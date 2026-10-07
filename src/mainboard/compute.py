@@ -236,7 +236,8 @@ class Survey:
         setups: the onboarding records by alias (see `onboarded`), read here when None.
         """
         recorded = self.onboarded() if setups is None else setups
-        held = Holdings(self.board.root).read()
+        root = self.board.root
+        held = Holdings(root, self.board.manifest.workspace.lake_home(root)).read()
         # Loading credentials mutates the process environment. Finish before SSH launches:
         # concurrent setenv and execve can fail with EFAULT before ssh itself starts.
         Credentials().load()

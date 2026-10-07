@@ -79,6 +79,8 @@ from tenacity import (
 
 from ..core.errors import MissionError
 from ..core.project import Project
+from ..manifest.loading import composition
+from ..manifest.schema.workspace import Header
 from ..runtime.tree import FileBudget
 from . import schema
 from .database import connect, quoted
@@ -336,7 +338,8 @@ class Health(FrozenModel):
 class Lake(FrozenModel):
     """One workspace's state lake.
 
-    root: the workspace root; the catalog, data and lock paths all derive from it.
+    root: the workspace root; the lock and token paths derive from it.
+    home: where the catalog and data live, the workspace's `[workspace] lake` (see `at`).
     extensions: where DuckDB's extensions are loaded from and installed to.
     repository: an extension repository URL or directory, DuckDB's core repository when empty.
     served: the `quack:host:port` a lake is served at, attached instead of the workspace's own
@@ -344,14 +347,20 @@ class Lake(FrozenModel):
     """
 
     root: Path
+    home: Path
     extensions: Path = Field(default_factory=_extensions)
     repository: str = ""
     served: str = Field(default_factory=lambda: Project().variable("LAKE").read())
 
     @classmethod
     def at(cls, root: Path) -> Lake:
-        """The lake of the workspace at `root`."""
-        return cls(root=root.absolute())
+        """The lake of the workspace at `root`, where its manifest's `[workspace] lake` says."""
+        root = root.absolute()
+        manifest = Project().manifest(root)
+        header = (
+            composition(manifest).manifest.workspace if manifest.is_file() else Header(name="")
+        )
+        return cls(root=root, home=header.lake_home(root))
 
     @property
     def out(self) -> Path:
@@ -360,11 +369,11 @@ class Lake(FrozenModel):
 
     @property
     def catalog(self) -> Path:
-        return self.out / "lake.sqlite"
+        return self.home / "lake.sqlite"
 
     @property
     def data(self) -> Path:
-        return self.out / "lake"
+        return self.home / "lake"
 
     @property
     def lock(self) -> Path:

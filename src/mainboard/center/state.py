@@ -474,7 +474,13 @@ class Carried:
             config = SshConfig((self.home / ".ssh" / "config").read_text(encoding="utf-8"))
         except FileNotFoundError:
             return []
-        return config.needed([*self.manifest.profiles(), *Holdings(self.root).read(), GITHUB])
+        return config.needed(
+            [
+                *self.manifest.profiles(),
+                *Holdings(self.root, self.manifest.workspace.lake_home(self.root)).read(),
+                GITHUB,
+            ]
+        )
 
     def _home_path(self, written: str) -> Path | None:
         """An `IdentityFile` as written, resolved here, None when it lies outside home."""

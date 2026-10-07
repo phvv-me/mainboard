@@ -19,7 +19,8 @@ def load(path: Path) -> Manifest:
     alias resolves like a declared one.
     """
     composed = composition(path).composed()
-    return composed.holding(Holdings(path.parent).profiles())
+    home = composed.workspace.lake_home(path.parent)
+    return composed.holding(Holdings(path.parent, home).profiles())
 
 
 def composition(path: Path) -> Composition:

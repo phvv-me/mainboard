@@ -1,5 +1,9 @@
+from pathlib import Path
+
 from patos import Model
 from pydantic import Field
+
+from ...core.project import Project
 
 # What a workspace holds as data rather than source, in the sync filter language: never sealed or
 # archived as a local trial's source, and pinned through `needs` or `resources` by what reads it.
@@ -20,6 +24,9 @@ class Header(Model):
     dotfiles: the owner's chezmoi dotfiles (`user/repo` or any repository `chezmoi init` takes),
         applied on every host `host setup` onboards and refreshed on each `host sync`, so every
         machine has the same shell, commands and editor. Left out of the compile digest.
+    lake: the directory the state lake lives in, its catalog `lake.sqlite` beside its data
+        `lake/`; `~` expands. Empty keeps it in the workspace's generated directory. Left out of
+        the compile digest, since no environment reads it.
     """
 
     name: str
@@ -31,3 +38,8 @@ class Header(Model):
     data: list[str] = Field(default=list(DATA), exclude=True)
     members: list[str] = []
     dotfiles: str = Field(default="", exclude=True)
+    lake: str = Field(default="", exclude=True)
+
+    def lake_home(self, root: Path) -> Path:
+        """Where the lake of the workspace at `root` lives."""
+        return Path(self.lake).expanduser() if self.lake else Project().out(root)

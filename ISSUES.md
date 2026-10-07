@@ -73,6 +73,15 @@ campaign first; move an entry to the bottom section once fixed and verified.
     `research/cuda-tokenization/datasets` hold 29 GB, much of it duplicates of lake objects.
     There is no `mb lake evict` to drop tree copies the lake verifiably holds, and no way to see
     which tree files are cached copies. Add both, and consider the lake on `/Volumes/PORTABLE`.
+13d. **`[workspace] lake` (2026-10-08) is not yet known to center migration.**
+    `center/state.py` ships `lake.sqlite` and the data as part of `.mainboard`; with the lake
+    elsewhere, `host setup --center` should carry it from `Lake.home` (or leave an external
+    volume where it is). `doctor` should also report the lake's home and refuse clearly when the
+    volume is unmounted.
+13e. **Palettes are only validated by hand.** The 2026-10-08 Hugging Face colour change came from
+    running the dataviz skill's `validate_palette.js` outside mainboard. `[plots.*]` colours and
+    palettes should be checked (lightness band, chroma, colour-blind and normal-vision
+    separation, contrast) when a style loads and in `mb lint`.
 13. The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...
     mainboard-agent`). It works, but contradicts the rule that nothing runs on the OS interpreter;
     document it as the one exception or ship the agent's own interpreter.

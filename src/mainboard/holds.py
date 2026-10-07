@@ -55,7 +55,7 @@ class Holds:
     def __init__(self, board: Board, *, aliases: SshAliases | None = None) -> None:
         self.board = board
         self.aliases = aliases or SshAliases()
-        self.holdings = Holdings(board.root)
+        self.holdings = Holdings(board.root, board.manifest.workspace.lake_home(board.root))
 
     def hold(
         self,

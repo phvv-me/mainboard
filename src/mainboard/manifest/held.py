@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 from pydantic import AwareDatetime
 
-from ..core.project import Project
 from .schema.host import HostProfile
 
 if TYPE_CHECKING:
@@ -40,12 +39,13 @@ class Held(FrozenModel):
 class Holdings:
     """The held machines of one workspace, the lake's `holds` view."""
 
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, root: Path, home: Path) -> None:
+        """home: where the workspace's lake lives, `Header.lake_home`."""
+        self.root, self.home = root, home
 
     def read(self) -> dict[str, Held]:
         """Every held machine by alias, none in a workspace that has no lake yet."""
-        if not (Project().out(self.root) / "lake.sqlite").is_file():
+        if not (self.home / "lake.sqlite").is_file():
             return {}
         # A hold an older release recorded may carry a profile field this release dropped.
         held = (Held.model_validate_json(row, extra="ignore") for row in self._log().records())
