@@ -4,7 +4,6 @@ import errno
 import hashlib
 import json
 import os
-import resource
 import shlex
 import sys
 from collections.abc import Generator
@@ -21,7 +20,7 @@ from mainboard.runtime.runner import Runner
 from mainboard.state import Lake
 from mainboard.state.blobs import Blobs
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX RLIMIT_NOFILE")
+resource = pytest.importorskip("resource", reason="POSIX RLIMIT_NOFILE")
 
 
 @contextmanager
