@@ -15,6 +15,7 @@ from plumbum import local as localhost
 from rich.console import Console
 
 from . import staleness, upkeep
+from .agents import Agents
 from .batch.spec import BatchSpec, Selection
 from .board import Board
 from .center.migrate import Migration
@@ -50,7 +51,7 @@ from .render import diverted, mode_of, plain, progress, record, rows, totals
 from .render.values import to_row
 from .runtime.job import Job
 from .runtime.runner import Runner
-from .state import DirectoryReplica, Evidence, Importer, Lake
+from .state import DirectoryReplica, Evidence, Lake
 from .state.lake import PORT
 from .vigil import STALL_SECONDS
 
@@ -495,15 +496,16 @@ def build(root: Path | None = None) -> App:
         quiet: Annotated[bool, Parameter(show=False)] = False,
         output: Output = _COMPACT,
     ) -> int:
-        """Print a job's or a batch's settled outcome, read only from its receipts; exit with it.
+        """Refresh one job or batch, print its recorded outcome, and exit with it.
 
         One row per trial: its outcome, its gate sweep and the ledger node it serves, never a
         scheduler's or a session's memory. Exit 0 when every row settled clean, 1 on a failure,
         2 while anything is in flight (or `--wait` timed out), 3 when the receipts prove
         nothing, 4 when `--wait` saw a job stall.
 
-        `--wait` blocks until it settles, sweeping exactly as `job list` does (results pulled
-        back, rentals released), with each test cell and a heartbeat on stderr.
+        Only the requested dispatch or batch is refreshed; receipt files and directories are
+        read offline. Rental deadlines remain enforced across the workspace. `--wait` repeats
+        that settlement until it finishes, with each test cell and a heartbeat on stderr.
 
         Args:
             target: a handle or name as `submit`/`list` print it, a batch id, a receipts stream id,
@@ -518,7 +520,7 @@ def build(root: Path | None = None) -> App:
         verdicts = board("local").verdicts()
         if not wait:
             with progress(f"reading {target}"):
-                settled = verdicts.of(target, host=on, run=run)
+                settled = verdicts.refresh(target, host=on, run=run)
             return _settled(settled, output)
         if not quiet:
             print(f"waiting on {target}", file=sys.stderr, flush=True)
@@ -526,6 +528,7 @@ def build(root: Path | None = None) -> App:
             settled = verdicts.wait(
                 target,
                 host=on,
+                run=run,
                 timeout=timeout,
                 interval=vocabulary.POLL_SECONDS,
                 stall=stall,
@@ -1721,6 +1724,54 @@ def build(root: Path | None = None) -> App:
             settled = board("local").verdicts().cancel(handle, host=on)
         return _settled(settled, output)
 
+    agents = App(
+        name="agents",
+        help="Configure every coding agent alike from `.agents`: files, links, servers, releases.",
+    )
+    app.command(agents)
+
+    @agents.command(name="sync")
+    def agents_sync(*, output: Output = _COMPACT) -> None:
+        """Render each harness's files from `.agents`, remove stale ones and make the links.
+
+        `.agents` declares what every harness shares: the MCP servers in `mcp.json`, the hooks
+        under `hooks` in `settings.json`, the subagents in `agents/*.md` and the skills in
+        `skills/`. Claude Code reads the folder itself through the `.claude` link; Codex,
+        opencode and Gemini get their own files (`.codex/`, `opencode.json`, `.gemini/`), each
+        with that harness's own settings file in `.agents` (`codex.toml`, `opencode.json`,
+        `gemini.json`) laid under it. The rendered files are tracked, so a fresh clone works
+        without this tool; edit `.agents`, never them.
+
+        Args:
+        """
+        changed = Agents.at(workspace_root()).sync()
+        output.print_rows([{"changed": path} for path in changed], title="agents sync")
+
+    @agents.command(name="check")
+    def agents_check(*, output: Output = _COMPACT) -> int:
+        """Judge what an agent started here meets, each row with its fix; 1 when one failed.
+
+        The links, AGENTS.md, files out of step with `.agents`, servers whose command or
+        variables this machine lacks, the Claude Code memory of this workspace, and each
+        harness's release and login.
+
+        Args:
+        """
+        with progress("checking the agents"):
+            sections = Agents.at(workspace_root()).sections()
+        return _sectioned(sections, output, title="agents check")
+
+    @agents.command(name="update")
+    def agents_update(*, output: Output = _COMPACT) -> int:
+        """Install every missing harness and bring every present one to its latest release.
+
+        Claude Code through its own installer and `claude update`, Codex through `pixi
+        global` from conda-forge, opencode and Gemini through npm into `~/.local`.
+
+        Args:
+        """
+        return _sectioned(Agents.at(workspace_root()).update(), output, title="agents update")
+
     proc = App(
         name="proc",
         help="Kill a process tree, bound a command, wait for a file or port, on every system.",
@@ -1919,27 +1970,6 @@ def build(root: Path | None = None) -> App:
                 while True:
                     time.sleep(3600)
 
-    @lake.command(name="import")
-    def import_(*, again: bool = False, output: Output = _COMPACT) -> int:
-        """Import this workspace's file state into its state lake once, and prove it landed.
-
-        Creates the lake (`lake.sqlite` beside a `lake/` data folder in the state directory) and
-        appends, in one transaction, the dispatch registry, batch events, receipts and logs,
-        cost ledgers, the offer catalog, held machines, study ledgers, the pulse memory, both
-        digest memories, job scripts and closure listings. Then reads every source's rows back
-        against the files and rebuilds the logs byte for byte, one row per comparison, and exits
-        1 when any differs. The files are only read: nothing is moved, rewritten or deleted, and
-        wandb folders, pins, source archives, recovery and environments are left out.
-
-        Args:
-            again: import even though the lake already holds an import, setting that lake aside
-                under `lake.aside/` first rather than appending the same records twice.
-        """
-        with progress("importing the state directory into the lake"):
-            tallies = Importer(Lake.at(workspace_root())).run(again=again)
-        output.print_rows([tally.model_dump() for tally in tallies], title="lake import")
-        return 0 if all(tally.ok for tally in tallies) else 1
-
     @paper.command(name="build")
     def paper_build(
         name: str,
@@ -2017,24 +2047,35 @@ def build(root: Path | None = None) -> App:
 
     @git.command(name="commit")
     def git_commit(
-        *, message: Annotated[str, Parameter(name=["--message", "-m"])], output: Output = _COMPACT
+        *paths: Path,
+        message: Annotated[str, Parameter(name=["--message", "-m"])],
+        everything: Annotated[bool, Parameter(name=["--all", "-a"], negative="")] = False,
+        output: Output = _COMPACT,
     ) -> int:
-        """Commit every dirty owned repository, submodules first, then the pointers to them.
+        """Commit the named paths, or what each owned repository has staged, submodules first.
 
-        Each commit lands on a branch: a detached HEAD is attached to its trunk when that is a
-        fast-forward of the branch, and held otherwise, as is a parent whose submodule did not
-        commit. A repository behind its upstream commits, then merges the upstream in, aborting
-        a conflicting merge with its paths named. Symbolic links a Windows checkout wrote as
-        files are put back first. Anything under a `[git] never-commit` pattern, files over the
-        size ceiling that Git LFS does not carry, links edited through as files, and nested
-        repositories `.gitmodules` does not declare stay out of the commit, unstaged, and the
-        row names them. Exits 1 when any repository was held or failed.
+        A path goes to the deepest owned repository holding it and is committed alone, as `git
+        commit <path>` would: whatever else sits in that index stays there for whoever staged
+        it. A directory takes every owned repository under it whole. A parent records the
+        pointer of each submodule that committed in this run, and no other. Without paths each
+        repository commits its index, and with nothing staged anywhere the command refuses.
+        A named path under a `[git] never-commit` pattern, over the size ceiling Git LFS does
+        not carry, a link edited through as a file, or a nested repository `.gitmodules` does not
+        declare holds its repository with the reason. Each commit lands on a branch: a detached
+        HEAD is attached to its trunk when that moves no commit, and held otherwise.
+
+        `--all` is the deliberate sweep: every change in every owned repository except what has
+        to stay out, links a Windows checkout wrote as files put back first, a parent held when
+        its submodule did not commit, and an upstream the repository is behind merged in after.
+        Exits 1 when any repository was held or failed.
 
         Args:
+            paths: files or directories to commit, relative to the working directory.
             message: the commit message, the same for every repository committed.
+            everything: commit every change in every owned repository.
         """
         with progress("committing the repository tree"):
-            steps = board("local").git().commit(message)
+            steps = board("local").git().commit(message, paths, everything=everything)
         return _stepped(steps, output, title="git commit")
 
     @git.command(name="push")

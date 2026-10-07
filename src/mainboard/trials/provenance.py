@@ -115,7 +115,13 @@ def source(repo: Path) -> Source:
     expected = DIGEST_VAR.read()
     if declared:
         closure = Path(declared).resolve()
-        tree = SourceTree(closure.parent)
+        # Snapshots keep the listing at their root; local runs stage it under workspace state.
+        root = (
+            closure.parent
+            if closure.name in Project().markers("closure")
+            else Project().find_root(closure.parent)
+        )
+        tree = SourceTree(root)
         if not repo.resolve().is_relative_to(tree.root):
             raise RuntimeError("trial project is outside the captured source workspace")
         manifest = closure.read_text(encoding="utf-8")

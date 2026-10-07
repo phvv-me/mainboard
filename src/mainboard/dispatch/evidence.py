@@ -67,7 +67,7 @@ def framing() -> str:
     """
     file = f'"${RECEIPTS_VAR.names[0]}"'
     return (
-        f"if [ -s {file} ]; then echo {_BEGIN}; "
+        f"if [ -s {file} ]; then echo; echo {_BEGIN}; "
         f'{{ base64 < {file} | tr -d "\\n"; echo; }} | fold -w {_CHUNK_WIDTH} '
         f"| sed 's/^/{_CHUNK_MARKER}/' || true; echo {_END}; fi"
     )
@@ -77,7 +77,7 @@ def framed(receipts: bytes) -> str:
     """`receipts` (never empty) framed exactly as `framing` frames a file."""
     payload = base64.b64encode(receipts).decode("ascii")
     chunks = [payload[at : at + _CHUNK_WIDTH] for at in range(0, len(payload), _CHUNK_WIDTH)]
-    return "\n".join([_BEGIN, *(f"{_CHUNK_MARKER}{chunk}" for chunk in chunks), _END]) + "\n"
+    return "\n".join(["", _BEGIN, *(f"{_CHUNK_MARKER}{chunk}" for chunk in chunks), _END]) + "\n"
 
 
 def unframed(log: str) -> str:
@@ -87,7 +87,8 @@ def unframed(log: str) -> str:
     verdict is about; a block torn mid-upload is skipped for the next one down.
     """
     lines = [line.strip() for line in log.splitlines()]
-    for start in reversed([at for at, line in enumerate(lines) if line == _BEGIN]):
+    # Older wrappers could follow a dependency's unterminated stderr line.
+    for start in reversed([at for at, line in enumerate(lines) if line.endswith(_BEGIN)]):
         ends = [at for at, line in enumerate(lines[start:], start) if line == _END]
         if not ends:
             continue

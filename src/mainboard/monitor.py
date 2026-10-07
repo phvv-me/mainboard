@@ -18,7 +18,6 @@ from .core.errors import MissionError
 from .core.project import Project
 from .dispatch import vocabulary
 from .dispatch.backends.base import route
-from .dispatch.dispatcher import Verdict
 from .dispatch.evidence import covered_in, receipts_in
 from .dispatch.schedulers import HostUnreachable, is_quota_refusal, short_reason
 from .dispatch.state import DownHost, Failed, Finished, Held, MonitorReport, Resumed
@@ -28,7 +27,7 @@ from .log import logger
 from .tracking import is_batched, streamed
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from pydantic import JsonValue
 
@@ -154,9 +153,9 @@ class Monitor:
     """The durable pass over every dispatched job still owed an outcome.
 
     One `once` probes each unsettled run, pulls back whatever just finished, releases what a
-    settled run still holds, records each fresh verdict in the study ledger that owns it, and
-    advances the run's reported cursor so the next pass says nothing. A host that does not answer
-    is reported once and its jobs are left for the next pass. Releasing is why this is worth
+    settled run still holds, and advances the run's reported cursor so the next pass says
+    nothing. A host that does not answer is reported once and its jobs are left for the next
+    pass. Releasing is why this is worth
     running unattended: a queue stops charging when the job ends, but a provider keeps the
     instance billing after its command exits, so a terminal verdict here is followed by a cancel
     the scheduler path deliberately does not make.
@@ -292,7 +291,9 @@ class Monitor:
             logger.warning("held dispatch for {} refused: {}", record.target, refusal)
             return _failed(record, f"held dispatch refused: {refusal}")
 
-    def held(self) -> tuple[list[Resumed], list[Held], list[Failed]]:
+    def held(
+        self, scope: Callable[[RunRecord], bool] | None = None
+    ) -> tuple[list[Resumed], list[Held], list[Failed]]:
         """Ask every quota-held dispatch's target for room again, in the order they were held.
 
         This makes a hold a delay rather than a loss: a wave meeting a group's job limit used to
@@ -304,7 +305,7 @@ class Monitor:
         waiting: list[Held] = []
         refused: list[Failed] = []
         for record in reversed(self.cache.live()):
-            if record.verdict != vocabulary.HELD:
+            if record.verdict != vocabulary.HELD or (scope is not None and not scope(record)):
                 continue
             run = self.asked(record)
             if run is None:
@@ -401,8 +402,11 @@ class Monitor:
             failed.append(_failed(record, detail))
         return failed
 
-    def once(self) -> MonitorReport:
-        """Serialize settlement before reading its cursor, including across monitor processes."""
+    def once(self, *, scope: Callable[[RunRecord], bool] | None = None) -> MonitorReport:
+        """Settle selected submissions under the shared lock; rental deadlines remain global.
+
+        scope: selects fresh registry rows inside the lock, all unsettled runs when omitted.
+        """
         expired = self.expired()
         lock = self.cache.settlement
         try:
@@ -411,19 +415,19 @@ class Monitor:
             logger.debug("another monitor owns settlement; leaving its cursor untouched")
             return MonitorReport(running=None, failed=expired)
         try:
-            report = self._once()
+            report = self._once(scope)
             return report.model_copy(update={"failed": [*expired, *report.failed]})
         finally:
             lock.release()
 
-    def _once(self) -> MonitorReport:
-        """Resolve every unsettled run once, harvest the newly terminal ones, report the changes.
+    def _once(self, scope: Callable[[RunRecord], bool] | None = None) -> MonitorReport:
+        """Resolve selected unsettled runs, harvest the newly terminal ones, report the changes.
 
         Resolving goes by target (see `Sweep`); the harvest then walks runs in cache order, so
         what a run causes does not depend on which target answered first. A run in flight is only
         counted. A run that ended has its results pulled, its output and trial receipts captured
-        beside its receipts stream, whatever it holds released, its verdict recorded in the
-        owning study ledger, and only then its cursor advanced, so a sweep killed halfway repeats
+        beside its receipts stream, whatever it holds released, and only then its cursor
+        advanced, so a sweep killed halfway repeats
         work rather than losing an outcome. Capture must precede release, which destroys a rented
         instance and its log; release must precede the cursor, so a pass dying between them
         cancels the rental again next time.
@@ -435,9 +439,8 @@ class Monitor:
         running = 0
         finished: list[Finished] = []
         self.quiet.clear()
-        resumed, waiting, failed = self.held()
-        fleet = self.board.fleet()
-        records = self.cache.tracked()
+        resumed, waiting, failed = self.held(scope)
+        records = [record for record in self.cache.tracked() if scope is None or scope(record)]
         failed.extend(
             _failed(record, reason)
             for record in records
@@ -469,9 +472,6 @@ class Monitor:
                     if not discarded:
                         self.evidence(record, (), status="not_started", detail=detail)
                     self.track(record, state, detail=detail)
-                    fleet.settle(
-                        {job.handle: Verdict(verdict=state.verdict, exit_code=state.exit_code)}
-                    )
                     self.cache.report(record, state.verdict)
                 else:
                     detail += "; release failed and will be retried"
@@ -544,7 +544,6 @@ class Monitor:
                     )
                 )
             self.track(record, state, detail=detail)
-            fleet.settle({job.handle: Verdict(verdict=state.verdict, exit_code=state.exit_code)})
             self.cache.report(self.cache.run(record.handle, record.target), state.verdict)
         return MonitorReport(
             running=running + len(waiting),
@@ -606,7 +605,7 @@ class Monitor:
     def track(self, record: RunRecord, state: JobState, *, detail: str) -> None:
         """Publish what this pass learned about one run into that run's own receipts stream.
 
-        This tracks a plain submit or a study trial like a batch job. A batched run is skipped,
+        This tracks a plain submit like a batch job. A batched run is skipped,
         since its batch's watch already publishes every line and a second publisher would double
         every row. Only a move is published, so a cron pass that finds nothing new writes nothing.
 

@@ -6,6 +6,7 @@
 # when something reads it; a PEP 810 `__lazy_modules__` declaration is inert on this interpreter.
 
 from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,8 +16,6 @@ if TYPE_CHECKING:
     from .core import MissionError, Project
     from .core.shell import script, sh
     from .experiments.data import HfDataset, HfModel, Needs, RepoFile
-    from .experiments.fleet import Fleet
-    from .experiments.study import Study as ExperimentStudy
     from .log import logger
     from .manifest import Manifest, load
     from .probe.gating import gpu_busy, wait_for_idle
@@ -36,8 +35,6 @@ _HOMES: dict[str, tuple[str, str]] = {
     "Collection": (".profile.profiler", "Collection"),
     "ComputePath": (".compute", "ComputePath"),
     "ExecutionPlan": (".context", "ExecutionPlan"),
-    "ExperimentStudy": (".experiments.study", "Study"),
-    "Fleet": (".experiments.fleet", "Fleet"),
     "HfDataset": (".experiments.data", "HfDataset"),
     "HfModel": (".experiments.data", "HfModel"),
     "HostFacts": (".probe.snapshot", "HostFacts"),
@@ -79,8 +76,6 @@ __all__ = [
     "HfModel",
     "Needs",
     "RepoFile",
-    "Fleet",
-    "ExperimentStudy",
     "Manifest",
     "load",
     "gpu_busy",
@@ -112,4 +107,7 @@ def __getattr__(name: str) -> object:
     return found
 
 
-__version__ = "0.1.0"
+try:
+    __version__ = version(__name__)
+except PackageNotFoundError:
+    __version__ = "0.0.0"

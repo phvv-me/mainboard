@@ -260,14 +260,16 @@ class Repo:
         ahead, behind = counted.split()
         return int(ahead), int(behind)
 
-    def changes(self, outside: Sequence[str] = ()) -> list[Change]:
+    def changes(self, outside: Sequence[str] = (), within: Sequence[str] = ()) -> list[Change]:
         """Every changed, staged or untracked path, a submodule counted only when its commit moved.
 
         A submodule with edits of its own is that submodule's business, reported on its own row,
         so the parent sees it only once the pointer it records would change.
 
         outside: exclude pathspecs whose paths are left out, which git then never walks.
+        within: repository-relative paths the listing is limited to, everything when empty.
         """
+        inside = [f":(literal){path}" for path in within] or ["."]
         listing = self.git.out(
             "status",
             "--porcelain=v1",
@@ -275,7 +277,9 @@ class Repo:
             "--untracked-files=all",
             "--no-renames",
             "--ignore-submodules=dirty",
-            *(("--", ".", *outside) if outside else ()),
+            "--",
+            *inside,
+            *outside,
         )
         return [Change(entry[:2], entry[3:]) for entry in listing.split("\0") if entry]
 

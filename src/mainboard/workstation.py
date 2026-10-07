@@ -136,7 +136,8 @@ class Workstation:
         if git.broken:
             return [git]
         windows = [self.symlinks(), self.longpaths()] if self.system == "Windows" else []
-        return [git, self.lfs(), self.credentials(), *windows]
+        macos = [self.precomposed()] if self.system == "Darwin" else []
+        return [git, self.lfs(), self.credentials(), *windows, *macos]
 
     def git(self) -> Readiness:
         """Whether git runs here at all."""
@@ -259,6 +260,21 @@ class Workstation:
             "longpaths",
             ("git", "config", "--global", "core.longpaths", "true"),
             "set core.longpaths=true in the global git config",
+        )
+
+    def precomposed(self) -> Readiness:
+        """Whether git on macOS reads a decomposed file name as the composed one it tracks.
+
+        A repository cloned on another system lacks the `core.precomposeunicode` a macOS clone
+        sets, so every tracked `ä` or `ã` the filesystem hands back decomposed lists twice: the
+        tracked file, and an untracked twin a sweep would commit.
+        """
+        if self._config("--type=bool", "--get", "core.precomposeunicode") == "true":
+            return Readiness(check="precomposeunicode", detail="core.precomposeunicode=true")
+        return self._applied(
+            "precomposeunicode",
+            ("git", "config", "--global", "core.precomposeunicode", "true"),
+            "set core.precomposeunicode=true in the global git config",
         )
 
     def _applied(self, check: str, command: Sequence[str], done: str) -> Readiness:

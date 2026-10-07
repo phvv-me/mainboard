@@ -40,6 +40,7 @@ class Submission(TypedDict, total=False):
     container: str
     fetch: str | None
     node: str
+    needs: tuple[str, ...]
 
 
 class BatchJob(FrozenModel):
@@ -48,7 +49,8 @@ class BatchJob(FrozenModel):
     name: the key every table row and receipt line carries.
     target: the host (or provider) alias the job is dispatched to.
     data: workspace paths needed on the target beyond the mirror (a dataset the manifest never
-        syncs), so a transfer set counts them whether or not they changed.
+        syncs): shipped as the job's needs, and counted by a transfer set whether or not they
+        changed.
     runtime_s: the command's expected wall seconds an estimate prices; zero prices setup alone.
     fetch: a results path pulled back when the job finishes.
     node: the ledger slug this job serves, carried into its record and receipts, or empty.
@@ -89,6 +91,7 @@ class BatchJob(FrozenModel):
             container=self.container,
             fetch=self.fetch or None,
             node=self.node,
+            needs=self.data,
         )
 
 

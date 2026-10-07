@@ -7,13 +7,15 @@ import os
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from mainboard.dispatch.provenance import SourceTree, listing
 from mainboard.nodes import evidence_of
-from mainboard.state import DirectoryReplica, Evidence, EvidenceTree, Lake
+from mainboard.state import DirectoryReplica, Evidence, EvidenceTree, Lake, schema
 from mainboard.state import blobs as blobs_module
+from mainboard.state import evidence as evidence_module
 from mainboard.state.blobs import Blobs
 from mainboard.trials.artifacts import Artifact
 from mainboard.trials.dataset import Dataset
@@ -139,9 +141,95 @@ def test_a_blob_from_before_chunking_still_reads(workspace) -> None:
     digest = hashlib.sha256(payload).hexdigest()
     with lake.open(write=True) as connection:
         lake.evolve(connection)
-    lake.append("blobs", [{"sha256": digest, "bytes": payload}])
+    lake.append(schema.blobs, [{"sha256": digest, "bytes": payload}])
     with lake.open() as connection:
         assert Blobs(lake).read(connection, {digest}) == {digest: payload}
+
+
+def test_blob_membership_is_limited_to_requested_digests(workspace, monkeypatch) -> None:
+    monkeypatch.setattr(blobs_module, "CHUNK_BYTES", 3)
+    lake = Lake.at(workspace).ready()
+    blobs = Blobs(lake)
+    payloads = [b"chunked", b"legacy", b"unrequested"]
+    chunked, legacy, unrelated = [hashlib.sha256(payload).hexdigest() for payload in payloads]
+    lake.transact(
+        lambda connection: blobs.stage(connection, {chunked: payloads[0], unrelated: payloads[2]})
+    )
+    lake.append(schema.blobs, [{"sha256": legacy, "bytes": payloads[1]}])
+    with lake.open() as connection:
+        assert blobs.held(connection, {chunked, legacy, "0" * 64}) == {chunked, legacy}
+        assert blobs.read(connection, {chunked, legacy, "0" * 64}) == {
+            chunked: payloads[0],
+            legacy: payloads[1],
+        }
+        assert blobs.held(connection, {"0" * 64}) == set()
+        assert blobs.read(connection, {"0" * 64}) == {}
+        for invalid in ("' OR true --", "", "g" * 64, "0" * 63, "0" * 64 + "\n"):
+            for select in (blobs.held, blobs.read):
+                with pytest.raises(ValueError, match="not a SHA-256 digest"):
+                    select(connection, {invalid})
+    # An empty request does not touch even a closed connection.
+    assert blobs.held(connection, set()) == set()
+    assert blobs.read(connection, set()) == {}
+
+
+def test_blob_membership_handles_large_requested_sets(workspace, monkeypatch) -> None:
+    monkeypatch.setattr(blobs_module, "CHUNK_BYTES", 3)
+    lake = Lake.at(workspace).ready()
+    blobs = Blobs(lake)
+    objects = {
+        hashlib.sha256(payload).hexdigest(): payload
+        for index in range(1601)
+        for payload in (f"object-{index}".encode(),)
+    }
+    lake.transact(lambda connection: blobs.stage(connection, objects))
+    # Duplicate chunks and duplicate requests must not multiply returned bytes.
+    digest = next(iter(objects))
+    lake.transact(lambda connection: blobs.stage(connection, {digest: objects[digest]}))
+    unrequested = next(reversed(objects))
+    expected = {key: value for key, value in objects.items() if key != unrequested}
+    requested = [*expected, digest, "0" * 64]
+    with lake.open() as connection:
+        depth = connection.execute("SELECT current_setting('max_expression_depth')").fetchone()
+        assert blobs.held(connection, requested) == set(expected)
+        assert blobs.read(connection, requested) == expected
+        assert (
+            connection.execute("SELECT current_setting('max_expression_depth')").fetchone()
+            == depth
+        )
+
+
+def test_ingest_deduplicates_within_and_across_windows(workspace, monkeypatch) -> None:
+    monkeypatch.setattr(evidence_module, "STAGED_BYTES", 8)
+    lake = Lake.at(workspace)
+    keeper = Evidence(lake)
+    previous = workspace / "previous.bin"
+    previous.write_bytes(b"kept")
+    keeper.ingest([previous])
+    root = workspace / "evidence"
+    root.mkdir()
+    payloads = [b"same", b"same", b"same", b"diff", b"kept"]
+    for index, payload in enumerate(payloads):
+        (root / f"{index}.bin").write_bytes(payload)
+    same, different, kept = [hashlib.sha256(payload).hexdigest() for payload in payloads[2:]]
+    with patch.object(Blobs, "held", autospec=True, side_effect=Blobs.held) as membership:
+        first = keeper.ingest([root])
+        again = keeper.ingest([root])
+    assert first.model_dump() == {"files": 5, "indexed": 5, "objects": 2, "size": 8}
+    assert again.model_dump() == {"files": 5, "indexed": 0, "objects": 0, "size": 0}
+    assert [call.args[2] for call in membership.call_args_list] == [
+        {same},
+        {same, different},
+        {kept},
+    ] * 2
+    assert lake.query(
+        "SELECT (SELECT count(*) FROM lake.blobs), (SELECT count(*) FROM lake.evidence_log)"
+    ) == [(3, 6)]
+    for path in root.iterdir():
+        path.unlink()
+    assert len(keeper.materialize([root])) == 5
+    assert [path.read_bytes() for path in sorted(root.iterdir())] == payloads
+    assert keeper.verify() == []
 
 
 def _chunked(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Lake, Path, str]:
@@ -247,13 +335,30 @@ def test_source_archives_restore_through_the_same_blobs(workspace, tmp_path_fact
     source = workspace / "src" / "code.py"
     source.parent.mkdir()
     source.write_text("print('kept')\n", encoding="utf-8")
+    lake = Lake.at(workspace)
+    Evidence(lake).ingest([source])
     tree = SourceTree(workspace)
     identity, rows = tree.seal(["src/code.py"])
     digest = tree.archive(listing(rows))
     assert digest == identity.digest
+    assert tree.archive(listing(rows)) == digest
     into = tmp_path_factory.mktemp("restored")
     [written] = tree.restore(digest, into)
     assert written.read_bytes() == source.read_bytes()
+    copy = source.with_name("copy.py")
+    copy.write_bytes(source.read_bytes())
+    added = source.with_name("added.py")
+    added.write_text("value = 1\n", encoding="utf-8")
+    _, rows = tree.seal(["src/code.py", "src/copy.py", "src/added.py"])
+    newer = tree.archive(listing(rows))
+    assert tree.archive(listing(rows)) == newer
+    assert lake.query(
+        "SELECT (SELECT count(*) FROM lake.blobs), (SELECT count(*) FROM lake.closures)"
+    ) == [(2, 4)]
+    restored = tree.restore(newer, tmp_path_factory.mktemp("newer"))
+    assert {path.name: path.read_bytes() for path in restored} == {
+        path.name: path.read_bytes() for path in (source, copy, added)
+    }
 
 
 def test_a_directory_replica_keeps_each_object_once_and_the_index(

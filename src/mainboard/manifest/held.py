@@ -3,7 +3,6 @@
 # `holds_log` and the loader lays it over the declared hosts. A workspace with no lake yet holds
 # nothing, and reading its holds never creates one.
 
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -15,7 +14,7 @@ from .schema.host import HostProfile
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ..state.lake import Session
+    from ..state.holds import HoldLog
 
 
 class Held(FrozenModel):
@@ -48,8 +47,9 @@ class Holdings:
         """Every held machine by alias, none in a workspace that has no lake yet."""
         if not (Project().out(self.root) / "lake.sqlite").is_file():
             return {}
-        rows = self._session().rows("SELECT held FROM lake.holds ORDER BY alias")
-        return {held.alias: held for held in (Held.model_validate_json(row) for (row,) in rows)}
+        # A hold an older release recorded may carry a profile field this release dropped.
+        held = (Held.model_validate_json(row, extra="ignore") for row in self._log().records())
+        return {machine.alias: machine for machine in held}
 
     def profiles(self) -> dict[str, HostProfile]:
         """The host profile of every held machine by alias."""
@@ -63,12 +63,12 @@ class Holdings:
         """Forget `alias`, if held."""
         self._append(alias, dropped=True)
 
-    def _append(self, alias: str, **fields: object) -> None:
-        self._session().append("holds_log", [{"ts": datetime.now(UTC), "alias": alias, **fields}])
+    def _append(self, alias: str, **fields: str | bool) -> None:
+        self._log().append(alias, **fields)
 
-    def _session(self) -> Session:
-        """The workspace lake's shared session, imported here so loading a manifest in a
-        workspace holding nothing never loads the database engine."""
-        from ..state.lake import Lake
+    def _log(self) -> HoldLog:
+        """The workspace lake's hold log, imported here so loading a manifest in a workspace
+        holding nothing never loads the database engine."""
+        from ..state.holds import HoldLog
 
-        return Lake.at(self.root).session()
+        return HoldLog(self.root)

@@ -15,6 +15,7 @@
 
 import json
 from collections.abc import Sequence
+from copy import deepcopy
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -285,6 +286,7 @@ class Trial:
         self.settled = ""
         self.gated = ""
         self.artifacts: dict[str, JsonValue] = {}
+        self.recorded_artifacts: dict[str, JsonValue] = {}
 
     def __getattr__(self, name: str) -> Callable[..., None]:
         """One declared word as a method, `trial.validated(...)`; an undeclared one refuses."""
@@ -346,6 +348,8 @@ class Trial:
                 "artifacts": dict(self.artifacts),
             }
         )
+
+        self.recorded_artifacts = deepcopy(self.artifacts)
 
     def settle(self, word: str, reason: str = "", **measured: JsonValue) -> None:
         """Commit this trial under a declared word, with one line of reason and its readings."""

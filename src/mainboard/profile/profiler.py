@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import os
 import threading
 import time
@@ -203,7 +204,10 @@ class Profiler:
 
     @staticmethod
     def module_codes(modules: Sequence[str]) -> set[CodeType]:
-        """Find owned module and nested code objects for local PEP 669 events."""
+        """Find owned function bodies, including nested functions but not comprehensions.
+
+        Traverse generated code too, since it may contain an explicitly written lambda.
+        """
         loaded = [importlib.import_module(name) for name in modules]
         found: set[CodeType] = set()
         pending = {code for module in loaded for code in Profiler.owned_codes(module)}
@@ -213,11 +217,15 @@ class Profiler:
             pending.update(
                 item for item in code.co_consts if isinstance(item, CodeType) and item not in found
             )
-        return found
+        return {
+            code
+            for code in found
+            if code.co_name not in ("<genexpr>", "<listcomp>", "<setcomp>", "<dictcomp>")
+        }
 
     @staticmethod
     def owned_codes(module: ModuleType) -> tuple[CodeType, ...]:
-        """Return function code owned by one module, including its class methods."""
+        """Return unique unwrapped function bodies owned by a module or its classes."""
         owned = [
             value
             for value in vars(module).values()
@@ -225,13 +233,20 @@ class Profiler:
         ]
         functions = [value for value in owned if isinstance(value, FunctionType)]
         methods = [
-            member
+            member.__func__ if isinstance(member, staticmethod | classmethod) else member
             for cls in owned
             if isinstance(cls, type)
             for member in vars(cls).values()
-            if isinstance(member, FunctionType)
+            if isinstance(member, FunctionType | staticmethod | classmethod)
         ]
-        return tuple(function.__code__ for function in (*functions, *methods))
+        return tuple(
+            dict.fromkeys(
+                function.__code__
+                for candidate in (*functions, *methods)
+                if isinstance(function := inspect.unwrap(candidate), FunctionType)
+                and function.__module__ == module.__name__
+            )
+        )
 
     @classmethod
     def under(cls, collection: Collection, *, gpus: Sequence[DeviceProbe] = ()) -> Profiler:
@@ -251,7 +266,11 @@ class Profiler:
         )
 
     def auto(self, modules: Sequence[str]) -> None:
-        """Enable local `sys.monitoring` events only for code owned by `modules`."""
+        """Enable local events for owned function bodies, leaving explicit spans active.
+
+        Explicit annotations and automatic spans can nest, even with the same label. Named
+        generators and coroutines emit active resume segments, not invocation counts.
+        """
         annotate.enable_auto(self.module_codes(modules))
         self.auto_on = True
 

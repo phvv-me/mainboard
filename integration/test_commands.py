@@ -5,13 +5,17 @@ import os
 import shutil
 import subprocess
 import sys
+from decimal import Decimal
 
+import duckdb
+import polars as pl
 import pytest
 
 from mainboard.cli import build
 from mainboard.core.errors import MissionError
 from mainboard.delimiter import Delimiter
 from mainboard.dispatch import commandline
+from mainboard.results import Results
 
 from .conftest import MB
 
@@ -58,6 +62,51 @@ def test_a_query_exports_through_duckdb(mb, workspace) -> None:
     target = workspace / "runs.csv"
     assert mb("query", "SELECT 1 AS one", "--out", str(target)).code == 0
     assert target.read_text(encoding="utf-8").splitlines() == ["one", "1"]
+
+
+def test_dataframe_queries_preserve_types_without_pyarrow(workspace, monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "pyarrow", None)
+    results = Results(workspace)
+    frame = results.query("""
+        SELECT i::TINYINT AS x,
+               CASE WHEN i = 2 THEN NULL ELSE i / 10 END::DECIMAL(4,2) AS y,
+               [struct_pack(n := i::SMALLINT)] AS nested
+        FROM range(4) t(i) ORDER BY i DESC
+    """)
+    assert frame.schema == {
+        "x": pl.Int8,
+        "y": pl.Decimal(4, 2),
+        "nested": pl.List(pl.Struct({"n": pl.Int16})),
+    }
+    # Results.query has already closed the DuckDB connection; these buffers remain owned.
+    assert frame.to_dicts() == [
+        {"x": i, "y": None if i == 2 else Decimal(i) / 10, "nested": [{"n": i}]}
+        for i in (3, 2, 1, 0)
+    ]
+    empty = results.query("""
+        SELECT NULL::SMALLINT AS x, []::STRUCT(n TINYINT)[] AS nested WHERE false
+    """)
+    assert empty.is_empty()
+    assert empty.schema == {"x": pl.Int16, "nested": pl.List(pl.Struct({"n": pl.Int8}))}
+    with pytest.raises(MissionError, match="not_a_column"):
+        results.query("SELECT not_a_column")
+    with pytest.raises(MissionError, match="Could not convert"):
+        results.query("SELECT CAST('bad' AS INTEGER)")
+    with pytest.raises(ValueError, match="one SELECT"):
+        results.query("SELECT 1; SELECT 2")
+
+
+def test_dataframe_queries_execute_once(workspace, monkeypatch) -> None:
+    results = Results(workspace)
+    original = results._views
+
+    def views(connection: duckdb.DuckDBPyConnection, project: str, sql: str) -> None:
+        connection.execute("CREATE SEQUENCE query_counter")
+        original(connection, project, sql)
+
+    monkeypatch.setattr(results, "_views", views)
+    frame = results.query("SELECT nextval('query_counter') AS n FROM range(4)")
+    assert frame["n"].to_list() == [1, 2, 3, 4]
 
 
 def test_an_environment_never_installed_is_named_not_crashed_on(mb) -> None:

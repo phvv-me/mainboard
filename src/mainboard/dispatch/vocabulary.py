@@ -2,7 +2,7 @@
 # one-word verdict lifecycle. It names no scheduler and no provider on purpose, so a provider
 # backend and a queue backend speak it without importing each other's family.
 
-from patos import FrozenModel, Lifecycle
+from patos import FrozenModel
 from pydantic import Field
 
 from .shared import HandleId
@@ -37,14 +37,17 @@ HELD = "held"
 # from the start since nothing was dispatched and no watch may wait on it.
 SKIPPED = "skipped"
 
-# Every terminal maps to the empty set, so a further move (a stale `running` after `ok`) raises
-# rather than mutates.
+# The moves a run's recorded verdict may make, each one the code makes: a provider declining a
+# submission reopens it, a job short enough to finish between two polls is never seen running, an
+# allocation fails or a walltime runs out in the queue, a preempted job is requeued, and a status
+# no backend vocabulary names reads as unknown. Every terminal maps to the empty set, so a further
+# move (a stale `running` after `ok`) is refused rather than recorded.
 VERDICTS: dict[str, set[str]] = {
     PREPARED: {SUBMITTING, FAILED, CANCELLED},
-    SUBMITTING: {QUEUED, RUNNING},
+    SUBMITTING: {PREPARED, QUEUED, RUNNING},
     HELD: {QUEUED, RUNNING, FAILED, VANISHED, CANCELLED},
-    QUEUED: {RUNNING, VANISHED, CANCELLED},
-    RUNNING: {OK, FAILED, VANISHED, TIMEOUT, CANCELLED},
+    QUEUED: {RUNNING, OK, FAILED, TIMEOUT, VANISHED, UNKNOWN, CANCELLED},
+    RUNNING: {QUEUED, OK, FAILED, VANISHED, UNKNOWN, TIMEOUT, CANCELLED},
     OK: set(),
     FAILED: set(),
     VANISHED: set(),
@@ -56,10 +59,6 @@ VERDICTS: dict[str, set[str]] = {
 
 # Settled for good, so a durable sweep trusts the cache instead of a queue that may have forgotten.
 TERMINAL = frozenset(verdict for verdict, moves in VERDICTS.items() if not moves)
-
-
-def tracker(initial: str = QUEUED) -> Lifecycle[str]:
-    return Lifecycle(VERDICTS, initial)
 
 
 class Resources(FrozenModel):

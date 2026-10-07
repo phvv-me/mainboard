@@ -7,7 +7,9 @@
 import json
 from typing import TYPE_CHECKING
 
-from ...state.lake import ALIAS
+from sqlalchemy import func, literal_column, select
+
+from ...state import schema
 from ..shared import now
 
 if TYPE_CHECKING:
@@ -27,7 +29,7 @@ class Captured:
         if self.transcript(stream, handle) != transcript:
             stamp = now()
             self.session.append(
-                "log_lines",
+                schema.log_lines,
                 [
                     {
                         "ts": stamp,
@@ -47,29 +49,31 @@ class Captured:
         known = set(held)
         fresh = [line for line in dict.fromkeys(receipts) if line not in known]
         self.session.append(
-            "receipts",
+            schema.receipts,
             [_receipt(stream, number, line) for number, line in enumerate(fresh, len(held) + 1)],
         )
 
     def receipts(self, stream: str) -> list[str]:
         """Every receipt line kept for `stream`, in the order they were kept."""
-        rows = self.session.rows(
-            f"SELECT line FROM {ALIAS}.receipts WHERE batch = ? ORDER BY rowid", [stream]
-        )
-        return [line for (line,) in rows]
+        kept = schema.receipts
+        query = select(kept.c.line).where(kept.c.batch == stream).order_by(literal_column("rowid"))
+        return [line for (line,) in self.session.rows(query)]
 
     def transcript(self, stream: str, handle: str, *, last: int = 0) -> str | None:
         """`handle`'s newest captured output, None when none was captured.
 
         last: only that many final lines, 0 for all of them.
         """
-        file = _file(stream, handle)
-        rows = self.session.rows(
-            f"SELECT line FROM {ALIAS}.log_lines WHERE file = ? AND ts = "
-            f"(SELECT max(ts) FROM {ALIAS}.log_lines WHERE file = ?) "
-            "QUALIFY n > max(n) OVER () - ? OR ? = 0 ORDER BY n",
-            [file, file, last, last],
+        log = schema.log_lines
+        file = log.c.file == _file(stream, handle)
+        newest = select(func.max(log.c.ts)).where(file).scalar_subquery()
+        lines = (
+            select(log.c.line, log.c.n, func.max(log.c.n).over().label("top"))
+            .where(file, log.c.ts == newest)
+            .subquery()
         )
+        query = select(lines.c.line).order_by(lines.c.n)
+        rows = self.session.rows(query.where(lines.c.n > lines.c.top - last) if last else query)
         return "\n".join(line for (line,) in rows) if rows else None
 
 

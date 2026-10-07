@@ -17,13 +17,13 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..agents import Agents
 from ..core.errors import MissionError
 from ..core.section import Section, Verdict, staged
 from ..engines.compile.provisioner import Provisioner
 from ..fitness import Fitness, Role
 from ..probe.system import System
 from ..workstation import Readiness, Workstation
-from .agents import Agents, dotenv
 from .exposure import Exposure, Spawn, directories, executables
 from .portable import Portability
 
@@ -98,13 +98,7 @@ class Verification:
         """Every readiness row, the tooling first since every later repair is a git command."""
         judged = Fitness(self.board.root, self.board.manifest).judge(self.system, role=Role.CENTER)
         tree = self.board.git()
-        agents = Agents(
-            self.board.root,
-            home=self.home,
-            environment=os.environ,
-            dotenv=dotenv(self.board.root / ".env"),
-            which=shutil.which,
-        )
+        agents = Agents.at(self.board.root, home=self.home)
         return [
             *self.tooling(),
             *(staged("machine", row) for row in judged),

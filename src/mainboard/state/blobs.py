@@ -36,8 +36,10 @@ from typing import IO
 
 import duckdb
 from patos import FrozenModel
+from sqlalchemy import func, select
 
 from ..core.errors import MissionError
+from . import schema
 from .lake import ALIAS, Lake, staged
 
 # One chunk of an object, and the most bytes of chunks one insert stages.
@@ -123,25 +125,29 @@ class Blobs:
         An object's chunks share one staging, so the catalog's per-file statistics find them
         without reading the rest of the table. Unverified: `write` hashes as it goes.
         """
+        kept = schema.blobs
+        ordinal = func.coalesce(kept.c.ordinal, 0)
+        object_ = kept.c.sha256 == digest
         ordinals = self.lake.execute(
-            connection,
-            f"SELECT DISTINCT coalesce(ordinal, 0) AS o FROM {ALIAS}.blobs WHERE sha256 = ? "
-            "ORDER BY o",
-            [digest],
+            connection, select(ordinal).distinct().where(object_).order_by(ordinal)
         ).fetchall()
-        for (ordinal,) in ordinals:
+        for (number,) in ordinals:
             row = self.lake.execute(
-                connection,
-                f"SELECT bytes FROM {ALIAS}.blobs WHERE sha256 = ? AND coalesce(ordinal, 0) = ? "
-                "LIMIT 1",
-                [digest, ordinal],
+                connection, select(kept.c.bytes).where(object_, ordinal == number).limit(1)
             ).fetchone()
             if row is not None:
                 yield row[0]
 
-    def held(self, connection: duckdb.DuckDBPyConnection) -> set[str]:
-        """Every digest the lake holds an object for."""
-        found = self.lake.execute(connection, f"SELECT DISTINCT sha256 FROM {ALIAS}.blobs")
+    def held(self, connection: duckdb.DuckDBPyConnection, digests: Collection[str]) -> set[str]:
+        """The digests among `digests` the lake holds an object for."""
+        if not digests:
+            return set()
+        found = self.lake.execute(
+            connection,
+            f"SELECT DISTINCT sha256 FROM {ALIAS}.blobs "
+            "WHERE sha256 IN (SELECT unnest(?::VARCHAR[]))",
+            [_digests(digests)],
+        )
         return {digest for (digest,) in found.fetchall()}
 
     def read(
@@ -154,7 +160,8 @@ class Blobs:
             connection,
             f"SELECT DISTINCT ON (sha256, o) sha256, o, bytes FROM (SELECT sha256, "
             f"coalesce(ordinal, 0) AS o, bytes FROM {ALIAS}.blobs WHERE sha256 IN "
-            f"({_listed(digests)})) ORDER BY sha256, o",
+            "(SELECT unnest(?::VARCHAR[]))) ORDER BY sha256, o",
+            [_digests(digests)],
         ).fetchall()
         assembled: dict[str, list[bytes]] = {}
         for digest, _, payload in rows:
@@ -216,8 +223,8 @@ class _Batch:
         """Insert every waiting chunk into `blobs` and its checksum into `checksums`."""
         if not self.rows:
             return
-        with staged("blobs", self.rows) as select:
-            self.connection.execute(f"CREATE OR REPLACE TEMP TABLE {_STAGED} AS {select}")
+        with staged(schema.blobs, self.rows) as staging:
+            self.connection.execute(f"CREATE OR REPLACE TEMP TABLE {_STAGED} AS {staging}")
         self.connection.execute(
             f"INSERT INTO {ALIAS}.blobs BY NAME SELECT sha256, ordinal, bytes FROM {_STAGED}"
         )
@@ -263,9 +270,9 @@ def _pieces(source: bytes | Path) -> Iterator[bytes]:
             yield payload
 
 
-def _listed(digests: Collection[str]) -> str:
-    """`digests` as a SQL list of literals, each checked to be a digest first."""
+def _digests(digests: Collection[str]) -> list[str]:
+    """A validated relation input; scalar IN lists exceed DuckLake's expression depth."""
     for digest in digests:
-        if not _DIGEST.match(digest):
+        if not _DIGEST.fullmatch(digest):
             raise ValueError(f"not a SHA-256 digest: {digest!r}")
-    return ", ".join(f"'{digest}'" for digest in sorted(digests))
+    return sorted(digests)

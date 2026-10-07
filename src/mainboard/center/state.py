@@ -11,7 +11,6 @@
 import hashlib
 import io
 import json
-import re
 import sqlite3
 import tarfile
 from collections.abc import Iterator, Sequence
@@ -25,6 +24,7 @@ from typing import TYPE_CHECKING, Literal
 import tomlkit
 from patos import FrozenModel
 
+from ..agents.harness import claude_key
 from ..core.project import Project
 from ..core.section import Section, Verdict
 from ..engines.compile.provisioner import Provisioner
@@ -87,14 +87,6 @@ _DEFAULT_KEYS = ("id_ed25519", "id_ecdsa", "id_rsa")
 
 # The host GitHub is reached at over ssh, which the workspace's own submodules name.
 GITHUB = "github.com"
-
-
-def claude_key(path: str) -> str:
-    """The directory name Claude Code files a workspace's state under: every other char a dash.
-
-    path: the workspace root as that machine spells it, `C:\\Users\\me\\projects` say.
-    """
-    return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
 class Destination(FrozenModel):

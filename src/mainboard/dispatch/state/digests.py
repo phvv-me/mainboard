@@ -6,6 +6,9 @@
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from sqlalchemy import select
+
+from ...state import schema
 from ...state.lake import Lake
 from ..agent import Digests
 
@@ -22,12 +25,9 @@ class KeptDigests(Digests):
     def __init__(self, root: Path, kind: str) -> None:  # noqa: PLW0231 - no file to read
         self.session = Lake.at(root).session()
         self.kind = kind
-        rows = self.session.rows(
-            f"SELECT path, {', '.join(_FIELDS)} FROM (SELECT * FROM lake.digests WHERE kind = ? "
-            "QUALIFY row_number() OVER (PARTITION BY path ORDER BY rowid DESC) = 1) "
-            "WHERE dropped IS NOT TRUE",
-            [kind],
-        )
+        kept = schema.digests
+        current = schema.latest(kept, "path", where=(kept.c.kind == kind,)).subquery()
+        rows = self.session.rows(select(current.c.path, *(current.c[name] for name in _FIELDS)))
         # A row an older release wrote without the inode or change time is simply rehashed.
         self.held: dict[str, list[int | str]] = {
             path: list(kept) for path, *kept in rows if None not in kept
@@ -58,5 +58,5 @@ class KeptDigests(Digests):
             for path in self.kept
             if path not in self.held
         ]
-        self.session.append("digests", [*changed, *gone])
+        self.session.append(schema.digests, [*changed, *gone])
         self.kept = dict(self.held)

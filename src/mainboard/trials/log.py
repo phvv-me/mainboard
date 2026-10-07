@@ -20,9 +20,10 @@ from ..observe.spool import Spool
 from ..profile.profiler import Collection, Profiler
 from .artifacts import Artifact, Artifacts
 from .session import params_of
+from .vocabulary import Outcome
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Generator, Mapping, Sequence
 
     from pydantic import BaseModel, JsonValue
 
@@ -188,7 +189,7 @@ class Log:
     @contextmanager
     def profile(
         self, *, name: str = "", collection: Collection | None = None
-    ) -> Iterator[Profiler]:
+    ) -> Generator[Profiler]:
         """Capture with the existing profiler and attach evidence even when the body raises."""
         policy = collection or self.trial.session.declared.collection
         profiler = Profiler.under(policy)
@@ -214,6 +215,13 @@ class Log:
             self._event(
                 "ended", {"passed": passed, "verdict": self.trial.settled}, kind=Kind.ended
             )
+            if self.trial.settled and self.trial.artifacts != self.trial.recorded_artifacts:
+                reason = (
+                    "Artifacts changed after the last receipt was settled; "
+                    "settle only after output checks and cleanup evidence are attached"
+                )
+                self.trial.record("", reason=reason, measured={}, outcome=Outcome.FAILED)
+                raise RuntimeError(reason)
         finally:
             sinks.pop(self.identity, None)
             reset_contextvars(**self.bound)

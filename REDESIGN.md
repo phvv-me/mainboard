@@ -840,3 +840,79 @@ The full account, with the designs left open, is `FIXES-2026-09-30.md`. Uncommit
       setup says it installs the mirror's environment, not the job's pinned copy
 - [ ] Setup builds the pinned environment; the landing ships the closure plus what installs;
       a Task Scheduler settler for the Windows center (each designed in the fixes file)
+
+## Round 8 (2026-10-06): the center goes back to the Mac mini
+
+The owner decided to leave the Windows center. The Mac mini (home LAN, Wi-Fi only, M4 Pro, 24 GB)
+becomes the center, with its workspace in `~/Developer/projects` on the internal disk (156 GB
+free) and bulk data on the external APFS volume `/Volumes/PORTABLE`; pedro-home stays a GPU job
+host. `SERVE.md` plans the mainboard and AIZK unification and `UNIFY.md` the trimming, reviewed by
+two critics (evidence in `UNIFY-evidence.md`).
+
+- [x] `scripts/browser-mcp.sh` no longer nests `mainboard run`: the task already puts the Node
+      binaries on PATH, and the nested run held the environment's own `mainboard.exe` for the MCP
+      server's whole life, so every `mb run` and `mb doctor` on Windows failed with os error 32
+      while any session's browser MCP was up
+- [x] All 732 pnpm links in the default environment's `node_modules`, made on 2026-09-29, stopped
+      being traversable on 2026-10-06 ("untrusted mount point"); recreated with the same relative
+      targets, after which `chrome-devtools-mcp` and `browsers` run again
+- [x] Move (2026-10-07), without the owner's commit authorization, so not through
+      `host setup --center` (it clones at HEAD and refuses unpushed HEADs): the working tree, `.git`
+      included, was copied to `~/Developer/projects` by a resumable size-and-mtime transfer, then
+      `fixup.py` restored file modes and symlinks and reset CRLF-only diffs in vendored (unowned)
+      repositories; owned repositories keep their bytes exactly. Envs, caches, cargo targets,
+      imported legacy state and remaster-lab/data stayed behind. Tracked dataset files came back
+      from git; of the untracked datasets, reproducibility's 51 GB and all but 0.5 GB of cutok's are
+      held by the lake and the 0.5 GB was copied; thoughtlens' 17 GB, which the lake does not hold,
+      waits for `/Volumes/PORTABLE` to become writable. `mb install`, the full integration suite and
+      `mb host list` pass on the Mac.
+- [x] Final catch-up and cutover (2026-10-07, after the cutok session stopped): 15,722 changed files
+      and 106 new lake data files carried, both lakes then held the same 322,431 evidence paths,
+      223,820 objects and 111.002 GB, `mb lake check` came back clean and the launchd settler
+      passes every 20 minutes. D:/projects stays as the archive
+- [x] macOS gaps closed: a launchd settler beside the systemd one (`durable.py`), and `FileBudget`
+      raising the soft file limit on every POSIX system (macOS defaulted to 256, below one lake
+      table's file count); the five file-budget tests now run on macOS
+- [x] `mb git commit` stops sweeping: named paths are committed alone (`git commit --only`), no
+      paths commits each repository's index, nothing staged refuses, `--all` keeps the sweep;
+      pointers only for submodules that committed in the run (`integration/test_git_tree.py`)
+- [x] Dead code removed: observe store/channels/agentmain and the `observe` host field (holds now
+      read with `extra="ignore"`), `mainboard.testing`, `trials/distribution.py`,
+      `vocabulary.tracker`; `__version__` reads the package metadata
+- [ ] The Node stage's `pnpm-lock.yaml` lives only in the ignored `.mainboard/envs/<env>/`, never in
+      mb.lock, so a fresh center fails `mb install` until it is carried or re-locked
+- [ ] Six `.mb-collect-*` / `.mainboard-collect-*` folders (2 GB) sit in the workspace root:
+      collection leaves its staging behind; clean up after a collection settles, not by hand
+      while one may still run
+- [ ] ~~After the move, delete the Windows-center code~~: kept, the owner wants Windows support,
+      every cloud provider and Slurm to stay for now
+
+## Round 9 (2026-10-07): one agent configuration, a SQLAlchemy state layer, a lake that fits 24 GB
+
+- [x] `mb agents sync|check|update` (`agents/`): `.agents` is the one declaration every coding agent
+      shares (MCP servers in `mcp.json`, hooks in `settings.json`, subagents in `agents/*.md`,
+      skills in `skills/`), a patos `Registry` of three harnesses renders each one's own files
+      (`.mcp.json`, `.codex/`, `opencode.json`), and `update` installs or upgrades each through
+      its channel (Claude's installer, `pixi global` for Codex, npm under `~/.local` for
+      opencode). Gemini was supported for a day and dropped: the owner does not use it. `center/agents.py` folded into it; `doctor --center` reads its rows
+- [x] Exa through OAuth (`?login`), no key in any agent's configuration; opencode logs in with the
+      OpenRouter key in `.env`, so it starts as `mb run opencode`
+- [x] `mb run` never loaded `.env` on macOS or Linux: the generated `dotenv.sh` sourced a path
+      relative to the caller's directory. It starts at `$PIXI_PROJECT_ROOT` now (Windows applied
+      its loader in Python, relative to the script, and was never affected)
+- [x] The lake schema is SQLAlchemy Core (`state/schema.py`): tables declared once, DDL and views
+      compiled from them by the duckdb-sqlalchemy dialect (the maintained fork of duckdb_engine),
+      and every registry, ledger and evidence query a `select()` run on the lake's own connections
+      (`Lake.execute` compiles a statement). The NDJSON bulk writer and the DuckDB-only bulk SQL
+      (temp tables, array binds, `results.py`) stay text. +60 ms to an import that touches the lake
+- [x] `VERDICTS` matches what the code does (SUBMITTING→PREPARED, QUEUED→OK/FAILED/TIMEOUT/UNKNOWN,
+      RUNNING→QUEUED/UNKNOWN) and the registry moves a verdict only along it, through
+      `patos.Lifecycle`, so a stale report never rewrites a settled or a newer verdict
+- [x] Blob files compacted, 27,709 to 246: a checkpoint merging 8 MB chunks in 122,880-row groups
+      ran the 24 GB center out of memory; blob tables now write 16-row groups split at 64 MB.
+      zstd stays at level 3: on our chunks level 5 saves 0.4% at half the speed
+- [x] The legacy importer (`mb lake import`, `_LEGACY`, `strays`) removed: its last source,
+      reproducibility's registry, holds no rows
+- [ ] The study/fleet layer stays: `research/compression/experiments/dispatch.py` is built on
+      `Fleet`, `Study` and `StudyLedger`, though the lake records no study since the migration
+- [ ] `mb host sync` every host: their environments predate duckdb-sqlalchemy and the dotenv fix

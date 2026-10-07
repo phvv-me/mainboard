@@ -23,6 +23,11 @@ _SKIPPED = (
     "data",
     "datasets",
 )
+# Consumers known to be broken, each with why it is allowed to stay so.
+_BROKEN = {
+    # Built on the study/fleet layer removed on 2026-10-07; the owner set compression aside.
+    "research/compression/experiments/dispatch.py",
+}
 
 
 def _consumers() -> dict[tuple[str, str], list[str]]:
@@ -32,6 +37,8 @@ def _consumers() -> dict[tuple[str, str], list[str]]:
         for path in (_WORKSPACE / top).rglob("*.py"):
             parts = path.relative_to(_WORKSPACE).parts
             if parts[:2] == ("packages", "mainboard") or any(skip in parts for skip in _SKIPPED):
+                continue
+            if path.relative_to(_WORKSPACE).as_posix() in _BROKEN:
                 continue
             try:
                 tree = ast.parse(path.read_bytes())

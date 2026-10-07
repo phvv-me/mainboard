@@ -2,7 +2,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
+from sqlalchemy import func, literal_column, select
 
+from ..state import schema
 from .ledger import Ledger, SetupFit
 from .model import BillingModel
 
@@ -70,9 +72,12 @@ class Catalog:
     def load(cls, session: Session) -> Catalog:
         """The roster the lake's newest `save` kept, empty when none was ever saved."""
         fields = tuple(Offer.model_fields)
+        quotes = schema.quotes
+        newest = select(func.max(quotes.c.ts)).scalar_subquery()
         rows = session.rows(
-            f"SELECT {', '.join(fields)} FROM lake.quotes "
-            "WHERE ts = (SELECT max(ts) FROM lake.quotes) ORDER BY rowid"
+            select(*(quotes.c[name] for name in fields))
+            .where(quotes.c.ts == newest)
+            .order_by(literal_column("rowid"))
         )
         return cls(
             tuple(Offer.model_validate(dict(zip(fields, row, strict=True))) for row in rows)
@@ -125,4 +130,6 @@ class Catalog:
     def save(self, session: Session) -> None:
         """Keep the whole roster in the lake's `quotes` under one stamp, the newest roster."""
         stamp = datetime.now(UTC)
-        session.append("quotes", [{"ts": stamp, **offer.model_dump()} for offer in self.roster])
+        session.append(
+            schema.quotes, [{"ts": stamp, **offer.model_dump()} for offer in self.roster]
+        )

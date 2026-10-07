@@ -14,7 +14,7 @@ from .compiler import Compiler
 from .ecosystems import SecondStage
 from .generated import GeneratedFiles
 from .generated.activation import write
-from .pixi_manifest import selected_manifest
+from .pixi_manifest import local_sources, selected_manifest
 from .state import SyncState
 from .vendor import Vendor
 
@@ -193,6 +193,14 @@ class Provisioner:
             SyncState.path(shard.directory),
             *GeneratedFiles(directory=shard.directory).inputs,
             *shard.stage.frozen_inputs(environment),
+            *(
+                self.root / path
+                for path in local_sources(
+                    shard.pixi.manifest.read_text(encoding="utf-8"),
+                    generated_dir=shard.directory.relative_to(self.root),
+                )
+                if (self.root / path).is_file()
+            ),
             *((committed,) if committed.is_file() else ()),
         )
         return tuple(dict.fromkeys(path.relative_to(self.root).as_posix() for path in paths))

@@ -37,11 +37,13 @@ from pathlib import Path, PurePosixPath
 
 import duckdb
 from patos import FrozenModel
+from sqlalchemy import func, or_, select
 
 from ..core.errors import MissionError
 from ..core.project import Project
+from . import schema
 from .blobs import STAGED_BYTES, Blobs
-from .lake import ALIAS, Finding, Lake, Session, insert
+from .lake import Finding, Lake, Session, insert
 
 # Where the read-through cache lives under the state directory.
 CACHE = "evidence"
@@ -186,11 +188,10 @@ class Evidence:
         """Every indexed file at or under the workspace-relative `prefix`, all when empty."""
         if not self.lake.exists():
             return []
-        rows = self.session.rows(
-            f"SELECT path, sha256, size FROM {ALIAS}.evidence "
-            "WHERE ? = '' OR path = ? OR starts_with(path, ? || '/') ORDER BY path",
-            [prefix, prefix, prefix],
-        )
+        kept = schema.evidence
+        query = select(kept.c.path, kept.c.sha256, kept.c.size).order_by(kept.c.path)
+        under = or_(kept.c.path == prefix, func.starts_with(kept.c.path, f"{prefix}/"))
+        rows = self.session.rows(query.where(under) if prefix else query)
         return [Located(path=path, sha256=digest, size=size) for path, digest, size in rows]
 
     def ingest(self, paths: Iterable[Path]) -> Kept:
@@ -208,13 +209,19 @@ class Evidence:
         given = list(paths)
         sources = self._files(given)
         self.lake.ready()
-        current = dict(self.session.rows(f"SELECT path, sha256 FROM {ALIAS}.evidence"))
-        held = self.session.run(self.blobs.held)
+        kept = schema.evidence
+        current = dict(self.session.rows(select(kept.c.path, kept.c.sha256)))
         indexed = objects = size = 0
         with ThreadPoolExecutor(max_workers=_READERS) as pool:
             for window in _windows(sources):
+                batch = list(pool.map(self._read, window))
+                held = self.session.run(
+                    lambda connection, digests={entry.sha256 for entry in batch}: self.blobs.held(
+                        connection, digests
+                    )
+                )
                 entries: list[_Entry] = []
-                for entry in pool.map(self._read, window):
+                for entry in batch:
                     new = entry.sha256 not in held
                     held.add(entry.sha256)
                     if new or current.get(entry.path) != entry.sha256:
@@ -228,7 +235,7 @@ class Evidence:
                 size += sum(entry.size for entry in entries if entry.new)
         kept = Kept(files=len(sources), indexed=indexed, objects=objects, size=size)
         self.lake.append(
-            "imports",
+            schema.imports,
             [
                 {
                     "ts": datetime.now(UTC),
@@ -342,7 +349,7 @@ class Evidence:
         stamp = datetime.now(UTC)
         insert(
             connection,
-            "evidence_log",
+            schema.evidence_log,
             [
                 {
                     "ts": stamp,

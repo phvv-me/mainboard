@@ -15,12 +15,14 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 from plumbum import ProcessExecutionError
+from sqlalchemy import select
 
 from .core.errors import MissionError
 from .dispatch.backends.base import route
 from .dispatch.schedulers import HostUnreachable, registry
 from .dispatch.wrapping import connection
 from .jobs.beacon import Progress
+from .state import schema
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -110,16 +112,14 @@ class Pulses:
                 quiet_s=int(now - grew) if key in held else None,
                 gpu_pct=reading.gpu_pct,
             )
-        self.session.append("pulse", grown)
+        self.session.append(schema.pulse, grown)
         return pulses
 
     def recalled(self, keys: Sequence[str]) -> dict[str, tuple[int, float]]:
         """Each of `keys`' remembered output length and when it last grew, where one is."""
-        rows = self.session.rows(
-            "SELECT key, size, grew FROM lake.pulse WHERE list_contains(?, key) "
-            "QUALIFY row_number() OVER (PARTITION BY key ORDER BY rowid DESC) = 1",
-            [list(keys)],
-        )
+        kept = schema.pulse
+        current = schema.latest(kept, "key", where=(kept.c.key.in_(keys),)).subquery()
+        rows = self.session.rows(select(current.c.key, current.c.size, current.c.grew))
         return {key: (int(size), float(grew)) for key, size, grew in rows}
 
 

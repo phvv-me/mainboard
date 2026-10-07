@@ -13,13 +13,15 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
+from sqlalchemy import select
 
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..manifest.loading import load
 from ..manifest.schema.workspace import DATA
+from ..state import schema
 from ..state.blobs import Blobs
-from ..state.lake import ALIAS, Lake, insert
+from ..state.lake import Lake, insert
 from .sync import GitignoreFilter
 
 if TYPE_CHECKING:
@@ -162,19 +164,20 @@ class SourceTree:
         closure = digest[:12]
 
         def keep(connection: duckdb.DuckDBPyConnection) -> None:
-            held = blobs.held(connection)
+            held = blobs.held(connection, {row.blob for row in rows})
             blobs.stage(
                 connection,
                 {row.blob: self.root / row.path for row in rows if row.blob not in held},
             )
+            kept = schema.closures
             listed = lake.execute(
-                connection, f"SELECT 1 FROM {ALIAS}.closures WHERE closure = ? LIMIT 1", [closure]
+                connection, select(kept.c.closure).where(kept.c.closure == closure).limit(1)
             ).fetchone()
             if listed is None:
                 stamp = datetime.now(UTC)
                 insert(
                     connection,
-                    "closures",
+                    schema.closures,
                     [
                         {
                             "ts": stamp,
@@ -197,11 +200,13 @@ class SourceTree:
         """
         lake = Lake.at(self.root).current()
         with lake.open() as connection:
-            rows = lake.execute(
-                connection,
-                f"SELECT path, blob FROM {ALIAS}.closures WHERE closure = ? ORDER BY path",
-                [digest[:12]],
-            ).fetchall()
+            kept = schema.closures
+            listing = (
+                select(kept.c.path, kept.c.blob)
+                .where(kept.c.closure == digest[:12])
+                .order_by(kept.c.path)
+            )
+            rows = lake.execute(connection, listing).fetchall()
             payloads = Blobs(lake).read(connection, {blob for _, blob in rows})
         if not rows:
             raise MissionError(f"the lake keeps no source listing {digest[:12]}")

@@ -11,10 +11,12 @@ from tempfile import mkdtemp
 from typing import TYPE_CHECKING, Any
 
 from filelock import FileLock
-from patos import FrozenModel
+from patos import FrozenModel, Lifecycle
 from pydantic import ValidationError
+from sqlalchemy import ColumnElement, Select, Table, func, or_, select
 
-from ...state.lake import ALIAS, Lake, Session
+from ...state import schema
+from ...state.lake import Lake, Session
 from .. import vocabulary
 from ..lease import Lease
 from ..onboard import HostSetup
@@ -24,8 +26,12 @@ from ..vocabulary import Request
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-# The terminal verdicts as SQL literals, fixed vocabulary words, for the lake to filter on.
-_TERMINAL = ", ".join(f"'{verdict}'" for verdict in sorted(vocabulary.TERMINAL))
+# The terminal verdicts, for the lake to filter on.
+_TERMINAL = sorted(vocabulary.TERMINAL)
+
+# The current runs and hosts, as the lake's views read them.
+_RUNS = schema.runs
+_HOSTS = schema.hosts
 
 
 class RunRecord(FrozenModel):
@@ -153,7 +159,7 @@ class Cache:
         rather than being settled into a verdict it never had.
         """
         with self._registry:
-            self._append("runs_log", [_row(run, dropped=True)])
+            self._append(schema.runs_log, [_row(run, dropped=True)])
 
     def delivery(self, run: RunRecord, status: str) -> RunRecord:
         """Advance evidence without replacing another process's computation or report fields."""
@@ -163,12 +169,12 @@ class Cache:
         """Forget `alias`'s onboarding, for a machine that no longer exists to be set up."""
         with self._registry:
             self._append(
-                "host_facts", [{"ts": now(), "alias": alias, "facts": "{}", "dropped": True}]
+                schema.host_facts, [{"ts": now(), "alias": alias, "facts": "{}", "dropped": True}]
             )
 
     def host(self, alias: str) -> HostSetup:
         """`alias`'s recorded onboarding, raising when the host was never set up."""
-        rows = self._rows(f"SELECT facts FROM {ALIAS}.hosts WHERE alias = ?", (alias,))
+        rows = self._rows(select(_HOSTS.c.facts).where(_HOSTS.c.alias == alias))
         if not rows:
             raise LookupError(f"host {alias!r} has never been set up; run `mb host setup {alias}`")
         try:
@@ -180,7 +186,7 @@ class Cache:
 
     def hosts(self) -> list[HostSetup]:
         """Every onboarded host, most recently set up first."""
-        rows = self._rows(f"SELECT facts FROM {ALIAS}.hosts ORDER BY probed_at DESC")
+        rows = self._rows(select(_HOSTS.c.facts).order_by(_HOSTS.c.probed_at.desc()))
         return [setup for (facts,) in rows if (setup := _current(facts)) is not None]
 
     def mark_synced(self, alias: str) -> None:
@@ -194,7 +200,7 @@ class Cache:
             except LookupError:
                 return
             synced = setup.model_copy(update={"synced_at": now()})
-            self._append("host_facts", [_host(synced, probed_at=setup.onboarded_at)])
+            self._append(schema.host_facts, [_host(synced, probed_at=setup.onboarded_at)])
 
     def live(self, project: str = "") -> list[RunRecord]:
         """Every run without a terminal verdict, newest first, never truncated by a limit.
@@ -203,42 +209,31 @@ class Cache:
 
         project: only the runs dispatched from this project; every run when empty.
         """
-        return self._matching(f"coalesce(verdict, '') NOT IN ({_TERMINAL})", project=project)
+        return self._matching(_unsettled(), project=project)
 
     def _matching(
-        self, where: str, *, project: str = "", limit: int | None = None
+        self, where: ColumnElement[bool], *, project: str = "", limit: int | None = None
     ) -> list[RunRecord]:
         """The current runs `where` holds, newest first, filtered in the lake rather than here.
 
         A registry of a hundred thousand runs cost 0.7 s a listing when every record was parsed
         to keep a few; the view's columns let the lake answer only those.
         """
-        clause = f"({where})" + (" AND project = ?" if project else "")
-        bound = "" if limit is None else f" LIMIT {int(limit)}"
-        rows = self._rows(
-            f"SELECT record FROM {ALIAS}.runs WHERE {clause} ORDER BY submitted_at DESC{bound}",
-            (project,) if project else (),
-        )
-        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
+        query = _newest().where(where).limit(limit)
+        return self._records(query.where(_RUNS.c.project == project) if project else query)
 
     def recent(self, limit: int | None = 20) -> list[RunRecord]:
         """Dispatched runs, newest first; None retains all historical declarations."""
-        bound = "" if limit is None else f" LIMIT {int(limit)}"
-        rows = self._rows(f"SELECT record FROM {ALIAS}.runs ORDER BY submitted_at DESC{bound}")
-        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
+        return self._records(_newest().limit(limit))
 
     def since(self, stamp: str) -> list[RunRecord]:
         """Every run dispatched at or after the ISO instant `stamp`, newest first."""
-        rows = self._rows(
-            f"SELECT record FROM {ALIAS}.runs WHERE submitted_at >= ? ORDER BY submitted_at DESC",
-            (stamp,),
-        )
-        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
+        return self._records(_newest().where(_RUNS.c.submitted_at >= stamp))
 
     def record(self, run: RunRecord) -> None:
         """Record a dispatched run, replacing whatever its identity recorded before."""
         with self._registry:
-            self._append("runs_log", [_row(run)])
+            self._append(schema.runs_log, [_row(run)])
 
     def reserve(self, run: RunRecord) -> None:
         """Reserve a creation once; unresolved identical requests cannot allocate twice."""
@@ -254,7 +249,7 @@ class Cache:
                     f"an unresolved creation already exists for {run.name or run.script!r} on "
                     f"{run.target}; inspect its job record and provider label before retrying"
                 )
-            self._append("runs_log", [_row(run)])
+            self._append(schema.runs_log, [_row(run)])
 
     def bind(self, run: RunRecord, handle: str) -> RunRecord:
         """Replace the intent identity in one commit, preserving its provenance and time."""
@@ -265,14 +260,14 @@ class Cache:
             bound = current.model_copy(
                 update={"handle": handle, "state": vocabulary.QUEUED, "verdict": vocabulary.QUEUED}
             )
-            self._append("runs_log", [_row(current, dropped=True), _row(bound)])
+            self._append(schema.runs_log, [_row(current, dropped=True), _row(bound)])
             return bound
 
     def leave_prepared(
         self, run: RunRecord, verdict: str, *, lease: Lease | None = None
     ) -> RunRecord:
         """Claim preparation once, so cancellation and creation cannot both win."""
-        if verdict not in vocabulary.VERDICTS[vocabulary.PREPARED]:
+        if not _reaches(vocabulary.PREPARED, verdict):
             raise ValueError(f"invalid prepared transition to {verdict!r}")
         return self._transition(
             run,
@@ -315,7 +310,7 @@ class Cache:
             if current is None:
                 raise _unregistered(run)
             relet = current.model_copy(update={"lease": lease})
-            self._append("runs_log", [_row(relet)])
+            self._append(schema.runs_log, [_row(relet)])
             return relet
 
     def report(self, run: RunRecord, verdict: str) -> None:
@@ -357,10 +352,8 @@ class Cache:
 
     def attempts(self, name: str, target: str) -> int:
         """How many runs named `name` were dispatched to `target`: every attempt of that run."""
-        rows = self._rows(
-            f"SELECT count(*) FROM {ALIAS}.runs WHERE target = ? AND name = ?", (target, name)
-        )
-        return int(rows[0][0])
+        counted = select(func.count()).where(_RUNS.c.target == target, _RUNS.c.name == name)
+        return int(self._rows(counted)[0][0])
 
     def save_host(self, setup: HostSetup) -> HostSetup:
         """Stamp `setup` with the current time and record it as `setup.host`'s onboarding.
@@ -369,7 +362,7 @@ class Cache:
         """
         stamped = setup.model_copy(update={"onboarded_at": now()})
         with self._registry:
-            self._append("host_facts", [_host(stamped, probed_at=stamped.onboarded_at)])
+            self._append(schema.host_facts, [_host(stamped, probed_at=stamped.onboarded_at)])
         return stamped
 
     def settled(self, limit: int, project: str = "") -> list[RunRecord]:
@@ -377,11 +370,11 @@ class Cache:
 
         project: only the runs dispatched from this project; every run when empty.
         """
-        return self._matching(f"verdict IN ({_TERMINAL})", project=project, limit=limit)
+        return self._matching(_RUNS.c.verdict.in_(_TERMINAL), project=project, limit=limit)
 
     def total(self) -> int:
         """How many runs this registry holds, the count a truncated listing measures against."""
-        return int(self._rows(f"SELECT count(*) FROM {ALIAS}.runs")[0][0])
+        return int(self._rows(select(func.count()).select_from(_RUNS))[0][0])
 
     def tracked(self) -> list[RunRecord]:
         """Every run a durable sweep still owes an outcome for, newest first.
@@ -389,30 +382,23 @@ class Cache:
         A run leaves only once its terminal verdict has been reported, so a sweep never announces
         a settled run twice nor drops one whose dispatching agent died before recording it.
         """
-        return self._matching(
-            f"coalesce(verdict, '') NOT IN ({_TERMINAL}) "
-            "OR (record->>'reported') IS DISTINCT FROM verdict"
-        )
+        reported = _RUNS.c.record["reported"].as_string()
+        return self._matching(or_(_unsettled(), reported.is_distinct_from(_RUNS.c.verdict)))
 
     def _change(self, run: RunRecord, **fields: str | int | None) -> RunRecord:
         """Update one registered identity atomically and answer its complete current record.
 
-        A terminal verdict is never replaced by a different one: a late or stale report leaves the
-        whole record as it stands rather than half of it.
+        A verdict moves only along `VERDICTS`, so a terminal one is never replaced: a late or
+        stale report leaves the whole record as it stands rather than half of it.
         """
         with self._registry:
             current = self._at(run)
             if current is None:
                 raise _unregistered(run)
-            verdict = fields.get("verdict")
-            if (
-                "verdict" in fields
-                and current.verdict in vocabulary.TERMINAL
-                and current.verdict != verdict
-            ):
+            if "verdict" in fields and not _reaches(current.verdict, fields["verdict"]):
                 return current
             changed = current.model_copy(update=fields)
-            self._append("runs_log", [_row(changed)])
+            self._append(schema.runs_log, [_row(changed)])
             return changed
 
     def _transition(
@@ -429,26 +415,21 @@ class Cache:
             if current is None or current.verdict != expected:
                 raise missing
             moved = current.model_copy(update=dict(update))
-            self._append("runs_log", [_row(moved)])
+            self._append(schema.runs_log, [_row(moved)])
             return moved
 
     def _at(self, run: RunRecord) -> RunRecord | None:
         """The current record of `run`'s identity, None when it was never recorded or dropped."""
-        rows = self._rows(
-            f"SELECT record FROM {ALIAS}.runs "
-            "WHERE target = ? AND handle = ? AND submitted_at = ?",
-            (run.target, run.handle, run.submitted_at),
+        identity = (
+            _RUNS.c.target == run.target,
+            _RUNS.c.handle == run.handle,
+            _RUNS.c.submitted_at == run.submitted_at,
         )
-        return RunRecord.model_validate_json(rows[0][0], extra="ignore") if rows else None
+        return next(iter(self._records(select(_RUNS.c.record).where(*identity))), None)
 
     def _on(self, target: str | None) -> list[RunRecord]:
         """Every current run, on `target` when given, newest first."""
-        rows = self._rows(
-            f"SELECT record FROM {ALIAS}.runs WHERE target = coalesce(?, target) "
-            "ORDER BY submitted_at DESC",
-            (target,),
-        )
-        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
+        return self._records(_newest().where(_RUNS.c.target == target) if target else _newest())
 
     def _lock(self, name: str) -> FileLock:
         """The process-reentrant file lock `name` under the lake's run directory."""
@@ -456,13 +437,38 @@ class Cache:
         path.parent.mkdir(parents=True, exist_ok=True)
         return FileLock(path, is_singleton=True)
 
-    def _rows(self, sql: str, parameters: Sequence[object] = ()) -> list[tuple[Any, ...]]:
-        """What `sql` answers in this cache's session."""
-        return self.session.rows(sql, parameters)
+    def _rows(self, statement: Select) -> list[tuple[Any, ...]]:
+        """What `statement` answers in this cache's session."""
+        return self.session.rows(statement)
 
-    def _append(self, table: str, rows: Sequence[Mapping[str, object]]) -> None:
+    def _records(self, statement: Select) -> list[RunRecord]:
+        """The run records `statement` selects, in its order."""
+        rows = self._rows(statement)
+        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
+
+    def _append(self, table: Table, rows: Sequence[Mapping[str, object]]) -> None:
         """Append `rows` to `table` in one commit of this cache's session."""
         self.session.append(table, rows)
+
+
+def _newest() -> Select:
+    """Every current run's record, the newest dispatch first."""
+    return select(_RUNS.c.record).order_by(_RUNS.c.submitted_at.desc())
+
+
+def _reaches(current: str | None, verdict: str | int | None) -> bool:
+    """Whether a run recorded at `current` may be recorded at `verdict`: never resolved, the same
+    verdict again, or one move `VERDICTS` declares."""
+    return (
+        current is None
+        or verdict == current
+        or Lifecycle(vocabulary.VERDICTS, current).allowed(str(verdict))
+    )
+
+
+def _unsettled() -> ColumnElement[bool]:
+    """Whether a run has no terminal verdict yet."""
+    return func.coalesce(_RUNS.c.verdict, "").not_in(_TERMINAL)
 
 
 def _row(run: RunRecord, *, dropped: bool = False) -> dict[str, object]:

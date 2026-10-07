@@ -23,13 +23,17 @@
 import os
 import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the ssh client's own agent tools with fixed argv since=2026-09-28
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from functools import cache
 from getpass import getpass
 from pathlib import Path
 from shutil import which
-from time import sleep
+from time import monotonic, sleep
 
 import keyring
+import psutil
+from filelock import FileLock, Timeout
 from keyring.errors import KeyringError
 
 from ..core.errors import MissionError
@@ -85,15 +89,28 @@ _DETACHED = (
     else 0
 )
 
-# The script a detached master asks through: it leaves the prompt in the folder `_RELAY` names
-# and waits for the answer `unlock` writes there after asking in the terminal.
-_RELAYER = CONTROL / "relay.sh"
-_RELAY = "MB_SSH_RELAY"
-_RELAY_SCRIPT = f"""#!/bin/sh
-printf '%s' "$1" > "${_RELAY}/prompt.part" && mv "${_RELAY}/prompt.part" "${_RELAY}/prompt"
-while [ ! -e "${_RELAY}/answer" ]; do sleep 0.2; done
-cat "${_RELAY}/answer"
-rm -f "${_RELAY}/answer"
+# The script a detached master asks through: it leaves the prompt in the folder `RELAY` names
+# and waits for the answer `unlock` writes there after asking in the terminal. It sets its own
+# PATH, since Git's ssh started from PowerShell hands it one without Git's tools, where `mv` and
+# `sleep` were missing, the one-time code never reached the terminal, and the script spun until
+# killed (2026-10-01). It gives up when its folder is gone, so an `unlock` that died or was
+# interrupted ends its master's login instead of leaving it waiting, and after `_PATIENCE`. Each
+# host has its own copy, `relay-<host>.sh`, so the processes of one host's login are told apart
+# by their command line alone.
+RELAY = "MB_SSH_RELAY"
+_PATIENCE = 600
+RELAY_SCRIPT = f"""#!/bin/sh
+PATH="/usr/bin:/bin:$PATH"
+[ -d "${RELAY}" ] || exit 1
+printf '%s' "$1" > "${RELAY}/prompt.part" && mv "${RELAY}/prompt.part" "${RELAY}/prompt"
+waited=0
+while [ ! -e "${RELAY}/answer" ]; do
+    [ -d "${RELAY}" ] && [ "$waited" -lt {_PATIENCE * 5} ] || exit 1
+    sleep 0.2
+    waited=$((waited + 1))
+done
+cat "${RELAY}/answer"
+rm -f "${RELAY}/answer"
 """
 
 
@@ -204,10 +221,10 @@ def identities(host: str) -> list[str]:
 
 
 def unlock(host: str) -> int:
-    """Make `host` answer without a prompt: add its keys to the tool's agent, asking for a
-    passphrase only when the keystore holds none that opens the key, and when it still asks for
-    more, log in once by hand and keep that login for every later ssh; the last check's exit
-    status."""
+    """Make `host` answer without a prompt: add each of its keys the tool's agent does not hold
+    yet, asking for a passphrase only when the keystore holds none that opens the key, and when
+    it still asks for more, log in once by hand and keep that login for every later ssh; the
+    last check's exit status."""
     socket = started()
     environ = {**os.environ, "SSH_AUTH_SOCK": socket}
     if not _silent(host, environ):
@@ -215,8 +232,12 @@ def unlock(host: str) -> int:
     keys = identities(host)
     if not keys:
         raise MissionError(f"ssh names no key file for {host}; add an IdentityFile to its config")
+    # A session with no keystore asks for every passphrase, so a key the agent already holds,
+    # from an earlier unlock, is never asked for again (2026-10-01, a Windows login over ssh).
+    held = _held(socket)
     for key in keys:
-        _remember(key, socket)
+        if _fingerprint(key) not in held:
+            _remember(key, socket)
     if not _silent(host, environ):
         return 0
     _login(host, environ)
@@ -227,35 +248,93 @@ def _login(host: str, environ: dict[str, str]) -> None:
     """Open `host`'s shared login as a daemon, relaying each question it asks to this terminal.
 
     The master has no console to ask in, so `ssh` hands every prompt (a passphrase, a one-time
-    code) to the `_RELAY` script, which leaves it in a folder this process watches and waits for
+    code) to the relay script, which leaves it in a folder this process watches and waits for
     the answer typed here. It runs until the site ends the login or `ssh -O exit` does.
+
+    One unlock of a host runs at a time, so a second terminal never cuts in on a code being
+    typed. A master an earlier unlock left behind, still waiting on a relay or never logged in,
+    is ended first, and so is this one when it gives up without a login.
     """
-    relay = CONTROL / f"relay-{os.getpid()}"
-    relay.mkdir(parents=True, exist_ok=True)
-    _RELAYER.write_text(_RELAY_SCRIPT, newline="\n")
-    _RELAYER.chmod(0o700)
-    master = _daemon(
-        [str(client()), *_control(host), "-o", "ControlMaster=yes", "-N", host],
-        {
-            **environ,
-            "SSH_ASKPASS": _RELAYER.as_posix(),
-            "SSH_ASKPASS_REQUIRE": "force",
-            _RELAY: relay.as_posix(),
-        },
-        CONTROL / f"mb-{host}.log",
-    )
+    with _alone(host):
+        _end_logins(host)
+        relay = CONTROL / f"relay-{os.getpid()}"
+        relay.mkdir(parents=True, exist_ok=True)
+        relayer = _relayer(host)
+        relayer.write_text(RELAY_SCRIPT, newline="\n")
+        relayer.chmod(0o700)
+        log = CONTROL / f"mb-{host}.log"
+        # A process still writing the last login's log keeps it on Windows; append after it then.
+        with suppress(PermissionError):
+            log.unlink(missing_ok=True)
+        master = _daemon(
+            [str(client()), *_control(host), "-o", "ControlMaster=yes", "-N", host],
+            {
+                **environ,
+                "SSH_ASKPASS": relayer.as_posix(),
+                "SSH_ASKPASS_REQUIRE": "force",
+                RELAY: relay.as_posix(),
+            },
+            log,
+        )
+        try:
+            _relay(host, master, relay)
+        finally:
+            shutil.rmtree(relay, ignore_errors=True)
+            if not _answering(host):
+                _end_logins(host)
+                logger.warning("{} opened no shared login; its ssh log is {}", host, log)
+
+
+@contextmanager
+def _alone(host: str) -> Iterator[None]:
+    """Hold `host`'s unlock lock, refusing when another unlock of it holds it."""
     try:
-        while master.poll() is None and not _answering(host):
-            try:
-                prompt = (relay / "prompt").read_text(encoding="utf-8")
-            except FileNotFoundError:
-                sleep(0.2)
-                continue
-            (relay / "prompt").unlink()
-            (relay / "answer.part").write_text(getpass(prompt) + "\n", newline="\n")
-            (relay / "answer.part").replace(relay / "answer")
-    finally:
-        shutil.rmtree(relay, ignore_errors=True)
+        with FileLock(CONTROL / f"mb-{host}.lock", timeout=0):
+            yield
+    except Timeout:
+        raise MissionError(f"another `unlock {host}` is running; finish it there") from None
+
+
+def _relay(host: str, master: subprocess.Popen[bytes], relay: Path) -> None:
+    """Ask in this terminal each question `master` leaves in `relay`, until its login answers,
+    it exits, or `_PATIENCE` passes without a login."""
+    deadline = monotonic() + _PATIENCE
+    while master.poll() is None and not _answering(host):
+        if monotonic() > deadline:
+            raise MissionError(f"{host} opened no login in {_PATIENCE} s")
+        try:
+            prompt = (relay / "prompt").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            sleep(0.2)
+            continue
+        (relay / "prompt").unlink()
+        (relay / "answer.part").write_text(getpass(prompt) + "\n", newline="\n")
+        (relay / "answer.part").replace(relay / "answer")
+
+
+def _end_logins(host: str) -> None:
+    """End every master of `host`'s shared login this user runs, and every relay asking for one.
+
+    Called only while no shared login to `host` answers and no other unlock of it runs, so what
+    it ends never logged in: a master whose relay lost its terminal, a relay whose master is gone.
+    """
+    path, relayer = _control(host)[1], _relayer(host).as_posix()
+    ended = []
+    for process in psutil.process_iter(["cmdline"]):
+        argv = process.info["cmdline"] or ()
+        if (path in argv and "ControlMaster=yes" in argv) or relayer in argv:
+            with suppress(psutil.NoSuchProcess):
+                ended += [*process.children(recursive=True), process]
+                logger.info("ending a stale login to {} (pid {})", host, process.pid)
+    for process in ended:
+        with suppress(psutil.NoSuchProcess):
+            process.kill()
+    psutil.wait_procs(ended, timeout=5)
+
+
+def _relayer(host: str) -> Path:
+    """`host`'s copy of the relay script."""
+    return CONTROL / f"relay-{host}.sh"
 
 
 def _answering(host: str) -> bool:
@@ -303,7 +382,10 @@ def _remember(key: str, socket: str) -> None:
         kept = keyring.get_password(_KEYSTORE, key)
     except _REFUSED as refusal:
         logger.warning(
-            "this session has no system keystore ({}); ssh-add asks for {}", refusal, key
+            "this session has no system keystore, as a Windows login over ssh has none ({}): "
+            "ssh-add asks for {} now, and the agent holds it until the agent stops",
+            refusal,
+            key,
         )
         return _asked(key, socket)
     if kept is not None and _add(key, kept, socket):
@@ -327,6 +409,32 @@ def _asked(key: str, socket: str) -> None:
     subprocess.run(
         [_tool("ssh-add"), key], env={**os.environ, "SSH_AUTH_SOCK": socket}, check=False
     )
+
+
+def _held(socket: str) -> set[str]:
+    """The fingerprints of the keys the agent at `socket` holds."""
+    listed = subprocess.run(
+        [_tool("ssh-add"), "-l"],
+        env={**os.environ, "SSH_AUTH_SOCK": socket},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return {line.split()[1] for line in listed.stdout.splitlines() if len(line.split()) > 1}
+
+
+def _fingerprint(key: str) -> str:
+    """`key`'s fingerprint, read from its public half without asking for the passphrase."""
+    shown = subprocess.run(
+        [_tool("ssh-keygen"), "-l", "-f", key],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return shown.stdout.split()[1] if shown.returncode == 0 else ""
 
 
 def _kept() -> list[str]:

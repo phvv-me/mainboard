@@ -179,28 +179,41 @@ def self_installed(
     parents = rerooted("", generated_dir=generated_dir)
     declared = [
         path
-        for spec in _editable_specs(tomlkit.parse(manifest).unwrap())
+        for spec in _source_specs(tomlkit.parse(manifest).unwrap())
+        if spec.get("editable")
         if isinstance(path := spec.get("path"), str)
     ]
     inside = [path for path in declared if path == parents or path.startswith(f"{parents}/")]
     return list(dict.fromkeys(path.removeprefix(parents).lstrip("/") for path in inside))
 
 
-def _editable_specs(value: Toml) -> Iterator[dict[str, Toml]]:
-    """Every editable dependency spec in the workspace, feature and platform-target tables."""
+def local_sources(manifest: str, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> list[str]:
+    """Workspace-relative dependency sources, including local wheel files."""
+    parents = rerooted("", generated_dir=generated_dir)
+    declared = [spec["path"] for spec in _source_specs(tomlkit.parse(manifest).unwrap())]
+    inside = [
+        path
+        for path in declared
+        if isinstance(path, str) and (path == parents or path.startswith(f"{parents}/"))
+    ]
+    return list(dict.fromkeys(path.removeprefix(parents).lstrip("/") for path in inside))
+
+
+def _source_specs(value: Toml) -> Iterator[dict[str, Toml]]:
+    """Every local dependency spec in the workspace, feature and platform-target tables."""
     if isinstance(value, dict):
         for key, item in value.items():
             if key in _DEP_TABLES and isinstance(item, dict):
                 yield from (
                     spec
                     for spec in item.values()
-                    if isinstance(spec, dict) and spec.get("editable")
+                    if isinstance(spec, dict) and isinstance(spec.get("path"), str)
                 )
             else:
-                yield from _editable_specs(item)
+                yield from _source_specs(item)
     elif isinstance(value, list):
         for item in value:
-            yield from _editable_specs(item)
+            yield from _source_specs(item)
 
 
 def _platform_name(entry: Toml) -> str:

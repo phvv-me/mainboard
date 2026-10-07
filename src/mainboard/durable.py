@@ -1,12 +1,15 @@
 # The durable form of `mb job list`: the periodic settling pass installed into the
 # machine's own service manager, not a session's terminal. A cron an agent starts dies with that
 # agent, and thirty five PBS jobs owed to it died unsettled, so the pass belongs to the machine.
-# Linux answers with a user systemd timer, which needs no root and survives every terminal.
-# Another platform is a refusal naming itself until an implementation is registered below.
+# Linux answers with a user systemd timer and macOS with a launchd user agent, neither needing
+# root and both surviving every terminal. Another platform is a refusal naming itself.
 
+import os
 import platform
+import plistlib
 import re
 from abc import ABC, abstractmethod
+from datetime import UTC, datetime
 from getpass import getuser
 from hashlib import blake2b
 from os import environ
@@ -19,7 +22,7 @@ from plumbum import CommandNotFound, local
 from plumbum.commands.processes import ProcessTimedOut
 
 from .core.errors import MissionError
-from .core.host import LINUX
+from .core.host import LINUX, MACOS
 from .core.project import Project
 
 if TYPE_CHECKING:
@@ -161,17 +164,12 @@ class SystemdUser(Settler):
     @property
     def service(self) -> Path:
         """The unit that runs one pass."""
-        return self.units / f"{_TOOL}-monitor-{self._stamp}.service"
+        return self.units / f"{_TOOL}-monitor-{_stamp(self.root)}.service"
 
     @property
     def timer(self) -> Path:
         """The unit that runs the service on a period."""
-        return self.units / f"{_TOOL}-monitor-{self._stamp}.timer"
-
-    @property
-    def _stamp(self) -> str:
-        """Eight hex digits of blake2b over the resolved root."""
-        return blake2b(str(self.root.resolve()).encode(), digest_size=4).hexdigest()
+        return self.units / f"{_TOOL}-monitor-{_stamp(self.root)}.timer"
 
     @staticmethod
     def available() -> bool:
@@ -190,7 +188,7 @@ class SystemdUser(Settler):
         self.shell(("systemctl", "--user", "daemon-reload"))
         status, output = self.shell(("systemctl", "--user", "enable", "--now", self.timer.name))
         if status:
-            raise MissionError(f"systemd refused {self.timer.name}: {self._complaint(output)}")
+            raise MissionError(f"systemd refused {self.timer.name}: {_complaint(output)}")
         return self.state()
 
     def remove(self) -> Settling:
@@ -322,11 +320,118 @@ class SystemdUser(Settler):
         found = re.search(rf"^{key}=(.+)$", text, re.MULTILINE)
         return found[1].strip() if found else ""
 
+
+class LaunchdAgent(Settler):
+    """The pass as a launchd user agent, the periodic runner macOS already has.
+
+    The agent is loaded into the GUI domain while someone is logged in at the console and into the
+    background user domain otherwise, which is all a center reached over ssh after a restart has.
+    launchd keeps no journal, so what each pass says goes to `run/settler.log` in the workspace's
+    state directory. The label carries the same root stamp as the systemd units.
+    """
+
+    def __init__(self, root: Path, agents: Path | None = None, shell: Shell = locally) -> None:
+        """agents: the LaunchAgents directory, the user's own when None.
+
+        shell: runs one command and answers with its status and output.
+        """
+        super().__init__(root)
+        self.agents = agents or Path.home() / "Library" / "LaunchAgents"
+        self.shell = shell
+
+    @property
+    def label(self) -> str:
+        return f"{_TOOL}.monitor.{_stamp(self.root)}"
+
+    @property
+    def plist(self) -> Path:
+        return self.agents / f"{self.label}.plist"
+
+    @property
+    def log(self) -> Path:
+        return Project().out(self.root) / "run" / "settler.log"
+
     @staticmethod
-    def _complaint(output: str) -> str:
-        """The last thing a service manager said, which is where it puts its refusal."""
-        spoken = [line.strip() for line in output.splitlines() if line.strip()]
-        return spoken[-1] if spoken else "it said nothing"
+    def available() -> bool:
+        """Whether this machine runs launchd, which is what makes a user agent installable."""
+        return MACOS and which("launchctl") is not None
+
+    def install(self, every: Every) -> Settling:
+        """Write the agent and load it afresh, so changing the period is the same command."""
+        found = which(_TOOL)
+        if found is None:
+            raise MissionError(f"no {_TOOL} on PATH for an agent to run; install the tool first")
+        self.agents.mkdir(parents=True, exist_ok=True)
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        agent = {
+            "Label": self.label,
+            "ProgramArguments": [found, *_PASS],
+            "WorkingDirectory": str(self.root),
+            "StartInterval": every.seconds,
+            "RunAtLoad": True,
+            "StandardOutPath": str(self.log),
+            "StandardErrorPath": str(self.log),
+            "EnvironmentVariables": {"PATH": environ.get("PATH", "")},
+        }
+        self.plist.write_bytes(plistlib.dumps(agent))
+        self.shell(("launchctl", "bootout", self._target))
+        status, output = self.shell(("launchctl", "bootstrap", self._domain, str(self.plist)))
+        if status:
+            refusal = _complaint(output)
+            raise MissionError(f"launchd refused {self.plist.name}: {refusal}")
+        return self.state()
+
+    def remove(self) -> Settling:
+        """Unload the agent and delete its plist, whether or not either is there."""
+        self.shell(("launchctl", "bootout", self._target))
+        self.plist.unlink(missing_ok=True)
+        return self.state()
+
+    def state(self) -> Settling:
+        """What the plist on disk and launchd say together."""
+        if not self.plist.is_file():
+            return Settling(
+                detail=(
+                    "no periodic pass installed, so a dispatched job settles only while a "
+                    "session sweeps it"
+                ),
+                fix=f"{Project().name} job list --every {_SUGGESTED}",
+            )
+        agent = plistlib.loads(self.plist.read_bytes())
+        every = _spelled(int(agent.get("StartInterval", 0)))
+        active = self.shell(("launchctl", "print", self._target))[0] == 0
+        try:
+            stamp = self.log.stat().st_mtime
+        except FileNotFoundError:
+            last_run = ""
+        else:
+            last_run = datetime.fromtimestamp(stamp, UTC).isoformat(timespec="seconds")
+        log = f"tail {self.log}"
+        state = "loaded" if active else "installed but not loaded"
+        return Settling(
+            installed=True,
+            active=active,
+            root=str(agent.get("WorkingDirectory", "")),
+            every=every,
+            last_run=last_run,
+            log=log,
+            detail=(
+                f"{self.label} {state}, one pass every {every}, read with `{log}`, "
+                f"last run {last_run or 'never'}"
+            ),
+            fix="" if active else f"launchctl bootstrap {self._domain} {self.plist}",
+        )
+
+    @property
+    def _domain(self) -> str:
+        """The GUI domain while someone is logged in at the console, else the background one."""
+        uid = os.getuid()
+        gui = self.shell(("launchctl", "print", f"gui/{uid}"))[0] == 0
+        return f"gui/{uid}" if gui else f"user/{uid}"
+
+    @property
+    def _target(self) -> str:
+        return f"{self._domain}/{self.label}"
 
 
 class Unsupported(Settler):
@@ -366,7 +471,27 @@ class Unsupported(Settler):
 # catching the rest. Registered by class, since which one wins never depends on the workspace.
 SETTLERS: Strategy[type[Settler]] = Strategy("settler")
 SETTLERS.register("systemd", SystemdUser)
+SETTLERS.register("launchd", LaunchdAgent)
 SETTLERS.register("none", Unsupported)
+
+
+def _stamp(root: Path) -> str:
+    """Eight hex digits of blake2b over the resolved root, which keeps workspaces' passes apart."""
+    return blake2b(str(root.resolve()).encode(), digest_size=4).hexdigest()
+
+
+def _spelled(seconds: int) -> str:
+    """A period in the largest whole unit, the way `Every.parse` reads it back."""
+    for suffix, size in (("h", 3600), ("m", 60)):
+        if seconds and seconds % size == 0:
+            return f"{seconds // size}{suffix}"
+    return f"{seconds}s"
+
+
+def _complaint(output: str) -> str:
+    """The last thing a service manager said, which is where it puts its refusal."""
+    spoken = [line.strip() for line in output.splitlines() if line.strip()]
+    return spoken[-1] if spoken else "it said nothing"
 
 
 def settler(root: Path) -> Settler:

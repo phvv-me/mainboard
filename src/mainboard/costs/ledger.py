@@ -2,6 +2,9 @@ import statistics
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
+from sqlalchemy import literal_column, select
+
+from ..state import schema
 
 if TYPE_CHECKING:
     from ..state.lake import Session
@@ -49,10 +52,12 @@ class Ledger:
     def observations(self, *, provider: str = "", gpu: str = "") -> list[Observation]:
         """Every recorded observation in the order recorded, an empty filter matching all."""
         fields = tuple(Observation.model_fields)
+        costs = schema.costs
+        matching = {costs.c.provider: provider, costs.c.gpu: gpu}
         rows = self.session.rows(
-            f"SELECT {', '.join(fields)} FROM lake.costs "
-            "WHERE (? = '' OR provider = ?) AND (? = '' OR gpu = ?) ORDER BY rowid",
-            [provider, provider, gpu, gpu],
+            select(*(costs.c[name] for name in fields))
+            .where(*(column == value for column, value in matching.items() if value))
+            .order_by(literal_column("rowid"))
         )
         return [
             Observation.model_validate(
@@ -62,7 +67,7 @@ class Ledger:
         ]
 
     def record(self, observation: Observation) -> None:
-        self.session.append("costs", [observation.model_dump()])
+        self.session.append(schema.costs, [observation.model_dump()])
 
 
 class SetupFit(FrozenModel):

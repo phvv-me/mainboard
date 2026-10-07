@@ -15,6 +15,7 @@ import duckdb
 from .core.errors import MissionError
 from .dispatch import vocabulary
 from .observe.files import FrameFile
+from .runtime.tree import FileBudget
 from .state.evidence import EvidenceTree
 from .state.lake import ALIAS, Lake, ndjson
 
@@ -56,13 +57,10 @@ class Results:
         import polars as pl
 
         with self._connected(sql, project) as (connection, text):
-            result = connection.execute(text)
-            return pl.DataFrame(
-                result.fetchall(),
-                schema=[column[0] for column in result.description],
-                orient="row",
-                infer_schema_length=None,
-            )
+            try:
+                return pl.DataFrame(connection.sql(text))
+            except pl.exceptions.ComputeError as fault:
+                raise MissionError(str(fault).strip()) from None
 
     def export(self, sql: str | Path, path: Path, *, project: str = "") -> Path:
         """Export one SELECT to a new CSV, Parquet, or JSON file, inferred from its suffix.
@@ -100,7 +98,10 @@ class Results:
                 sql = sql.expanduser().read_text(encoding="utf-8")
             except UnicodeError as fault:
                 raise ValueError(f"SQL file {sql} must contain UTF-8 text: {fault}") from fault
-        with duckdb.connect(config={"autoinstall_known_extensions": False}) as connection:
+        with (
+            FileBudget.permitted(),
+            duckdb.connect(config={"autoinstall_known_extensions": False}) as connection,
+        ):
             statements = connection.extract_statements(sql)
             if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
                 raise ValueError("results queries must be one SELECT statement")
@@ -117,16 +118,16 @@ class Results:
     def table(
         self, schema: str, *, project: str = "", runs: Collection[str] | None = None
     ) -> pl.DataFrame:
-        import polars as pl
-
-        from .trials.artifacts import Artifact
-
         """Read verified Parquet tables from collected storage, never a source host's path.
 
         Original repository and machine metadata remain in the _trial provenance column.
         runs: select run identities before reading their artifacts; None selects all runs.
             An empty collection selects none. Selected artifacts still require valid bytes.
         """
+        import polars as pl
+
+        from .trials.artifacts import Artifact
+
         artifacts = self.query("SELECT * FROM artifacts", project=project)
         if runs is not None:
             artifacts = artifacts.filter(

@@ -123,7 +123,7 @@ def test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one(
     (tracked / "copied").write_bytes((tracked / "target.txt").read_bytes())
     (tracked / "spelled").write_text("target.txt", encoding="utf-8", newline="")
     (tracked / "edited").write_text("changed through the copy\n", encoding="utf-8")
-    ran = mb("git", "commit", "-m", "nothing to take", "--json")
+    ran = mb("git", "commit", "-m", "nothing to take", "--all", "--json")
     detail = steps(ran)["."]["detail"]
     # Without links git reads `spelled` as the link itself, so only the copy needs putting back.
     relinked = "copied, spelled" if makes_links == "true" else "copied"
@@ -149,7 +149,9 @@ def test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict(
     if verb == "pull":
         git(tracked, "add", "-A")
         git(tracked, "commit", "--quiet", "-m", "mine")
-    root = steps(mb("git", verb, "--json", *(("-m", "mine") if verb == "commit" else ())))["."]
+    root = steps(
+        mb("git", verb, "--json", *(("-m", "mine", "--all") if verb == "commit" else ()))
+    )["."]
     assert not (tracked / ".git" / "MERGE_HEAD").exists()
     if edited == "shared.txt":
         assert "conflicts in shared.txt" in root["detail"]
@@ -165,7 +167,61 @@ def test_commit_withholds_a_nested_repository_gitmodules_does_not_declare(
 ) -> None:
     committed(tracked / "nested")
     (tracked / "plain.txt").write_text("plain\n", encoding="utf-8", newline="\n")
-    root = steps(mb("git", "commit", "-m", "plain", "--json"))["."]
+    root = steps(mb("git", "commit", "-m", "plain", "--all", "--json"))["."]
     assert root["outcome"] == "done" and "withheld nested/" in root["detail"]
     listed = git(tracked, "ls-tree", "--name-only", "HEAD").stdout.split()
     assert "plain.txt" in listed and "nested" not in listed
+
+
+def test_commit_takes_only_the_named_paths_and_leaves_the_index_alone(mb, tracked: Path) -> None:
+    for name in ("mine.txt", "theirs.txt", "staged.txt"):
+        (tracked / name).write_text(f"{name}\n", encoding="utf-8", newline="\n")
+    git(tracked, "add", "staged.txt")
+    root = steps(mb("git", "commit", "-m", "mine", "mine.txt", "--json"))["."]
+    assert root["outcome"] == "done", root
+    assert git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split() == ["mine.txt"]
+    status = git(tracked, "status", "--porcelain").stdout.splitlines()
+    assert "A  staged.txt" in status and "?? theirs.txt" in status
+
+
+def test_commit_without_paths_commits_the_index_and_refuses_an_empty_one(
+    mb, tracked: Path
+) -> None:
+    (tracked / "loose.txt").write_text("loose\n", encoding="utf-8", newline="\n")
+    refused = mb("git", "commit", "-m", "nothing")
+    assert refused.code != 0 and "--all" in refused.said
+    (tracked / "staged.txt").write_text("staged\n", encoding="utf-8", newline="\n")
+    git(tracked, "add", "staged.txt")
+    root = steps(mb("git", "commit", "-m", "staged", "--json"))["."]
+    assert root["outcome"] == "done", root
+    assert git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split() == [
+        "staged.txt"
+    ]
+    assert "?? loose.txt" in git(tracked, "status", "--porcelain").stdout
+
+
+def test_commit_refuses_a_named_never_commit_path(mb, tracked: Path) -> None:
+    data = tracked / "datasets" / "rows.csv"
+    data.parent.mkdir()
+    data.write_text("a,b\n", encoding="utf-8", newline="\n")
+    head = git(tracked, "rev-parse", "HEAD").stdout
+    root = steps(mb("git", "commit", "-m", "data", "datasets/rows.csv", "--json"))["."]
+    assert root["outcome"] == "held" and "refused datasets/rows.csv" in root["detail"]
+    assert git(tracked, "rev-parse", "HEAD").stdout == head
+
+
+def test_commit_records_the_pointer_of_a_submodule_that_committed(mb, tracked: Path) -> None:
+    # Beside the root's own remote, so its URL names the same owner and the tree owns it.
+    remote = Path(git(tracked, "remote", "get-url", "origin").stdout.strip())
+    library = committed(remote.parent / "library")
+    git(tracked, "submodule", "add", "--quiet", library.as_posix(), "library")
+    git(tracked, "commit", "--quiet", "-m", "library")
+    checkout = tracked / "library"
+    git(checkout, "config", "user.name", "it")
+    git(checkout, "config", "user.email", "it@example.invalid")
+    (checkout / "change.txt").write_text("change\n", encoding="utf-8", newline="\n")
+    (tracked / "unrelated.txt").write_text("unrelated\n", encoding="utf-8", newline="\n")
+    ran = steps(mb("git", "commit", "-m", "change", "library/change.txt", "--json"))
+    assert ran["library"]["outcome"] == "done" and ran["."]["outcome"] == "done", ran
+    assert git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split() == ["library"]
+    assert "?? unrelated.txt" in git(tracked, "status", "--porcelain").stdout

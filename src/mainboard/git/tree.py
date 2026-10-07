@@ -50,9 +50,12 @@ class Tree:
         """Fast-forward every owned repository and bring submodule checkouts along."""
         return Pull(self).run()
 
-    def commit(self, message: str) -> list[Step]:
-        """Commit every dirty owned repository, submodules before the pointers to them."""
-        return Commit(self, message).run()
+    def commit(
+        self, message: str, paths: Sequence[Path] = (), *, everything: bool = False
+    ) -> list[Step]:
+        """Commit the named paths (each repository's index when none), submodules before the
+        pointers to them; `everything` sweeps every change instead."""
+        return Commit(self, message, paths, everything=everything).run()
 
     def push(self) -> list[Step]:
         """Push every owned repository, submodules before the parents that point at them."""
@@ -75,15 +78,17 @@ class Tree:
             if complaint
         }
 
-    def upward(self, verb: str, act: Callable[[Repo], Step]) -> list[Step]:
+    def upward(self, verb: str, act: Callable[[Repo], Step], *, hold: bool = True) -> list[Step]:
         """`act` on every owned repository bottom-up, holding each parent of one that did not.
 
         verb: what the held step says the submodule did not do.
+        hold: whether a submodule that did not get there holds its parent; a parent acting only
+            on what it was asked about, never the stuck submodule's pointer, need not wait.
         """
         steps: list[Step] = []
         stuck: set[str] = set()
         for repo in reversed(self.owned()):
-            blocked = [child.name for child in repo.children if child.name in stuck]
+            blocked = [child.name for child in repo.children if hold and child.name in stuck]
             step = (
                 Step(repo=repo.name, outcome=Outcome.HELD, detail=f"{blocked[0]} did not {verb}")
                 if blocked

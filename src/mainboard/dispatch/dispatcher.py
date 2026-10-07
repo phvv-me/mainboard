@@ -15,6 +15,7 @@ from uuid import uuid4
 from zipfile import BadZipFile
 
 from patos import FrozenModel
+from sqlalchemy import Column, Table, select
 
 from ..context.admission import admit
 from ..core.errors import MissionError
@@ -24,6 +25,7 @@ from ..engines.compile.vendor import vendor_root
 from ..log import logger
 from ..manifest.loading import load
 from ..runtime.job import ToolCall
+from ..state import schema
 from ..state.lake import Lake
 from . import vocabulary
 from .agent import Agent, Scope, SshLink
@@ -815,7 +817,7 @@ class Dispatcher:
         with GeneratedFiles(directory=path.parent).locked() as files:
             files.write(path, content)
         table, column, key, rows = _recorded(name, content)
-        held = self.cache.session.rows(f"SELECT 1 FROM lake.{table} WHERE {column} = ?", [key])
+        held = self.cache.session.rows(select(column).where(column == key).limit(1))
         if not held:
             self.cache.session.append(table, rows)
         return path.relative_to(self.root).as_posix()
@@ -904,7 +906,7 @@ class Dispatcher:
             )
 
 
-def _recorded(name: str, content: bytes) -> tuple[str, str, str, list[dict[str, object]]]:
+def _recorded(name: str, content: bytes) -> tuple[Table, Column, str, list[dict[str, object]]]:
     """How one staged file is recorded: its table, the column and value naming it, its rows.
 
     A closure listing is one row per listed file, its tab-separated path, blob and status; any
@@ -918,11 +920,11 @@ def _recorded(name: str, content: bytes) -> tuple[str, str, str, list[dict[str, 
             {"ts": stamp, "closure": closure, "path": path, "blob": blob, "status": status}
             for path, blob, status in listed
         ]
-        return "closures", "closure", closure, rows
+        return schema.closures, schema.closures.c.closure, closure, rows
     script: dict[str, object] = {
         "ts": stamp,
         "name": name,
         "sha256": hashlib.sha256(content).hexdigest(),
         "script": content.decode("utf-8", "replace"),
     }
-    return "job_specs", "name", name, [script]
+    return schema.job_specs, schema.job_specs.c.name, name, [script]

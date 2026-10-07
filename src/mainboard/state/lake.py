@@ -59,6 +59,17 @@ import duckdb
 from filelock import FileLock, Timeout
 from patos import FrozenModel
 from pydantic import Field
+from sqlalchemy import (
+    JSON,
+    ClauseElement,
+    Column,
+    DateTime,
+    LargeBinary,
+    Table,
+    func,
+    literal_column,
+)
+from sqlalchemy import select as selecting
 from tenacity import (
     Retrying,
     retry_if_exception,
@@ -68,10 +79,9 @@ from tenacity import (
 
 from ..core.errors import MissionError
 from ..core.project import Project
-from .schema import BY_NAME, TABLES, VERSION, VIEWS
-
-# The alias every attach uses, so view definitions and callers' SQL name one catalog.
-ALIAS = "lake"
+from ..runtime.tree import FileBudget
+from . import schema
+from .schema import ALIAS, DIALECT, TABLES, VERSION, VIEWS, ddl, kind
 
 # The DuckDB extensions an attach needs, and the ones reaching or serving a lake over Quack.
 _EXTENSIONS = ("ducklake", "sqlite")
@@ -89,27 +99,22 @@ _OPTIONS = (
     ("delete_older_than", "'7 days'"),
 )
 
-# Tables whose rows never inline into the catalog. DuckLake keeps a small insert (ten rows or
-# fewer) inside the SQLite catalog until a checkpoint, which suits log rows and costs a catalog
-# its size for source-file bytes: 598 blobs made D:\projects' catalog 102 MB of its 104.
-_UNINLINED = ("blobs",)
+# Tables of stored bytes, which keep their rows out of the catalog and their files small. A small
+# insert (ten rows or fewer) otherwise stays inside the SQLite catalog until a checkpoint, which
+# suits log rows and costs a catalog its size for source-file bytes: 598 blobs made D:\projects'
+# catalog 102 MB of its 104. And DuckDB holds a whole row group while writing and 2,048 rows of a
+# vector while reading, so 8 MB chunks in the default 122,880-row groups and 512 MB files ran a
+# 24 GB center out of memory merging 27k blob files. Groups of 16 rows let a writer split files
+# at 64 MB, which a 2,048-row vector never exceeds.
+_BYTES = (schema.blobs,)
+_BYTES_OPTIONS = (
+    ("data_inlining_row_limit", "0"),
+    ("parquet_row_group_size", "16"),
+    ("target_file_size", "'64MB'"),
+)
 
 # The catalog size past which `check` suggests a compaction.
 _CATALOG_FLOOR_BYTES = 64 << 20
-
-# The files a workspace kept its state in before the lake, which `ready` refuses to bury under a
-# fresh empty lake until `mb lake import` has imported them. Not `dispatch/digests.json`: a host's
-# agent still keeps its mirror memory there, and a job's tree on that host must open a lake.
-_LEGACY = (
-    "dispatch/db.sqlite",
-    "dispatch/holds.json",
-    "batches",
-    "costs",
-    "studies",
-    "catalog.ndjson",
-    "collection.digests.json",
-    "pulse.json",
-)
 
 # The largest staged row, a base64 source file among them, that an append accepts.
 _MAX_ROW_BYTES = 1 << 31
@@ -198,20 +203,30 @@ def inlined(sql: str, parameters: Sequence[object]) -> str:
     return "'".join(pieces)
 
 
-def _cell(kind: str, value: object) -> object:
-    """`value` as one NDJSON field of a column of SQL type `kind`, None kept as SQL NULL.
+def compiled(statement: ClauseElement) -> tuple[str, list[Any]]:
+    """`statement` as DuckDB SQL, and the values its `?` placeholders bind in order."""
+    done = DIALECT.statement_compiler(
+        DIALECT, statement, compile_kwargs={"render_postcompile": True}
+    )
+    bound = done.construct_params()
+    return done.string, [bound[name] for name in done.positiontup or ()]
+
+
+def _cell(column: Column, value: object) -> object:
+    """`value` as one NDJSON field of `column`, None kept as SQL NULL.
 
     A JSON column takes a string as already JSON and embeds anything else as it is; bytes travel
     as base64 and a timestamp as its text, both of which the insert decodes.
     """
-    if value is None:
-        return None
-    if kind == "JSON":
-        return json.loads(value) if isinstance(value, str) else value
-    if kind == "BLOB":
-        return base64.b64encode(value).decode("ascii")  # type: ignore[arg-type]
-    if kind == "TIMESTAMPTZ":
-        return str(value)
+    match column.type, value:
+        case _, None:
+            return None
+        case JSON(), str():
+            return json.loads(value)
+        case LargeBinary(), bytes():
+            return base64.b64encode(value).decode("ascii")
+        case DateTime(), _:
+            return str(value)
     return value
 
 
@@ -235,7 +250,7 @@ def ndjson(records: Iterable[Mapping[str, object] | str]) -> Generator[str]:
 
 
 def insert(
-    connection: duckdb.DuckDBPyConnection, table: str, rows: Iterable[Mapping[str, object]]
+    connection: duckdb.DuckDBPyConnection, table: Table, rows: Iterable[Mapping[str, object]]
 ) -> int:
     """Append `rows` to the attached lake's `table` in one statement, returning how many.
 
@@ -247,20 +262,20 @@ def insert(
     if not listed:
         return 0
     with staged(table, listed) as select:
-        connection.execute(f"INSERT INTO {ALIAS}.{table} BY NAME {select}")
+        connection.execute(f"INSERT INTO {ALIAS}.{table.name} BY NAME {select}")
     return len(listed)
 
 
 @contextmanager
-def staged(table: str, rows: Iterable[Mapping[str, object]]) -> Generator[str]:
+def staged(table: Table, rows: Iterable[Mapping[str, object]]) -> Generator[str]:
     """Stage `rows` for one statement as a SELECT typed like `table`'s columns (see `insert`).
 
     The rows wait in a temporary NDJSON file while the block runs, which the SELECT reads.
     """
-    schema = BY_NAME[table]
-    columns = ", ".join(_decoded(column, kind) for column, kind in schema.columns)
+    columns = ", ".join(_decoded(column) for column in table.columns)
     cells = (
-        {column: _cell(kind, row.get(column)) for column, kind in schema.columns} for row in rows
+        {column.name: _cell(column, row.get(column.name)) for column in table.columns}
+        for row in rows
     )
     with ndjson(cells) as path:
         # A row carries a source file base64-encoded, and DuckDB refuses a JSON object over 16 MB
@@ -271,13 +286,15 @@ def staged(table: str, rows: Iterable[Mapping[str, object]]) -> Generator[str]:
         )
 
 
-def _decoded(column: str, kind: str) -> str:
-    """The SQL reading `column` of SQL type `kind` back out of a staged NDJSON object."""
-    if kind == "JSON":
-        return f"json->'{column}' AS {column}"
-    if kind == "BLOB":
-        return f"from_base64(json->>'{column}') AS {column}"
-    return f"CAST(json->>'{column}' AS {kind}) AS {column}"
+def _decoded(column: Column) -> str:
+    """The SQL reading `column` back out of a staged NDJSON object."""
+    name = column.name
+    match column.type:
+        case JSON():
+            return f"json->'{name}' AS {name}"
+        case LargeBinary():
+            return f"from_base64(json->>'{name}') AS {name}"
+    return f"CAST(json->>'{name}' AS {kind(column)}) AS {name}"
 
 
 class Finding(FrozenModel):
@@ -385,12 +402,6 @@ class Lake(FrozenModel):
                 f"{self.data} holds lake data but its catalog {self.catalog} is gone; restore "
                 "the catalog rather than creating a lake that forgets that data"
             )
-        legacy = [name for name in _LEGACY if (self.out / name).exists()]
-        if legacy:
-            raise MissionError(
-                f"{self.out} keeps state from before the lake ({', '.join(legacy)}); import it "
-                "once with `mb lake import`"
-            )
         try:
             self.create()
         except MissionError:
@@ -421,7 +432,7 @@ class Lake(FrozenModel):
         write: attach read-write; a read-only attach refuses every write.
         Raises MissionError when the lake was never created.
         """
-        with self._attached(write=write, create=False) as connection:
+        with FileBudget.permitted(), self._attached(write=write, create=False) as connection:
             yield connection
 
     def create(self) -> str:
@@ -441,14 +452,14 @@ class Lake(FrozenModel):
                     connection.execute(f"CALL {ALIAS}.set_option('{option}', {value})")
                 connection.execute(f"USE {ALIAS}")
                 for table in TABLES:
-                    connection.execute(table.ddl)
+                    connection.execute(ddl(table))
                 for view in VIEWS:
                     connection.execute(view.ddl)
                 spec = _spec(connection)
                 _record(connection, spec)
                 connection.execute("COMMIT")
                 # A table's settings wait for the table to exist outside its transaction.
-                _uninline(connection)
+                _set_apart(connection)
         return spec
 
     def evolve(self, connection: duckdb.DuckDBPyConnection) -> None:
@@ -474,17 +485,19 @@ class Lake(FrozenModel):
             connection.execute(f"USE {ALIAS}")
             for table in TABLES:
                 if table.name not in tables:
-                    connection.execute(table.ddl)
+                    connection.execute(ddl(table))
                     continue
-                for column, kind in table.columns:
-                    if (table.name, column) not in held:
-                        connection.execute(f"ALTER TABLE {table.name} ADD COLUMN {column} {kind}")
+                for column in table.columns:
+                    if (table.name, column.name) not in held:
+                        connection.execute(
+                            f"ALTER TABLE {table.name} ADD COLUMN {column.name} {kind(column)}"
+                        )
             # A table's settings wait for the table to exist outside its transaction.
             connection.execute("COMMIT")
             connection.execute("BEGIN")
-            _uninline(connection)
+            _set_apart(connection)
             for view in VIEWS:
-                connection.execute(view.ddl.replace("CREATE VIEW", "CREATE OR REPLACE VIEW", 1))
+                connection.execute(view.ddl)
             _record(connection, _spec(connection))
             connection.execute("COMMIT")
             connection.execute("USE memory")
@@ -497,9 +510,12 @@ class Lake(FrozenModel):
         self._held("upgrade")
         with self._attached(write=True, create=False, migrate=True) as connection:
             spec = _spec(connection)
-            recorded = connection.execute(
-                f"SELECT spec FROM {ALIAS}.schema_log ORDER BY rowid DESC LIMIT 1"
-            ).fetchone()
+            latest = (
+                selecting(schema.schema_log.c.spec)
+                .order_by(literal_column("rowid").desc())
+                .limit(1)
+            )
+            recorded = connection.execute(*compiled(latest)).fetchone()
             if recorded is None or recorded[0] != spec:
                 _record(connection, spec)
         return spec
@@ -509,7 +525,7 @@ class Lake(FrozenModel):
         with self.open() as connection:
             return _spec(connection)
 
-    def append(self, table: str, rows: Iterable[Mapping[str, object]]) -> int:
+    def append(self, table: Table, rows: Iterable[Mapping[str, object]]) -> int:
         """Append `rows` to `table` in one commit, returning how many were appended.
 
         Retried with a fresh attach while SQLite answers that the catalog is locked.
@@ -537,16 +553,24 @@ class Lake(FrozenModel):
             connection.execute("COMMIT")
         return done
 
-    def query(self, sql: str, parameters: Iterable[object] = ()) -> list[tuple[Any, ...]]:
+    def query(
+        self, statement: ClauseElement | str, parameters: Iterable[object] = ()
+    ) -> list[tuple[Any, ...]]:
         """One read-only query's rows; tables and views are named `lake.<name>`."""
         with self.open() as connection:
-            return self.execute(connection, sql, parameters).fetchall()
+            return self.execute(connection, statement, parameters).fetchall()
 
     def execute(
-        self, connection: duckdb.DuckDBPyConnection, sql: str, parameters: Iterable[object] = ()
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        statement: ClauseElement | str,
+        parameters: Iterable[object] = (),
     ) -> duckdb.DuckDBPyConnection:
-        """`sql` run on `connection` with `parameters` bound, inlined for a served lake."""
-        bound = list(parameters)
+        """`statement` run on `connection`, a built statement compiled or SQL with `parameters`
+        bound, inlined for a served lake."""
+        sql, bound = (
+            (statement, list(parameters)) if isinstance(statement, str) else compiled(statement)
+        )
         if self.served and bound:
             return connection.execute(inlined(sql, bound))
         return connection.execute(sql, bound)
@@ -646,7 +670,7 @@ class Lake(FrozenModel):
         """
         if not create and not self.exists():
             raise MissionError(
-                f"no state lake at {self.catalog}; create one with `mb lake import`"
+                f"no state lake at {self.catalog}; the first command recording state creates it"
             )
         connection = duckdb.connect(
             config={"autoinstall_known_extensions": False, "autoload_known_extensions": False}
@@ -709,24 +733,29 @@ class Lake(FrozenModel):
         self._rehome()
         token = token or self._kept_token()
         uri = f"quack:localhost:{port}"
-        served = duckdb.connect(
-            f"ducklake:sqlite:{self.catalog.as_posix()}",
-            config={
-                "extension_directory": self.extensions.as_posix(),
-                "autoinstall_known_extensions": False,
-            },
-        )
-        try:
-            served.execute(f"SET GLOBAL ducklake_max_retry_count = {_RETRIES}")
-            served.execute("SET GLOBAL TimeZone = 'UTC'")
-            self._load(served, _QUACK)
-            served.execute(f"CALL quack_serve({_quoted(uri)}, token => {_quoted(token)})")
-            yield uri, token
-            served.execute(f"CALL quack_stop({_quoted(uri)})")
-        except duckdb.Error as fault:
-            raise MissionError(f"could not serve the lake at {uri}: {_first(fault)}") from fault
-        finally:
-            served.close()
+        with (
+            FileBudget.permitted(),
+            closing(
+                duckdb.connect(
+                    f"ducklake:sqlite:{self.catalog.as_posix()}",
+                    config={
+                        "extension_directory": self.extensions.as_posix(),
+                        "autoinstall_known_extensions": False,
+                    },
+                )
+            ) as served,
+        ):
+            try:
+                served.execute(f"SET GLOBAL ducklake_max_retry_count = {_RETRIES}")
+                served.execute("SET GLOBAL TimeZone = 'UTC'")
+                self._load(served, _QUACK)
+                served.execute(f"CALL quack_serve({_quoted(uri)}, token => {_quoted(token)})")
+                yield uri, token
+                served.execute(f"CALL quack_stop({_quoted(uri)})")
+            except duckdb.Error as fault:
+                raise MissionError(
+                    f"could not serve the lake at {uri}: {_first(fault)}"
+                ) from fault
 
     def _kept_token(self) -> str:
         """The token this lake is served with, made and kept on first use."""
@@ -841,12 +870,16 @@ class Session:
             self._stack.close()
             self._connection = None
 
-    def rows(self, sql: str, parameters: Iterable[object] = ()) -> list[tuple[Any, ...]]:
-        """What `sql` answers in this session."""
+    def rows(
+        self, statement: ClauseElement | str, parameters: Iterable[object] = ()
+    ) -> list[tuple[Any, ...]]:
+        """What `statement` answers in this session."""
         bound = list(parameters)
-        return self.run(lambda connection: self.lake.execute(connection, sql, bound).fetchall())
+        return self.run(
+            lambda connection: self.lake.execute(connection, statement, bound).fetchall()
+        )
 
-    def append(self, table: str, rows: Iterable[Mapping[str, object]]) -> int:
+    def append(self, table: Table, rows: Iterable[Mapping[str, object]]) -> int:
         """Append `rows` to `table` in one commit, returning how many were appended."""
         staged = list(rows)
         return self.run(lambda connection: insert(connection, table, staged))
@@ -858,14 +891,16 @@ class Session:
         publishes from its own thread while its owner reads the stream), and a per-thread cursor
         would be closed under its thread by the reattach a stale catalog snapshot needs.
         """
-        with self._turn:
+        with self._turn, FileBudget.permitted():
             return _patiently(recoverable, before=self.close)(lambda: statement(self._attached()))
 
     def _attached(self) -> duckdb.DuckDBPyConnection:
         """The connection, attaching first; a fresh workspace's lake is created on this use and
         an older release's lake brought up to this schema."""
         if self._connection is None:
-            connection = self._stack.enter_context(self.lake.ready().open(write=True))
+            connection = self._stack.enter_context(
+                self.lake.ready()._attached(write=True, create=False)
+            )
             self.lake.evolve(connection)
             self._connection = connection
         return self._connection
@@ -889,7 +924,8 @@ def _patiently(
 
 def _version(connection: duckdb.DuckDBPyConnection) -> int:
     """The newest schema version the attached lake records."""
-    row = connection.execute(f"SELECT max(version) FROM {ALIAS}.schema_log").fetchone()
+    newest = selecting(func.max(schema.schema_log.c.version))
+    row = connection.execute(*compiled(newest)).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
 
 
@@ -901,12 +937,13 @@ def _spec(connection: duckdb.DuckDBPyConnection) -> str:
     return str(row[0]) if row else ""
 
 
-def _uninline(connection: duckdb.DuckDBPyConnection) -> None:
-    """Keep every `_UNINLINED` table's rows in Parquet, never inside the catalog."""
-    for table in _UNINLINED:
-        connection.execute(
-            f"CALL {ALIAS}.set_option('data_inlining_row_limit', 0, table_name => '{table}')"
-        )
+def _set_apart(connection: duckdb.DuckDBPyConnection) -> None:
+    """Give every `_BYTES` table its own options."""
+    for table in _BYTES:
+        for option, value in _BYTES_OPTIONS:
+            connection.execute(
+                f"CALL {ALIAS}.set_option('{option}', {value}, table_name => '{table.name}')"
+            )
 
 
 def _record(connection: duckdb.DuckDBPyConnection, spec: str) -> None:
@@ -914,7 +951,7 @@ def _record(connection: duckdb.DuckDBPyConnection, spec: str) -> None:
     engine = connection.execute("SELECT library_version FROM pragma_version()").fetchone()
     insert(
         connection,
-        "schema_log",
+        schema.schema_log,
         [
             {
                 "ts": datetime.now(UTC),

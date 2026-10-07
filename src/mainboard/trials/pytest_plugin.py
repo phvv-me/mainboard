@@ -197,7 +197,12 @@ def pytest_report_collectionfinish(config: pytest.Config) -> list[str]:
     session = config.stash.get(SESSION, None)
     if session is None or not session.lanes:
         return []
-    return [session.heading, *(status.line() for status in session.lanes)]
+    coverage = (
+        "Prior evidence; complete lanes run again (--rerun)."
+        if config.getoption("--rerun")
+        else "Prior evidence; complete lanes are skipped."
+    )
+    return [session.heading, coverage, *(status.line() for status in session.lanes)]
 
 
 @pytest.hookimpl(wrapper=True)

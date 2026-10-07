@@ -25,7 +25,7 @@ from ..core.project import Project
 from ..dispatch.evidence import RECEIPTS_VAR, framed
 from .entry import Refusal, entering
 from .job import walltime_seconds
-from .tree import ProcessTree
+from .tree import FileBudget, ProcessTree
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping, MutableMapping
@@ -108,7 +108,7 @@ class Runner:
 
     def run(self) -> int:
         """Run the job, frame its receipts, record its exit, and answer its exit status."""
-        with self.output(), self.endings():
+        with self.output(), self.endings(), FileBudget.permitted():
             status = self.outcome()
             self.say(self.receipts.frame())
             if self.job.logs:

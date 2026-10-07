@@ -98,8 +98,8 @@ host once for all of them: one `qstat`, one `squeue`, one `pueue status`. A
 listing that had to leave anything out says so rather than stopping quietly at a
 limit, and `--limit` bounds only the settled tail.
 
-It settles first: outstanding results are collected into durable job records and
-study ledgers, and a pass reports changes without repeating unchanged outcomes on
+It settles first: outstanding results are collected into durable job records, and a
+pass reports changes without repeating unchanged outcomes on
 later passes. A host that does not answer is knocked on once per command; its runs
 keep what was last recorded, a note names it with what to do about them, and a
 wait on another host's job asks it again only every half minute. `job cancel`
@@ -356,7 +356,9 @@ Experiment data never enters a commit: `mainboard lake ingest` keeps it, and
 ```console
 $ mainboard git status          # branch or detached, ahead/behind, dirty, published
 $ mainboard git pull            # fast-forward only, submodules follow their pointers
-$ mainboard git commit -m "…"   # submodules first, then the parents' pointers
+$ mainboard git commit -m "…" PATH...  # those paths alone, then the pointers that moved
+$ mainboard git commit -m "…"   # what each repository has staged
+$ mainboard git commit -m "…" --all  # every change in every owned repository
 $ mainboard git push            # children first, pointers verified, protected main → branch
 $ mainboard git check           # everything a clone or the next push would trip on
 ```
@@ -395,6 +397,33 @@ hook and CI all call the same command and read the same exit code. A
 `mainboard.toml` holding only `[lint]` is enough to use it in any git
 repository.
 
+## Every coding agent alike
+
+Claude Code, Codex and opencode each read their own files in their own format. A workspace writes what they share once, in `.agents`:
+
+```text
+AGENTS.md                 the instructions, read by all three (Claude through CLAUDE.md's @AGENTS.md)
+.agents/mcp.json          the MCP servers, in the `mcpServers` shape; values reference `${NAME}`
+.agents/settings.json     Claude Code's settings, whose `hooks` the others get too
+.agents/agents/*.md       the subagents, Markdown under front matter
+.agents/skills/           the skills, which Codex and opencode read in place
+.agents/codex.toml        settings only Codex reads (opencode.json likewise)
+```
+
+```console
+$ mainboard agents sync      # render .mcp.json, .codex/, opencode.json and the .claude link
+$ mainboard agents check     # drift, servers this machine cannot start, releases, logins
+$ mainboard agents update    # install what is missing, bring every harness to its latest release
+```
+
+The rendered files are tracked, so a fresh clone works without this tool; edit
+`.agents` and sync, never them. Each harness gets the servers in its own
+spelling: Codex forwards a variable by name (`env_vars`, `env_http_headers`,
+`bearer_token_env_var`) and reads no reference, and opencode writes `{env:NAME}`.
+A server's `overrides.<harness>` table is laid over that one harness's entry for
+what only it can say. Codex runs the hooks under Claude Code's event names;
+opencode runs none, since its lifecycle extensions are JavaScript plugins.
+
 ## The center
 
 One machine holds the monorepo, runs this tool and runs the AI agents: the
@@ -411,8 +440,7 @@ $ mainboard host setup --center pedro-home --root C:/Users/vazva/life   # move i
 machine's git tooling (safe git settings applied in place), the machine judged
 against the workspace, the `doctor` report, the plan `host list --plan` resolves, a smoke run
 of Python, torch and CUDA in the default environment, whether every lint tool can
-start, the repository tree, every agent's configuration (AGENTS.md, CLAUDE.md,
-`.claude -> .agents`, `.codex/config.toml`, `.mcp.json`, `opencode.json`), and
+start, the repository tree, every agent's configuration (`agents check` below), and
 the tracked scripts that use a platform-divergent command (`sed -i`,
 `find -printf`, `grep -P`, `timeout`, `xargs -r`, `readlink -f`, `stat -c/-f`,
 `date -d`, `jq`, `flock`...), each named with its portable replacement.
@@ -470,16 +498,11 @@ as `lake.<table>`. The `lake` group keeps it, the way `uv cache` keeps uv's:
 $ mb lake check        # every data file on disk, every evidence object hashed back
 $ mb lake compact      # inlined rows to Parquet, small files merged, old snapshots expired
 $ mb lake upgrade      # the catalog to the newest DuckLake spec
-$ mb lake import       # a workspace from before the lake, imported once and proven
 $ mb lake ingest DIR   # evidence files kept byte for byte, so they can leave git
 $ mb lake materialize DIR  # kept evidence written back where it stood
 $ mb lake replicate DIR    # every evidence object and the path index, copied to another disk
 $ mb lake serve        # this lake over DuckDB's Quack protocol, on localhost:9494
 ```
-
-`lake import` appends the old record files in one transaction, then reads every
-source back and rebuilds the logs byte for byte, exiting 1 on any difference; a
-workspace still holding them is refused until it is imported.
 
 `lake ingest` keeps each evidence file once per content in `blobs` (8 MiB
 chunks, so a multi-gigabyte object fits) and its path in `lake.evidence`. The

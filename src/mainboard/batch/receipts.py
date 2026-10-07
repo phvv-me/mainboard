@@ -46,9 +46,11 @@ from typing import TYPE_CHECKING, Protocol
 
 from patos import FrozenModel
 from pydantic import JsonValue, ValidationError
+from sqlalchemy import literal_column, select
 
 from ..dispatch.shared import now
 from ..log import logger
+from ..state import schema
 from ..state.lake import Session
 
 if TYPE_CHECKING:
@@ -118,7 +120,7 @@ class Journal:
 
     def publish(self, event: Event) -> None:
         self.session.append(
-            "events",
+            schema.events,
             [
                 {
                     "ts": event.at,
@@ -131,9 +133,11 @@ class Journal:
         )
 
     def replay(self) -> list[Event]:
+        kept = schema.events
         rows = self.session.rows(
-            "SELECT ts, batch, topic, job, data FROM lake.events WHERE batch = ? ORDER BY rowid",
-            [self.batch],
+            select(kept.c.ts, kept.c.batch, kept.c.topic, kept.c.job, kept.c.data)
+            .where(kept.c.batch == self.batch)
+            .order_by(literal_column("rowid"))
         )
         events: list[Event] = []
         for at, batch, topic, job, data in rows:

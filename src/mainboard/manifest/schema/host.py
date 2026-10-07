@@ -3,7 +3,6 @@ from typing import Self
 
 from ...core.base import Declared
 from ...core.project import Project
-from .observe import Observe
 from .queue import Defaults, QueuePolicy
 
 
@@ -70,7 +69,6 @@ class HostProfile(Declared):
     sync: Sync = Sync()
     queues: dict[str, QueuePolicy] = {}
     defaults: Defaults = Defaults()
-    observe: Observe = Observe()
 
     def inheriting(self, base: Self) -> Self:
         """This profile with `base` filling every unset field and merging the tables."""

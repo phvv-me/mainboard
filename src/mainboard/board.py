@@ -91,7 +91,6 @@ if TYPE_CHECKING:
     from .dispatch.schedulers import Scheduler
     from .dispatch.shared import Watcher
     from .dispatch.vocabulary import JobState
-    from .experiments.fleet import Fleet
     from .manifest.schema.root import Manifest
     from .manuscript import Manuscript
     from .probe.system import System
@@ -538,12 +537,6 @@ class Board:
         declared = self.manifest.requirement(self.project.package)
         return declared.version if declared is not None else ""
 
-    def fleet(self) -> Fleet:
-        """The many-jobs surface for simultaneous studies over this board."""
-        from .experiments.fleet import Fleet  # noqa: PLC0415  (the research layer loads on use)
-
-        return Fleet(self)
-
     def install(
         self,
         env: str = "",
@@ -814,7 +807,7 @@ class Board:
     def receipts(self, stream: str) -> Bus:
         """Where one stream's events go: this workspace's lake, the one record of them.
 
-        stream: the receipts stream, a batch id, a study id, or one run's own name.
+        stream: the receipts stream, a batch id, or one run's own name.
         """
         return Journal(self.dispatcher.cache.session, stream)
 

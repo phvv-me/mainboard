@@ -56,14 +56,18 @@ def test_a_second_workspace_reads_and_writes_the_served_lake(
     assert ran.code == 0, ran.said
     assert json.loads(ran.out) == [{"n": 0}]
 
-    # An append and a parameterized read, through the session every writer uses.
+    # An append, a built read and a parameterized one, through the session every writer uses.
     write = (
         "from datetime import UTC, datetime\n"
         "from pathlib import Path\n"
+        "from sqlalchemy import func, select\n"
+        "from mb.state import schema\n"
         "from mb.state.lake import Lake\n"
         "session = Lake.at(Path.cwd()).session()\n"
-        "session.append('schema_log', [{'ts': datetime.now(UTC), 'version': 0, "
+        "log = schema.schema_log\n"
+        "session.append(log, [{'ts': datetime.now(UTC), 'version': 0, "
         "'spec': 'from-far', 'engine': 'it'}])\n"
+        "print(session.rows(select(func.count()).where(log.c.spec == 'from-far')))\n"
         "sql = 'SELECT count(*) FROM lake.schema_log WHERE spec = ?'\n"
         "print(session.rows(sql, ['from-far']))\n"
     )
@@ -77,7 +81,7 @@ def test_a_second_workspace_reads_and_writes_the_served_lake(
         check=False,
     )
     assert done.returncode == 0, done.stderr
-    assert "[(1,)]" in done.stdout
+    assert done.stdout.splitlines() == ["[(1,)]", "[(1,)]"]
     assert not (elsewhere / ".mb").exists(), "a served lake keeps nothing on the client"
 
     # The server's own workspace sees the row through its files.

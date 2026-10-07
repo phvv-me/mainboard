@@ -373,6 +373,15 @@ class Verdicts:
         run: which run of a receipts store to score, its newest when empty; the other targets
             carry one run's evidence by construction.
         """
+        return self.__of(target, host=host, run=run)
+
+    def refresh(self, target: str, *, host: str = "", run: str = "") -> StreamVerdict:
+        """Refresh only this dispatch or stream before reading it; receipt files stay offline."""
+        return self.__of(target, host=host, run=run, monitor=self.board.monitor())
+
+    def __of(
+        self, target: str, *, host: str, run: str, monitor: Monitor | None = None
+    ) -> StreamVerdict:
         path = self.board.dispatcher.local(target)
         stored = self.stored(path, stream=target, run=run)
         if stored is not None:
@@ -382,6 +391,13 @@ class Verdicts:
             return StreamVerdict(stream=target, trials=read, note=unreadable(path, read))
         events = Journal(self.board.dispatcher.cache.session, target).replay()
         harvested = self.harvest(target)
+        if monitor is not None:
+            stream = bool(events or harvested)
+            report = monitor.once(scope=self.__scope(target, host=host, stream=stream))
+            if not stream and report.resumed:
+                resumed = report.resumed[0]
+                return self.of(resumed.handle, host=resumed.target, run=run)
+            return self.of(target, host=host, run=run)
         if events or harvested:
             recorded = eventful(events)
             seen = {(trial.target, trial.handle) for trial in recorded}
@@ -495,48 +511,68 @@ class Verdicts:
         handle: str,
         *,
         host: str = "",
+        run: str = "",
         timeout: float = 0.0,
         interval: float = vocabulary.POLL_SECONDS,
         stall: float = STALL_SECONDS,
         say: Callable[[str], None] = logger.debug,
         poll: Callable[[float], None] = sleep,
     ) -> StreamVerdict:
-        """Block until `handle` settles, sweeping the same durable path the monitor cron runs.
+        """Block until `handle` settles through the monitor's durable settlement path.
 
-        Every pass is one `Monitor.once`, so waiting pulls results, releases rentals and writes
-        receipts like an unattended sweep. Interruption stops this waiter, not the job or its
+        Each pass selects only this dispatch or batch, while rental deadlines remain global.
+        Waiting pulls results, releases rentals and writes receipts like an unattended sweep.
+        Interruption stops this waiter, not the job or its
         billing. The answer's code is the normalized receipt outcome, not the process exit status.
         Between passes a vigil says each cell as it lands plus a heartbeat, settles a job whose
         pytest session ended while its process lingers, and stops with `STALLED` on a job silent
         past `stall` on an idle card.
 
         handle: the dispatched run, or a batch id as `submit --batch` printed it, which waits for
-            every job of the batch and answers with the batch's verdict.
+            every job of the batch and answers with the batch's verdict. Local receipt paths
+            are read once without contacting hosts.
+        run: which run to read when the target is a local receipts store.
         timeout: wall seconds before giving up with the run reported in flight (exit 2), 0 never.
         interval: seconds between sweeps.
         stall: seconds of silence on an idle card that stop the wait, 0 never.
         say: where the cells and the heartbeat go.
         """
+        path = self.board.dispatcher.local(handle)
+        stored = self.stored(path, stream=handle, run=run)
+        if stored is not None:
+            return stored
+        if path.is_file():
+            return self.of(handle, host=host, run=run)
         deadline = monotonic() + timeout if timeout else None
         monitor = self.board.monitor()
         stream = bool(Journal(self.board.dispatcher.cache.session, handle).replay())
+        scope = self.__scope(handle, host=host, stream=stream)
         vigil = Vigil(Pulses(self.board), stall=stall, say=say)
         silent: set[str] = set()
-        # What already settled answers before any pass runs, since a pass settles the whole
-        # workspace and a caller re-reading a finished batch owes it nothing.
+        # A caller re-reading a finished batch owes no remote probe.
         while (settled := self.__settled(handle, host=host, stream=stream)) is None:
             if deadline is not None and monotonic() >= deadline:
                 return self.__standing(handle, host=host, stream=stream)
             # Said once: a wait on a run whose host went silent otherwise reads as a job that
             # is merely slow, until the timeout.
-            for down in monitor.once().unreachable_hosts:
+            report = monitor.once(scope=scope)
+            if not stream and report.resumed:
+                handle, host = report.resumed[0].handle, report.resumed[0].target
+                scope = self.__scope(handle, host=host, stream=False)
+            for down in report.unreachable_hosts:
                 if down.host not in silent:
                     silent.add(down.host)
                     asked = self.board.declares(down.host)
                     say(f"{down.host} is not answering: {down.reason}" if asked else down.reason)
             if self.__settled(handle, host=host, stream=stream) is not None:
                 continue
-            look = vigil.look(self.__running(handle, host=host, stream=stream))
+            look = vigil.look(
+                [
+                    record
+                    for record in self.board.dispatcher.cache.live()
+                    if record.verdict == vocabulary.RUNNING and scope(record)
+                ]
+            )
             for linger in look.lingering:
                 self.conclude(linger.handle, host=linger.target, session=linger.session)
             if look.stalled:
@@ -550,19 +586,16 @@ class Verdicts:
         """What `handle` reads as right now, settled or not."""
         return self.of(handle) if stream else self.handled(handle, host=host)
 
-    def __running(self, handle: str, *, host: str, stream: bool) -> list[RunRecord]:
-        """The dispatched runs behind `handle` that are running now, as the last pass left them."""
-        cache = self.board.dispatcher.cache
-        behind = (
-            [
-                record
-                for record in cache.live()
-                if streamed(record.name or "", handle=record.handle)[0] == handle
-            ]
-            if stream
-            else [cache.run(handle, host or None)]
+    def __scope(self, handle: str, *, host: str, stream: bool) -> Callable[[RunRecord], bool]:
+        """Match a whole stream or one host-qualified submission, never a recycled handle."""
+        if stream:
+            return lambda record: streamed(record.name or "", handle=record.handle)[0] == handle
+        selected = self.record(handle, host=host)
+        return lambda record: (
+            record.handle == selected.handle
+            and record.target == selected.target
+            and record.submitted_at == selected.submitted_at
         )
-        return [record for record in behind if record.verdict == vocabulary.RUNNING]
 
     def __settled(self, handle: str, *, host: str, stream: bool) -> StreamVerdict | None:
         """`handle`'s final answer, None while any of it is still in flight.

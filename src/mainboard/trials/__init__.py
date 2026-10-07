@@ -33,7 +33,6 @@ from .artifacts import Artifact
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import ADMISSIBILITY, OPENED, Ambiguous, Dataset
 from .declaration import MARKERS, Declaration
-from .distribution import Distribution, Fleet, Local, Partition
 from .figures import Figures, Gap, Need, Refusal, rendered_twice
 from .flags import Flag, held, moved, reading
 from .lease import Busy, CardLease
@@ -78,22 +77,18 @@ __all__ = [
     "Cell",
     "Dataset",
     "Declaration",
-    "Distribution",
     "Figures",
     "Flag",
     "Finding",
-    "Fleet",
     "Gap",
     "Hunt",
     "LaneStatus",
     "Ledger",
-    "Local",
     "Miss",
     "Need",
     "Optuna",
     "Outcome",
     "Owed",
-    "Partition",
     "Preflight",
     "Probed",
     "Proposer",
