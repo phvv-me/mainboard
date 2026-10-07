@@ -239,7 +239,7 @@ class Stress:
     def _timed(self, call: Callable[[], None]) -> float:
         """The median wall time of `call` over the timed repetitions, device synchronized.
 
-        Never below one tick of the clock: a call shorter than that reads as zero on Windows,
+        Never below one tick of the clock: a call shorter than that reads as zero,
         and a rate divided by it would be infinite rather than merely unmeasurable.
         """
         for _ in range(self.warmups):

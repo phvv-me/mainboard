@@ -22,14 +22,12 @@ from .center.migrate import Migration
 from .center.standalone import Standalone
 from .center.verify import Verification
 from .ci import LocalLeg, Matrix, Package
-from .completion import powershell
 from .context.resolver import Resolver
 from .core.errors import MissionError, NoWorkspace
 from .core.project import Project
 from .core.section import Section, Verdict, failed
 from .core.shell import become
 from .delimiter import Delimiter
-from .diagnostics import Diagnostics
 from .dispatch import vocabulary
 from .dispatch.commandline import joined, vetted
 from .dispatch.evidence import printed
@@ -438,11 +436,6 @@ def build(root: Path | None = None) -> App:
         The lane's parametrization is the plan: its cells are collected here, grouped by the
         `split` value or sliced, and each group runs its cells as fresh processes.
         """
-        manifest = load(project.manifest(workspace_root()))
-        if windows := [
-            h for h in hosts if h in manifest.hosts and manifest.hosts[h].platform == "win-64"
-        ]:
-            raise MissionError(f"a lane cannot be queued on Windows hosts: {', '.join(windows)}")
         with progress(f"collecting {target}"):
             probe = ["run", "--", "python", "-m", "mainboard.jobs.lanes", "collect", target]
             cells = lanes_module.parsed(localhost[project.package][probe]())
@@ -759,36 +752,6 @@ def build(root: Path | None = None) -> App:
         output.print_record(payload, title="new")
 
     @app.command
-    def diagnose(*, days: int = 7, out: Path | None = None, output: Output = _COMPACT) -> int:
-        """Preserve recent operating-system incidents and explain what their evidence establishes.
-
-        Every read-only probe is bounded. The report keeps raw records, device identities,
-        missing permissions and submission times separately from original incident times.
-        No repair, restart, elevation or settings change happens here. Works without a manifest.
-
-        Args:
-            days: the recent event window, from 1 to 365 days.
-            out: the evidence directory; a new timestamped directory under .mainboard when omitted.
-        """
-        if not 1 <= days <= 365:
-            raise MissionError("days must be between 1 and 365")
-        with progress("collecting operating-system evidence"):
-            report = Diagnostics(days=days).collect()
-            destination = (
-                out
-                or Path.cwd()
-                / ".mainboard"
-                / "diagnostics"
-                / report.collected_at.strftime("%Y%m%dT%H%M%S.%fZ")
-            )
-            saved = report.save(destination)
-        sections = [
-            *report.findings,
-            Section(section="evidence", verdict=Verdict.PASS, detail=str(saved.resolve())),
-        ]
-        return _sectioned(sections, output, title="diagnose")
-
-    @app.command
     def doctor(
         env: str = "", *, center: bool = False, members: bool = False, output: Output = _COMPACT
     ) -> int:
@@ -883,19 +846,15 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
-    def completion(shell: Literal["bash", "zsh", "fish", "powershell"]) -> None:
+    def completion(shell: Literal["bash", "zsh", "fish"]) -> None:
         """Print the script that completes this tool's commands and options in a shell.
 
-        Keep it in the shell's startup: `eval "$(mb completion zsh)"` (zsh, bash; `mb
-        completion fish | source` in fish) or `mb completion powershell | Out-String |
-        Invoke-Expression` in `$PROFILE`. The same four shells on Linux, macOS and Windows.
+        Keep it in the shell's startup: `eval "$(mb completion zsh)"` (zsh, bash), or
+        `mb completion fish | source` in fish.
 
         Args:
             shell: the shell the script is for.
         """
-        if shell == "powershell":
-            print(powershell(app, (project.name, project.package)))
-            return
         print(app.generate_completion(prog_name=project.name, shell=shell))
 
     @host.command(name="upgrade")
@@ -1040,7 +999,7 @@ def build(root: Path | None = None) -> App:
         findings `host list --facts` shows, judged from the census read back through the new
         activation.
 
-        `--center` instead moves the center there (Windows, macOS or Linux): probes it, signs gh
+        `--center` instead moves the center there (macOS or Linux): probes it, signs gh
         in, carries ssh config and keys, clones the monorepo at this HEAD with every owned
         submodule, carries what git does not hold (`.env`, the lake, agent configuration and
         memory), installs this tool and the default environment, and ends with `doctor --center`
@@ -1826,8 +1785,8 @@ def build(root: Path | None = None) -> App:
     ) -> int:
         """Block until a file exists, a port accepts, and a process has exited, whichever named.
 
-        The loop around `sleep`, `test` and `nc` that no Windows shell runs. Exits 0 once every
-        named condition holds and 1 when the timeout passed first.
+        The loop around `sleep`, `test` and `nc`, as one verb. Exits 0 once every named
+        condition holds and 1 when the timeout passed first.
 
         Args:
             port: a `host:port` that must accept a TCP connection.
@@ -2047,7 +2006,7 @@ def build(root: Path | None = None) -> App:
         HEAD is attached to its trunk when that moves no commit, and held otherwise.
 
         `--all` is the deliberate sweep: every change in every owned repository except what has
-        to stay out, links a Windows checkout wrote as files put back first, a parent held when
+        to stay out, links written out as files put back first, a parent held when
         its submodule did not commit, and an upstream the repository is behind merged in after.
         Exits 1 when any repository was held or failed.
 
@@ -2269,8 +2228,7 @@ def _agreed() -> bool:
 
     The question shares stderr with the expectation line it follows, since stdout belongs to the
     handle or the document this verb prints once the dispatch has actually happened. An input
-    that ends unanswered is a no: Windows reports its null device as a terminal, so a script that
-    redirected stdin there reaches this question too, and should pass `--yes`.
+    that ends unanswered is a no.
     """
     print("dispatch? [y/N] ", end="", file=sys.stderr, flush=True)
     try:
@@ -2532,20 +2490,6 @@ def _changes(report: MonitorReport) -> list[dict[str, str]]:
     return [dict(zip(_CHANGE_COLUMNS, row, strict=True)) for row in moved]
 
 
-def _forget_openssh_descriptors() -> None:
-    """Drop the descriptor table Win32-OpenSSH hands the process it spawns.
-
-    sshd passes its child a `<guid>_POSIX_FD_STATE` naming that child's own handles, and the
-    variable rides every environment inherited after it. An `ssh.exe` this tool starts reads the
-    stale table as its own and hangs before reading its config, so a center driven over ssh
-    reached no host (pedro-home, 2026-09-26). plumbum copied the environment at import, so its
-    copy loses the table too.
-    """
-    for name in [name for name in os.environ if name.endswith("_POSIX_FD_STATE")]:
-        del os.environ[name]
-        del localhost.env[name]
-
-
 def main() -> None:
     """Console entry point, `MissionError` printed to stderr without a traceback, exit 1.
 
@@ -2553,9 +2497,9 @@ def main() -> None:
     command is ever read as this tool's. The verbs a person or an agent types log short plain
     lines; the ones a dispatched job runs keep the JSON its log readers parse.
     """
-    _forget_openssh_descriptors()
-    # A job's log carries whatever it printed (a progress bar's block characters), and a Windows
-    # pipe encodes cp1252, so one such character killed `job logs` mid-print (2026-09-29).
+    # A job's log carries whatever it printed (a progress bar's block characters), which a pipe
+    # in a narrower encoding cannot print; one such character killed `job logs` mid-print
+    # (2026-09-29).
     for stream in (sys.stdout, sys.stderr):
         if isinstance(stream, TextIOWrapper):
             stream.reconfigure(errors="replace")
@@ -2585,7 +2529,7 @@ def _profiled(report: Path, command: Callable[[], object]) -> None:
     from .profile import Feature, Profiler  # noqa: PLC0415
 
     # Entry points and the standard-library agents are left out: importing them runs them.
-    skipped = ("__main__", "_refresh", "agent.program", "center.remote", ".profile")
+    skipped = ("__main__", "agent.program", "center.remote", ".profile")
     modules = [
         found.name
         for found in pkgutil.walk_packages(package, f"{__package__}.")

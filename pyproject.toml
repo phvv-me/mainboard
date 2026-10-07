@@ -31,15 +31,15 @@ dependencies = [
     "sqlalchemy>=2.1.3",
     "pytz>=2025.2",
     # Hardware inventory is a core Mainboard verb, so the official CUDA host bindings cannot be
-    # hidden behind an extra on the two platforms NVIDIA supports. The wheel depends only on
+    # hidden behind an extra on Linux, where NVIDIA supports them. The wheel depends only on
     # cuda-pathfinder and locates installed CUDA/NVML libraries at runtime. macOS keeps its Apple
     # provider and never tries to resolve an unsupported NVIDIA wheel.
-    "cuda-bindings>=13.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "cuda-bindings>=13.0; sys_platform == 'linux'",
     "filelock>=4.0",
     # cuda-bindings 13.3.1 imports NumPy from its NVML extension but does not declare it in the
     # wheel metadata. Mainboard reads that official extension for inventory and sensors, so keep
     # its actual runtime dependency beside the binding until NVIDIA declares it upstream.
-    "numpy>=2.0; sys_platform == 'linux' or sys_platform == 'win32'",
+    "numpy>=2.0; sys_platform == 'linux'",
     "packaging>=24.0",
     "patos>=0.0.13",
     "plumbum>=1.8",
@@ -69,8 +69,8 @@ dependencies = [
 adversarial = ["hypothesis>=6.100"]
 search = ["optuna>=4.0"]
 # CUDA Core adds the higher-level device facade. Low-level runtime and NVML inventory are base
-# functionality on NVIDIA's supported platforms, so the extra contains only this richer layer.
-cuda = ["cuda-core>=1.1; sys_platform == 'linux' or sys_platform == 'win32'"]
+# functionality on Linux, so the extra contains only this richer layer.
+cuda = ["cuda-core>=1.1; sys_platform == 'linux'"]
 modal = ["modal>=1.0"]
 # Plotting and the trials API hand polars frames to seaborn; a workspace declares all three in
 # its own environment, so the tool installs them only when asked for `mb plot`.
@@ -113,10 +113,10 @@ dev = [
 # the GitHub workflow is only a checkout and that same verb, so a step cannot pass locally and be
 # missing on a runner, or the reverse. The first step is the lock: `--locked` refuses a uv.lock
 # the manifest has moved past, which is the failure that used to reach CI before anyone ran it.
-# Every step runs on all three platforms, the type checkers included, since each narrows
+# Every step runs on both platforms, the type checkers included, since each narrows
 # `sys.platform` branches to the host it runs on. The tests run the real `mb` (integration/).
 [tool.mainboard.ci]
-os = ["linux", "osx", "win"]
+os = ["linux", "osx"]
 
 [[tool.mainboard.ci.steps]]
 name = "lock"

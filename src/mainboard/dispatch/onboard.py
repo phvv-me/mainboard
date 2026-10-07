@@ -15,7 +15,6 @@ from patos import FrozenModel, Resolution, Strategy, StrategyError
 from plumbum import local
 from tenacity import (
     Retrying,
-    retry_if_exception,
     retry_if_result,
     stop_after_attempt,
     wait_fixed,
@@ -30,7 +29,7 @@ from ..probe.snapshot import HostFacts
 from .schedulers.pueue import Pueue
 from .schedulers.registry import pick
 from .shared import Watcher, announce
-from .shells import HostShell, is_windows, open_shell
+from .shells import HostShell, open_shell
 from .targets import Facts, probe_capabilities, resolve, rooted
 
 if TYPE_CHECKING:
@@ -45,16 +44,6 @@ _TOOL = Project().package
 
 # Where the tool's own source sits inside a synced workspace that vendors it.
 _SOURCE = f"packages/{_TOOL}"
-
-# uv's refusal when Windows will not let it replace the tool's entrypoint while a running copy
-# holds it (pedro-home, 2026-09-26): the same install succeeded by hand minutes later.
-_HELD = "failed to install entrypoint"
-
-# How often an install polls for running copies of the tool to end, how often it retries a held
-# entrypoint, and the pause between either.
-_HOLDER_POLLS = 12
-_INSTALL_ATTEMPTS = 3
-_PAUSE = 5.0
 
 
 def gpus_command() -> str:
@@ -310,42 +299,8 @@ class Bootstrap:
             raise MissionError(
                 f"cannot install {_TOOL} on {self.shell.plan.host!r} by {where}: {refused}"
             ) from None
-        self._install(routes.select(resolution.winner))
+        routes.select(resolution.winner).install()
         return resolution
-
-    def _install(self, installer: Installer) -> None:
-        """Run the winning route, riding out an entrypoint a running copy of the tool holds.
-
-        Windows cannot replace a running executable, so the install first waits a bounded time
-        for every running copy to end (a verify a dropped ssh left behind), then retries uv's
-        refusal a few times, and a refusal that outlasts both names the processes holding it.
-        """
-        Retrying(
-            retry=retry_if_result(bool),
-            stop=stop_after_attempt(_HOLDER_POLLS),
-            wait=wait_fixed(_PAUSE),
-            retry_error_callback=lambda state: None,
-        )(self._holders)
-        attempts = Retrying(
-            retry=retry_if_exception(_held),
-            stop=stop_after_attempt(_INSTALL_ATTEMPTS),
-            wait=wait_fixed(_PAUSE),
-            reraise=True,
-        )
-        try:
-            attempts(installer.install)
-        except MissionError as refusal:
-            if not (_held(refusal) and (holders := self._holders())):
-                raise
-            raise MissionError(
-                f"{_TOOL}'s entrypoint on {self.shell.plan.host!r} is held by "
-                f"{'; '.join(holders.splitlines())}; stop it and install again"
-            ) from refusal
-
-    def _holders(self) -> str:
-        """Each running process holding the tool's entrypoint, one per line."""
-        probe = self.shell.dialect.holders
-        return self.shell.run(probe).strip() if probe else ""
 
     def environment(self) -> None:
         """Have the machine's own tool compile the synced manifest and install `env` from it.
@@ -361,11 +316,6 @@ class Bootstrap:
                 f"{host!r} has no {self.shell.proof} after installing {self.env!r}; "
                 "the environment was not provisioned"
             )
-
-
-def _held(refusal: BaseException) -> bool:
-    """Whether `refusal` is uv finding the tool's entrypoint held by a running copy."""
-    return _HELD in str(refusal).lower()
 
 
 def read_facts(text: str) -> HostFacts:
@@ -485,26 +435,17 @@ class Onboarding:
         """Make sure the pueue daemon a plain ssh host dispatches through is answering.
 
         Every later `submit` fails on its socket otherwise, so a down daemon is started here and
-        the host refused, naming the fix, when it still does not answer. A Windows host is set up
-        without one, since nothing here can daemonize pueue there yet: it runs commands and
-        collects, and a `submit` to it refuses on its own until a pueue answers.
+        the host refused, naming the fix, when it still does not answer.
         """
         if not isinstance(pick(self.plan.profile), Pueue) or shell.ok(
             "pueue status", activate=True
         ):
             return
-        if not is_windows(self.plan.profile) and not shell.ok("command -v pueued", activate=True):
+        if not shell.ok("command -v pueued", activate=True):
             # A host-level tool, never an environment's (a lean one has none): a host without
             # the dotfiles' toolbox gets it from pixi, which this setup just aligned.
             self.watch(f"installing pueue on {host}")
             shell.run("pixi global install pueue")
-        if is_windows(self.plan.profile):
-            logger.warning(
-                "{} answers no pueue; `submit` cannot queue there until pueue is installed and "
-                "`pueued` started, then the host set up again",
-                host,
-            )
-            return
         shell.run("pueued -d </dev/null >/dev/null 2>&1", activate=True)
         ready = Retrying(
             retry=retry_if_result(lambda answered: not answered),
@@ -557,7 +498,7 @@ class Onboarding:
         pulling on every later one. A host keeping its own shell still runs jobs, so a failure is
         said and the setup goes on.
         """
-        if not self.dotfiles or is_windows(self.plan.profile):
+        if not self.dotfiles:
             return
         self.watch(f"applying the dotfiles on {host}")
         # The source is named, since a host's own chezmoi config may point anywhere.
@@ -608,7 +549,7 @@ class Onboarding:
                 host=host,
                 root=root,
                 env=self.env,
-                activate=shell.activation_record,
+                activate=shell.proof,
                 installer=winner.winner,
                 rejected=winner.rejected,
                 tool=shell.run(f"{_TOOL} --version").strip(),
@@ -685,7 +626,7 @@ class Onboarding:
             # A daemon that died or a host cleaned since setup would refuse every submit.
             self.verify_queue(shell, host=host)
             self.apply_dotfiles(shell, host=host)
-            activate = shell.activation_record
+            activate = shell.proof
         fresh = self.dispatcher.cache.host(host)
         updated = self.dispatcher.cache.save_host(
             fresh.model_copy(

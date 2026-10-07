@@ -5,8 +5,8 @@
 # line, and everything else comes down ssh's stdin: a loader, then one JSON header naming the
 # modules to load and the function to call with its arguments, then whatever byte stream that
 # function reads, a tar of files say. The argv holds no secret and no path, so it quotes the same
-# under cmd.exe, PowerShell and a POSIX login shell, and the answer comes back as one marked line
-# so a login banner above it is never mistaken for it.
+# under every login shell, and the answer comes back as one marked line so a login banner above
+# it is never mistaken for it.
 
 import json
 from collections.abc import Iterable, Mapping

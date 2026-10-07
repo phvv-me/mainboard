@@ -11,8 +11,8 @@ if TYPE_CHECKING:
 
     from .inventory import Attributes
 
-# The byte-order marks a Windows editor or a PowerShell redirect writes UTF-16 text behind. Such
-# a file is full of NUL bytes, so the binary test below would otherwise take it for data.
+# The byte-order marks UTF-16 text starts with. Such a file is full of NUL bytes, so the binary
+# test below would otherwise take it for data.
 _UTF16 = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 
 # Git's own binary test: a NUL byte anywhere in the first 8000 bytes.

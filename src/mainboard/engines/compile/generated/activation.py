@@ -71,7 +71,6 @@ def activation(
         ]
     lines.append(hook.strip())
     if binaries:
-        # A colon even on Windows: only bash reads this, and `;` made one unusable entry.
         joined = ":".join(shlex.quote(str(path)) for path in binaries)
         lines.append(f'export PATH={joined}:"$PATH"')
     if runtime:

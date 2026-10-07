@@ -26,29 +26,14 @@ if TYPE_CHECKING:
     from .backend import CommandResult
 
 _ENVIRONMENT_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_WINDOWS_DEVICES = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{index}" for index in range(1, 10)}
-    | {f"LPT{index}" for index in range(1, 10)}
-)
 
 
 def environment_segment(environment: str) -> str:
-    """Validate a logical environment name as a generated path segment, portably.
-
-    What Linux accepts must stay a valid, unaliased directory on Windows, so device names are
-    refused even with an extension (`con.txt`).
-    """
-    stem = environment.partition(".")[0].upper()
-    if (
-        not _ENVIRONMENT_SEGMENT.fullmatch(environment)
-        or environment.endswith((".", " "))
-        or stem in _WINDOWS_DEVICES
-    ):
+    """Validate a logical environment name as a generated path segment."""
+    if not _ENVIRONMENT_SEGMENT.fullmatch(environment) or environment.endswith("."):
         raise MissionError(
             f"environment {environment!r} cannot name a generated directory; use letters, "
-            "digits, dots, underscores or hyphens, starting with a letter or digit, and avoid "
-            "Windows device names"
+            "digits, dots, underscores or hyphens, starting with a letter or digit"
         )
     return environment
 
@@ -247,18 +232,10 @@ class Provisioner:
         with shard.pixi.activated(env), self.leading(env):
             yield
 
-    def run(
-        self,
-        command: Sequence[str],
-        env: str = "default",
-        *,
-        exports: dict[str, str] | None = None,
-    ) -> int:
-        """Compile stale generated files, then let Pixi's cross-platform runner run `command`."""
+    def run(self, command: Sequence[str], env: str = "default") -> int:
+        """Compile stale generated files, then let Pixi's runner run `command`."""
         shard = self.refreshed(env)
         with local.cwd(str(self.root)), self.runtime(shard, env), self.leading(env):
-            if exports:
-                return shard.pixi.run(command, env, exports=exports)
             return shard.pixi.run(command, env)
 
     def capture(
@@ -281,19 +258,12 @@ class Provisioner:
             yield
 
     def refreshed(self, env: str) -> _EnvironmentShard:
-        """`env`'s compile stack with its generated files current, ready to run a command in.
-
-        A recompile makes the Windows activation cache read stale, so an installed prefix has
-        it retaken here rather than refusing every command until a reinstall.
-        """
+        """`env`'s compile stack with its generated files current, ready to run a command in."""
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
-            recompiled = shard.compiler.stale()
-            if recompiled:
+            if shard.compiler.stale():
                 shard.compiler.write(files)
             self.synchronized(shard, env)
-        if recompiled and shard.pixi.ready(env):
-            shard.pixi.cache_windows_activation(env, self.binaries(env))
         return shard
 
     def synchronized(self, shard: _EnvironmentShard, env: str) -> None:
@@ -359,5 +329,3 @@ class Provisioner:
                 # and the host that runs it installs the second stage and its activation.
                 return
             shard.stage.install(env, resolve=resolve or refresh)
-            if shard.pixi.ready(env):
-                shard.pixi.cache_windows_activation(env, self.binaries(env))

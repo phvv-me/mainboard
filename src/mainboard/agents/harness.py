@@ -42,15 +42,12 @@ class Channel(ABC):
 class Script(Channel):
     """The vendor's own installer, and the harness's own command to update itself."""
 
-    def __init__(self, *, posix: str, windows: str, update: Sequence[str]) -> None:
-        self.posix = posix
-        self.windows = windows
+    def __init__(self, *, script: str, update: Sequence[str]) -> None:
+        self.script = script
         self.updating = update
 
     def install(self, home: Path, which: Which) -> list[str]:
-        if sys.platform == "win32":
-            return ["powershell", "-NoProfile", "-Command", self.windows]
-        return ["bash", "-c", self.posix]
+        return ["bash", "-c", self.script]
 
     def update(self, home: Path, which: Which) -> list[str]:
         return [*self.updating]
@@ -72,9 +69,6 @@ class PixiGlobal(Channel):
 class Npm(Channel):
     """An npm package installed under `~/.local`, whose `bin` the vendor installers share.
 
-    npm writes a Windows prefix's commands into the prefix itself, so there the prefix is
-    `~/.local/bin` for the commands to land in the same directory.
-
     scripts: the packages whose install scripts must run, which npm otherwise skips (its
         native terminal and keychain bindings, say).
     """
@@ -84,14 +78,13 @@ class Npm(Channel):
         self.scripts = scripts
 
     def install(self, home: Path, which: Which) -> list[str]:
-        prefix = home / ".local" / ("bin" if sys.platform == "win32" else "")
         allowed = [f"--allow-scripts={','.join(self.scripts)}"] if self.scripts else []
         return [
             _found("npm", which),
             "install",
             "--global",
             "--prefix",
-            str(prefix),
+            str(home / ".local"),
             *allowed,
             f"{self.package}@latest",
         ]
@@ -145,9 +138,7 @@ class Claude(Harness):
 
     binary = "claude"
     channel = Script(
-        posix="curl -fsSL https://claude.ai/install.sh | bash",
-        windows="irm https://claude.ai/install.ps1 | iex",
-        update=("claude", "update"),
+        script="curl -fsSL https://claude.ai/install.sh | bash", update=("claude", "update")
     )
     credentials = (".claude/.credentials.json",)
     keys = ("ANTHROPIC_API_KEY",)

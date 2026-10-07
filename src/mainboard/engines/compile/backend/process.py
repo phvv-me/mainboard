@@ -1,20 +1,16 @@
 import codecs
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from subprocess import DEVNULL, PIPE
+from subprocess import PIPE
 from typing import TYPE_CHECKING, TextIO, cast
 
 from ....core import MissionError
-from ....core.host import WINDOWS
 from .result import CommandResult
 
 if TYPE_CHECKING:
     from io import BufferedReader
 
     from plumbum.commands.base import BaseCommand
-
-# DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, spelled out since POSIX subprocess lacks them.
-_WINDOWS_DETACHED_FLAGS = 0x00000200 | 0x00000008
 
 
 class Process:
@@ -41,24 +37,6 @@ class Process:
         pipes of `stream` would leave unredrawn.
         """
         return command.popen(stdin=None, stdout=None, stderr=None).wait()
-
-    @staticmethod
-    def detached(command: BaseCommand) -> None:
-        """Start work that must outlive and release the calling executable, in its own session.
-
-        Windows cannot replace a running executable, so a self-update launches Pixi with no
-        inherited handles and returns, letting this process exit before Pixi's uv child replaces
-        the tool directory.
-        """
-        if WINDOWS:
-            command.popen(
-                stdin=DEVNULL,
-                stdout=DEVNULL,
-                stderr=DEVNULL,
-                creationflags=_WINDOWS_DETACHED_FLAGS,
-            )
-            return
-        command.popen(stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True)
 
     @staticmethod
     def output(command: BaseCommand, operation: str) -> str:

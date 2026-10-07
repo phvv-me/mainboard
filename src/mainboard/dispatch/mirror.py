@@ -41,10 +41,11 @@ _RECORD = TypeAdapter(tuple[str, str, int, int, bool | None, str])
 
 
 class _Capabilities(FrozenModel):
-    """What the target's file system can hold, the first record of every survey."""
+    """What the target's file system can hold, the first record of every survey.
 
-    links: bool
-    modes: bool
+    fold: whether it folds case, holding two paths that differ only in case as one.
+    """
+
     fold: bool
 
 
@@ -112,8 +113,6 @@ class Mirror:
             }
         )
         capabilities = _Capabilities.model_validate(first)
-        if not capabilities.links:
-            local = self.__dereferenced(local, digests=digests)
         digests.save()
         if capabilities.fold and (clashes := clashing(local)):
             raise MissionError(
@@ -124,7 +123,7 @@ class Mirror:
             entry.path: entry
             for entry in (Entry(*_RECORD.validate_python(record)) for record in records)
         }
-        delta = Delta.between(local, held, protected=protected, modes=capabilities.modes)
+        delta = Delta.between(local, held, protected=protected)
         logger.info(
             "mirroring {} of {} path(s) to {}:{}",
             len(delta.files),
@@ -162,23 +161,6 @@ class Mirror:
             status = os.stat(native(root, relative))
             found[relative] = self.__hashed(Entry.stated(relative, status), digests)
         return found
-
-    def __dereferenced(self, local: dict[str, Entry], *, digests: Digests) -> dict[str, Entry]:
-        """`local` as a target that holds no links takes it: each link to a file sent as that file.
-
-        A link to a directory has no file to become and is left behind with a warning, since
-        walking into it could carry a whole second tree under a name nobody declared.
-        """
-        adapted: dict[str, Entry] = {}
-        for path, entry in local.items():
-            referent = native(str(self.workspace), path)
-            if entry.kind != LINK:
-                adapted[path] = entry
-            elif os.path.isfile(referent):
-                adapted[path] = self.__hashed(Entry.stated(path, os.stat(referent)), digests)
-            else:
-                logger.warning("{} cannot hold the link {}; left behind", self.agent.host, path)
-        return adapted
 
     def __hashed(self, entry: Entry, digests: Digests) -> Entry:
         if entry.kind == FILE:
@@ -234,22 +216,20 @@ class Delta(FrozenModel):
         held: Mapping[str, Entry],
         *,
         protected: Rules,
-        modes: bool,
     ) -> Delta:
         """What turns `held` into `local`, leaving alone whatever `protected` claims.
 
-        A file differs by size or digest, and by its execute bit when both ends keep one. A
-        path whose kind changed, or a link whose target did, is pruned before it is remade,
-        since neither a directory nor a link is replaced by a rename.
+        A file differs by size, digest or execute bit. A path whose kind changed, or a link whose
+        target did, is pruned before it is remade, since neither a directory nor a link is
+        replaced by a rename.
 
         held: what the target described.
         protected: paths the target keeps whether or not this workspace holds them.
-        modes: whether the target keeps execute bits.
         """
         files = tuple(
             entry
             for path, entry in sorted(local.items())
-            if entry.kind == FILE and _differs(entry, held.get(path), modes=modes)
+            if entry.kind == FILE and _differs(entry, held.get(path))
         )
         stale = tuple(
             path
@@ -290,14 +270,14 @@ def clashing(paths: Iterable[str]) -> list[str]:
     return sorted(path for group in folded.values() if len(group) > 1 for path in group)
 
 
-def _differs(mine: Entry, theirs: Entry | None, *, modes: bool) -> bool:
+def _differs(mine: Entry, theirs: Entry | None) -> bool:
     """Whether the target's copy of a file is missing or holds other bytes or another mode."""
     if theirs is None or theirs.kind != FILE:
         return True
-    return (mine.size, mine.detail) != (theirs.size, theirs.detail) or (
-        modes
-        and None not in (mine.executable, theirs.executable)
-        and mine.executable != theirs.executable
+    return (mine.size, mine.detail, mine.executable) != (
+        theirs.size,
+        theirs.detail,
+        theirs.executable,
     )
 
 

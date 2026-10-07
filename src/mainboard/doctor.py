@@ -380,7 +380,7 @@ class Doctor:
         """
         if self.env:
             return (self.env,)
-        # An environment declared for other platforms (a Linux-only experiment one, on a Windows
+        # An environment declared for other platforms (a Linux-only experiment one, on a macOS
         # center) is never installed here, and saying so every time is noise.
         here = current_platform()
         return (

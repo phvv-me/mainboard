@@ -1,7 +1,7 @@
 # The one way a dispatched job runs, on whichever machine it landed on.
 #
 # What a rendered bash script once did (exit trap, `timeout` re-exec, `trap 'exit 143' TERM`,
-# exports, sourced activation) is a step here, so every scheduler and Windows run the same code.
+# exports, sourced activation) is a step here, so every scheduler runs the same code.
 #
 # The order is the contract: build the environment, enter it, export what the dispatch decided,
 # attest, start the sampler, point the command at its receipts file, and run it from the pinned
@@ -9,8 +9,6 @@
 # is the command's own, a signal's `128 + N`, or the walltime's `124`/`137`.
 
 import os
-import shlex
-import shutil
 import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the dispatched job and this tool's own verbs, argv built from the job record since=2026-09-25
 import sys
@@ -20,10 +18,9 @@ from tempfile import gettempdir
 from time import monotonic
 from typing import TYPE_CHECKING
 
-from ..core.host import WINDOWS
 from ..core.project import Project
 from ..dispatch.evidence import RECEIPTS_VAR, framed
-from .entry import Refusal, entering
+from .entry import Refusal
 from .job import walltime_seconds
 from .tree import FileBudget, ProcessTree
 
@@ -31,14 +28,11 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Mapping, MutableMapping
     from types import FrameType
 
-    from .entry import Entering
     from .job import Job, ToolCall
 
-# The signals ending a job, whichever this platform has: the command's tree and the job end with
-# `128 + N`, the status `trap 'exit 143' TERM` gave it.
-_ENDINGS = tuple(
-    getattr(signal, name) for name in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, name)
-)
+# The signals ending a job: the command's tree and the job end with `128 + N`, the status
+# `trap 'exit 143' TERM` gave it.
+_ENDINGS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 # How long a sampler is given to notice the job is over before it is stopped outright.
 _SAMPLER_GRACE = 5.0
@@ -79,19 +73,13 @@ class Runner:
     `tool` calls this very tool for the verbs around a command, in its own interpreter rather
     than whichever `mainboard` a PATH names.
 
-    how: this machine's way of entering an environment, chosen by platform by default.
     grace: seconds a command ended at its walltime is given before it is killed outright.
     """
 
     tool: tuple[str, ...] = (sys.executable, "-m", Project().package)
 
     def __init__(
-        self,
-        job: Job,
-        *,
-        environ: Mapping[str, str] | None = None,
-        how: Entering | None = None,
-        grace: float = 30.0,
+        self, job: Job, *, environ: Mapping[str, str] | None = None, grace: float = 30.0
     ) -> None:
         self.job = job
         self.environ = {
@@ -99,7 +87,6 @@ class Runner:
             for name, value in (os.environ if environ is None else environ).items()
             if name not in RECEIPTS_VAR.names
         }
-        self.how = how or entering()
         self.grace = grace
         self.receipts = Receipts()
         self.tree: ProcessTree | None = None
@@ -148,7 +135,7 @@ class Runner:
 
     def environment(self) -> dict[str, str]:
         """The environment the command starts in: entered, then the dispatch's own variables."""
-        entered = self.job.activation.entered(self.environ, cwd=self.job.root, how=self.how)
+        entered = self.job.activation.entered(self.environ, cwd=self.job.root)
         if self.job.pythonpath:
             entered["PYTHONPATH"] = self.job.pythonpath
         elif self.job.isolate_pythonpath:
@@ -160,7 +147,7 @@ class Runner:
         """Run the command from the pinned tree under the walltime and answer its status."""
         self.flush()
         process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the job's own command, run the way its dispatch spelled it since=2026-09-25
-            self.argv(environment), cwd=self.job.root, env=environment
+            self.argv(), cwd=self.job.root, env=environment
         )
         self.tree = ProcessTree(process, grace=self.grace)
         remaining = None if self.deadline is None else max(self.deadline - monotonic(), 0.0)
@@ -171,16 +158,9 @@ class Runner:
         self.say(f"mainboard: killed at walltime {self.job.walltime} (exit {status})")
         return status
 
-    def argv(self, environment: Mapping[str, str]) -> list[str]:
-        """The command's argv: its container, `bash -c`, or on shell-less Windows its own words,
-        the program looked up on the environment's `PATH` as a shell would."""
-        if self.job.container:
-            return list(self.job.container)
-        if not WINDOWS:
-            return ["bash", "-c", self.job.command]
-        words = shlex.split(self.job.command)
-        program = shutil.which(words[0], path=environment.get("PATH")) or words[0]
-        return [program, *words[1:]]
+    def argv(self) -> list[str]:
+        """The command's argv: its container, else `bash -c`."""
+        return list(self.job.container) if self.job.container else ["bash", "-c", self.job.command]
 
     def call(
         self, call: ToolCall | None, environment: Mapping[str, str], *, quiet: bool = True

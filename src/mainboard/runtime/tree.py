@@ -2,11 +2,11 @@
 #
 # Signalling only the process a job spawned leaves its workers (a dataloader, a compile pool, a
 # serving engine) running and holding the card. The tree is read from the process table rather
-# than a process group, so the same code ends a job on Linux, macOS and Windows, and the command
-# stays in the runner's group so a scheduler signalling the group (PBS, pueue) still reaches it.
+# than a process group, so the same code ends a job on Linux and macOS, and the command stays in
+# the runner's group so a scheduler signalling the group (PBS, pueue) still reaches it.
 
+import resource
 import subprocess
-import sys
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from threading import RLock
@@ -18,19 +18,17 @@ import psutil
 # Apple silicon), and 10240 (`OPEN_MAX`) always. Its default of 256 is below one lake table.
 _UNBOUNDED = (1 << 20, 92160, 10240)
 
-if sys.platform != "win32":
-    import resource
 
-    def _raise(hard: int) -> None:
-        """Lift the soft file limit to `hard`, or where that is unbounded to the largest the kernel
-        grants, keeping the current one when it grants none of them."""
-        asked = (hard,) if hard != resource.RLIM_INFINITY else _UNBOUNDED
-        for soft in asked:
-            try:
-                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
-            except ValueError, OSError:
-                continue
-            return
+def _raise(hard: int) -> None:
+    """Lift the soft file limit to `hard`, or where that is unbounded to the largest the kernel
+    grants, keeping the current one when it grants none of them."""
+    asked = (hard,) if hard != resource.RLIM_INFINITY else _UNBOUNDED
+    for soft in asked:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        except ValueError, OSError:
+            continue
+        return
 
 
 class FileBudget:
@@ -43,21 +41,18 @@ class FileBudget:
     @classmethod
     @contextmanager
     def permitted(cls) -> Generator[None]:
-        if sys.platform != "win32":
-            with cls._lock:
-                if cls._holders == 0:
-                    cls._original = resource.getrlimit(resource.RLIMIT_NOFILE)
-                    _raise(cls._original[1])
-                cls._holders += 1
-            try:
-                yield
-            finally:
-                with cls._lock:
-                    cls._holders -= 1
-                    if cls._holders == 0:
-                        resource.setrlimit(resource.RLIMIT_NOFILE, cls._original)
-        else:
+        with cls._lock:
+            if cls._holders == 0:
+                cls._original = resource.getrlimit(resource.RLIMIT_NOFILE)
+                _raise(cls._original[1])
+            cls._holders += 1
+        try:
             yield
+        finally:
+            with cls._lock:
+                cls._holders -= 1
+                if cls._holders == 0:
+                    resource.setrlimit(resource.RLIMIT_NOFILE, cls._original)
 
 
 class ProcessTree:
@@ -83,7 +78,7 @@ class ProcessTree:
         return 128 - returned if returned < 0 else returned
 
     def terminate(self) -> None:
-        """Ask the whole tree to stop, SIGTERM on POSIX and an immediate end on Windows."""
+        """Ask the whole tree to stop with SIGTERM."""
         for member in self._members():
             with suppress(psutil.NoSuchProcess):
                 member.terminate()

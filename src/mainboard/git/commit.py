@@ -294,9 +294,9 @@ def _unready(repo: Repo) -> Step | None:
 def _stage(repo: Repo, paths: Sequence[str], *command: str) -> None:
     """Hand `paths` to `git add -A`, or to `command`, through stdin rather than the command line.
 
-    A tree this size easily passes the thirty-two thousand characters Windows allows a command
-    line. Every path is literal, so a file named `*.txt` never globs its neighbours in, unless it
-    carries its own magic (`:(exclude)...`).
+    A tree this size can pass the kernel's limit on a command line. Every path is literal, so a
+    file named `*.txt` never globs its neighbours in, unless it carries its own magic
+    (`:(exclude)...`).
     """
     if not paths:
         return

@@ -1,8 +1,8 @@
 # What a dispatched job is once it reaches the machine that runs it: data, not a shell script.
 #
 # The dispatching workstation decides everything about a job and writes it down as one `Job`; the
-# host's own installed tool carries it out, so the job behaves the same under PBS, pueue, a rented
-# box or Windows, and nothing is spelled in a shell grammar only some of them speak.
+# host's own installed tool carries it out, so the job behaves the same under PBS, pueue or a
+# rented box, and nothing is spelled in a shell grammar only some of them speak.
 
 import shlex
 from pathlib import Path
@@ -14,12 +14,10 @@ from pydantic import Field
 from ..core.project import Project
 from ..engines.compile.prefixes import ACTIVATION, STAMPED
 from .activation import Runtime, prepended
-from .entry import Refusal
+from .entry import Refusal, activated
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-
-    from .entry import Entering
 
 
 class ToolCall(FrozenModel):
@@ -49,7 +47,7 @@ class PrefixActivation(FrozenModel):
     env: str
     refusal: str
 
-    def entered(self, base: Mapping[str, str], *, cwd: str, how: Entering) -> dict[str, str]:
+    def entered(self, base: Mapping[str, str], *, cwd: str) -> dict[str, str]:
         """`base` inside the prefix, with the runtime step applied and its own `lib/` leading.
 
         The runtime step runs here too, for a prefix whose `activate.sh` predates calling it. The
@@ -60,9 +58,9 @@ class PrefixActivation(FrozenModel):
         """
         prefix = Path(self.prefix)
         script = prefix / ACTIVATION
-        if not (self._stamped(prefix) and how.ready(prefix, script)):
+        if not (self._stamped(prefix) and script.is_file()):
             raise Refusal(self.refusal)
-        entered = how.activated(base, shard=prefix, script=script, env=self.env, cwd=cwd)
+        entered = activated(base, script=script, cwd=cwd)
         installed = prefix / ".pixi" / "envs" / self.env
         Runtime(installed).apply(entered)
         prepended(entered, "LD_LIBRARY_PATH", [installed / "lib"])
@@ -89,22 +87,21 @@ class WorkspaceActivation(FrozenModel):
     prefix: str
     refusal: str
 
-    def entered(self, base: Mapping[str, str], *, cwd: str, how: Entering) -> dict[str, str]:
+    def entered(self, base: Mapping[str, str], *, cwd: str) -> dict[str, str]:
         """`base` inside the workspace's environment: its activation, else its executables.
 
         Otherwise a `Refusal`, since a command quietly running on the machine's own interpreter
         costs far more to discover than one that will not start.
         """
         installed, script = Path(self.prefix), Path(self.script)
-        shard = installed.parents[2]
-        if how.ready(shard, script):
-            entered = how.activated(base, shard=shard, script=script, env=installed.name, cwd=cwd)
+        if script.is_file():
+            entered = activated(base, script=script, cwd=cwd)
         else:
-            executables = [path for path in how.executables(installed) if path.is_dir()]
-            if not executables:
+            executables = installed / "bin"
+            if not executables.is_dir():
                 raise Refusal(self.refusal)
             entered = dict(base)
-            prepended(entered, "PATH", executables)
+            prepended(entered, "PATH", [executables])
         Runtime(installed).apply(entered)
         return entered
 
@@ -115,7 +112,7 @@ type Activation = Annotated[PrefixActivation | WorkspaceActivation, Field(discri
 class Job(FrozenModel):
     """Everything the host needs to run one dispatched command, in the order it happens.
 
-    command: run through `bash -c` on POSIX and split into an argv on Windows.
+    command: run through `bash -c`.
     root: the pinned tree the command runs from.
     container: an argv running the command inside a container instead, empty for none.
     walltime: the `HH:MM:SS` cap this runner enforces, empty when a scheduler enforces it or the
@@ -147,9 +144,8 @@ class Job(FrozenModel):
     def read(cls, given: str) -> Job:
         """The record `given` spells as JSON, or the one the job script at that path hands over.
 
-        A POSIX script hands its record over inline, which a scheduler feeding it to a shell on
-        stdin still runs. Anything that can name the script instead (a Windows queue whose shell
-        would mangle the quotes, a rerun by hand) names the file.
+        A script hands its record over inline, which a scheduler feeding it to a shell on stdin
+        still runs. Anything that can name the script instead (a rerun by hand) names the file.
         """
         if given.lstrip().startswith("{"):
             return cls.model_validate_json(given)

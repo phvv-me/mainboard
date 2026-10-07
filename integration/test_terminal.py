@@ -1,4 +1,4 @@
-"""What a terminal gets, where no pseudo-terminal exists to run `mb` under (Windows)."""
+"""What a terminal gets when `mb` logs to one."""
 
 import subprocess
 import sys
@@ -7,7 +7,7 @@ from .conftest import MB
 
 
 def test_logging_to_a_terminal_starts_on_every_platform() -> None:
-    """Colors on Windows need colorama; a terminal without it once crashed every command."""
+    """The console renderer starts on a terminal; it once crashed every command there."""
     probe = (
         "import sys\n"
         "class Terminal:\n"

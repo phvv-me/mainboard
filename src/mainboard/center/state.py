@@ -77,9 +77,7 @@ _CLAUDE_PROJECT = (
     "hasClaudeMdExternalIncludesWarningShown",
 )
 
-# ssh settings the Windows OpenSSH client refuses outright, and the macOS-only one other clients
-# refuse unless told to ignore it.
-_WINDOWS_REFUSES = ("controlmaster", "controlpath", "controlpersist")
+# The macOS-only ssh setting other clients refuse unless told to ignore it.
 _MACOS_ONLY = ("usekeychain",)
 
 # The keys ssh offers when a host names none, carried when present.
@@ -99,7 +97,6 @@ class Destination(FrozenModel):
 
     root: str
     home: str
-    separator: str = "/"
     system: str = ""
     user: str = ""
 
@@ -209,9 +206,7 @@ class SshConfig:
         user: the login a block naming none reaches its host as, empty to leave it to ssh; the
             catch-all `Host *` is left alone, since it would rename every other host there too.
         """
-        refused = (_WINDOWS_REFUSES if system == "Windows" else ()) + (
-            _MACOS_ONLY if system != "Darwin" else ()
-        )
+        refused = _MACOS_ONLY if system != "Darwin" else ()
         rendered = []
         for block in blocks:
             lines = [line for line in block if not line.strip().lower().startswith(refused)]

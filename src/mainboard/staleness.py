@@ -6,14 +6,9 @@
 # contents, to stay cheap; pyproject because a runtime dependency changes what the command can
 # do). The digest is recorded when `self update` finishes a reinstall; a snapshot with no record
 # (installed by hand) counts as stale, since nothing proves what it was built from.
-#
-# Windows cannot replace the running interpreter, so there the reinstall goes to a worker that
-# waits for this process to exit, and records the digest once it succeeds.
 
 import hashlib
 import json
-import os
-import sys
 import tomllib
 from contextlib import suppress
 from functools import partial
@@ -24,7 +19,6 @@ from plumbum import CommandNotFound
 from plumbum.commands.processes import ProcessTimedOut
 
 from .core.errors import MissionError
-from .core.host import WINDOWS
 from .core.project import Project
 from .engines.compile.backend.engine import PixiEngine
 from .engines.compile.backend.process import Process
@@ -38,10 +32,6 @@ _EXTRA = "plot"
 # uv is never a host prerequisite: Pixi resolves and runs this exact package in its cached exec
 # environment.
 _UV = "uv=0.12.7"
-
-# The worker's Pixi exec environment is independent of the uv tool directory, so these packages
-# outlive the launcher while uv removes and rebuilds it.
-_DEFERRED_SPECS = ("python=3.14", "psutil=7.2.2", "cyclopts=4.23")
 
 # How long the reinstall itself may take before it is abandoned.
 _INSTALL_SECONDS = 600.0
@@ -95,8 +85,6 @@ def check(package: Path | None = None) -> Snapshot:
         return Snapshot(installed=True, detail=f"no source tree at {source}")
     extras = ",".join(requirement.get("extras") or [_EXTRA])
     interpreter = _durable_interpreter(declared["tool"].get("python"))
-    # Absolute, because the deferred Windows worker runs from wherever pixi's exec environment
-    # stands, not the directory the receipt is relative to.
     uv = (
         "uv",
         "tool",
@@ -129,14 +117,7 @@ def check(package: Path | None = None) -> Snapshot:
 
 
 def update(found: Snapshot) -> str:
-    """Reinstall a stale snapshot from its source, answering what happened.
-
-    POSIX reinstalls now and records the digest. Windows hands the reinstall to a worker that
-    waits for this process to exit, since the running interpreter holds the tool directory.
-    """
-    if WINDOWS:
-        _defer(found)
-        return "updates once this command exits"
+    """Reinstall a stale snapshot from its source and record the digest it was built from."""
     try:
         result = PixiEngine().within_cwd(
             partial(Process.capture, timeout=_INSTALL_SECONDS), *found.fix
@@ -156,26 +137,6 @@ def record(found: Snapshot) -> None:
         (found.tool / _STATE).write_text(
             json.dumps({"digest": found.digest}), encoding="utf-8", newline="\n"
         )
-
-
-def _defer(found: Snapshot) -> None:
-    """Start the Windows worker that reinstalls once this process has exited."""
-    log = Project().out(found.source or Path.cwd()) / "self-update.log"
-    worker = str(Path(__file__).with_name("_refresh.py"))
-    specs = [token for spec in (_UV, *_DEFERRED_SPECS) for token in ("--spec", spec)]
-    state = str((found.tool or Path(sys.prefix)) / _STATE)
-    PixiEngine().defer(
-        "exec",
-        *specs,
-        "python",
-        worker,
-        str(os.getpid()),
-        str(log),
-        state,
-        found.digest,
-        "--",
-        *found.uv,
-    )
 
 
 def _recorded(state: Path) -> str:

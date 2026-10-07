@@ -17,7 +17,6 @@
 # A process that configured structlog itself keeps its configuration: this one is applied only
 # when nothing else was, so importing the tool never takes over a host application's logging.
 
-import importlib.util
 import sys
 from collections.abc import Callable, MutableMapping
 from typing import Any
@@ -26,7 +25,6 @@ import structlog
 from structlog.processors import CallsiteParameter
 from structlog.typing import FilteringBoundLogger
 
-from .core.host import WINDOWS
 from .core.project import Project
 
 type EventDict = MutableMapping[str, Any]
@@ -68,14 +66,6 @@ def _braced(level: int) -> type[FilteringBoundLogger]:
     return type("Logger", (base,), {name: method(name) for name in _METHODS})
 
 
-def _colors() -> bool:
-    """Whether console lines are colored: on a terminal, and on Windows only where colorama is
-    installed, since structlog refuses colors there without it rather than falling back."""
-    if not sys.stderr.isatty():
-        return False
-    return not WINDOWS or importlib.util.find_spec("colorama") is not None
-
-
 def _line(_: object, __: str, event: EventDict) -> str:
     """One short line: the event, its fields as `key=value`, a level word only above info."""
     level = event.pop("level", "info")
@@ -115,7 +105,7 @@ def configure(level: str = "", output: str = "") -> None:
             structlog.processors.JSONRenderer(),
         ]
         if json
-        else [structlog.dev.ConsoleRenderer(colors=_colors())]
+        else [structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())]
     )
     structlog.configure(
         processors=[*shared, *rendered],

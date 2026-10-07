@@ -5,11 +5,8 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from ....core import MissionError
-from ....core.host import WINDOWS
 
 if TYPE_CHECKING:
-    from io import IOBase
-
     from filelock import FileLock
 
 
@@ -64,20 +61,11 @@ class Writer:
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
             with temporary.open("xb") as stream:
-                self._make_portable(stream)
+                # Mode 0644 whatever the umask, so another process identity can read it.
+                os.fchmod(stream.fileno(), 0o644)
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
-
-    @staticmethod
-    def _make_portable(stream: IOBase) -> None:
-        """Set mode 0644, independent of the umask, except on Windows.
-
-        There Python 3.14's chmod turns 0644 into a protected owner-only DACL instead of the
-        inherited one, leaving the file unreadable to another process identity.
-        """
-        if not WINDOWS:
-            os.fchmod(stream.fileno(), 0o644)

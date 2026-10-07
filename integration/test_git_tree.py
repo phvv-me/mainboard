@@ -60,7 +60,6 @@ def broken(workspace: Path, tmp_path_factory) -> Path:
     git(workspace, "commit", "--quiet", "-m", "vendor")
     assert git(workspace, "status", "--porcelain").returncode == 0
     pointer = workspace / "vendor" / "library" / "deps" / "nested" / ".git"
-    # Replaced rather than rewritten: git hides the file on Windows, which refuses a write.
     pointer.unlink()
     pointer.write_text("gitdir: ../../../../.git/modules/gone\n", encoding="utf-8", newline="\n")
     assert git(workspace, "status", "--porcelain").returncode != 0

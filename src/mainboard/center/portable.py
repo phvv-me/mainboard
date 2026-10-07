@@ -1,9 +1,9 @@
 # Commands in the workspace's scripts that mean different things on different machines.
 #
-# The center may be macOS, Linux or Windows and the agents on it run whichever shell they run, so
+# The center may be macOS or Linux and the agents on it run whichever shell they run, so
 # a script that leans on GNU or BSD behavior works on one center and breaks on the next, usually
 # without an error: `sed -i` takes a suffix argument on macOS and none on Linux, `stat -f` is a
-# format on BSD and a filesystem query on GNU, and `timeout` does not exist on Windows at all.
+# format on BSD and a filesystem query on GNU, and `timeout` does not exist on macOS at all.
 # Every such command is found here in the tracked scripts, tasks and agent hooks, and named with
 # the portable replacement the default environment carries or the verb this tool provides.
 
@@ -98,7 +98,7 @@ RULES = tuple(
         (
             "flock",
             r"(?:^|[;&|(]|\s)flock\s",
-            "a lock taken in Python (filelock), which Windows also honors",
+            "a lock taken in Python (filelock)",
         ),
         ("nc -z", r"\bnc\s+(?:-\w+\s+)*-\w*z", "mainboard proc wait --port <host:port>"),
         (

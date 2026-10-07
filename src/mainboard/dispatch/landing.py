@@ -26,7 +26,7 @@ from .onboard import Bootstrap
 from .rentals import Rental, handoff
 from .schedulers.base import failure_reason
 from .shared import Watcher, announce
-from .shells import PosixShell
+from .shells import HostShell
 from .snapshots import Snapshots
 from .sync import SyncLock
 from .targets import home_of, placed
@@ -180,7 +180,7 @@ class Landing:
             )
             # Every command below stands in the workspace the mirror just created, which is why
             # nothing before this line may `cd` into a root that did not exist yet.
-            bootstrap = Bootstrap(PosixShell(remote, self.plan, root), floor=self.floor)
+            bootstrap = Bootstrap(HostShell(remote, self.plan, root), floor=self.floor)
             self.watch(f"installing the tool on {rental.handle}")
             bootstrap.tool()
             self.watch(f"provisioning {self.plan.env} on {rental.handle}")

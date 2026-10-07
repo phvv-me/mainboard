@@ -1,15 +1,14 @@
 # The one CI gate a package states, in its own pyproject.toml, for every place that runs it.
 #
 # The gate used to live twice, as YAML steps GitHub ran and as whatever a developer remembered to
-# run before pushing, and the two drifted: a stale lock, a coverage hole and forty Windows-only
+# run before pushing, and the two drifted: a stale lock, a coverage hole and forty platform-only
 # failures each reached CI first. Now `[tool.mainboard.ci]` is the gate and `mainboard ci` alone
 # runs it: from a developer's shell, with `--matrix` on a remote host of each other platform before
 # a push, and from the GitHub workflow, which only checks out the code and calls that same verb.
 #
-# A step is a command line, never a shell script: Windows has no bash, and a gate on three
-# platforms has to mean the same words on all three. A step runs on every platform the package
-# supports unless it names the ones it is for, which is also how a platform that needs a different
-# spelling (a coverage threshold Windows cannot meet) says so in the open.
+# A step is a command line, never a shell script, so a gate means the same words on every
+# platform. A step runs on every platform the package supports unless it names the ones it is
+# for, which is also how a platform that needs a different spelling says so in the open.
 
 import tomllib
 from pathlib import Path
@@ -25,16 +24,16 @@ from ..core.project import Project
 
 # The operating-system families a gate runs on, spelled the way pixi spells platform families,
 # so a host profile's `platform` names its family without a second vocabulary.
-type Family = Literal["linux", "osx", "win"]
+type Family = Literal["linux", "osx"]
 
-FAMILIES: tuple[Family, ...] = ("linux", "osx", "win")
+FAMILIES: tuple[Family, ...] = ("linux", "osx")
 
 # The file a package declares its gate in.
 PYPROJECT = "pyproject.toml"
 
 
 def family_of(platform: str) -> Family:
-    """The family a pixi platform string (`win-64`, `osx-arm64`) belongs to.
+    """The family a pixi platform string (`linux-64`, `osx-arm64`) belongs to.
 
     platform: a pixi platform string, or a bare family.
     """

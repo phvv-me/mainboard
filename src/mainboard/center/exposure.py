@@ -1,19 +1,14 @@
 # The default environment's tools, reachable from every shell an agent opens on the center.
 #
 # Agents rarely run inside an activated environment: Claude Code runs its commands through the
-# user's zsh or, on Windows, Git Bash; Codex through PowerShell or a login shell; opencode through
-# whatever shell it spawns. The portable toolset the manifest puts in the default environment
-# (the uutils coreutils, ripgrep, fd, sd, yq and the rest) only standardizes their commands if each
-# of those shells finds it first, so the environment's executable directories go on the one PATH
-# each platform gives every new process:
-#
-# - Windows keeps a user PATH in the registry, which cmd, PowerShell and Git Bash all start from,
-#   so the directories are prepended there, and every entry an older prefix left is replaced.
-# - macOS and Linux have no such store, only each shell's startup files, so one generated file,
-#   `~/.config/mainboard/path.sh`, puts the directories on PATH. The startup files belong to the
-#   owner's dotfiles, which source it; only a startup file that does not (a machine without them)
-#   gets a marked line appended: `~/.zshenv` for zsh (login or not, interactive or not), and
-#   `~/.profile` and `~/.bashrc` for bash and sh.
+# user's zsh, Codex through a login shell, opencode through whatever shell it spawns. The portable
+# toolset the manifest puts in the default environment (the uutils coreutils, ripgrep, fd, sd, yq
+# and the rest) only standardizes their commands if each of those shells finds it first. macOS
+# and Linux keep no PATH outside each shell's startup files, so one generated file,
+# `~/.config/mainboard/path.sh`, puts the environment's executable directories on PATH. The
+# startup files belong to the owner's dotfiles, which source it; only a startup file that does not
+# (a machine without them) gets a marked line appended: `~/.zshenv` for zsh (login or not,
+# interactive or not), and `~/.profile` and `~/.bashrc` for bash and sh.
 #
 # Each shell kind is then started the way an agent starts it, from a fresh environment, and asked
 # where each tool resolves, which is the only proof that counts.
@@ -21,12 +16,11 @@
 import json
 import os
 from pathlib import Path
-from shlex import quote as posix_quote
+from shlex import quote
 from typing import TYPE_CHECKING
 
 from ..core.project import Project
 from ..core.section import Section, Verdict
-from ..dispatch.shells import quoted
 from ..workstation import abbreviated
 
 if TYPE_CHECKING:
@@ -34,12 +28,6 @@ if TYPE_CHECKING:
 
 # Runs one command under an environment, answering its status and joined output.
 type Spawn = Callable[[Sequence[str], Mapping[str, str]], tuple[int, str]]
-
-# Where conda puts executables in a Windows prefix, in the order its own activation searches.
-_WINDOWS_DIRS = ("", "Library/mingw-w64/bin", "Library/usr/bin", "Library/bin", "Scripts", "bin")
-
-# The file extensions Windows runs by name.
-_RUNNABLE = (".exe", ".bat", ".cmd")
 
 # The generated PATH file on macOS and Linux, and the marked line that sources it. Both keep the
 # legacy name on purpose: every startup file already sourcing it stays correct untouched, and a
@@ -56,10 +44,6 @@ _STARTUP = {"zsh": (".zshenv",), "bash": (".profile", ".bashrc"), "sh": (".profi
 # The PATH a fresh POSIX login starts from, before any startup file adds to it.
 _BARE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
-# The path segments only this tool's environments carry, under any of its state directory names,
-# their prefix and second-stage directories alike, which mark a stale user PATH entry.
-_PREFIX_MARKS = tuple(os.sep.join(("", name, "envs", "")) for name in Project().out_dirs)
-
 # This tool as it is typed, which every agent shell must reach wherever uv put it.
 _TOOL = Project().name
 
@@ -67,34 +51,19 @@ _TOOL = Project().name
 _NAMED = 6
 
 
-def directories(prefix: Path, system: str) -> list[Path]:
-    """Every directory of the installed `prefix` holding executables, in PATH order.
-
-    system: the platform as `platform.system()` spells it.
-    """
-    if system == "Windows":
-        return [prefix / relative if relative else prefix for relative in _WINDOWS_DIRS]
-    return [prefix / "bin"]
-
-
-def executables(prefix: Path, packages: Sequence[str], system: str) -> list[str]:
-    """The command names the declared conda `packages` put in `prefix`, from conda's records."""
+def executables(prefix: Path, packages: Sequence[str]) -> list[str]:
+    """The command names the declared conda `packages` put in `prefix/bin`, from conda's
+    records."""
     records = [
         json.loads(record.read_text(encoding="utf-8"))
         for record in (prefix / "conda-meta").glob("*.json")
     ]
-    files = [
-        Path(file)
-        for record in records
-        if record.get("name") in packages
-        for file in record.get("files", [])
-    ]
-    if system == "Windows":
-        return sorted({path.stem for path in files if path.suffix.lower() in _RUNNABLE})
     return sorted(
         {
             path.name
-            for path in files
+            for record in records
+            if record.get("name") in packages
+            for path in map(Path, record.get("files", []))
             if path.parent.as_posix() == "bin" and _runnable(prefix / path)
         }
     )
@@ -109,30 +78,19 @@ class Exposure:
     """
 
     def __init__(
-        self,
-        folders: Sequence[Path],
-        *,
-        system: str,
-        home: Path,
-        shells: Mapping[str, str],
-        spawn: Spawn,
+        self, folders: Sequence[Path], *, home: Path, shells: Mapping[str, str], spawn: Spawn
     ) -> None:
         self.folders = [str(folder) for folder in folders]
-        self.system = system
         self.home = home
         self.shells = dict(shells)
         self.spawn = spawn
 
-    def apply(self) -> Section:
-        """Make the directories reachable, changing only what is not already so."""
-        return self._registry() if self.system == "Windows" else self._startup()
-
     def verify(self, names: Sequence[str]) -> list[Section]:
         """Where each of `names`, and this tool, resolves from every shell here, one row each.
 
-        A name that resolves outside the environment is shadowed, a PowerShell alias of the same
-        name included, and one that resolves nowhere is missing; both are named with the fix.
-        This tool lives in its own uv environment, so it only has to resolve at all.
+        A name that resolves outside the environment is shadowed, and one that resolves nowhere
+        is missing; both are named with the fix. This tool lives in its own uv environment, so it
+        only has to resolve at all.
         """
         asked = [_TOOL, *names]
         return [
@@ -140,42 +98,7 @@ class Exposure:
             for kind, path in sorted(self.shells.items())
         ]
 
-    def _registry(self) -> Section:
-        """Prepend the directories to the Windows user PATH, dropping older prefixes' entries."""
-        _, held = self._powershell("[Environment]::GetEnvironmentVariable('Path','User')")
-        entries = [entry for entry in held.strip().split(";") if entry]
-        kept = [
-            entry
-            for entry in entries
-            if entry not in self.folders
-            and not any(mark in entry.replace("/", os.sep) for mark in _PREFIX_MARKS)
-        ]
-        wanted = [*self.folders, *kept]
-        if wanted == entries:
-            return Section(
-                section="path", verdict=Verdict.PASS, detail="the environment is on the user PATH"
-            )
-        command = (
-            f"[Environment]::SetEnvironmentVariable('Path', {quoted(';'.join(wanted))}, 'User')"
-        )
-        status, said = self._powershell(command)
-        if status:
-            return Section(
-                section="path",
-                verdict=Verdict.FAIL,
-                detail=f"the user PATH could not be written: {said.strip()[-160:]}",
-                fix=command,
-            )
-        return Section(
-            section="path",
-            verdict=Verdict.PASS,
-            detail=(
-                f"put {len(self.folders)} environment directories on the user PATH; "
-                "new shells see them"
-            ),
-        )
-
-    def _startup(self) -> Section:
+    def apply(self) -> Section:
         """Write the PATH file and source it from each present shell's startup files."""
         path_file = self.home / PATH_FILE
         lines = [
@@ -202,38 +125,15 @@ class Exposure:
         )
 
     def _resolved(self, kind: str, path: str, names: Sequence[str]) -> dict[str, tuple[str, str]]:
-        """Each name's resolution in one shell kind: its kind of command and where it lives.
-
-        A PowerShell alias has no source, so its definition, the command it stands for, is
-        where it lives; the row then reads as the shadow it is rather than as missing.
-        """
-        environment = self._fresh(kind)
-        match kind:
-            case "powershell" | "pwsh":
-                listed = ",".join(quoted(name) for name in names)
-                script = (
-                    f"foreach ($t in @({listed})) {{ "
-                    "$c = Get-Command $t -ErrorAction SilentlyContinue | Select-Object -First 1; "
-                    "$w = if ($c.Source) { $c.Source } else { $c.Definition }; "
-                    '"$t`t$($c.CommandType)`t$w" }'
-                )
-                _, said = self.spawn((path, "-NoProfile", "-Command", script), environment)
-            case "cmd":
-                _, said = self.spawn((path, "/d", "/c", "where", *names), environment)
-                hits = [(Path(line.strip()).stem, line.strip()) for line in said.splitlines()]
-                # `where` lists hits in PATH order, so the first per name wins: build from the end.
-                return {
-                    stem: ("Application", hit) for stem, hit in reversed(hits) if stem in names
-                }
-            case _:
-                loop = " ".join(posix_quote(name) for name in names)
-                script = (
-                    f'for t in {loop}; do p=$(command -v "$t"); '
-                    'case "$p" in /*) k=Application ;; *) k=Builtin ;; esac; '
-                    'printf "%s\\t%s\\t%s\\n" "$t" "$k" "$p"; done'
-                )
-                flag = "-c" if kind == "zsh" else "-lc"
-                _, said = self.spawn((path, flag, script), environment)
+        """Each name's resolution in one shell kind: its kind of command and where it lives."""
+        loop = " ".join(quote(name) for name in names)
+        script = (
+            f'for t in {loop}; do p=$(command -v "$t"); '
+            'case "$p" in /*) k=Application ;; *) k=Builtin ;; esac; '
+            'printf "%s\\t%s\\t%s\\n" "$t" "$k" "$p"; done'
+        )
+        flag = "-c" if kind == "zsh" else "-lc"
+        _, said = self.spawn((path, flag, script), self._fresh(kind))
         rows = [line.split("\t") for line in said.splitlines() if line.count("\t") == 2]
         return {name: (sort, where) for name, sort, where in rows if where}
 
@@ -258,35 +158,19 @@ class Exposure:
             detail += f"; shadowed by {abbreviated(shadowed, _NAMED)}"
         if not missing and not shadowed:
             return Section(section=f"path {kind}", verdict=Verdict.PASS, detail=detail)
-        aliases = [name for name in names if name in found and found[name][0] == "Alias"]
-        fix = (
-            f"add `Remove-Item Alias:{',Alias:'.join(aliases)} -Force "
-            "-ErrorAction SilentlyContinue` to $PROFILE"
-            if aliases
-            else f"{Project().name} install, then open a new shell"
+        return Section(
+            section=f"path {kind}",
+            verdict=Verdict.WARN,
+            detail=detail,
+            fix=f"{Project().name} install, then open a new shell",
         )
-        return Section(section=f"path {kind}", verdict=Verdict.WARN, detail=detail, fix=fix)
 
     def _ours(self, where: str) -> bool:
         """Whether a resolved path lies in one of the environment's directories."""
-        folded = where.replace("\\", "/").casefold()
-        return any(
-            folded.startswith(folder.replace("\\", "/").casefold().rstrip("/") + "/")
-            for folder in self.folders
-        )
+        return any(where.startswith(folder.rstrip("/") + "/") for folder in self.folders)
 
     def _fresh(self, kind: str) -> dict[str, str]:
-        """The environment a new shell of `kind` starts from, before its startup files run.
-
-        On Windows that is the machine PATH and the user PATH as the registry holds them now,
-        which this process, started before any change, does not carry itself.
-        """
-        if self.system == "Windows":
-            _, joined = self._powershell(
-                "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + "
-                "[Environment]::GetEnvironmentVariable('Path','User')"
-            )
-            return {**os.environ, "PATH": joined.strip()}
+        """The environment a new shell of `kind` starts from, before its startup files run."""
         return {
             "HOME": str(self.home),
             "USER": os.environ.get("USER", ""),
@@ -294,10 +178,6 @@ class Exposure:
             "SHELL": self.shells.get(kind, ""),
             "TERM": "dumb",
         }
-
-    def _powershell(self, script: str) -> tuple[int, str]:
-        """Run `script` in Windows PowerShell under this process's own environment."""
-        return self.spawn(("powershell", "-NoProfile", "-Command", script), os.environ)
 
 
 def _runnable(path: Path) -> bool:
@@ -339,5 +219,5 @@ def _sourced(startup: Path) -> bool:
 
 def _prepended(folder: str) -> str:
     """The POSIX line putting `folder` at the front of PATH once, however often it is sourced."""
-    held = posix_quote(folder)
+    held = quote(folder)
     return f'case ":$PATH:" in *:{held}:*) ;; *) PATH={held}:"$PATH" ;; esac'

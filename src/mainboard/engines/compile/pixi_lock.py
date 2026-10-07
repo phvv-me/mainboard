@@ -141,7 +141,8 @@ def _ordered(body: Sequence[str], header: re.Pattern[str], naming: Mapping[str, 
 
 
 def packages(lock: str) -> dict[str, list[str]]:
-    """Every package location the lock installs, by subdirectory (`win-64-system` as `win-64`)."""
+    """Every package location the lock installs, by subdirectory (`linux-64-system` as
+    `linux-64`)."""
     lines = lock.splitlines()
     subdirs = {label: subdir for label, subdir, _ in _entries(lines)}
     found: dict[str, list[str]] = {}

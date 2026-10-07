@@ -940,3 +940,24 @@ two critics (evidence in `UNIFY-evidence.md`).
 - [ ] pedro-home setup waits on the Codex app there, whose MCP server holds the installed tool
 - [x] Gemini dropped (the owner does not use it); the study/fleet layer removed, compression's
       dispatcher set aside with it
+
+## Round 11 (2026-10-07): Windows dropped
+
+The center is the Mac mini and every job host runs Linux, so the owner dropped Windows support
+outright rather than keep carrying it for pedro-home alone. About 3,300 lines went with it:
+
+- [x] The restricted-sandbox task runner (`windows_task.py`), the recorded activation
+      (`activation-windows.json`), the batch dotenv and unset loaders, and the `win` targets the
+      compiler wrote into every pixi manifest
+- [x] The PowerShell dialect and shell: `Dialect` and `HostShell` are one class each now, the
+      login-bash ones, and `probe_capabilities` asks one bash probe
+- [x] Git/MSYS2 ssh selection, the `NUL` known-hosts spelling, the Win32-OpenSSH descriptor
+      scrub, the MSYS path-conversion guard and the deferred self-update worker (`_refresh.py`)
+- [x] `mb diagnose` (Windows event logs through PowerShell), the PowerShell completion script,
+      winget, the registry probes behind long paths and Developer Mode, the junction and
+      hard-link stand-ins for links, and the WDDM process filter
+- [x] The `win` CI family and every `windows-latest` runner; the root workspace solves
+      osx-arm64, linux-64 and linux-aarch64, and pedro-home left the hosts. The RTX 5080 comes
+      back only as a Linux host (WSL2 or a Linux install)
+- [x] A host whose file system cannot hold links now warns in `doctor --center` whatever the
+      platform, since PORTABLE (exFAT) is one

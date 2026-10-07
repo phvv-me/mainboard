@@ -7,7 +7,7 @@
 # it, into a directory of its own under the host's generated tree. The host's own mirror is left
 # alone, since a job may be running from it, and the package's environment persists there between
 # runs, so the second matrix only pays for what changed. Each step is then one ssh process of its
-# own under the step's deadline, spelled in the host's own shell, PowerShell on Windows.
+# own under the step's deadline, run by the host's login bash.
 
 import os
 import subprocess
@@ -21,7 +21,7 @@ from patos import FrozenModel
 from ..core.errors import MissionError
 from ..core.host import current_platform
 from ..core.project import Project
-from ..dispatch.shells import dialect_for, plain_errors
+from ..dispatch.shells import Dialect
 from ..dispatch.targets import rooted
 from ..dispatch.transport import HostUnreachable, SshTransport
 from ..lint.process import MISSING, TIMED_OUT, Invocation
@@ -214,7 +214,7 @@ class RemoteLeg(Leg):
         yield from super().run(steps)
 
     def _step(self, step: Step) -> Result:
-        dialect = dialect_for(self.plan.profile)
+        dialect = Dialect()
         where = f"{self.root}/{self.package}"
         line = dialect.stage(
             self.plan, where, command=dialect.invocation(step.argv), activate=False
@@ -231,5 +231,5 @@ class RemoteLeg(Leg):
             timed_out = isinstance(error.__cause__, subprocess.TimeoutExpired)
             verdict = Verdict.TIMED_OUT if timed_out else Verdict.UNREACHABLE
             return self.result(step.name, verdict, started=started, output=str(error))
-        output = out + plain_errors(err)
+        output = out + err
         return self.result(step.name, Verdict.of(code), started=started, output=output)

@@ -1,7 +1,7 @@
-# `mainboard proc`: the process chores no binary does the same under PowerShell, zsh and bash.
-# `timeout` is GNU coreutils, absent from macOS and Windows; killing a process tree is `pkill -P`
-# or `kill -- -pgid` on one system and `taskkill /T` on another; and waiting for a file or a port
-# is a shell loop around `sleep`, `test` and `nc` that no Windows shell runs.
+# `mainboard proc`: the process chores no binary does the same on macOS and Linux. `timeout` is
+# GNU coreutils, absent from macOS; killing a process tree is `pkill -P` or `kill -- -pgid`
+# depending on how it was started; and waiting for a file or a port is a shell loop around
+# `sleep`, `test` and `nc`.
 
 import socket
 import subprocess

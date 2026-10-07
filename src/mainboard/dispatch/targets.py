@@ -9,7 +9,6 @@ from patos import FrozenModel
 from ..core.errors import MissionError
 from ..core.host import pixi_platform
 from ..core.project import Project
-from .shells import POWERSHELL, encoded
 from .transport import SshTransport
 
 if TYPE_CHECKING:
@@ -51,46 +50,11 @@ _CAPABILITIES = "\n".join(
     )
 )
 
-# The same lines from a Windows host, whose cmd.exe login shell cannot run the POSIX one.
-_WINDOWS_CAPABILITIES = "\n".join(
-    (
-        "$gpu = nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits"
-        " 2>$null | Select-Object -First 1",
-        "$mem = [int64]((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1024)",
-        "$pixi = (Get-Command pixi -ErrorAction SilentlyContinue).Source",
-        'if (-not $pixi) { $pixi = (Get-Item "$HOME\\.pixi\\bin\\pixi.exe"'
-        " -ErrorAction SilentlyContinue).FullName }",
-        "$uv = (Get-Command uv -ErrorAction SilentlyContinue).Source",
-        'if (-not $uv) { $uv = (Get-Item "$HOME\\.local\\bin\\uv.exe"'
-        " -ErrorAction SilentlyContinue).FullName }",
-        "$userHome = $env:USERPROFILE -replace '\\\\', '/'",
-        '"home=$userHome"',
-        '"kind=ssh"',
-        '"gpu=$gpu"',
-        '"mem=$mem"',
-        '"account="',
-        '"queue="',
-        '"pixi=$pixi"',
-        '"uv=$uv"',
-        '"platform=Windows $env:PROCESSOR_ARCHITECTURE"',
-        f"$jobs = @({','.join(f"'{folder}'" for folder in _FOLDERS)})"
-        " | Where-Object { Test-Path (Join-Path $HOME $_) } | Select-Object -First 1",
-        "\"jobs=$(if ($jobs) { '~/' + $jobs })\"",
-    )
-)
-
-# Tried in order. The bash script travels as one line, so cmd.exe fails on one command rather
-# than trying each line as its own.
-_PROBES = (
-    ("bash", "-lc", shlex.quote(_CAPABILITIES.replace("\n", "; "))),
-    (*POWERSHELL, encoded(_WINDOWS_CAPABILITIES)),
-)
-
 
 class Facts(FrozenModel):
     """One host's bootstrap-probed capabilities, before any manifest override.
 
-    home: the login home, forward-slashed on Windows, which a profile's `~` root is placed under.
+    home: the login home, which a profile's `~` root is placed under.
     kind: the scheduler the login node's PATH exposes (`slurm` / `pbs` / `ssh`).
     account: the user's primary group, PBS `group_list`'s natural default.
     queue: the host's interactive queue, when one was discovered.
@@ -189,20 +153,14 @@ def placed(root: str, *, home: str) -> str:
 def probe_capabilities(host: str, *, ssh: SshTransport | None = None) -> Facts:
     """Probe `host` over ssh with stock tools only, before a byte is shipped.
 
-    A host with no `bash` (Windows, whose login shell is cmd.exe) is asked in PowerShell instead.
-
     ssh: the bounded SSH policy; the default policy when omitted.
     """
     policy = ssh or SshTransport()
-    refusals: list[str] = []
-    for shell in _PROBES:
-        argv = (*policy.command(host), *shell)
-        _, out, err = policy.invoke(argv, host, operation="probe")
-        if "platform=" in out:
-            return Facts.parsed(host, out)
-        refusals.append(err.strip()[-200:])
-    said = " / ".join(refusal for refusal in refusals if refusal) or "nothing"
-    raise MissionError(f"{host!r} answered neither the bash nor the PowerShell probe: {said}")
+    probe = ("bash", "-lc", shlex.quote(_CAPABILITIES.replace("\n", "; ")))
+    _, out, err = policy.invoke((*policy.command(host), *probe), host, operation="probe")
+    if "platform=" not in out:
+        raise MissionError(f"{host!r} did not answer the bash probe: {err.strip()[-200:]}")
+    return Facts.parsed(host, out)
 
 
 def rooted(profile: HostProfile, *, host: str) -> str:

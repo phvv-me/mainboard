@@ -1,8 +1,7 @@
 # How the center asks a target's agent one thing. The target runs whatever Python its shell
 # answers to with a one-line bootstrap, and everything else travels on standard input in one
 # framed stream: the agent's own source, the request as one JSON line, then any payload. Nothing
-# is installed on the far side and nothing is quoted for its shell but the bootstrap, which is
-# plain enough for sh, cmd.exe and PowerShell alike.
+# is installed on the far side and nothing is quoted for its shell but the bootstrap.
 
 import io
 import json

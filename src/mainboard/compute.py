@@ -100,8 +100,8 @@ def summary(facts: HostFacts) -> str:
 def reachable(host: str, ssh: SshTransport = _PROBE_SSH) -> str:
     """Why `host` cannot be reached right now, empty when one bounded ssh round trip lands.
 
-    An echo marker works in POSIX shells, cmd and PowerShell without a provisioned environment.
-    This proves a remote command answered, not that a GPU job can run.
+    An echo marker works without a provisioned environment. This proves a remote command
+    answered, not that a GPU job can run.
     """
     try:
         reply = ssh.run(

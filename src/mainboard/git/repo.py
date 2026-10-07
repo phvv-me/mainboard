@@ -286,11 +286,9 @@ class Repo:
     def unlinked(self) -> list[str]:
         """Every symbolic link the index records that the working tree holds as a changed file.
 
-        A Windows checkout that could not make links wrote each one as a file, the target copied
-        or the target's path as text (`.codex/config.toml`, 2026-10-01). Where git makes links it
-        sees a type change, and staging it replaces the link for every other checkout; where it
-        does not (`core.symlinks=false`) it reads the file as the link's text, and staging a copy
-        points the link at a path spelled like the target's contents.
+        A checkout or a tool that could not keep a link wrote it as a file, the target copied or
+        the target's path as text (`.codex/config.toml`, 2026-10-01). Git sees a type change, and
+        staging it would replace the link for every other checkout.
         """
         listing = self.git.out(
             "diff", "--raw", "-z", "--no-renames", "--ignore-submodules=all", "--diff-filter=TM"

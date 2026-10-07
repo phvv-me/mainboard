@@ -2,7 +2,7 @@
 
 import json
 import os
-import shutil
+import pty
 import subprocess
 import sys
 from decimal import Decimal
@@ -14,7 +14,6 @@ import pytest
 from mainboard.cli import build
 from mainboard.core.errors import MissionError
 from mainboard.delimiter import Delimiter
-from mainboard.dispatch import commandline
 from mainboard.results import Results
 
 from .conftest import MB
@@ -152,36 +151,6 @@ def test_the_delimiter_goes_where_the_command_starts(typed: str, placed: str) ->
     assert Delimiter(build()).placed(typed.split()) == placed.split()
 
 
-def test_a_path_the_shell_rewrote_is_refused_naming_the_switch(monkeypatch) -> None:
-    """Git Bash turned `--out-dir /home/crimson/y` into a path under its own folder, and a GPU
-    job wrote an hour of results under that literal name on a Linux host."""
-    monkeypatch.setattr(commandline, "_shell_roots", lambda: ("C:/Program Files/Git/",))
-    rewritten = r"C:\Program Files\Git\home\crimson\y"
-    with pytest.raises(MissionError, match="MSYS_NO_PATHCONV=1") as refused:
-        commandline.joined(["python", "-m", "x", "--out-dir", rewritten])
-    assert "`/home/crimson/y`" in str(refused.value)
-    with pytest.raises(MissionError, match="`--out=/home/y`"):
-        commandline.joined(["python", "x.py", "--out=C:/Program Files/Git/home/y"])
-    assert commandline.joined(["python", "x.py", "D:/data/y"]) == "python x.py D:/data/y"
-
-
-@pytest.mark.skipif(
-    sys.platform != "win32"
-    or shutil.which("cygpath") is None
-    or "MSYS_NO_PATHCONV" in os.environ
-    or os.environ.get("MSYS2_ARG_CONV_EXCL") == "*",
-    reason="needs an MSYS shell on PATH with its path conversion on",
-)
-def test_a_submit_refuses_a_rewritten_path_before_any_host_is_asked(mb) -> None:
-    root = subprocess.run(
-        ["cygpath", "-m", "/"], capture_output=True, text=True, encoding="utf-8", check=True
-    ).stdout.strip()
-    typed = ["job", "submit", "--on", "nowhere", "--", "python", "x.py"]
-    ran = mb(*typed, f"{root.rstrip('/')}/home/me/out", env={"MSYSTEM": "MINGW64"})
-    assert ran.code == 1
-    assert "MSYS_NO_PATHCONV=1" in ran.err and "`/home/me/out`" in ran.err
-
-
 def test_a_bounded_command_is_stopped_at_its_bound(mb) -> None:
     ran = mb("proc", "timeout", "1", sys.executable, "-c", "import time; time.sleep(30)")
     assert ran.code == 124
@@ -194,11 +163,8 @@ def test_a_workspace_is_required_and_said_to_be(mb, tmp_path_factory) -> None:
     assert "mb.toml" in ran.said or "mainboard.toml" in ran.said
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="a pseudo-terminal needs POSIX")
 def test_a_real_terminal_gets_the_same_answers(workspace) -> None:
     """The console renderer runs only on a terminal; it crashed there once while pipes passed."""
-    import pty
-
     primary, secondary = pty.openpty()
     done = subprocess.run(
         [MB, "job", "list"],

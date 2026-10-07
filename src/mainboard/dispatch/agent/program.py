@@ -9,8 +9,8 @@ the machine shipped with, nothing installed.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
-import importlib
 import json
 import os
 import re
@@ -53,9 +53,6 @@ STAMP = f".{LEGACY}-source"
 CLOSURE = f".{LEGACY}-closure"
 WRAPPERS = f".{LEGACY}-jobs"
 RESERVED = (*marked("source"), *marked("closure"), *marked("jobs"))
-
-# Whether this interpreter stands on Windows, read once so a test can stand in for either OS.
-WINDOWS = os.name == "nt"
 
 # What one walked path is: a regular file, a directory, or a link carried as a link.
 FILE, DIRECTORY, LINK = "f", "d", "l"
@@ -150,13 +147,8 @@ class Refusal(Exception):
 
 
 def unsafe(relative: str) -> bool:
-    """Whether `relative`, forward slashes only, fails to name a path strictly below a root.
-
-    On Windows a backslash or a colon would climb out of the root or name a drive or a stream.
-    """
-    return any(part in ("", ".", "..") for part in relative.split("/")) or (
-        WINDOWS and any(mark in relative for mark in "\\:")
-    )
+    """Whether `relative`, forward slashes only, fails to name a path strictly below a root."""
+    return any(part in ("", ".", "..") for part in relative.split("/"))
 
 
 def checked(relative: str) -> str:
@@ -261,13 +253,9 @@ class Digests:
 
 
 def _stamp(status: os.stat_result) -> list[int | str]:
-    """What a file's digest is remembered by.
-
-    Windows reports 128-bit file ids on some volumes; the id is folded to the 64 bits the lake
-    keeps, since it only tells a replaced file from an edited one beside size and times.
-    """
-    inode = (status.st_ino >> 64) ^ (status.st_ino & 0xFFFFFFFFFFFFFFFF)
-    return [status.st_size, inode, status.st_mtime_ns, status.st_ctime_ns]
+    """What a file's digest is remembered by: the inode tells a replaced file from an edited one
+    beside size and times."""
+    return [status.st_size, status.st_ino, status.st_mtime_ns, status.st_ctime_ns]
 
 
 class Rules:
@@ -519,7 +507,7 @@ class Entry:
     @classmethod
     def stated(cls, path: str, status: os.stat_result) -> Entry:
         """The file entry a stat describes."""
-        executable = None if WINDOWS else bool(status.st_mode & stat.S_IXUSR)
+        executable = bool(status.st_mode & stat.S_IXUSR)
         return cls(path, FILE, status.st_size, status.st_mtime_ns, executable)
 
     def record(self) -> list[Json]:
@@ -608,27 +596,11 @@ def locked(path: str) -> Iterator[None]:
     leaves nothing behind that the next one would have to be told about.
     """
     with open(path, "a+b") as handle:
-        if WINDOWS:
-            msvcrt = importlib.import_module("msvcrt")
-            handle.seek(0)
-            while True:
-                try:
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-                    break
-                except OSError:
-                    continue
-            try:
-                yield
-            finally:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl = importlib.import_module("fcntl")
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class Emitter:
@@ -667,7 +639,7 @@ def survey(spec: SurveySpec, emit: Emitter) -> None:
     root = spec["root"]
     state = native(root, spec["state"])
     os.makedirs(state, exist_ok=True)
-    emit({"links": not WINDOWS, "modes": not WINDOWS, "fold": _folds(state)})
+    emit({"fold": _folds(state)})
     digests = Digests(os.path.join(state, "digests.json"))
     for scope in spec["scopes"]:
         for entry in walk(root, Scope.of(scope)):
@@ -765,12 +737,11 @@ def _place(path: str, source: IO[bytes], mtime: int, executable: bool | None) ->
     """Write `source` beside `path`, rename it into place, and answer the digest of its bytes.
 
     The file is created with the mode its execute bit asks for, which this host's umask then
-    narrows, and in binary mode, since Windows would otherwise turn every newline it writes into
-    a carriage return and a newline.
+    narrows.
     """
     parent = os.path.dirname(path)
     staged = os.path.join(parent, f".{os.path.basename(path)}.mainboard-{os.getpid()}")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     hashed = hashlib.sha256()
     try:
         os.makedirs(parent, exist_ok=True)

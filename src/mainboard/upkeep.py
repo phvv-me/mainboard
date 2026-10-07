@@ -1,11 +1,11 @@
 # What this machine could and should update, and the one pass that updates it.
 #
-# Every system keeps its software current through its own managers (apt, dnf, brew, snap, winget,
-# fwupd for firmware) plus the tools these workspaces add on top (the pixi global toolbox, uv, the
+# Every system keeps its software current through its own managers (apt, dnf, brew, snap, fwupd
+# for firmware) plus the tools these workspaces add on top (the pixi global toolbox, uv, the
 # owner's dotfiles, this tool). `audit` asks each manager present what is pending, read-only, and
 # says what to run; `upgrade` runs the lot in order, the way the owner used to type `apt update &&
 # apt full-upgrade && apt autoremove` by hand. A host answers with its own copy of this tool, so
-# the same code judges Linux, macOS and Windows.
+# the same code judges Linux and macOS.
 
 import json
 import os
@@ -45,11 +45,6 @@ def _apt(out: str) -> int:
 
 def _snap(out: str) -> int:
     return 0 if "up to date" in out else max(_lines(out) - 1, 0)
-
-
-def _winget(out: str) -> int:
-    found = re.search(r"(\d+) upgrades? available", out)
-    return int(found.group(1)) if found else 0
 
 
 def _fwupd(out: str) -> int:
@@ -108,13 +103,6 @@ MANAGERS = (
         ("brew update", "brew upgrade", "brew cleanup"),
     ),
     Manager("snap", "snap", ("snap", "refresh", "--list"), _snap, ("sudo snap refresh",)),
-    Manager(
-        "winget",
-        "winget",
-        ("winget", "upgrade", "--include-unknown"),
-        _winget,
-        ("winget upgrade --all --silent --accept-source-agreements --accept-package-agreements",),
-    ),
     Manager(
         "firmware",
         "fwupdmgr",
@@ -226,10 +214,6 @@ def _system() -> Section:
         name = found.group(1) if found else name
     elif name == "Darwin":
         name = f"macOS {platform.mac_ver()[0]}, kernel {platform.release()}"
-    elif name == "Windows":
-        # Windows 11 still reports itself as 10.0; its builds start at 22000.
-        build = int(platform.win32_ver()[1].rsplit(".", 1)[-1] or 0)
-        name = f"Windows {11 if build >= 22000 else 10} build {build}"
     if LINUX:
         name += f", kernel {platform.release()}"
     return Section(section="system", verdict=Verdict.PASS, detail=f"{name}, {platform.machine()}")

@@ -1,7 +1,6 @@
-# The center workstation's git tooling, on macOS, Linux or native Windows (no WSL): whether git
-# runs, whether large files arrive as files rather than pointer text, whether an https remote
-# authenticates without a password prompt nobody is there to answer, and on Windows whether the
-# repository's symbolic links and deep paths survive a checkout.
+# The center workstation's git tooling, on macOS or Linux: whether git runs, whether large files
+# arrive as files rather than pointer text, and whether an https remote authenticates without a
+# password prompt nobody is there to answer.
 #
 # A repair that is a local git setting is applied here, since printing it for a person to type
 # would only make that person the slowest step. A repair that needs an installer or an
@@ -10,7 +9,6 @@
 import platform
 from pathlib import Path
 from shlex import join
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -18,46 +16,26 @@ from patos import FrozenModel
 from .durable import Shell, locally
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
 # Installs keyed by package, then by `platform.system()`. A system not named is read as a Linux
 # distribution, the one family with no single installer.
 _INSTALLS = {
-    "git": {"Windows": "winget install --id Git.Git -e", "Darwin": "xcode-select --install"},
-    "git-lfs": {
-        "Windows": "winget install --id GitHub.GitLFS -e",
-        "Darwin": "brew install git-lfs",
-    },
-    "gh": {"Windows": "winget install --id GitHub.cli -e", "Darwin": "brew install gh"},
-    "ssh": {
-        "Windows": "Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0",
-        "Darwin": "ssh ships with macOS; restore it with xcode-select --install",
-    },
+    "git": {"Darwin": "xcode-select --install"},
+    "git-lfs": {"Darwin": "brew install git-lfs"},
+    "gh": {"Darwin": "brew install gh"},
+    "ssh": {"Darwin": "ssh ships with macOS; restore it with xcode-select --install"},
 }
 _DISTRIBUTION = "sudo apt install {package} (or the {package} package of this distribution)"
 
-# The credential helper each platform ships with its git, as git names it after `credential-`.
-_KEYCHAIN = {"Windows": "manager", "Darwin": "osxkeychain"}
-
-# How the standard helper arrives when missing, and what stands in for one on Linux.
-_KEYCHAIN_INSTALL = {"Windows": _INSTALLS["git"]["Windows"], "Darwin": "brew install git"}
+# The credential helper macOS ships with its git, as git names it after `credential-`, and how
+# it arrives when missing. Linux ships none.
+_KEYCHAIN = "osxkeychain"
+_KEYCHAIN_INSTALL = "brew install git"
 _PLAINTEXT_HELPER = "git config --global credential.helper store"
-
-# The one switch that lets an unprivileged account create symbolic links on Windows.
-DEVELOPER_MODE = (
-    "enable Developer Mode: Settings > System > For developers > Developer Mode (or run "
-    "`reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock /t REG_DWORD "
-    "/f /v AllowDevelopmentWithoutDevLicense /d 1` as administrator)"
-)
-
-# The index mode of a symbolic link.
-_LINK_MODE = "120000"
 
 # How many names a detail line lists before it only counts the rest.
 _NAMED = 3
-
-# Why this process cannot create a symbolic link, empty when it can.
-type Linking = Callable[[], str]
 
 
 def install_command(system: str, package: str) -> str:
@@ -72,20 +50,6 @@ def abbreviated(names: Sequence[str], named: int = _NAMED) -> str:
     """The first `named` of `names`, then only a count of the rest."""
     rest = len(names) - named
     return ", ".join(names[:named]) + (f" and {rest} more" if rest > 0 else "")
-
-
-def refusal_to_link() -> str:
-    """Try one symbolic link in a scratch directory, answering the OS's refusal or nothing.
-
-    Windows refuses an account without Developer Mode (or elevation) with WinError 1314, and a
-    git that cannot link checks every link out as a plain file holding its target's path.
-    """
-    with TemporaryDirectory() as scratch:
-        try:
-            Path(scratch, "link").symlink_to(Path(scratch, "target"))
-        except OSError as refusal:
-            return str(refusal)
-    return ""
 
 
 class Readiness(FrozenModel):
@@ -114,18 +78,10 @@ class Workstation:
     system: the platform as `platform.system()` spells it, this machine's when empty.
     """
 
-    def __init__(
-        self,
-        root: Path,
-        *,
-        shell: Shell = locally,
-        system: str = "",
-        linking: Linking = refusal_to_link,
-    ) -> None:
+    def __init__(self, root: Path, *, shell: Shell = locally, system: str = "") -> None:
         self.root = root
         self.shell = shell
         self.system = system or platform.system()
-        self.linking = linking
 
     def examine(self) -> list[Readiness]:
         """Every check this platform needs, or git's alone when git does not run.
@@ -135,9 +91,8 @@ class Workstation:
         git = self.git()
         if git.broken:
             return [git]
-        windows = [self.symlinks(), self.longpaths()] if self.system == "Windows" else []
         macos = [self.precomposed()] if self.system == "Darwin" else []
-        return [git, self.lfs(), self.credentials(), *windows, *macos]
+        return [git, self.lfs(), self.credentials(), *macos]
 
     def git(self) -> Readiness:
         """Whether git runs here at all."""
@@ -155,8 +110,8 @@ class Workstation:
         """Whether large files check out as their contents rather than as pointer text.
 
         The binary alone is not enough: without its filters in some git config, a clone holds
-        the pointer files and nothing says so until one of them is opened. Git for Windows
-        installs those filters system-wide, so the effective value is what is read here.
+        the pointer files and nothing says so until one of them is opened. A system-wide install
+        puts those filters in the system config, so the effective value is what is read here.
         """
         status, said = self.shell(("git", "lfs", "version"))
         if status:
@@ -178,8 +133,8 @@ class Workstation:
         """Whether every https remote reaches a credential helper instead of a password prompt.
 
         Git itself matches each remote against the generic and the url-specific helpers, so an
-        uncovered remote is exactly the one a fetch would stop and ask about. The platform's
-        own helper is set only once this machine verifiably has it; elsewhere the fix is named.
+        uncovered remote is exactly the one a fetch would stop and ask about. The macOS helper is
+        set only once this machine verifiably has it; elsewhere the fix is named.
         """
         uncovered = [
             url
@@ -189,14 +144,7 @@ class Workstation:
         if not uncovered:
             return Readiness(check="credentials", detail="every https remote has a helper")
         remotes = ", ".join(uncovered)
-        if helper := self._keychain():
-            return self._applied(
-                "credentials",
-                ("git", "config", "--global", "credential.helper", helper),
-                f"set credential.helper={helper} for {remotes}",
-            )
-        standard = _KEYCHAIN.get(self.system)
-        if standard is None:
+        if self.system != "Darwin":
             return Readiness(
                 check="credentials",
                 detail=(
@@ -206,60 +154,18 @@ class Workstation:
                 ),
                 fix=_PLAINTEXT_HELPER,
             )
+        if self._keychain():
+            return self._applied(
+                "credentials",
+                ("git", "config", "--global", "credential.helper", _KEYCHAIN),
+                f"set credential.helper={_KEYCHAIN} for {remotes}",
+            )
         return Readiness(
             check="credentials",
-            detail=f"no credential helper for {remotes}, and git-credential-{standard} is missing",
-            fix=(
-                f"{_KEYCHAIN_INSTALL[self.system]}; "
-                f"git config --global credential.helper {standard}"
+            detail=(
+                f"no credential helper for {remotes}, and git-credential-{_KEYCHAIN} is missing"
             ),
-        )
-
-    def symlinks(self) -> Readiness:
-        """Whether the repository's symbolic links are links on this Windows disk.
-
-        Three things have to hold. This account must be allowed to create a link at all, which
-        is Developer Mode; the repository must ask git for links, which is `core.symlinks` and
-        is set here when missing; and every link already checked out while it was off is still
-        a plain file holding its target's path, which only a re-checkout of those paths turns
-        into a link, named rather than run since it rewrites the working tree.
-        """
-        if refusal := self.linking():
-            return Readiness(
-                check="symlinks",
-                broken=True,
-                detail=f"this account cannot create symbolic links: {refusal}",
-                fix=DEVELOPER_MODE,
-            )
-        changed = ""
-        if self._config("--type=bool", "--get", "core.symlinks") != "true":
-            configured = self._applied(
-                "symlinks",
-                ("git", "-C", str(self.root), "config", "core.symlinks", "true"),
-                "set core.symlinks=true in this repository",
-            )
-            if configured.fix:
-                return configured
-            changed = f"{configured.detail}; "
-        if flat := self._flattened_links():
-            return Readiness(
-                check="symlinks",
-                detail=(
-                    f"{changed}{len(flat)} links were checked out as plain files "
-                    f"({abbreviated(flat)}); checking those paths out again makes them links"
-                ),
-                fix=join(("git", "-C", str(self.root), "checkout", "--", *flat)),
-            )
-        return Readiness(check="symlinks", detail=f"{changed or 'core.symlinks=true; '}links work")
-
-    def longpaths(self) -> Readiness:
-        """Whether git on Windows checks out paths past the 260 character limit."""
-        if self._config("--type=bool", "--get", "core.longpaths") == "true":
-            return Readiness(check="longpaths", detail="core.longpaths=true")
-        return self._applied(
-            "longpaths",
-            ("git", "config", "--global", "core.longpaths", "true"),
-            "set core.longpaths=true in the global git config",
+            fix=f"{_KEYCHAIN_INSTALL}; git config --global credential.helper {_KEYCHAIN}",
         )
 
     def precomposed(self) -> Readiness:
@@ -299,24 +205,7 @@ class Workstation:
         urls = [line.split()[1] for line in said.splitlines() if len(line.split()) > 1]
         return list(dict.fromkeys(url for url in urls if url.startswith("https://")))
 
-    def _keychain(self) -> str:
-        """The platform's standard credential helper when this machine verifiably has it."""
-        match self.system:
-            case "Windows":
-                status, _ = self.shell(("git", "credential-manager", "--version"))
-                return "" if status else "manager"
-            case "Darwin":
-                status, place = self.shell(("git", "--exec-path"))
-                found = not status and Path(place.strip(), "git-credential-osxkeychain").is_file()
-                return "osxkeychain" if found else ""
-        return ""
-
-    def _flattened_links(self) -> list[str]:
-        """Every link the index records that sits on disk as something other than a link."""
-        _, said = self.shell(("git", "-C", str(self.root), "ls-files", "-s", "-z"))
-        entries = [entry.split("\t", 1) for entry in said.split("\0") if "\t" in entry]
-        return [
-            path
-            for stage, path in entries
-            if stage.startswith(_LINK_MODE) and not (self.root / path).is_symlink()
-        ]
+    def _keychain(self) -> bool:
+        """Whether this Mac's git carries the Keychain credential helper."""
+        status, place = self.shell(("git", "--exec-path"))
+        return not status and Path(place.strip(), f"git-credential-{_KEYCHAIN}").is_file()

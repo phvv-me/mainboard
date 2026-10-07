@@ -18,7 +18,7 @@ from .engines.compile.pixi_lock import packages
 from .engines.compile.platforms import SystemFloors
 from .engines.compile.provisioner import Provisioner
 from .git.process import Git
-from .workstation import DEVELOPER_MODE, abbreviated, install_command
+from .workstation import abbreviated, install_command
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,12 +47,6 @@ _DISK = {"center": 60 * 10**9, "target": 20 * 10**9}
 _CENTER_TOOLS = ("git", "git-lfs", "gh", "ssh")
 
 _DRIVERS = "install a newer NVIDIA driver (https://www.nvidia.com/Download/index.aspx)"
-
-# The Windows switch that lets paths past 260 characters open.
-_LONG_PATHS = (
-    "reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem /v LongPathsEnabled "
-    "/t REG_DWORD /d 1 /f (as administrator)"
-)
 
 
 class Role(StrEnum):
@@ -241,21 +235,15 @@ class Fitness:
         )
 
     def links(self, system: System) -> Section:
-        """Whether the repository's symbolic links and deep paths survive a checkout here."""
-        notes = []
-        fixes = []
-        if system.windows and system.symlinks:
-            notes.append(
-                "this account cannot create symbolic links, so linked directories become "
-                "junctions and linked files hard links"
-            )
-            fixes.append(DEVELOPER_MODE)
-        if system.windows and not system.long_paths:
-            notes.append("paths past 260 characters are refused")
-            fixes.append(_LONG_PATHS)
-        if not notes:
-            return _row("links", Verdict.PASS, "symbolic links and long paths work")
-        return _row("links", Verdict.WARN, "; ".join(notes), "; ".join(fixes))
+        """Whether the repository's symbolic links survive a checkout here."""
+        if not system.symlinks:
+            return _row("links", Verdict.PASS, "symbolic links work")
+        return _row(
+            "links",
+            Verdict.WARN,
+            f"symbolic links cannot be made where the workspace lives: {system.symlinks}",
+            "keep the workspace on a filesystem that holds links (APFS, ext4, XFS)",
+        )
 
     def case(self, system: System) -> Section:
         """Whether the tracked tree checks out whole on this filesystem's idea of a name."""
@@ -296,13 +284,7 @@ class Fitness:
 
     def shell(self, system: System) -> Section:
         """Whether the shells the agents run commands through are here."""
-        found = ", ".join(sorted(system.shells))
-        if system.windows and "bash" not in system.shells:
-            detail = (
-                f"no Git for Windows Bash, which Claude Code runs its commands in; found {found}"
-            )
-            return _row("shells", Verdict.WARN, detail, install_command(system.system, "git"))
-        return _row("shells", Verdict.PASS, found)
+        return _row("shells", Verdict.PASS, ", ".join(sorted(system.shells)))
 
     def _floors(self, environment: str) -> dict[str, str]:
         """The floors `environment` solves against, its own over the workspace's."""

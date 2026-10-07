@@ -10,18 +10,17 @@ if TYPE_CHECKING:
     from ...manifest import Manifest
 
 # Every platform family pixi names a virtual package for, the reach of an unlisted floor.
-_EVERY_FAMILY = frozenset({"linux", "osx", "win"})
+_EVERY_FAMILY = frozenset({"linux", "osx"})
 
 # The families whose machines carry each floor's virtual package: a macOS target means nothing
 # to a Linux solve, glibc to a macOS one, CUDA to Apple. A key pixi adds later rides everywhere.
 _FLOOR_FAMILIES: dict[str, frozenset[str]] = {
     "archspec": _EVERY_FAMILY,
-    "cuda": frozenset({"linux", "win"}),
+    "cuda": frozenset({"linux"}),
     "glibc": frozenset({"linux"}),
     "linux": frozenset({"linux"}),
     "macos": frozenset({"osx"}),
     "osx": frozenset({"osx"}),
-    "windows": frozenset({"win"}),
 }
 
 

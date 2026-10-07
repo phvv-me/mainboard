@@ -11,7 +11,6 @@
 
 import json
 import os
-import platform
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,7 +23,7 @@ from ..engines.compile.provisioner import Provisioner
 from ..fitness import Fitness, Role
 from ..probe.system import System
 from ..workstation import Readiness, Workstation
-from .exposure import Exposure, Spawn, directories, executables
+from .exposure import Exposure, Spawn, executables
 from .portable import Portability
 
 if TYPE_CHECKING:
@@ -250,22 +249,15 @@ class Verification:
                 )
             ]
         exposure = Exposure(
-            self._folders(),
-            system=self.system.system,
-            home=self.home,
-            shells=self.system.shells,
-            spawn=self.spawn,
+            self._folders(), home=self.home, shells=self.system.shells, spawn=self.spawn
         )
-        names = executables(prefix, sorted(self.board.manifest.deps), self.system.system)
+        names = executables(prefix, sorted(self.board.manifest.deps))
         return [exposure.apply(), *exposure.verify(names)]
 
     def _folders(self) -> list[Path]:
         """Every executable directory of the default environment, in PATH order."""
         prefix = self.provisioner.pixi_for("default").env_prefix("default")
-        return [
-            *directories(prefix, self.system.system or platform.system()),
-            *self.provisioner.binaries("default"),
-        ]
+        return [prefix / "bin", *self.provisioner.binaries("default")]
 
     def _smoke(self) -> tuple[int, str]:
         """Run the smoke command in the default environment, bounded."""

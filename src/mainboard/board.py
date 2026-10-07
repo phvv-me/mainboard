@@ -24,7 +24,6 @@ from .context.admission import admit
 from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
-from .core.host import WINDOWS
 from .core.project import Project
 from .core.section import Section
 from .core.shell import become, foreground, interactive_shell
@@ -49,7 +48,7 @@ from .dispatch.onboard import (
 )
 from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
-from .dispatch.shells import dialect_for, is_windows, open_shell
+from .dispatch.shells import Dialect, open_shell
 from .dispatch.shipment import Shipment
 from .dispatch.snapshots import Snapshots, queued_here
 from .dispatch.targets import home_of, placed, rooted
@@ -76,7 +75,6 @@ from .nodes import evidence_of
 from .pack import Packed, pack
 from .probe.occupancy import Occupancy
 from .probe.snapshot import HostFacts
-from .runtime.activation import Runtime
 from .runtime.job import walltime_seconds
 from .scaffold import Scaffold
 from .tracking import Sampler, attesting, is_batched, sampling, streamed
@@ -595,11 +593,10 @@ class Board:
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
         # A platform this machine cannot run has no prefix to activate here; its lock ships with
-        # `setup`. `activate.sh` is bash, which nothing on Windows sources: a Windows workspace
-        # activates through the activation pixi cached at provisioning, so none is named.
+        # `setup`.
         activate = (
             str(provisioner.activate(plan.env, modules=plan.profile.modules))
-            if provisioner.runs_here(plan.env) and not WINDOWS
+            if provisioner.runs_here(plan.env)
             else ""
         )
         return HostSetup(
@@ -666,7 +663,7 @@ class Board:
         session = pick(plan.profile).interactive(
             env=plan.env, command=command, resources=resources
         )
-        dialect = dialect_for(plan.profile)
+        dialect = Dialect()
         staged = dialect.stage(plan, self.remote_root(), command=session, activate=False)
         if keep:
             # `new-session -A` attaches to the named session when it exists and only otherwise
@@ -1088,7 +1085,6 @@ class Board:
         """
         plan = self.plan(env=env, container=container)
         target = Target.spelled(command, self.root)
-        exported: dict[str, str] | None = None
         if target is not None:
             if not self.local:
                 raise MissionError(
@@ -1097,17 +1093,9 @@ class Board:
                     "`mb job show --wait` or `mb job list`. Run collection and help locally."
                 )
             shipment = self.sealed(target, plan)
-            listing = self.dispatcher.stage_listing(shipment)
-            if WINDOWS and not plan.containerized:
-                exported = shipment.local_exports(self.root, closure=listing)
-                command = shlex.split(shipment.command)
-            else:
-                command = shipment.locally(self.root, closure=listing)
+            command = shipment.locally(self.root, closure=self.dispatcher.stage_listing(shipment))
         if self.local and not plan.containerized:
-            return Provisioner(self.root, self.manifest).run(command, plan.env, exports=exported)
-        if not self.local and is_windows(plan.profile):
-            with open_shell(plan, self.remote_root()) as shell:
-                return shell.foreground(task_line(self.manifest, joined(command), env=plan.env))
+            return Provisioner(self.root, self.manifest).run(command, plan.env)
         line = self.line(joined(command), env=env, container=container)
         if self.local:
             return foreground(localhost["bash"]["-lc", line])
@@ -1171,11 +1159,8 @@ class Board:
 
         The activation `install` computed from the manifest is applied here, then this process
         becomes the shell, so it owns the terminal and leaving it lands where the user began.
-        Any shell works (zsh, bash, fish, pwsh, cmd): pixi's own `shell` refuses zsh on Windows.
-        On Linux and macOS the environment's `activate.sh` (modules, pixi, second-stage tools)
-        is sourced by `sh`, which then becomes the shell; on Windows the activation pixi
-        recorded at install is applied as variables. An unprovisioned environment is refused
-        naming the fix.
+        The environment's `activate.sh` (modules, pixi, second-stage tools) is sourced by `sh`,
+        which then becomes the shell. An unprovisioned environment is refused naming the fix.
 
         env: the environment name, the host profile's own when empty.
         replace: the process-replacing exec, injectable so a test can read what it was handed.
@@ -1189,18 +1174,12 @@ class Board:
         pixi = Provisioner(self.root, self.manifest).pixi_for(plan.env)
         if not pixi.ready(plan.env):
             raise MissionError(missing(plan, plan.prefix(str(self.root))))
-        shell = interactive_shell()
-        base = os.environ | pixi.overrides
-        if WINDOWS:
-            entered = pixi.recorded_environment(plan.env, base)
-            entered |= Runtime(pixi.env_prefix(plan.env)).changes(entered)
-            replace(shell[0], shell, entered)
         script = self.root / self.project.activation(plan.env, self.root)
         if not script.is_file():
             tool = self.project.name
             raise MissionError(f"{plan.env!r} has no activation; run `{tool} install`")
         entering = ["/bin/sh", "-c", '. "$1" && shift && exec "$@"', "mb-shell", str(script)]
-        replace(entering[0], [*entering, *shell], base)
+        replace(entering[0], [*entering, *interactive_shell()], os.environ | pixi.overrides)
 
     def submit(
         self,

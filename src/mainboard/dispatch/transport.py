@@ -19,8 +19,7 @@ from plumbum.machines.session import ShellSession
 from plumbum.machines.ssh_machine import SshMachine
 from pydantic import Field, field_validator
 
-from ..core.host import WINDOWS
-from .ssh import client, microsoft
+from .ssh import client
 
 # ssh's own exit status when the transport fails, with the stderr phrases naming the fault. A
 # name that does not resolve belongs here too: the host cannot be reached right now (a dropped
@@ -57,27 +56,12 @@ _DAEMON_DOWN_MARKERS = ("connecting to the daemon", "connection refused", ".sock
 
 
 def terminate_process_tree(pid: int, *, force: bool = False) -> None:
-    """Terminate (or with `force`, kill) one process tree, children first, on every platform.
-
-    psutil walks the tree natively everywhere, ProxyJump children included, so no separate
-    POSIX-signal and Windows process code exists.
-    """
+    """Terminate (or with `force`, kill) one process tree, children first, ProxyJump children
+    included."""
     root = psutil.Process(pid)
     for process in [*reversed(root.children(recursive=True)), root]:
         with suppress(psutil.Error):
             (process.kill if force else process.terminate)()
-
-
-def ssh_null() -> str:
-    """The null device as the ssh this machine runs spells it.
-
-    `os.devnull` is `nul` on Windows, which Windows' own OpenSSH reads as the device and MSYS2's
-    or Git's ssh (the dotfiles' toolbox puts MSYS2's first) reads as a file name: every rental's
-    host key landed in a file called `nul` in the working directory, one git cannot index.
-    """
-    if not WINDOWS:
-        return os.devnull
-    return "NUL" if microsoft() else "/dev/null"
 
 
 class HostUnreachable(Exception):
@@ -121,9 +105,8 @@ class Endpoint(FrozenModel):
     @field_validator("identity")
     @classmethod
     def expanded(cls, value: str) -> str:
-        """The key path with `~` resolved, in forward slashes, which ssh and its config accept on
-        Windows too (`C:/Users/...`); ssh receives it as one argument with no shell."""
-        return Path(value).expanduser().as_posix() if value else value
+        """The key path with `~` resolved; ssh receives it as one argument with no shell."""
+        return str(Path(value).expanduser()) if value else value
 
     @property
     def destination(self) -> str:
@@ -141,7 +124,7 @@ class Endpoint(FrozenModel):
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
-            f"UserKnownHostsFile={ssh_null()}",
+            f"UserKnownHostsFile={os.devnull}",
             "-o",
             "LogLevel=ERROR",
         )
@@ -340,8 +323,7 @@ class SshTransport(FrozenModel):
         """Run `command`, killing its group on timeout, and return its status, stdout, stderr."""
         stdin = subprocess.PIPE if input_text is not None else subprocess.DEVNULL
         process = self.__spawn(command, host, operation=operation, stdin=stdin, stdout=sink)
-        # Bytes both ways, because a text-mode pipe on Windows writes every `\n` of the input as
-        # `\r\n`, and the bash reading it on the host takes that `\r` as part of each command.
+        # Bytes both ways, so the host's bash reads the input exactly as it was written.
         sent = None if input_text is None else input_text.encode("utf-8")
         try:
             stdout, stderr = process.communicate(input=sent, timeout=timeout)

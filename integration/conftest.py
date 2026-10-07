@@ -13,8 +13,7 @@ from pathlib import Path
 
 import pytest
 
-# The console script installed with the interpreter running the tests: beside it on POSIX, in
-# its `Scripts` folder on Windows.
+# The console script installed beside the interpreter running the tests.
 MB = shutil.which("mb", path=sysconfig.get_path("scripts"))
 
 

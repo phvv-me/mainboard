@@ -17,8 +17,8 @@ class LintTool(Declared):
     A pass that may write runs `fix` where declared and `check` elsewhere; `lint --check` runs
     only `check`. Commands run from the owner directory, so a checker finds that owner's
     settings, and are split like POSIX shell words but never handed to a shell. `{files}`
-    expands to the matched files relative to the owner, batched under Windows' command-line
-    limit; without it the command checks the whole owner once whenever a matched file changed
+    expands to the matched files relative to the owner, batched under a command-line
+    budget; without it the command checks the whole owner once whenever a matched file changed
     there, deletions included. `{root}` expands to the workspace root.
 
     check: reports what is wrong and changes nothing.

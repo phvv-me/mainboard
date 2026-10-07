@@ -1,13 +1,12 @@
 # Moving the center: the one machine that holds the monorepo, runs this tool and runs the agents.
 #
-# The destination is any machine ssh reaches, Windows, macOS or Linux, with nothing of ours on
-# it. The move is a sequence of converging steps, each of which looks at what the destination
-# already holds and does only the difference, so running it again after an interruption carries
-# on where it stopped and running it once more after it finished re-verifies everything and
-# changes nothing. Nothing the center knows is typed twice: the tree comes from the `git`
-# module's ownership rules, the environment from the lock this center solved, the machine
-# findings from the same census and judge `facts` uses, and the final word from the destination
-# running `doctor --center` on itself.
+# The destination is any macOS or Linux machine ssh reaches, with nothing of ours on it. The move
+# is a sequence of converging steps, each of which looks at what the destination already holds and
+# does only the difference, so running it again after an interruption carries on where it stopped
+# and running it once more after it finished re-verifies everything and changes nothing. Nothing
+# the center knows is typed twice: the tree comes from the `git` module's ownership rules, the
+# environment from the lock this center solved, the machine findings from the same census and judge
+# `facts` uses, and the final word from the destination running `doctor --center` on itself.
 
 import re
 import subprocess
@@ -23,7 +22,7 @@ from ..core.project import Project
 from ..core.section import Section, Verdict, staged
 from ..dispatch.onboard import Bootstrap, Onboarding
 from ..dispatch.shared import announce
-from ..dispatch.shells import dialect_for, open_shell, plain_errors
+from ..dispatch.shells import Dialect, open_shell
 from ..dispatch.targets import probe_capabilities
 from ..dispatch.transport import HostUnreachable, SshTransport
 from ..fitness import Fitness, Role
@@ -61,14 +60,6 @@ _CHECKOUT = "~/projects"
 
 # A remote reached over ssh at GitHub, `git@github.com:owner/name` or `ssh://git@github.com/...`.
 _GITHUB_SSH = re.compile(r"(ssh://)?([^@/:]+@)?github\.com[:/]")
-
-# What a Windows filesystem cannot hold in a path, as git for Windows judges it: a character NTFS
-# forbids, a name ending in a space or a dot, or a device name, whatever extension follows it.
-_UNHOLDABLE = re.compile(
-    r'[<>:"|?*\x01-\x1f]|[ .](/|$)'
-    r"|(^|/)(con|prn|aux|nul|conin\$|conout\$|com[1-9]|lpt\d) *(\.[^/]*)?(/|$)",
-    re.IGNORECASE,
-)
 
 # How long the destination's own `doctor --center` may run, a torch and CUDA smoke and every lint
 # tool's probe included, and the silence its ssh rides out while that smoke loads the machine:
@@ -304,15 +295,11 @@ class Migration:
         return Section(section="carry ssh config", verdict=Verdict.PASS, detail=detail)
 
     def clone(self, carrier: Carrier, place: Destination) -> list[Section]:
-        """The root at this HEAD and each owned submodule at its pointer, then the foreign rest.
-
-        On Windows each repository's checkout leaves out the tracked paths NTFS cannot hold,
-        which a warning names, instead of failing that repository whole.
-        """
+        """The root at this HEAD and each owned submodule at its pointer, then the foreign rest."""
         tree = self.board.git()
-        pairs = _submodules(tree)
         submodules = [
-            [parent.name, parent.relative(child), child.declared] for parent, child in pairs
+            [parent.name, parent.relative(child), child.declared]
+            for parent, child in _submodules(tree)
         ]
         foreign = [
             child.name
@@ -320,12 +307,6 @@ class Migration:
             for child in parent.children
             if child.initialized and not child.owned
         ]
-        repos = [tree.root, *(child for _, child in pairs)]
-        excluded = {
-            repo.name: paths
-            for repo in (repos if place.system == "Windows" else [])
-            if (paths := [path for path in repo.tracked() if _UNHOLDABLE.search(path)])
-        }
         steps = carrier.call(
             "clone",
             {
@@ -334,7 +315,6 @@ class Migration:
                 "branch": tree.root.branch(),
                 "commit": tree.root.head(),
                 "submodules": submodules,
-                "excluded": excluded,
             },
             list[Cloned],
         )
@@ -347,16 +327,6 @@ class Migration:
                 fix="" if step.outcome == "done" else again,
             )
             for step in steps
-        ]
-        rows += [
-            Section(
-                section=f"unholdable {repo}",
-                verdict=Verdict.WARN,
-                detail=f"{len(paths)} tracked paths Windows cannot hold left out: "
-                + ", ".join(paths[:3]),
-                fix=f'rename them in {repo} (no <>:"|?*, trailing space or dot, or device name)',
-            )
-            for repo, paths in excluded.items()
         ]
         if foreign:
             rows.append(
@@ -423,7 +393,7 @@ class Migration:
         the machine, bounded by a wall clock past any full verify.
         """
         self.watch(f"verifying {self.destination}")
-        dialect = dialect_for(plan.profile)
+        dialect = Dialect()
         ssh = self.transport.model_copy(update=_PATIENT)
         line = dialect.stage(plan, root, command=f"{_TOOL} doctor --center --json", activate=False)
         argv = dialect.one_shot(ssh, self.destination, line)
@@ -437,7 +407,7 @@ class Migration:
         try:
             sections = _SECTIONS.validate_json(out[start:] if start >= 0 else "")
         except ValueError:
-            said = plain_errors(err or out).strip()[-240:]
+            said = (err or out).strip()[-240:]
             return [
                 Section(
                     section="verify",

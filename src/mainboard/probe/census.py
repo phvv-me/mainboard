@@ -33,7 +33,7 @@ _DRIVER = re.compile(r"(?:Driver|KMD) Version:\s*(\d+(?:\.\d+)+)")
 _DRIVER_CUDA = re.compile(r"CUDA (?:UMD )?Version:\s*(\d+(?:\.\d+)+)")
 
 # Every tool a report names, with the argv that makes it say its version. `git lfs` is asked
-# through git, since its own binary is only ever reached as a git subcommand on Windows.
+# through git, the way every checkout reaches it.
 TOOLS: dict[str, tuple[str, ...]] = {
     "git": ("git", "--version"),
     "git-lfs": ("git", "lfs", "version"),
@@ -49,27 +49,10 @@ TOOLS: dict[str, tuple[str, ...]] = {
 }
 
 # The shells an agent or a person may run commands through, by the name each is known as.
-SHELLS = ("bash", "zsh", "sh", "pwsh", "powershell", "cmd")
+SHELLS = ("bash", "zsh", "sh")
 
 # The git settings a checkout depends on, read from the global scope a clone inherits.
-GIT_SETTINGS = (
-    "core.autocrlf",
-    "core.eol",
-    "core.symlinks",
-    "core.longpaths",
-    "credential.helper",
-)
-
-# Where Windows keeps its long-path switch and Developer Mode, the one that lets an ordinary
-# account create a symbolic link.
-_LONG_PATHS = ("HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "LongPathsEnabled")
-_DEVELOPER_MODE = (
-    "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock",
-    "AllowDevelopmentWithoutDevLicense",
-)
-
-# The Bash Git for Windows ships, the one a Claude Code session on Windows runs commands in.
-_GIT_BASH = ("Git", "bin", "bash.exe")
+GIT_SETTINGS = ("core.autocrlf", "core.eol", "credential.helper")
 
 type Runner = Callable[[Sequence[str]], tuple[int, str]]
 
@@ -128,8 +111,6 @@ class Census:
             "root": str(anchor),
             "case_sensitive": self.case_sensitive(anchor),
             "symlinks": self.symlinks(anchor),
-            "long_paths": self.long_paths(),
-            "developer_mode": self.developer_mode(),
             "free_bytes": shutil.disk_usage(anchor).free,
             "git": self.git(),
             "tools": self.tools(),
@@ -147,12 +128,8 @@ class Census:
 
     def version(self) -> str:
         """The operating system's own name for its version, a distribution's where it has one."""
-        match self.system:
-            case "Darwin":
-                return f"macOS {platform.mac_ver()[0]}"
-            case "Windows":
-                release, build, _, _ = platform.win32_ver()
-                return f"Windows {release} build {build}"
+        if self.system == "Darwin":
+            return f"macOS {platform.mac_ver()[0]}"
         try:
             text = Path("/etc/os-release").read_text(encoding="utf-8")
         except OSError:
@@ -161,28 +138,8 @@ class Census:
         return fields.get("PRETTY_NAME", platform.version()).strip('"')
 
     def shells(self) -> dict[str, str]:
-        """Every shell on PATH by name, with Git for Windows' Bash found where it installs."""
-        found = {name: path for name in SHELLS if (path := self.finder(name))}
-        if self.system == "Windows":
-            found.pop("bash", None)
-            if bash := self.git_bash():
-                found["bash"] = bash
-        return found
-
-    def git_bash(self) -> str:
-        """Git for Windows' Bash, never System32's WSL launcher that also answers to `bash`."""
-        git = self.finder("git")
-        roots = [Path(git).resolve().parent.parent] if git else []
-        roots += [
-            Path(value)
-            for name in ("ProgramFiles", "ProgramW6432")
-            if (value := os.environ.get(name))
-        ]
-        for root in roots:
-            for candidate in (root.joinpath(*_GIT_BASH[1:]), root.joinpath(*_GIT_BASH)):
-                if candidate.is_file():
-                    return str(candidate)
-        return ""
+        """Every shell on PATH by name."""
+        return {name: path for name in SHELLS if (path := self.finder(name))}
 
     @staticmethod
     def case_sensitive(anchor: Path) -> bool:
@@ -203,20 +160,6 @@ class Census:
         except OSError as refusal:
             return str(refusal) or type(refusal).__name__
         return ""
-
-    def long_paths(self) -> bool:
-        """Whether paths past 260 characters open here, a Windows switch and a given elsewhere."""
-        return self.system != "Windows" or self.registry(*_LONG_PATHS) == 1
-
-    def developer_mode(self) -> bool:
-        """Whether Windows lets this account make symbolic links, False on every other system."""
-        return self.system == "Windows" and self.registry(*_DEVELOPER_MODE) == 1
-
-    def registry(self, key: str, value: str) -> int:
-        """One DWORD out of the Windows registry, 0 when it is unset or unreadable."""
-        status, said = self.runner(("reg", "query", key, "/v", value))
-        found = re.search(r"REG_DWORD\s+0x([0-9a-fA-F]+)", said) if not status else None
-        return int(found[1], 16) if found else 0
 
     def git(self) -> dict[str, str]:
         """The global git settings a clone inherits, each empty when unset."""
@@ -270,9 +213,8 @@ class Census:
         """A card's memory in MiB from its `memory.total`, the system's when it has none."""
         if memory.isdigit():
             return {"vram_mb": int(memory)}
-        sysconf: Callable[[str], int] | None = getattr(os, "sysconf", None)  # none on Windows
         try:
-            pages = sysconf("SC_PHYS_PAGES") * sysconf("SC_PAGE_SIZE") if sysconf else 0
+            pages = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
         except ValueError, OSError:
             pages = 0
         return {"vram_mb": pages // 2**20, "unified": True}

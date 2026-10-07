@@ -57,8 +57,8 @@ class Invocation(FrozenModel):
     def run(self, environment: Mapping[str, str]) -> Outcome:
         """Run the command under `environment`, stopping it and its children at the deadline.
 
-        The executable is looked up on the environment's own PATH, because Windows resolves a
-        bare program name against the parent's PATH whatever the child is handed.
+        The executable is looked up on the environment's own PATH first, so a tool the
+        environment lacks is named as missing rather than failing to start.
 
         environment: the complete process environment the command runs under.
         """

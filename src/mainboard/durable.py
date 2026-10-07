@@ -8,7 +8,6 @@ import os
 import platform
 import plistlib
 import re
-import sys
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from getpass import getuser
@@ -426,11 +425,9 @@ class LaunchdAgent(Settler):
     @property
     def _domain(self) -> str:
         """The GUI domain while someone is logged in at the console, else the background one."""
-        if sys.platform != "win32":
-            uid = os.getuid()
-            gui = self.shell(("launchctl", "print", f"gui/{uid}"))[0] == 0
-            return f"gui/{uid}" if gui else f"user/{uid}"
-        raise MissionError("launchd domains exist on macOS only")
+        uid = os.getuid()
+        gui = self.shell(("launchctl", "print", f"gui/{uid}"))[0] == 0
+        return f"gui/{uid}" if gui else f"user/{uid}"
 
     @property
     def _target(self) -> str:

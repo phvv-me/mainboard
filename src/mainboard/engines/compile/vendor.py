@@ -19,7 +19,7 @@
 # code, so editing its files moves no digest, while editing its `pyproject.toml` moves
 # `Compiler.resolution_digest`, read at the vendored location on both machines alike.
 
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
@@ -43,7 +43,7 @@ def vendor_root(root: Path | None = None) -> str:
 
 def outside(path: str) -> bool:
     """Whether a declared workspace-relative path leaves the root, by spelling alone."""
-    if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
+    if PurePosixPath(path).is_absolute():
         return True
     depth = 0
     for part in PurePosixPath(path).parts:

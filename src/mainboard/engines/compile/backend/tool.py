@@ -1,43 +1,17 @@
 from contextlib import nullcontext
 from functools import cached_property
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from plumbum import local
 
 from ....core import MissionError
-from ....core.host import WINDOWS
 from .process import Process
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from plumbum.commands.base import BaseCommand
-
-
-# A Windows conda package ships `npm` (a POSIX script `CreateProcess` refuses) beside `npm.cmd`,
-# and plumbum would take the script. Only `PATHEXT` spellings run, `.cmd`/`.bat` via cmd.exe.
-_SCRIPT_LAUNCHERS = {".cmd", ".bat"}
-
-
-def windows_launcher(name: str) -> BaseCommand:
-    """The command that runs `name` on Windows: its `PATHEXT` spelling, under cmd.exe if a script.
-
-    name: `npm`, or a spelling already carrying its extension (`C:/Python/python.exe`), which is
-        looked up as it stands.
-    """
-    extensions = (local.env.get("PATHEXT") or ".COM;.EXE;.CMD;.BAT").lower().split(";")
-    suffix = Path(name).suffix.lower()
-    spellings = [name] if suffix and suffix in extensions else [name + ext for ext in extensions]
-    for directory in local.env.path:
-        for spelling in spellings:
-            candidate = Path(str(directory)) / spelling
-            if not candidate.is_file():
-                continue
-            if candidate.suffix.lower() in _SCRIPT_LAUNCHERS:
-                return local["cmd.exe"]["/d", "/c", str(candidate)]
-            return local[str(candidate)]
-    raise MissionError(f"{name} is not on PATH")
 
 
 class Tool:
@@ -67,8 +41,6 @@ class Tool:
         """
         if not self.name:
             raise MissionError(f"{type(self).__name__} names no command of its own to run")
-        if WINDOWS:
-            return windows_launcher(self.name)
         return local[self.name]
 
     @staticmethod
@@ -98,11 +70,6 @@ class Tool:
         if not self.available():
             return 0
         return self.within_cwd(Process.passthrough, verb, *args, **flags)
-
-    def defer(self, verb: str, *args: str, **flags: bool | str | None) -> None:
-        """Start a command that must outlive this process, doing nothing when unavailable."""
-        if self.available():
-            self.within_cwd(Process.detached, verb, *args, **flags)
 
     def scope(self) -> tuple[str, ...]:
         """Args after the verb pinning the command to this workspace."""

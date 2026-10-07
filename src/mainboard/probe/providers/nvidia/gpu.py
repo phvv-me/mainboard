@@ -175,8 +175,8 @@ class NvidiaGPU(GPU):
     def pci_bus_id(self) -> str:
         """PCI bus ID of the visible device, honoring `CUDA_VISIBLE_DEVICES`.
 
-        The CUDA Runtime preserves visible-device remapping; a pure-NVML Windows stack reads
-        the same identity from the physical handle instead.
+        The CUDA Runtime preserves visible-device remapping; a pure-NVML stack reads the same
+        identity from the physical handle instead.
         """
         if (runtime := self.apis.runtime) is None:
             return text(self.apis.nvml.device_get_pci_info_v3(self.handle).bus_id)
@@ -293,19 +293,8 @@ class NvidiaGPU(GPU):
         return 0.0
 
     def processes(self) -> tuple[UnitProcess, ...]:
-        """Every reliably attributed compute process, empty when NVML cannot distinguish them.
-
-        Windows WDDM reports ordinary desktop graphics clients through the compute-process query
-        and marks every process's memory as unavailable. Treating that list as contention makes
-        every Windows workstation permanently busy, so WDDM is an unsupported process sensor and
-        degrades to the same empty reading as any other unavailable sensor. Mainboard's card lease
-        still excludes concurrent Mainboard jobs across processes.
-        """
+        """Every compute process on the card, empty when NVML cannot say."""
         nvml = self.apis.nvml
-        with suppress(*self.apis.nvml_errors, AttributeError):
-            current, _pending = nvml.device_get_driver_model_v2(self.handle)
-            if current == nvml.DriverModel.DRIVER_WDDM:
-                return ()
         with suppress(*self.apis.nvml_errors):
             running = nvml.device_get_compute_running_processes_v3(self.handle)
             return tuple(

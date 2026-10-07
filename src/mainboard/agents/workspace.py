@@ -3,37 +3,27 @@
 # `sync` renders each harness's files from the shared declarations, removes the ones no longer
 # rendered and makes the links a harness reads `.agents` through. `update` installs a missing
 # harness and brings every present one to its latest release. `sections` judges what an agent
-# started here would meet: a link git could not make (a Windows account without the privilege
-# checks one out as a text file, repaired in place since a safe local action can), a file out of
-# step with `.agents`, a server whose command or variables this machine lacks, a harness missing
-# or logged out, and the Claude Code memory this workspace keeps.
+# started here would meet: a missing link, a file out of step with `.agents`, a server whose
+# command or variables this machine lacks, a harness missing or logged out, and the Claude Code
+# memory this workspace keeps.
 
 import os
-import re
 import shutil
 import subprocess
-import sys
 from functools import cached_property
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..core.section import Section, Verdict
-from ..git.process import Git
 from .harness import Harness, claude_key
 from .source import FOLDER, Server, Source
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
 
     from .harness import Which
-
-# The mode git records a symbolic link under in its index.
-_LINK_MODE = "120000"
-
-# A value that is an absolute path on some machine: `/…` or `C:\…`.
-_ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
 
 # The launcher that loads the workspace `.env` itself, under any of its names, so a server it
 # starts needs nothing else.
@@ -41,24 +31,6 @@ _TOOL = Project().names
 
 # Seconds a harness gets to print its version.
 _VERSION_SECONDS = 60
-
-type Junction = Callable[[Path, Path], str]
-
-
-def _junction(link: Path, target: Path) -> str:
-    """Make `link` a Windows directory junction to `target`, answering why not, empty on success.
-
-    A junction needs no privilege, so it stands in for a directory link without Developer Mode.
-    """
-    done = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=argv of fixed words and two paths since=2026-09-25
-        ["cmd", "/d", "/c", "mklink", "/J", str(link), str(target)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    return "" if done.returncode == 0 else (done.stdout + done.stderr).strip()
 
 
 class Agents:
@@ -78,14 +50,12 @@ class Agents:
         environment: Mapping[str, str],
         dotenv: Mapping[str, str],
         which: Which,
-        junction: Junction = _junction,
     ) -> None:
         self.root = root
         self.home = home
         self.environment = environment
         self.dotenv = dotenv
         self.which = which
-        self.junction = junction
 
     @classmethod
     def at(cls, root: Path, *, home: Path | None = None) -> Agents:
@@ -145,7 +115,7 @@ class Agents:
         if not claude.exists():
             claude.write_bytes(b"@AGENTS.md\n")
             changed.append("CLAUDE.md")
-        return sorted([*changed, *self._linked(), *self._repaired()])
+        return sorted([*changed, *self._linked()])
 
     def update(self) -> list[Section]:
         """Install every missing harness and bring every present one to its latest release.
@@ -190,26 +160,12 @@ class Agents:
         ]
 
     def links(self) -> Section:
-        """Whether every link the harnesses read and the workspace tracks is a link.
-
-        A tracked link git could not make is a text file holding its target, rebuilt here as a
-        junction (a directory) or a hard link (a file); git is told to stop comparing that path,
-        since it would otherwise report the stand-in as a change forever.
-        """
-        try:
-            repaired = self._repaired()
-        except OSError as refusal:
-            return Section(
-                section="agents: links",
-                verdict=Verdict.FAIL,
-                detail=f"cannot stand in for a link: {refusal}",
-                fix="enable Developer Mode, then git checkout -- <path>",
-            )
+        """Whether every link the harnesses read is a link."""
         missing = [
             link
             for harness in self.harnesses
             for link in harness.links
-            if not _is_link(self.root / link)
+            if not (self.root / link).is_symlink()
         ]
         if missing:
             return Section(
@@ -218,12 +174,7 @@ class Agents:
                 detail=f"not links: {', '.join(missing)}",
                 fix=f"{Project().name} agents sync",
             )
-        detail = (
-            f"stood in for {len(repaired)} links git could not make: {', '.join(repaired)}"
-            if repaired
-            else "every link resolves"
-        )
-        return Section(section="agents: links", verdict=Verdict.PASS, detail=detail)
+        return Section(section="agents: links", verdict=Verdict.PASS, detail="every link resolves")
 
     def instructions(self) -> Section:
         """Whether AGENTS.md is there and CLAUDE.md brings it in."""
@@ -353,7 +304,7 @@ class Agents:
         return rows
 
     def _run(self, argv: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
-        """`argv` run in the terminal, its program found on PATH (an npm `.cmd` on Windows)."""
+        """`argv` run in the terminal, its program found on PATH."""
         return subprocess.run([self.which(argv[0]) or argv[0], *argv[1:]], check=False)  # ruff:ignore[subprocess-without-shell-equals-true]  reason=argv a channel composed since=2026-10-07
 
     def _version(self, harness: Harness) -> str:
@@ -390,7 +341,7 @@ class Agents:
             )
             yield f"{name}: {variable} is {where}"
         for value in server.env.values():
-            if _ABSOLUTE.match(value) and not Path(value).exists():
+            if value.startswith("/") and not Path(value).exists():
                 yield f"{name}: {value} does not exist on this machine"
 
     def _stale(self, rendered: Mapping[str, str]) -> list[str]:
@@ -409,65 +360,15 @@ class Agents:
             link: target
             for harness in self.harnesses
             for link, target in harness.links.items()
-            if not _is_link(self.root / link) and not (self.root / link).exists()
+            if not (self.root / link).is_symlink() and not (self.root / link).exists()
         }
         for link, target in missing.items():
             self._link(self.root / link, target)
         return list(missing)
 
     def _link(self, path: Path, target: str) -> None:
-        """Link `path` to `target`, a junction for a directory where Windows refuses a link."""
-        folder = (path.parent / target).is_dir()
-        try:
-            path.symlink_to(target, target_is_directory=folder)
-        except OSError:
-            if sys.platform != "win32" or not folder:
-                raise
-            if refusal := self.junction(path, (path.parent / target).resolve()):
-                raise OSError(refusal) from None
-
-    def _repaired(self) -> list[str]:
-        """Stand in for every tracked link checked out as a text file; the paths repaired."""
-        repaired = []
-        for path, target in self._flattened():
-            self._stand_in(path, target)
-            relative = path.relative_to(self.root).as_posix()
-            Git(self.root).run("update-index", "--skip-worktree", "--", relative)
-            repaired.append(relative)
-        return repaired
-
-    def _flattened(self) -> list[tuple[Path, Path]]:
-        """Every tracked link checked out as a text file, with the target it names."""
-        listing = Git(self.root).run("ls-files", "-s", "-z").stdout
-        entries = [entry.split("\t", 1) for entry in listing.split("\0") if "\t" in entry]
-        found = []
-        for stage, relative in entries:
-            path = self.root / relative
-            if not stage.startswith(_LINK_MODE) or path.is_symlink() or not path.is_file():
-                continue
-            written = path.read_text(encoding="utf-8").strip()
-            target = (path.parent / PurePosixPath(written)).resolve()
-            if target.is_relative_to(self.root.resolve()) and target.exists():
-                found.append((path, target))
-        return found
-
-    def _stand_in(self, path: Path, target: Path) -> None:
-        """Replace the text file at `path` with a junction or a hard link to `target`.
-
-        The text file is set aside rather than deleted until its stand-in exists, so a refused
-        link leaves the checkout exactly as git wrote it.
-        """
-        aside = path.with_name(f"{path.name}.{Project().name}-link")
-        aside.unlink(missing_ok=True)
-        if not target.is_dir():
-            os.link(target, aside)
-            aside.replace(path)
-            return
-        path.replace(aside)
-        if refusal := self.junction(path, target):
-            aside.replace(path)
-            raise OSError(refusal)
-        aside.unlink()
+        """Link `path` to `target`, relative to the link's folder."""
+        path.symlink_to(target, target_is_directory=(path.parent / target).is_dir())
 
 
 def _current(path: Path) -> str:
@@ -481,10 +382,6 @@ def _text(path: Path) -> str:
         return path.read_bytes().decode()
     except FileNotFoundError:
         return ""
-
-
-def _is_link(path: Path) -> bool:
-    return path.is_symlink() or path.is_junction()
 
 
 def _dotenv(path: Path) -> dict[str, str]:

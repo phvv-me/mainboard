@@ -1,15 +1,12 @@
 import os
 import shlex
 import shutil
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the argv a verb hands over, the Windows stand-in for exec since=2026-09-28
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from string.templatelib import Interpolation, Template
 from typing import TYPE_CHECKING, NoReturn
 
 from plumbum import FG, ProcessExecutionError
-
-from ..core.host import WINDOWS
 
 if TYPE_CHECKING:
     from plumbum.commands.base import BaseCommand
@@ -57,18 +54,10 @@ def _render(template: Template, convert: Callable[[Interpolation], str]) -> str:
 
 
 def become(program: str, argv: list[str], env: Mapping[str, str] | None = None) -> NoReturn:
-    """Hand this process over to `program` with `argv`, the terminal and its signals included.
-
-    POSIX replaces the process. Windows has no exec: its `os.exec*` starts a child without quoting
-    its arguments, so an ssh handed `bash -lc 'cd root && ...'` ran only the `cd` in the login
-    shell and the rest from the home directory. There the child is run to completion instead,
-    its arguments quoted the way Windows parses them, and its exit status becomes this one's.
-    """
-    if not WINDOWS:
-        if env is None:
-            os.execvp(program, argv)
-        os.execvpe(program, argv, dict(env))
-    raise SystemExit(subprocess.call(argv, env=None if env is None else dict(env)))
+    """Replace this process with `program` and `argv`, the terminal and its signals included."""
+    if env is None:
+        os.execvp(program, argv)
+    os.execvpe(program, argv, dict(env))
 
 
 # Shells that need `-i` to read their interactive startup when not started by a terminal.
@@ -76,18 +65,9 @@ _POSIX_SHELLS = frozenset({"zsh", "bash", "fish", "sh", "dash", "ksh"})
 
 
 def interactive_shell() -> list[str]:
-    """The user's own interactive shell as an argv, found the same way on every system.
-
-    `$SHELL` where it names a shell this machine runs (zsh, bash and fish, MSYS zsh on Windows
-    included, whose `/usr/bin/zsh` is found by name), else PowerShell 7, Windows PowerShell or
-    cmd on Windows, else `sh`.
-    """
+    """The user's own interactive shell as an argv: `$SHELL` where this machine runs it, else
+    `sh`."""
     named = os.environ.get("SHELL", "")
     if named and (found := shutil.which(named) or shutil.which(Path(named).name)):
         return [found, "-i"] if Path(found).stem in _POSIX_SHELLS else [found]
-    if WINDOWS:
-        for name in ("pwsh", "powershell"):
-            if found := shutil.which(name):
-                return [found, "-NoLogo"]
-        return [os.environ.get("COMSPEC", "cmd.exe")]
     return ["/bin/sh", "-i"]

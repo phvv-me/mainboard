@@ -27,7 +27,7 @@ import posixpath
 import tomllib
 from collections import Counter
 from functools import cached_property
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from packaging.requirements import Requirement
@@ -486,7 +486,7 @@ def _moved(
 
 def _rebased(base: str, path: str) -> str:
     """`path`, relative to the member at `base`, as the workspace spells it; absolute ones stay."""
-    if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
+    if PurePosixPath(path).is_absolute():
         return path
     return posixpath.normpath(posixpath.join(base, path))
 

@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
     from ..manifest.schema.root import Manifest
 
-# Characters of file arguments one command carries. Windows refuses a command line past 32767
-# characters, and the same budget everywhere keeps a run's batching identical on every machine.
+# Characters of file arguments one command carries, well inside every kernel's argument limit,
+# and the same budget everywhere keeps a run's batching identical on every machine.
 _BATCH = 24_000
 
 

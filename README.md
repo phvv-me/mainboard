@@ -50,21 +50,6 @@ command descriptions, this README, and Python API docstrings. Results name their
 source locations. The wheel includes the README. API search never imports
 the scanned modules. Broad searches show twenty hits and the full match count.
 
-
-`mainboard diagnose --days 7` captures recent Windows incidents into a new
-`.mainboard/diagnostics/` directory, even when no workspace manifest works.
-`--out <directory>` chooses where to retain the evidence. Each read-only probe
-has a 45-second deadline; unavailable permissions, failed probes and collection
-limits remain visible. The versioned report retains raw event records, updates,
-service and driver identities, drive counters, network routes, PCIe parent paths
-and dump metadata. WER submissions are deduplicated by report ID; original dump
-times stay separate from submission times. A restart event does not establish its
-cause, and Healthy drive status or missing counters never exclude intermittent
-faults. Storage stalls and actual corruption appear before generic warnings.
-Protected dump inventory and component-store health require an elevated terminal;
-the command never elevates, repairs or restarts the machine. Incident collection
-currently supports Windows; other platforms explicitly report unavailable.
-
 `host list --facts` pairs the hardware with a software census (operating system and version,
 shells, filesystem case sensitivity, symlink and long-path support, the git
 settings a clone inherits, git, git-lfs, gh, ssh, uv, pixi, tectonic, node,
@@ -82,8 +67,8 @@ and every provider with whether its credentials are here and what the account
 has left. No credential is ever printed, only whether one was found.
 `provisioned` means a cached setup record exists, not that a job can currently run.
 `observed_at` timestamps the live survey; `cached_at` timestamps the retained host
-facts, which may be stale. An SSH echo probe works with POSIX shells, cmd, and
-PowerShell without requiring an installed environment. Neither cached hardware nor
+facts, which may be stale. An SSH echo probe works without an installed environment.
+Neither cached hardware nor
 a successful login proves GPU availability. For PBS/Slurm, the reachable endpoint
 is the login host, not an allocated compute node. Inspect `mainboard job list` and
 `mainboard host list <host> --facts` before choosing a target.
@@ -106,18 +91,10 @@ wait on another host's job asks it again only every half minute. `job cancel`
 settles a run on such a host without stopping it there, and says so.
 
 `run` executes native file targets locally. Use `job submit` for remote jobs.
-From Git Bash or MSYS2, an argument that looks like an absolute POSIX path is
-rewritten by the shell into a Windows one before this tool sees it; a command bound
-for a host refuses such an argument and names `MSYS_NO_PATHCONV=1`, which hands
-every argument on as typed.
 Collection and help stay local. Plain diagnostic commands use SSH.
 On a cluster, SSH reaches the login endpoint. It provides no batch allocation.
-Windows diagnostic arguments preserve embedded quotes and empty strings through native process
-creation, including `python -c` source. Native Windows collection and direct runs are supported;
-queued submissions remain unsupported. HPC-AI catalog prices absent from the provider response
-are unknown (`null`), never interpreted as free compute.
-A lane (`job submit --split`) refuses a roster containing a Windows host before starting any job; it never
-silently omits that host and returns a misleading success for partial coverage.
+HPC-AI catalog prices absent from the provider response are unknown (`null`), never
+interpreted as free compute.
 Onboarding selects Python from the tool's declared runtime requirement, not the host's
 older system interpreter. Workspace dependencies still install from the shipped frozen lock.
 The environment is installed before starting its queue service. Startup detaches its streams
@@ -301,7 +278,7 @@ copy an older release installs from.
 A target never holds a human checkout: Mainboard keeps everything there in one
 folder, `~/.mb-jobs` unless the profile names another `root` (a host set up under
 the older name keeps its `~/.mainboard-jobs`, so nothing is built twice). `host setup` reads
-the home in the host's own shell (`$HOME`, `%USERPROFILE%` on Windows) and places
+the home in the host's own shell (`$HOME`) and places
 a leading `~` under it, so every consumer uses one absolute path; a host never set
 up is refused with the command that fixes it, and a rental's home is read on landing.
 
@@ -433,7 +410,7 @@ verbs that manage the monorepo itself are `git`, `paper`, `doctor --center`,
 
 ```console
 $ mainboard doctor --center                      # is this machine ready to be the center
-$ mainboard host setup --center pedro-home --root C:/Users/vazva/life   # move it there
+$ mainboard host setup --center macmini --root ~/Developer/projects    # move it there
 ```
 
 `doctor --center` is one report, each row with the command that repairs it: this
@@ -446,25 +423,20 @@ the tracked scripts that use a platform-divergent command (`sed -i`,
 `date -d`, `jq`, `flock`...), each named with its portable replacement.
 
 It also puts the default environment's executable directories on the PATH every
-agent shell starts from, and proves it from each shell kind (zsh, bash, sh,
-PowerShell, cmd, Git Bash). Windows prepends them to the user PATH in the
-registry, which cmd, PowerShell and Git Bash all start from. macOS and Linux have
-no such store, so `~/.config/mainboard/path.sh` puts them on PATH and one marked
-line sources it from `~/.zshenv` (every zsh, login or not) and `~/.profile` and
-`~/.bashrc` (bash and sh). A dotfiles manager should adopt that line. A
-PowerShell alias shadowing a tool (`ls`, `cat`, `sort`...) is named with the
-`$PROFILE` line that removes it.
+agent shell starts from, and proves it from each shell kind (zsh, bash, sh).
+`~/.config/mainboard/path.sh` puts them on PATH and one marked line sources it
+from `~/.zshenv` (every zsh, login or not) and `~/.profile` and `~/.bashrc` (bash
+and sh). A dotfiles manager should adopt that line.
 
-`host setup --center <alias>` moves the center to any machine ssh reaches, Windows
-included with no WSL. It refuses to start while an owned HEAD is on no remote,
+`host setup --center <alias>` moves the center to any macOS or Linux machine ssh
+reaches. It refuses to start while an owned HEAD is on no remote,
 puts uv there when missing, runs the same census `host list --facts` uses and stops early on
 a platform the workspace or its lock cannot serve, then:
 
 1. signs `gh` in with this machine's login and makes it git's https credential;
 2. carries the ssh config blocks the declared and held hosts need (with their
    jump hosts), the keys they name and `known_hosts`, dropping the options the
-   destination's client refuses (`ControlMaster` on Windows, `UseKeychain` off
-   macOS);
+   destination's client refuses (`UseKeychain` off macOS);
 3. clones the monorepo at this HEAD and every owned submodule at its recorded
    pointer (foreign reference submodules are left to fetch on demand);
 4. carries what git does not hold: the `.env`, `.mainboard/` (the dispatch
@@ -705,7 +677,7 @@ Mainboard's remote result mounts and after fetching.
 
 ```console
 mainboard job list --json
-mainboard job collect research/reproducibility/datasets/experiments/architecture_error_census --on pedro-home
+mainboard job collect research/reproducibility/datasets/experiments/architecture_error_census --on pedro-cvlab
 mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
 mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
 mainboard query "SELECT server, handle, backend_state, verdict, evidence, settled FROM jobs"
@@ -904,10 +876,7 @@ publication may leave a valid subset for the next retry. Current transfers send
 the selected scope again and growing snapshots can overlap on disk; incremental
 transfer and snapshot compaction remain optimization work.
 
-Collection from native Windows, Linux, and macOS nodes to a Linux client has been exercised,
-as has native Windows local execution. Source setup,
-snapshot pinning, and scheduler launch still contain Unix-shell paths; collection
-support does not establish fully portable remote submission. The next boundary is
+Collection from Linux and macOS nodes has been exercised. The next boundary is
 one Python executor for the existing job specification, retaining Pueue/PBS/Slurm
 as scheduler adapters and Pixi as environment activation rather than adding a
 second queue or database service.

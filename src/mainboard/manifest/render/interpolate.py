@@ -112,8 +112,8 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _os_name() -> str:
-    """The running platform family: `linux`, `macos`, or `windows`."""
-    return {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
+    """The running platform family: `linux` or `macos`."""
+    return "macos" if sys.platform == "darwin" else "linux"
 
 
 def _exec(command: str) -> str:

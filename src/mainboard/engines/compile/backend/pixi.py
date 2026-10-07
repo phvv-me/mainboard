@@ -4,24 +4,20 @@ import sys
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from time import monotonic
 from typing import TYPE_CHECKING, cast
 
 from plumbum import local
 from plumbum.commands.base import BoundEnvCommand
 
 from ....core import MissionError, Project
-from ....core.host import WINDOWS, current_platform
-from ....runtime.activation import prepended
+from ....core.host import current_platform
 from .engine import PixiEngine
 from .process import Process
 from .repair import EnvironmentAudit
-from .tool import Tool, windows_launcher
-from .windows_task import WindowsTaskRunner
+from .tool import Tool
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping, Sequence
+    from collections.abc import Generator, Sequence
 
     from plumbum.commands.base import BaseCommand
 
@@ -29,10 +25,6 @@ if TYPE_CHECKING:
 
 # What pixi writes into a prefix's `conda-meta/` once an installation has finished.
 _FINGERPRINT = ".pixi-environment-fingerprint"
-
-# Pixi's complete activation, conda package hooks included, recorded after a Windows provision
-# (while Pixi can still initialize its auth store) for commands run inside a restricted sandbox.
-_WINDOWS_ACTIVATION = "activation-windows.json"
 
 # The env var vouching each virtual-package floor, so a machine that cannot present the package
 # (a login node with no GPU driver) still installs the frozen lock its jobs run under.
@@ -43,16 +35,7 @@ _FLOOR_OVERRIDES = {
     "linux": "CONDA_OVERRIDE_LINUX",
     "macos": "CONDA_OVERRIDE_OSX",
     "osx": "CONDA_OVERRIDE_OSX",
-    "windows": "CONDA_OVERRIDE_WIN",
 }
-
-
-def _executable_dirs(prefix: Path, *, windows: bool) -> list[str]:
-    """The prefix's existing command directories: root, `Scripts`, `Library/bin` on Windows."""
-    candidates = (
-        (prefix, prefix / "Scripts", prefix / "Library" / "bin") if windows else (prefix / "bin",)
-    )
-    return [str(candidate) for candidate in candidates if candidate.is_dir()]
 
 
 class Pixi(Tool):
@@ -76,9 +59,9 @@ class Pixi(Tool):
     def command(self) -> BaseCommand:
         """The engine's pixi with the workspace's `overrides` bound over its own environment.
 
-        Read per invocation, since the compiler may have just rewritten the floors. Bound in one
-        overlay so a floor cannot discard Windows' HOME binding, and outright rather than through
-        `with_env`, which returns a bare command when empty, so callers see one shape.
+        Read per invocation, since the compiler may have just rewritten the floors. Bound
+        outright rather than through `with_env`, which returns a bare command when empty, so
+        callers see one shape.
         """
         engine = self.engine.command
         environment = dict(engine.env or {}) | self.overrides
@@ -100,33 +83,10 @@ class Pixi(Tool):
 
     @contextmanager
     def activated(self, env: str = "default") -> Generator[None]:
-        """Prepend the environment's existing executable directories to PATH for the block."""
-        windows = WINDOWS
-        binaries = _executable_dirs(self.env_prefix(env), windows=windows)
-        with local.env(PATH=os.pathsep.join([*binaries, str(local.env["PATH"])])):
-            yield
-
-    @contextmanager
-    def direct_windows_environment(self, env: str) -> Generator[None]:
-        """Activate a Windows prefix with an accessible profile and temporary storage.
-
-        The temporary directory lives outside the workspace, since provenance sampled inside this
-        context would otherwise see a dirty tree.
-        """
-        exported, cleared = self._windows_activation()
-        with (
-            TemporaryDirectory(prefix="mainboard-run-", ignore_cleanup_errors=True) as temporary,
-            local.env(
-                **exported,
-                HOME=str(Path.home()),
-                TEMP=temporary,
-                TMP=temporary,
-            ),
-            self.activated(env),
-        ):
-            for name in cleared:
-                if name in local.env:
-                    del local.env[name]
+        """Prepend the environment's `bin`, once installed, to PATH for the block."""
+        binaries = self.env_prefix(env) / "bin"
+        leading = [str(binaries)] if binaries.is_dir() else []
+        with local.env(PATH=os.pathsep.join([*leading, str(local.env["PATH"])])):
             yield
 
     def env_prefix(self, env: str) -> Path:
@@ -173,7 +133,6 @@ class Pixi(Tool):
         """Install `env` locked by default and verify every explicitly resolved lock."""
         result = self.environment_result("install", "-e", env, resolve=resolve)
         self._raise_on_lock_drift(result, locked=not resolve)
-        self._raise_on_inaccessible_windows_home(result, env=env, resolve=resolve)
         if result.returncode:
             raise MissionError("`pixi install` failed (see its output above)")
         # Known wart from chefe: a resolve installs twice, the repair riding the second, locked
@@ -216,48 +175,17 @@ class Pixi(Tool):
         """Whether pixi finished installing `env`: its fingerprint, not a mere prefix, exists."""
         return (self.env_prefix(env) / "conda-meta" / _FINGERPRINT).is_file()
 
-    def run(
-        self,
-        command: Sequence[str],
-        env: str = "default",
-        *,
-        exports: dict[str, str] | None = None,
-    ) -> int:
+    def run(self, command: Sequence[str], env: str = "default") -> int:
         """Run a task or command argv through Pixi, each token a distinct argument, no shell.
-
-        Under a restricted Windows sandbox, where Pixi 0.78's auth store cannot resolve the
-        profile even with `HOME` and `USERPROFILE` right, an argv runs straight from the prefix
-        and a declared task through `WindowsTaskRunner`, both under the cached activation and
-        without starting Pixi.
 
         command: a task name and arguments, or an ad-hoc argv.
         """
-        if self._restricted_windows_command(command):
-            runner = self._restricted_runner(env)
-            with self.direct_windows_environment(env), local.env(**(exports or {})):
-                if command[0] in runner.tasks:
-                    return runner.run(command, Process.stream).returncode
-                return Process.passthrough(windows_launcher(command[0])[command[1:]])
-        if exports:
-            command = ["env", *(f"{name}={value}" for name, value in exports.items()), *command]
         return self.within_cwd(Process.passthrough, "run", "--frozen", "-e", env, *command)
 
     def capture(
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
     ) -> CommandResult:
         """`run`, capturing output under `timeout` seconds."""
-        if self._restricted_windows_command(command):
-            runner = self._restricted_runner(env)
-            with self.direct_windows_environment(env):
-                if command[0] in runner.tasks:
-                    deadline = None if timeout is None else monotonic() + timeout
-
-                    def capture_task(argv: BaseCommand) -> CommandResult:
-                        remaining = None if deadline is None else max(deadline - monotonic(), 0.0)
-                        return Process.capture(argv, timeout=remaining)
-
-                    return runner.run(command, capture_task)
-                return Process.capture(windows_launcher(command[0])[command[1:]], timeout=timeout)
         return self.within_cwd(
             lambda argv: Process.capture(argv, timeout=timeout),
             "run",
@@ -265,141 +193,6 @@ class Pixi(Tool):
             "-e",
             env,
             *command,
-        )
-
-    def _restricted_runner(self, env: str) -> WindowsTaskRunner:
-        """The sandbox task runner for an installed `env`."""
-        if not self.ready(env):
-            raise MissionError(
-                f"environment {env!r} is not installed; run `{Project().name} install {env}`"
-            )
-        return WindowsTaskRunner(self.manifest, env)
-
-    def _restricted_windows_command(self, command: Sequence[str]) -> bool:
-        """Whether a Windows command can use cached activation and explicit auth storage."""
-        return WINDOWS and bool(command) and self.windows_activation_cache.is_file()
-
-    @property
-    def windows_activation_cache(self) -> Path:
-        return self.manifest.parent / _WINDOWS_ACTIVATION
-
-    def cache_windows_activation(self, env: str, binaries: Sequence[Path]) -> None:
-        """Persist Pixi's full Windows activation, including every conda package hook.
-
-        binaries: the second-stage executable directories, recorded leading the activated `PATH`
-            the way `activate.sh` puts them, since every Windows entry reads this record instead.
-        """
-        if not WINDOWS:
-            return
-        text = self.within_cwd(
-            lambda command: Process.output(command, "pixi shell-hook --json"),
-            "shell-hook",
-            "--frozen",
-            "--json",
-            "-e",
-            env,
-        )
-        recorded = json.loads(text)
-        variables = recorded["environment_variables"]
-        path = next((name for name in variables if name.upper() == "PATH"), "PATH")
-        prepended(variables, path, binaries)
-        self.windows_activation_cache.write_text(
-            json.dumps(recorded), encoding="utf-8", newline="\n"
-        )
-
-    def recorded_environment(self, env: str, base: Mapping[str, str]) -> dict[str, str]:
-        """`base` entered into `env` the way a restricted command enters it, as a plain mapping.
-
-        The recorded variables over `base`, the declared clears taken out, and the prefix's
-        executable directories leading `PATH`.
-        """
-        exported, cleared = self._windows_activation()
-        entered = {
-            name: value for name, value in {**base, **exported}.items() if name not in cleared
-        }
-        binaries = _executable_dirs(self.env_prefix(env), windows=True)
-        entered["PATH"] = os.pathsep.join([*binaries, entered.get("PATH", "")])
-        return entered
-
-    def _windows_activation(self) -> tuple[dict[str, str], set[str]]:
-        """The recorded activation's exports and clears, its generated scripts applied."""
-        exported, scripts = self._cached_windows_activation()
-        cleared: set[str] = set()
-        for script in scripts:
-            self._apply_generated_activation(script, exported, cleared)
-        return exported, cleared
-
-    def _cached_windows_activation(self) -> tuple[dict[str, str], list[Path]]:
-        """Load the complete activation Pixi recorded when this prefix was provisioned."""
-        cache = self.windows_activation_cache
-        try:
-            if cache.stat().st_mtime_ns < self.manifest.stat().st_mtime_ns:
-                raise MissionError(
-                    f"Windows activation changed; run `{Project().name} install` outside the "
-                    "application sandbox"
-                )
-            decoded = json.loads(cache.read_text(encoding="utf-8"))
-        except FileNotFoundError as error:
-            raise MissionError(
-                f"Windows activation is not cached; run `{Project().name} install` outside the "
-                "application sandbox"
-            ) from error
-        variables = decoded.get("environment_variables", {})
-        scripts = decoded.get("activation_scripts", [])
-        if not isinstance(variables, dict) or not isinstance(scripts, list):
-            raise MissionError(f"Windows activation cache is invalid: {cache}")
-        exported = {
-            name.upper(): value
-            for name, value in variables.items()
-            if isinstance(name, str) and isinstance(value, str)
-        }
-        return exported, [Path(script) for script in scripts if isinstance(script, str)]
-
-    @staticmethod
-    def _apply_generated_activation(
-        script: Path, exported: dict[str, str], cleared: set[str]
-    ) -> None:
-        """Apply Mainboard's generated dotenv/unset batch scripts, refusing arbitrary ones.
-
-        A POSIX `.sh` is skipped: pixi cannot run it on Windows either.
-        """
-        if script.suffix == ".sh":
-            return
-        try:
-            text = script.read_text(encoding="utf-8")
-        except FileNotFoundError as error:
-            raise MissionError(f"Windows activation script does not exist: {script}") from error
-        if script.name == "dotenv.bat" and _generated(text, "'s Provisioner"):
-            location = next(
-                line.partition('"')[2].partition('"')[0]
-                for line in text.splitlines()
-                if line.strip().lower().startswith('if not exist "')
-            )
-            dotenv = script.parent / location
-            try:
-                lines = dotenv.read_text(encoding="utf-8").splitlines()
-            except FileNotFoundError:
-                return
-            for line in lines:
-                if line.startswith("#") or "=" not in line:
-                    continue
-                name, _, value = line.partition("=")
-                # Upper-cased like the cached activation, since the batch `if not defined` is
-                # case-blind; `foo` beside a cached `FOO` put both in one CreateProcess block.
-                key = name.upper()
-                if key and key not in os.environ and key not in exported:
-                    exported[key] = value
-            return
-        if script.name == "unset.bat" and _generated(text, " from the [env] table"):
-            cleared.update(
-                line.removeprefix("set ").removesuffix("=")
-                for line in text.splitlines()
-                if line.lower().startswith("set ") and line.endswith("=")
-            )
-            return
-        raise MissionError(
-            f"restricted Windows execution cannot reproduce activation script {script}; "
-            "run this command outside the application sandbox"
         )
 
     def repair(self, env: str) -> None:
@@ -448,7 +241,7 @@ class Pixi(Tool):
     def shell_hook(self, env: str = "default", *, shell: str = "bash") -> str:
         """Pixi's full activation of `env` as a sourceable `shell` snippet, for `activate.sh`."""
         # Frozen: unfrozen, a lock pixi reads as stale is re-solved for every platform, which is
-        # how a Windows host came to build an osx-arm64 sdist (2026-09-11).
+        # how a host came to build another platform's sdist (2026-09-11).
         command = self.command["shell-hook", "--frozen", "-s", shell, "-e", env, *self.scope()]
         return Process.output(command, "pixi shell-hook")
 
@@ -473,26 +266,6 @@ class Pixi(Tool):
                 "on a solve-capable machine, which is also what a host is then sent."
             )
 
-    @staticmethod
-    def _raise_on_inaccessible_windows_home(
-        result: CommandResult, *, env: str, resolve: bool
-    ) -> None:
-        """Explain the one Pixi provisioning failure caused by a restricted Windows profile."""
-        failure = f"{result.stdout}\n{result.stderr}".casefold()
-        if (
-            result.returncode
-            and WINDOWS
-            and "filestorageerror" in failure
-            and "could not determine the home directory" in failure
-        ):
-            environment = "" if env == "default" else f" {env}"
-            verb = "lock" if resolve else "install"
-            raise MissionError(
-                "Pixi could not access the Windows home/profile required for provisioning. "
-                f"Run `{Project().name} {verb}{environment}` from a regular "
-                "terminal outside the restricted application sandbox."
-            )
-
     def _has_editable_paths(self) -> bool:
         """Whether the generated manifest carries a mutable editable Python source."""
         try:
@@ -509,9 +282,3 @@ class Pixi(Tool):
             elif isinstance(value, list):
                 pending.extend(value)
         return False
-
-
-def _generated(text: str, credit: str) -> bool:
-    """Whether `text` is a loader the compiler generated, credited under any of the tool's names
-    (`compiler.AUTHOR` writes the legacy one)."""
-    return any(f"Generated by {name}{credit}" in text for name in Project().names)

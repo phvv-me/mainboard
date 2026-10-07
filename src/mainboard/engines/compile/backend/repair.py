@@ -24,12 +24,8 @@ _IGNORED_DIRS = frozenset({"__pycache__", "build", "dist", "node_modules", "targ
 
 
 def site_packages(prefix: Path) -> tuple[Path, ...]:
-    """The site-packages trees a compiled prefix holds, POSIX and Windows spellings alike."""
-    candidates = [
-        *(prefix / "lib").glob("python*/site-packages"),
-        prefix / "Lib" / "site-packages",
-    ]
-    return tuple(tree for tree in candidates if tree.is_dir())
+    """The site-packages trees a compiled prefix holds."""
+    return tuple(tree for tree in (prefix / "lib").glob("python*/site-packages") if tree.is_dir())
 
 
 def recorded_extensions(name: str, *, prefix: Path) -> tuple[Path, ...]:

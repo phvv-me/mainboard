@@ -1,5 +1,5 @@
 import re
-from pathlib import PurePath, PurePosixPath, PureWindowsPath
+from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Self
 
 import tomlkit
@@ -51,15 +51,9 @@ _PYPI_OPTION_KEYS = (
 
 # The generated dotenv loader, sourced first by pixi activation when `workspace.dotenv` is on.
 _DOTENV_SH = "dotenv.sh"
-_DOTENV_BAT = "dotenv.bat"
 
 # The generated unset script, sourced after the dotenv loader so a clear beats `.env`.
 _UNSET_SH = "unset.sh"
-_UNSET_BAT = "unset.bat"
-
-# Windows activation runs under cmd, which `CALL`s a POSIX script into its file association and,
-# without a desktop, never returns, so a declared script joins it only with a batch suffix.
-_BATCH_SUFFIXES = frozenset({".bat", ".cmd"})
 
 
 def cleared(env: dict[str, str | bool]) -> list[str]:
@@ -77,7 +71,7 @@ def rerooted(path: str, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> 
     The parents are counted from `generated_dir`'s depth, never by hand. An absolute path rides
     through, and an empty one names the workspace root.
     """
-    if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
+    if PurePosixPath(path).is_absolute():
         return path
     parents = ("..",) * len(generated_dir.parts)
     root = PurePosixPath(*parents)
@@ -357,24 +351,17 @@ class PixiManifest(FrozenModel):
 
     @staticmethod
     def activation_table(
-        m: Manifest,
-        *,
-        windows: bool = False,
-        generated_dir: PurePath = _DEFAULT_GENERATED_DIR,
+        m: Manifest, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR
     ) -> dict[str, Toml]:
         """The `[activation]` table: exported env vars and the scripts pixi sources on entry.
 
         The dotenv loader comes first so every later script sees what it loads; declared
-        scripts are workspace-relative and rerooted, and Windows takes only the batch ones.
+        scripts are workspace-relative and rerooted.
         """
         scripts: list[Toml] = [
-            *([_DOTENV_BAT if windows else _DOTENV_SH] if m.workspace.dotenv else []),
-            *([_UNSET_BAT if windows else _UNSET_SH] if cleared(m.env) else []),
-            *(
-                rerooted(script, generated_dir=generated_dir)
-                for script in m.workspace.scripts
-                if not windows or PurePosixPath(script).suffix.lower() in _BATCH_SUFFIXES
-            ),
+            *([_DOTENV_SH] if m.workspace.dotenv else []),
+            *([_UNSET_SH] if cleared(m.env) else []),
+            *(rerooted(script, generated_dir=generated_dir) for script in m.workspace.scripts),
         ]
         exported = {name: value for name, value in m.env.items() if isinstance(value, str)}
         return {
@@ -420,7 +407,6 @@ class PixiManifest(FrozenModel):
         platforms: PlatformMatrix,
         *,
         clearing: bool = False,
-        windows: bool = False,
         generated_dir: PurePath = _DEFAULT_GENERATED_DIR,
     ) -> Toml:
         """One `[feature.<name>]` table: the env's own feature table, platforms and tasks.
@@ -429,9 +415,8 @@ class PixiManifest(FrozenModel):
         hold, so an isolated feature carries the unset script in its own activation.
 
         clearing: whether the workspace `[env]` table takes any variable away.
-        windows: whether this feature can run on a Windows target.
         """
-        body: dict[str, Toml] = {
+        return {
             **cls.feature_table(env),
             **(
                 {_PLATFORMS: platforms.environments[name]}
@@ -450,13 +435,6 @@ class PixiManifest(FrozenModel):
             ),
             **({"activation": {"scripts": [_UNSET_SH]}} if clearing and env.no_default else {}),
         }
-        if not (clearing and env.no_default and windows):
-            return body
-        targets = _table(body.get("target"))
-        windows_target = _table(targets.get("win"))
-        targets["win"] = {**windows_target, "activation": {"scripts": [_UNSET_BAT]}}
-        body["target"] = targets
-        return body
 
     @classmethod
     def feature_table(cls, env: Env) -> dict[str, Toml]:
@@ -492,10 +470,6 @@ class PixiManifest(FrozenModel):
         The default shard owns the synthetic dev and platform-routing features, a named shard
         only its own (Pixi layers the root feature unless `no-default`).
         """
-        clearing = bool(cleared(m.env))
-        workspace_platforms = tuple(
-            _platform_name(entry) for entry in cls.workspace_platforms(platforms, environment)
-        )
         if environment != "default":
             env = m.envs[environment]
             return (
@@ -504,11 +478,7 @@ class PixiManifest(FrozenModel):
                         environment,
                         env,
                         platforms,
-                        clearing=clearing,
-                        windows=any(
-                            platform.startswith("win-")
-                            for platform in (env.platforms or workspace_platforms)
-                        ),
+                        clearing=bool(cleared(m.env)),
                         generated_dir=generated_dir,
                     )
                 },
@@ -589,24 +559,6 @@ class PixiManifest(FrozenModel):
                 body["target"] = {
                     platform: scope for platform, scope in target.items() if platform in selectors
                 }
-        if any(_platform_name(entry).startswith("win-") for entry in workspace_platforms) and (
-            windows_activation := cls.activation_table(
-                m, windows=True, generated_dir=generated_dir
-            )
-        ):
-            windows_target = _table(targets.get("win"))
-            platform_activation = _table(windows_target.get("activation"))
-            windows_environment = {
-                **_table(windows_activation.get("env")),
-                **_table(platform_activation.get("env")),
-            }
-            targets["win"] = {
-                **windows_target,
-                "activation": {
-                    **windows_activation,
-                    **({"env": windows_environment} if windows_environment else {}),
-                },
-            }
         payload: dict[str, Toml] = {
             "workspace": {
                 "name": m.workspace.name,

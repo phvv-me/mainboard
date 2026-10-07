@@ -38,8 +38,6 @@ class System(FrozenOpenModel):
     root: the directory the filesystem questions were asked of.
     case_sensitive: whether names differing only in case are different files there.
     symlinks: why a symbolic link cannot be made there, empty when it can.
-    long_paths: whether paths past 260 characters open, always true off Windows.
-    developer_mode: whether Windows lets this account make symbolic links.
     free_bytes: free space where the workspace lives.
     git: the global git settings a clone inherits, empty values for unset ones.
     tools: every tool that answered with a version, by name.
@@ -55,8 +53,6 @@ class System(FrozenOpenModel):
     root: str = ""
     case_sensitive: bool = True
     symlinks: str = ""
-    long_paths: bool = True
-    developer_mode: bool = False
     free_bytes: int = 0
     git: dict[str, str] = {}
     tools: dict[str, str] = {}
@@ -72,11 +68,6 @@ class System(FrozenOpenModel):
     def surveyed(self) -> bool:
         """Whether a census filled this in, since a host onboarded by an older tool has none."""
         return bool(self.system)
-
-    @property
-    def windows(self) -> bool:
-        """Whether this is a Windows machine."""
-        return self.system == "Windows"
 
     @property
     def platform(self) -> str:

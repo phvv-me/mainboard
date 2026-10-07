@@ -1,9 +1,9 @@
 """The standard-library agent `host setup --center` runs on the destination, sent over SSH stdin.
 
-A machine about to become the center has no Mainboard yet, often no Bash, and may
-be Windows, macOS or Linux. Everything done there before the tool is installed is therefore
-one of these functions, run by a Python that uv provides and fed through ssh's stdin, so the
-same code clones, places files and signs in on every platform. Each answers with plain JSON,
+A machine about to become the center, macOS or Linux, has no Mainboard yet. Everything done
+there before the tool is installed is therefore one of these functions, run by a Python that uv
+provides and fed through ssh's stdin, so the same code clones, places files and signs in on
+either platform. Each answers with plain JSON,
 and nothing here ever prints or returns the content it was handed, since some of it is secret.
 """
 
@@ -11,7 +11,6 @@ import getpass
 import hashlib
 import json
 import os
-import re
 import stat
 import subprocess
 import sys
@@ -40,7 +39,6 @@ def where(root: str) -> dict[str, Json]:
     return {
         "root": str(Path(root).expanduser().absolute()),
         "home": str(Path.home()),
-        "separator": os.sep,
         "user": getpass.getuser(),
     }
 
@@ -111,12 +109,7 @@ def ssh(blocks: Sequence[str], known: Sequence[str]) -> dict[str, Json]:
 
 
 def clone(
-    root: str,
-    url: str,
-    branch: str,
-    commit: str,
-    submodules: Sequence[Sequence[str]],
-    excluded: Mapping[str, Sequence[str]],
+    root: str, url: str, branch: str, commit: str, submodules: Sequence[Sequence[str]]
 ) -> list[dict[str, str]]:
     """Clone the workspace at `commit` and every owned submodule at the pointer it records.
 
@@ -128,20 +121,17 @@ def clone(
     url: the root repository's remote.
     branch: the branch the center is on, empty for a detached HEAD.
     submodules: each owned submodule as `[parent, path, url]`, parents first, paths relative.
-    excluded: the tracked paths this machine cannot hold, by repository name (`.` the root),
-        which that repository's checkout leaves out.
     """
     base = Path(root).expanduser()
-    _prepare()
-    steps = [_checkout(base, url, branch, commit, excluded.get(".", ()))]
+    if not _run(("git", "lfs", "version"))[0]:
+        # Large files check out as files only once git-lfs's filters are installed.
+        _run(("git", "lfs", "install", "--skip-repo"))
+    steps = [_checkout(base, url, branch, commit)]
     if steps[0]["outcome"] != "done":
         return steps
-    for parent, path, address in submodules:
-        name = PurePosixPath(parent, path).as_posix()
-        if name in excluded:
-            _narrowed(base / parent, path, address, excluded[name])
+    for parent, path, _ in submodules:
         found = _git(base / parent, "submodule", "update", "--init", "--", path)
-        steps.append(_step(name, found, done="at its pointer"))
+        steps.append(_step(PurePosixPath(parent, path).as_posix(), found, done="at its pointer"))
     return steps
 
 
@@ -230,26 +220,9 @@ def _write(target: Path, source: IO[bytes], *, mtime: float, private: bool) -> i
 def _restrict(path: Path) -> None:
     """Make `path` readable by this user alone, which ssh insists on for a private key."""
     path.chmod(_PRIVATE)
-    if os.name == "nt":
-        user = os.environ.get("USERNAME", "")
-        _run(("icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"))
 
 
-def _prepare() -> None:
-    """The git settings a clone of this tree needs before its first checkout on this machine.
-
-    Large files check out as files only once git-lfs's filters are installed, and on Windows a
-    checkout of this tree's deeper paths needs `core.longpaths` before it starts.
-    """
-    if not _run(("git", "lfs", "version"))[0]:
-        _run(("git", "lfs", "install", "--skip-repo"))
-    if os.name == "nt":
-        _run(("git", "config", "--global", "core.longpaths", "true"))
-
-
-def _checkout(
-    base: Path, url: str, branch: str, commit: str, excluded: Sequence[str]
-) -> dict[str, str]:
+def _checkout(base: Path, url: str, branch: str, commit: str) -> dict[str, str]:
     """Put the root repository at `commit`, cloning it first when it is not here yet."""
     held = {"repo": ".", "outcome": "held"}
     if (base / ".git").exists():
@@ -268,8 +241,6 @@ def _checkout(
         found = _run(("git", "clone", "--no-checkout", "--quiet", url, str(base)))
         if found[0]:
             return {"repo": ".", "outcome": "failed", "detail": found[1]}
-    if excluded:
-        _narrow(base, excluded)
     moved = (
         _git(base, "checkout", "-q", "-B", branch, commit)
         if branch
@@ -278,42 +249,6 @@ def _checkout(
     if branch and not moved[0]:
         _git(base, "branch", "-q", f"--set-upstream-to=origin/{branch}")
     return _step(".", moved, done=f"{branch or 'detached'} at {commit[:12]}")
-
-
-def _narrowed(parent: Path, path: str, url: str, excluded: Sequence[str]) -> None:
-    """Check the submodule at `path` out at its pointer without `excluded`.
-
-    `submodule update` would clone and then fail the whole checkout on the first such path, so
-    the clone is made here without a checkout and narrowed first; the update then finds it at its
-    pointer. A checkout that never happened, the index empty, is forced over whatever a failed
-    one left behind.
-    """
-    target = parent / path
-    if not (target / ".git").exists():
-        _run(("git", "clone", "--no-checkout", "--quiet", url, str(target)))
-    _narrow(target, excluded)
-    if not _git(target, "ls-files")[1].strip():
-        pointer = _git(parent, "rev-parse", f"HEAD:{path}")[1].strip()
-        _git(target, "checkout", "-q", "-f", "--detach", pointer)
-
-
-def _narrow(repo: Path, excluded: Sequence[str]) -> None:
-    """Leave `excluded` out of `repo`'s worktree, every other path in it.
-
-    Git for Windows refuses such a path even into the index unless the repository turns
-    `core.protectNTFS` off, so the index keeps it while a non-cone sparse checkout, each path
-    escaped to match itself alone, keeps it off the disk.
-    """
-    patterns = ["/*", *(f"!/{_literal(path)}" for path in excluded)]
-    _git(repo, "config", "core.protectNTFS", "false")
-    _git(repo, "sparse-checkout", "set", "--no-cone", "--stdin", stdin="\n".join(patterns) + "\n")
-
-
-def _literal(path: str) -> str:
-    """`path` as a sparse-checkout pattern matching it alone, wildcards and end blanks escaped."""
-    escaped = re.sub(r"([\\*?\[])", r"\\\1", path)
-    kept = escaped.rstrip(" ")
-    return kept + "\\ " * (len(escaped) - len(kept))
 
 
 def _hosts(line: str) -> tuple[str, ...]:
@@ -352,9 +287,9 @@ def _step(repo: str, found: tuple[int, str], *, done: str) -> dict[str, str]:
     return {"repo": repo, "outcome": "done", "detail": done}
 
 
-def _git(path: Path, *arguments: str, stdin: str = "") -> tuple[int, str]:
+def _git(path: Path, *arguments: str) -> tuple[int, str]:
     """`git -C path arguments`, answered as status and output."""
-    return _run(("git", "-C", str(path), *arguments), stdin=stdin)
+    return _run(("git", "-C", str(path), *arguments))
 
 
 def _run(command: Sequence[str], stdin: str = "") -> tuple[int, str]:

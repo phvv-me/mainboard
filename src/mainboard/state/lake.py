@@ -151,13 +151,9 @@ def cache_home(
     environ: Mapping[str, str] = os.environ,
     home: Path | None = None,
 ) -> Path:
-    """The user's cache directory on `platform`, the one every OS convention names.
-
-    `LOCALAPPDATA` on Windows, `~/Library/Caches` on macOS, else `XDG_CACHE_HOME` or `~/.cache`.
-    """
+    """The user's cache directory on `platform`: `~/Library/Caches` on macOS, else
+    `XDG_CACHE_HOME` or `~/.cache`."""
     base = home or Path.home()
-    if platform == "win32" and environ.get("LOCALAPPDATA"):
-        return Path(environ["LOCALAPPDATA"])
     if platform == "darwin":
         return base / "Library" / "Caches"
     return Path(environ.get("XDG_CACHE_HOME") or base / ".cache")
@@ -864,7 +860,7 @@ class Session:
         self._connection: duckdb.DuckDBPyConnection | None = None
         self._turn = RLock()
         # Detaching is the collector's job, not a caller's: otherwise only interpreter exit
-        # releases the catalog, which Windows then refuses to delete or move.
+        # releases the catalog.
         weakref.finalize(self, self._stack.close)
 
     def close(self) -> None:

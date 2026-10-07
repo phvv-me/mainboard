@@ -152,7 +152,7 @@ def source(repo: Path) -> Source:
 def installed(name: str) -> str:
     """The installed version behind one logical package name, or `absent`.
 
-    A platform may ship the import under another distribution name (`triton-windows` for
+    A platform may ship the import under another distribution name (`pytorch-triton` for
     `triton`), so the import-to-distribution index keeps the receipt schema platform-independent.
     """
     try:

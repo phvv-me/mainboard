@@ -1,5 +1,4 @@
 import os
-import shutil
 import sys
 from functools import cached_property
 from pathlib import Path, PurePath
@@ -9,7 +8,6 @@ from plumbum import local
 from plumbum.commands.processes import CommandNotFound
 
 from ....core import MissionError, Project
-from ....core.host import WINDOWS
 from .process import Process
 from .tool import Tool
 
@@ -25,9 +23,6 @@ PIXI_VERSION = "0.79.0"
 
 # `pip install mainboard` brings no pixi, so first use runs the official installer at the pin.
 POSIX_INSTALLER = f"curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION={PIXI_VERSION} sh"
-WINDOWS_INSTALLER = (
-    f"$Env:PIXI_VERSION='{PIXI_VERSION}'; irm -useb https://pixi.sh/install.ps1 | iex"
-)
 
 _TOOL = Project().name
 
@@ -48,18 +43,11 @@ class PixiEngine(Tool):
 
     @cached_property
     def command(self) -> BaseCommand:
-        """pixi on PATH, else `PIXI_HOME/bin` (a non-login shell drops it), else bootstrapped.
-
-        On Windows `HOME` is bound to the real user profile, since tools in a pixi exec
-        environment follow it and a launcher may pass another.
-        """
+        """pixi on PATH, else `PIXI_HOME/bin` (a non-login shell drops it), else bootstrapped."""
         try:
-            command = local["pixi"]
+            return local["pixi"]
         except CommandNotFound:
-            command = local[str(self.installed_binary())]
-        if WINDOWS:
-            return command.with_env(HOME=str(Path.home()))
-        return command
+            return local[str(self.installed_binary())]
 
     def version(self) -> str:
         """The pixi this machine runs as `X.Y.Z`, empty when none resolves.
@@ -80,7 +68,7 @@ class PixiEngine(Tool):
     @staticmethod
     def appended_shell_file() -> str:
         """The startup file pixi's installer will append a PATH line to, else empty."""
-        if os.environ.get("PIXI_NO_PATH_UPDATE") or WINDOWS:
+        if os.environ.get("PIXI_NO_PATH_UPDATE"):
             return ""
         return _SHELL_RC.get(PurePath(os.environ.get("SHELL", "")).name, "")
 
@@ -101,22 +89,8 @@ class PixiEngine(Tool):
 
     @staticmethod
     def installer() -> BaseCommand:
-        """Pixi's official installer command for this operating system."""
-        if WINDOWS:
-            executable = shutil.which("powershell") or shutil.which("pwsh")
-            if executable is None:
-                raise MissionError("PowerShell is required to install pixi on Windows")
-            return local[executable][
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                WINDOWS_INSTALLER,
-            ]
-        executable = shutil.which("sh")
-        if executable is None:
-            raise MissionError("a POSIX shell is required to install pixi on this platform")
-        return local[executable]["-c", POSIX_INSTALLER]
+        """Pixi's official installer command."""
+        return local["sh"]["-c", POSIX_INSTALLER]
 
     def installed_binary(self) -> Path:
         """The fallback Pixi binary, bootstrapped when absent."""
@@ -127,6 +101,5 @@ class PixiEngine(Tool):
 
     @staticmethod
     def binary_path() -> Path:
-        """The fallback Pixi executable path for this operating system."""
-        name = "pixi.exe" if WINDOWS else "pixi"
-        return PixiEngine.home() / "bin" / name
+        """The fallback Pixi executable path."""
+        return PixiEngine.home() / "bin" / "pixi"

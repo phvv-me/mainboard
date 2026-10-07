@@ -40,9 +40,8 @@ class HostProfile(Declared):
 
     root: where the workspace lives there. Unset, one of the tool's `~/.<name>-jobs` folders,
         the one the host already uses when it has one (`dispatch.targets.resolve`); a leading
-        `~` is the host's own home as its setup probed it (`%USERPROFILE%` on Windows).
-    platform: the pixi platform (`win-64`), probed at setup when empty; it decides whether the
-        host is reached through a login `bash` or PowerShell.
+        `~` is the host's own home as its setup probed it.
+    platform: the pixi platform (`linux-64`), probed at setup when empty.
     python: the bootstrap interpreter in the remote ssh login shell, quoted as that shell needs;
         standard-library collection needs no environment or Mainboard there.
     vars: read by this machine's backends (an API key, rental parameters), never shipped.

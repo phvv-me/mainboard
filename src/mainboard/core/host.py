@@ -3,11 +3,8 @@ import sys
 
 # This machine's operating system, the one spelling every branch on it uses. A host's system,
 # probed or recorded, is data and stays a string compared where it is read.
-WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
 LINUX = sys.platform.startswith("linux")
-
-_UNIX_FAMILIES = frozenset({"linux", "osx"})
 
 
 def platform_family(platform_name: str) -> str:
@@ -28,21 +25,18 @@ def platform_selectors(platform_name: str) -> tuple[str, ...]:
     """
     family = platform_family(platform_name)
     selectors = (platform_name,) if family == platform_name else (platform_name, family)
-    return (*selectors, "unix") if family in _UNIX_FAMILIES else selectors
+    return (*selectors, "unix")
 
 
 def pixi_platform(system: str, machine: str) -> str:
     """The pixi platform string (`linux-64` style) for one kernel and machine pair.
 
     system: the kernel as `uname -s`, `platform.system()` or a probe spells it.
-    machine: the architecture as `uname -m` or `PROCESSOR_ARCHITECTURE` spells it.
+    machine: the architecture as `uname -m` spells it.
     """
     arm = machine.lower() in {"arm64", "aarch64"}
-    match system.lower():
-        case "darwin":
-            return "osx-arm64" if arm else "osx-64"
-        case "windows":
-            return "win-64"
+    if system.lower() == "darwin":
+        return "osx-arm64" if arm else "osx-64"
     return "linux-aarch64" if arm else "linux-64"
 
 

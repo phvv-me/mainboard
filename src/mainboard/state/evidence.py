@@ -48,7 +48,7 @@ from .lake import Finding, Lake, Session, insert
 # Where the read-through cache lives under the state directory.
 CACHE = "evidence"
 
-# How many files are read at once: opening a file is what costs on a scanned Windows disk, and
+# How many files are read at once: opening a file is what costs on a scanned disk, and
 # the opens overlap. The largest file a read holds in memory; a larger one streams when staged.
 _READERS = 16
 _HELD_BYTES = 32 << 20
@@ -200,7 +200,7 @@ class Evidence:
         Idempotent: an object already held costs nothing, and a path whose latest row already
         names its digest gets no new row. Files are taken in windows of at most `STAGED_BYTES`,
         each file read once by a pool of readers (opening a file, not the lake, is what costs on
-        a scanned Windows disk), and each window commits as one insert, one data file. An
+        a scanned disk), and each window commits as one insert, one data file. An
         interrupted ingest keeps the windows it committed and a rerun finishes the rest. The run
         is recorded in `imports`.
 

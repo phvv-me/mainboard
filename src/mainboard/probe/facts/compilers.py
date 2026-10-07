@@ -81,15 +81,13 @@ class Compilers(FrozenModel):
         if found := shutil.which("nvcc") or shutil.which("cuda-nvcc"):
             return Compiler(path=Path(found))
         declared = (
-            Path(home) / "bin" / name
+            Path(home) / "bin" / "nvcc"
             for variable in ("CUDA_PATH", "CUDA_HOME")
             if (home := os.environ.get(variable))
-            for name in ("nvcc", "nvcc.exe")
         )
         toolkits = (
             *declared,
             Path(sys.prefix) / "bin" / "nvcc",
-            Path(sys.prefix) / "Library" / "bin" / "nvcc.exe",
             _CUDA_ROOT / "cuda" / "bin" / "nvcc",
             *sorted(_CUDA_ROOT.glob("cuda-*/bin/nvcc")),
         )
