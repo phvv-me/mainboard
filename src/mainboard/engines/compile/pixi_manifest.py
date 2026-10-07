@@ -87,7 +87,7 @@ def anchored(
     one directory deeper, so `"../../.."` meant the generated directory and pixi refused it).
     Textual, since the lock and dotenv loader spell the same locations. Every spelling landing
     inside the workspace is rewritten, not only the one `rerooted` writes: pixi 0.79 re-spelled
-    `../../../.mainboard/vendor/atpx` as `../../vendor/atpx`, which escaped an exact-prefix match
+    `../../../.mainboard/vendor/patos` as `../../vendor/patos`, which escaped an exact-prefix match
     and left a Miyabi wave importing no torch (2026-09-06).
 
     generated_dir: the directory it was compiled into, whose depth decides which relative

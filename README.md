@@ -324,7 +324,9 @@ anybody else is read to verify the pointers that name it and otherwise left alon
 [git]
 owners = ["phvv-me", "ComputerVisionLaboratory"]
 ceiling-mb = 50                              # the default; LFS files are exempt
-never-commit = ["**/evidence/**", "**/datasets/**"]  # the default; data lives in the lake
+never-commit = [                             # the default; data lives in the lake
+  "datasets/**", "research/*/datasets/**", "**/experiments/**/evidence/**", "**/*.parquet",
+]
 ```
 
 Experiment data never enters a commit: `mainboard lake ingest` keeps it, and
@@ -344,7 +346,7 @@ $ mainboard git check           # everything a clone or the next push would trip
 
 ```toml
 [lint]
-exclude = ["**/datasets/", "**/references/"]   # never read, never rewritten
+exclude = ["research/*/datasets/", "**/references/"]   # never read, never rewritten
 owners = ["packages/*", "research/*"]           # beside every dir holding pyproject.toml or .git
 
 [lint.tools.ruff-format]
@@ -373,6 +375,11 @@ that passes it is one the writing pass would leave alone. A person, an agent, a
 hook and CI all call the same command and read the same exit code. A
 `mainboard.toml` holding only `[lint]` is enough to use it in any git
 repository.
+
+Only the repositories the workspace owns are read: reference code and a vendored
+`third_party/` are someone else's. A check that reads its whole owner (pyrefly,
+ty, mcmr) answers for the files the pass reads and no others, so linting a few
+files is red only for those.
 
 ## Every coding agent alike
 
@@ -844,7 +851,8 @@ their actual bytes with SHA-256, preserves a content-addressed source ZIP under
 An edit after capture requires a new bundle, not a commit. Discovery follows the
 same per-repository file set as mirroring, reading `.gitignore` files directly when
 no Git answers; secrets and output protections remain. A local trial's bundle also
-leaves out `[workspace] data` (default `/datasets/`, `/references/`, `**/evidence/`),
+leaves out `[workspace] data` (default `/datasets/`, `/research/*/datasets/`,
+`/references/`, `**/experiments/**/evidence/`),
 which is pinned through `needs` or `resources`, never archived as source; host mirrors
 still ship what their own sync include names. An interrupted archive
 leaves one `<digest>.zip.partial` its retry replaces, swept after a day.

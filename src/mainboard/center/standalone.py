@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # A fresh resolve of a GPU stack downloads gigabytes, and a solve that never ends is a finding.
 _INSTALL_SECONDS = 1800.0
 
-# A relative path starting with a climb (`../../packages/atpx`), which from a file at the member's
+# A relative path starting with a climb (`../../packages/patos`), which from a file at the member's
 # top always leaves it, guarded against biting into a longer path or prose; and the manifest's
 # own root spelled as a template, which a path may start from.
 _CLIMB = re.compile(r"(?<![\w./+~@-])\.\.(?:/[\w.+~@-]+)*")

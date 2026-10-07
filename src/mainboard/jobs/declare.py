@@ -59,7 +59,11 @@ def declared(module: ast.Module, name: str) -> Declaration:
 
     A function or method carries it on its decorator, an application on the call wrapping it
     (`app = job(needs=...)(App(...))`); a target declaring nothing gets the empty declaration.
+    A whole test file (no name) declares what its tests do together: every need and resource
+    once, in order, and the fetch path when they all name the same one.
     """
+    if not name:
+        return _together(module)
     parts = name.split("::")
     body = module.body
     for parent in parts[:-1]:
@@ -77,6 +81,24 @@ def declared(module: ast.Module, name: str) -> Declaration:
                 {keyword.arg: _literal(keyword, name) for keyword in decoration.keywords}
             )
     return Declaration()
+
+
+def _together(module: ast.Module) -> Declaration:
+    """What every decorated function or method in `module` declares, as one declaration."""
+    found = [
+        Declaration.model_validate(
+            {keyword.arg: _literal(keyword, node.name) for keyword in decoration.keywords}
+        )
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and (decoration := _job_decorator(node)) is not None
+    ]
+    fetches = {declaration.fetch for declaration in found if declaration.fetch}
+    return Declaration(
+        needs=tuple(dict.fromkeys(need for each in found for need in each.needs)),
+        resources=tuple(dict.fromkeys(item for each in found for item in each.resources)),
+        fetch=fetches.pop() if len(fetches) == 1 else "",
+    )
 
 
 def _decoration(node: ast.stmt, name: str) -> ast.Call | None:

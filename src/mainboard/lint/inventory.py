@@ -1,13 +1,17 @@
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
 from ..core.errors import MissionError
+from ..git.tree import Tree
 from .git import git, printed
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
+
+    from ..manifest.schema.git import GitPolicy
 
 # The one newline git writes back out for a file whose attributes say `eol=crlf`.
 _CRLF = "\r\n"
@@ -27,12 +31,17 @@ class Attributes(FrozenModel):
 class Inventory:
     """The files a lint run reads, asked of git so ignored and generated trees never appear.
 
-    Submodules are entered rather than skipped, since each one is a project of the monorepo
-    whose files the owner scan checks, and git reports a submodule as one opaque path.
+    An owned submodule is entered rather than skipped, since each one is a project of the
+    monorepo whose files the owner scan checks, and git reports a submodule as one opaque path.
+    A repository the workspace does not own (reference code, a vendored `third_party/`) is
+    someone else's code, never read, the way the `git` verbs never write it.
+
+    policy: the `[git]` table, whose owners say which repositories are this workspace's.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, policy: GitPolicy) -> None:
         self.root = root
+        self.policy = policy
 
     def changed(self) -> list[Path]:
         """Every file that differs from HEAD or is new, deletions included.
@@ -80,10 +89,10 @@ class Inventory:
         ]
         for name in names:
             path = repository / name
-            if path.is_dir():
-                yield from self._changed(path)
-            else:
+            if not path.is_dir():
                 yield path
+            elif path.resolve() in self._entered:
+                yield from self._changed(path)
 
     def _differing(self, repository: Path) -> list[str]:
         """What differs from HEAD in `repository`, everything git tracks while HEAD is unborn."""
@@ -97,10 +106,17 @@ class Inventory:
         )
         for name in names:
             path = directory / name
-            if path.is_dir():
+            if not path.is_dir():
+                if path.exists():
+                    yield path
+            elif path.resolve() in self._entered:
                 yield from self._listed(path)
-            elif path.exists():
-                yield path
+
+    @cached_property
+    def _entered(self) -> frozenset[Path]:
+        """The checked-out repositories this workspace owns, the ones a listing descends into: a
+        submodule never initialized lists itself as `./` and is not among them."""
+        return frozenset(repo.path.resolve() for repo in Tree(self.root, self.policy).owned())
 
     @staticmethod
     def _names(repository: Path, *arguments: str, stdin: str = "") -> list[str]:

@@ -1443,11 +1443,11 @@ def build(root: Path | None = None) -> App:
     def lint(*paths: Path, check: bool = False, only: str = "", json: bool = False) -> int:
         """Fix what can be fixed, then check, over the changed files or everything under PATHS.
 
-        With no path the pass reads every file that differs from HEAD or is new, submodules
-        entered and deletions included, so the everyday call costs what the edit did. A path
-        widens it to every file git tracks or would track at or beneath it, so `lint .` at the
-        root reads the whole workspace. The exit is nonzero when a file was rewritten or a step
-        failed, the one answer a person, an agent, a hook and a CI job all act on.
+        With no path the pass reads every file that differs from HEAD or is new, owned
+        submodules entered and deletions included, so the everyday call costs what the edit did.
+        A path widens it to every file git tracks or would track at or beneath it, so `lint .` at
+        the root reads the whole workspace. The exit is nonzero when a file was rewritten or a
+        step failed, the one answer a person, an agent, a hook and a CI job all act on.
 
         Args:
             paths: files or directories, relative to the working directory.
@@ -1458,12 +1458,14 @@ def build(root: Path | None = None) -> App:
             json: print the report as canonical JSON instead of the findings and a summary line.
         """
         root = workspace_root()
-        inventory = Inventory(root)
-        files = (
-            inventory.under([path.resolve() for path in paths]) if paths else inventory.changed()
-        )
+        manifest = load(project.manifest(root))
+        inventory = Inventory(root, manifest.git)
+        if paths:
+            files = inventory.under([path.resolve() for path in paths])
+        else:
+            files = inventory.changed()
         steps = [step.strip() for step in only.split(",") if step.strip()]
-        report = Linter(root, load(project.manifest(root)), check=check, only=steps).lint(files)
+        report = Linter(root, manifest, check=check, only=steps).lint(files)
         if json:
             record(report.model_dump(mode="json"), mode="json", fields=(), title="lint")
         else:

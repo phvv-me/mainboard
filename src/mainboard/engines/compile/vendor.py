@@ -1,7 +1,7 @@
 # HOW A WORKSPACE DEPENDS ON A PACKAGE OUTSIDE ITS ROOT. `../../packages/sample_lib` resolves on
 # the workstation, but on Miyabi the mirror (`/work/xg25g007/x10537/reproducibility`) is a
 # sibling of the monorepo's, so the spelling names nothing there and the lock and digest spell
-# one machine's tree. (Before this, sample-lib and atpx were reached by hand-written `PYTHONPATH`
+# one machine's tree. (Before this, sample-lib and patos were reached by hand-written `PYTHONPATH`
 # and version pins that never reached a host.)
 #
 # THE RULE, WITH NO KNOB: such a dependency is declared to pixi at `<generated>/vendor/<name>`,

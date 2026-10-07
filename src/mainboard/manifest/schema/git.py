@@ -12,13 +12,20 @@ class GitPolicy(Declared):
     owners: GitHub users or organizations, compared case-insensitively.
     ceiling_mb: the largest file a commit takes; Git LFS pointers are exempt.
     never_commit: git glob pathspecs per repository a commit leaves alone, even when staged by
-        hand, except a hand-staged deletion. The default is where experiments write data
-        (`datasets/`, `evidence/`), whose bytes the lake keeps (`mb lake ingest`).
+        hand, except a hand-staged deletion. The default is the data the lake keeps (`mb lake
+        ingest`): a project's `datasets/` (a research repository's own, or one under
+        `research/*` in the monorepo), an experiment node's `evidence/`, and Parquet anywhere.
+        Anchored so a source package named `datasets` or `evidence` is still code.
     """
 
     owners: list[str] = []
     ceiling_mb: float = 50.0
-    never_commit: list[str] = ["**/evidence/**", "**/datasets/**"]
+    never_commit: list[str] = [
+        "datasets/**",
+        "research/*/datasets/**",
+        "**/experiments/**/evidence/**",
+        "**/*.parquet",
+    ]
 
     @property
     def ceiling_bytes(self) -> int:

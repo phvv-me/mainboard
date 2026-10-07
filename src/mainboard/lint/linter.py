@@ -1,6 +1,8 @@
 import hashlib
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from pathspec import GitIgnoreSpec
@@ -13,7 +15,7 @@ from ..manifest.schema.lint import FILES, TEXT
 from . import text
 from .inventory import Attributes, Inventory
 from .owners import Owners
-from .process import Invocation, Outcome
+from .process import MISSING, TIMED_OUT, Invocation, Outcome
 from .report import Report
 
 if TYPE_CHECKING:
@@ -26,6 +28,11 @@ if TYPE_CHECKING:
 # and the same budget everywhere keeps a run's batching identical on every machine.
 _BATCH = 24_000
 
+# Where a finding line points, `path:line` as every check prints it (ruff, ty's concise and
+# pyrefly's min-text formats, mcmr's concise one, vulture, vale): relative to the owner the
+# check ran in, or absolute.
+_LOCATION = re.compile(r"(?:^|\s)(?P<path>[^\s:]+\.\w+):\d+")
+
 
 class Linter:
     """Normalize, fix and check workspace files in one parallel pass.
@@ -35,6 +42,11 @@ class Linter:
     `[lint.tools]` declares them, since two formatters must never rewrite one file together,
     then every read-only check at once. Each tool runs once per owner of the files it matches,
     inside that owner, under its environment's PATH.
+
+    A check that reads its whole owner (a type checker, mcmr) answers for every file there, so
+    its verdict is narrowed to the files this pass reads: a finding naming another file is
+    dropped, and the check passes when none is left. Output naming no file at all is a tool
+    that broke, and keeps its failure. A pass over a few files is red only for those files.
 
     A check pass writes nothing: the hygiene names what it would repair as findings of its
     own, and every tool runs its `check` command, all at once since no two of them can race
@@ -53,7 +65,7 @@ class Linter:
         self.check = check
         self.steps = self._selected(only)
         self._tools = {name: tool for name, tool in self.table.tools.items() if name in self.steps}
-        self.inventory = Inventory(root)
+        self.inventory = Inventory(root, manifest.git)
         self.owners = Owners(root, self.table.owners, self.table.markers)
         self._provisioner = Provisioner(root, manifest)
         self._environments: dict[str, Mapping[str, str]] = {}
@@ -81,7 +93,14 @@ class Linter:
             if name not in writers
             for invocation in self._invocations(name, files)
         ]
-        outcomes.extend(self._parallel(checks))
+        read = frozenset(self._relative(path) for path in files)
+        whole = {
+            name for name, tool in self._tools.items() if FILES not in tool.argv(check=self.check)
+        }
+        outcomes.extend(
+            self._narrowed(outcome, read) if outcome.step in whole else outcome
+            for outcome in self._parallel(checks)
+        )
         return Report(
             files=len(files),
             rewritten=tuple(
@@ -195,6 +214,29 @@ class Linter:
                 self._environments[env] = local.env.getdict()
         with ThreadPoolExecutor() as pool:
             return list(pool.map(lambda job: job.run(self._environments[job.env]), invocations))
+
+    def _narrowed(self, outcome: Outcome, read: frozenset[str]) -> Outcome:
+        """A whole-owner check's verdict over the files `read` alone (workspace-relative); a
+        check that timed out or never started keeps its failure whatever it printed."""
+        if outcome.code in {0, TIMED_OUT, MISSING}:
+            return outcome
+        named = [(line, self._named(line, outcome.owner)) for line in outcome.output.splitlines()]
+        if not any(name for _, name in named):
+            return outcome
+        kept = [line for line, name in named if name in read]
+        code = outcome.code if kept else 0
+        return outcome.model_copy(update={"code": code, "output": "\n".join(kept)})
+
+    def _named(self, line: str, owner: str) -> str | None:
+        """The workspace-relative file a finding line names, None for a line naming none and
+        empty for one naming a file outside the workspace."""
+        found = _LOCATION.search(line)
+        if found is None:
+            return None
+        place = PurePosixPath(found["path"])
+        if not place.is_absolute():
+            return (PurePosixPath(owner) / place).as_posix()
+        return place.relative_to(self.root).as_posix() if place.is_relative_to(self.root) else ""
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.root).as_posix()

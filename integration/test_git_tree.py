@@ -11,35 +11,13 @@ no `.gitmodules` entry. `mb git commit` settles each of them rather than stoppin
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from .conftest import committed, git
+
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
-
-
-def git(where: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    """Run git in `where`, local-path submodules allowed and an author named."""
-    settings = ("protocol.file.allow=always", "user.name=it", "user.email=it@example.invalid")
-    flags = [word for setting in settings for word in ("-c", setting)]
-    return subprocess.run(
-        ["git", "-C", str(where), *flags, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-
-
-def committed(where: Path) -> Path:
-    """A repository at `where` holding one commit."""
-    where.mkdir(parents=True)
-    git(where, "init", "--quiet", "--initial-branch=main")
-    (where / "README").write_text("one\n", encoding="utf-8", newline="\n")
-    git(where, "add", "README")
-    git(where, "commit", "--quiet", "-m", "one")
-    return where
 
 
 @pytest.fixture
@@ -63,22 +41,6 @@ def broken(workspace: Path, tmp_path_factory) -> Path:
     pointer.unlink()
     pointer.write_text("gitdir: ../../../../.git/modules/gone\n", encoding="utf-8", newline="\n")
     assert git(workspace, "status", "--porcelain").returncode != 0
-    return workspace
-
-
-@pytest.fixture
-def tracked(workspace: Path, tmp_path_factory) -> Path:
-    """The workspace as a repository with an author, its manifest committed and pushed to a bare
-    `origin`, the remote that makes it the workspace's own."""
-    remote = tmp_path_factory.mktemp("remotes") / "root.git"
-    git(workspace, "init", "--quiet", "--bare", "--initial-branch=main", remote.as_posix())
-    git(workspace, "init", "--quiet", "--initial-branch=main")
-    git(workspace, "config", "user.name", "it")
-    git(workspace, "config", "user.email", "it@example.invalid")
-    git(workspace, "remote", "add", "origin", remote.as_posix())
-    git(workspace, "add", "-A")
-    git(workspace, "commit", "--quiet", "-m", "manifest")
-    git(workspace, "push", "--quiet", "-u", "origin", "main")
     return workspace
 
 

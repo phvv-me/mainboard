@@ -1001,6 +1001,26 @@ llm-head 680); the root `[git] never-commit` adds `**/*.parquet`.
       scan of `blobs` each, and copies only an object larger than a window on its own. One
       streamed read of everything is not an option: DuckDB holds a read's whole answer, and half
       the lake in one read peaked at 32 GB
-- [ ] `never-commit`'s `**/evidence/**` and `**/datasets/**` also match source code (mcmr's
+- [x] `never-commit`'s `**/evidence/**` and `**/datasets/**` also matched source code (mcmr's
       `evidence/` packages, research/llm's `scripts/datasets/*.py`, compression's
-      `evidence/*.py`), so a commit silently leaves edits there out
+      `evidence/*.py`), so a commit silently left edits there out: see Round 14
+
+## Round 14 (2026-10-07): 0.5.0, mainboard alone
+
+The owner retired atpx and every math/ tree ("we just use mainboard now") and asked for every
+node to be wiped and set up again on one published release.
+
+- [x] `[git] never-commit` and `[workspace] data` name data where projects write it: a
+      repository's `datasets/`, `research/*/datasets/`, an experiment node's `evidence/` and
+      Parquet anywhere. A source package called `datasets` or `evidence` is code again
+- [x] `mb lint .` recursed forever into a submodule never initialized (git lists it as
+      `./`), and read vendored `third_party/` trees whole. A pass reads the repositories the
+      workspace owns, the ones `mb git` writes, and nothing else: 16,287 files, not 28,079
+- [x] A check that reads its whole owner (ty, pyrefly, mcmr, vulture) answers for the files
+      the pass reads: a finding naming another file is dropped, one naming no file at all is
+      a tool that broke and keeps its failure. The root runs them in one-line formats
+- [x] A whole test file run as one job declares what its tests declare together, so
+      `mb run path/test_x.py` writes back every lake-held need its tests name
+- [ ] A commit hook running `mb lint` on what a commit takes works, but every touched file
+      still carries its share of about 110,000 older findings (mcmr alone about 60,000). How
+      a hook treats that debt (a recorded baseline, or fixing it first) waits for the owner
