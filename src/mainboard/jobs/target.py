@@ -105,21 +105,41 @@ class Target(FrozenModel):
         """The directory the job file lives in, workspace-relative."""
         return PurePosixPath(self.file).parent.as_posix()
 
+    @property
+    def home(self) -> PurePosixPath | None:
+        """The folder a test under `experiments/<x>/` keeps its evidence store in, else None.
+
+        Its `datasets/experiments/<x>` sibling, holding the receipts and the objects they pin
+        under `evidence/`.
+        """
+        file = PurePosixPath(self.file)
+        for parent in file.parents if self.test else ():
+            parts = file.relative_to(parent).parts
+            if parent.name == "experiments" and len(parts) > 1:
+                return parent.parent / "datasets" / "experiments" / parts[0]
+        return None
+
+    def results(self, fetch: str) -> str:
+        """What a dispatch of this target pulls back: its home when `fetch` lies inside it.
+
+        An empty `fetch` means the home too, and any other is kept. A sealed snapshot links only
+        the results path back to the mirror, so a folder beside the store left the receipts'
+        objects in the snapshot, never collected, and settling failed on every pass (cutok 621
+        and 631, 2026-10-09).
+        """
+        home = self.home
+        if home and (not fetch or PurePosixPath(fetch).is_relative_to(home)):
+            return home.as_posix()
+        return fetch
+
     def declaration(self, root: Path) -> Declaration:
         """What the target declared beyond its imports, read off the file's syntax.
 
-        `Class::test_case[1]` declares what `test_case` declared. A test under `experiments/<x>/`
-        declaring no fetch fetches its `datasets/experiments/<x>` sibling.
+        `Class::test_case[1]` declares what `test_case` declared; its fetch is what `results`
+        makes of it.
         """
         declaration = declared(parsed(root / self.file), self.name.partition("[")[0])
-        if self.test and not declaration.fetch:
-            for parent in PurePosixPath(self.file).parents:
-                if parent.name == "experiments":
-                    parts = PurePosixPath(self.file).relative_to(parent).parts
-                    if len(parts) > 1:
-                        fetch = parent.parent / "datasets" / "experiments" / parts[0]
-                        return declaration.model_copy(update={"fetch": fetch.as_posix()})
-        return declaration
+        return declaration.model_copy(update={"fetch": self.results(declaration.fetch)})
 
     @staticmethod
     def __relative(spelling: str, root: Path) -> str:

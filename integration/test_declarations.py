@@ -7,11 +7,12 @@ it, so a source package that happens to be called `datasets` or `evidence` is st
 """
 
 import ast
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from textwrap import dedent
 
 import pytest
 
+from mainboard.board import Board
 from mainboard.jobs.declare import Declaration, declared
 from mainboard.manifest.schema.git import GitPolicy
 
@@ -55,6 +56,24 @@ def test_tests_naming_different_fetch_paths_leave_the_file_without_one() -> None
     )
 
     assert declared(module, "").fetch == ""
+
+
+def test_a_test_pulls_back_the_home_its_receipts_are_kept_in(workspace: Path) -> None:
+    """A folder inside a test's home, declared or given, still brings its store home.
+
+    Pulling the folder alone left the objects the receipts pin in the snapshot (cutok 631).
+    """
+    home = "lab/datasets/experiments/law"
+    test = workspace / "lab" / "experiments" / "law" / "test_law.py"
+    test.parent.mkdir(parents=True)
+    test.write_text(f'@job(fetch="{home}/probe")\ndef test_law(): ...\n', encoding="utf-8")
+    board = Board(workspace)
+    command = "lab/experiments/law/test_law.py::test_law"
+
+    assert board.results(None, command=command) == home
+    assert board.results(f"{home}/other", command=command) == home
+    assert board.results("data/elsewhere", command=command) == "data/elsewhere"
+    assert board.results(f"{home}/probe", command="python -m law") == f"{home}/probe"
 
 
 def _kept_out(path: str) -> bool:

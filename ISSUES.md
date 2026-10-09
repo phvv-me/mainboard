@@ -250,13 +250,27 @@ campaign first; move an entry to the bottom section once fixed and verified.
     (2026-10-09): the v25 roster audit reached `bulk-baselines-20261006-v17/support-snapshot.json`
     last and wrote `admitted: false`. Resolve every pinned input (from the lake) before the audit
     reads anything.
-13j. **A job's `fetch` folder on the host is not scoped to the run** (2026-10-09, cutok smoke 621
-    and 622 on pedro-cvlab): a second run of the same test overwrote the first's uncollected
-    files. Settling 621 then failed on every pass with "no lake around .../stream-hypotheses-v26
-    holds e5abe45f...", since neither the host nor a lake still held what its manifest pinned.
-    The rerun's collection was refused as conflicting evidence. Both runs only settled as failed,
-    with "result transfer failed". Write each run's fetch under a run-scoped staging folder on
-    the host, or collect before the next run of that target starts.
+13j. **A test whose fetch is a folder beside its evidence store never settles** (2026-10-09, cutok
+    smoke 621, 631, 632 on pedro-cvlab). Every pass failed with "no lake around
+    .../stage-probe-v26 holds 862d65c8...". The digest is one of the receipt's artifacts in
+    `heterogeneous_pipeline/evidence/objects/`, and which one is named varies by pass, since
+    `Artifacts.verify` walks a set. The declared fetch was
+    `heterogeneous_pipeline/stage-probe-v26`, and a sealed snapshot links only the results path
+    back to the mirror. So the trial wrote its
+    store (receipts, the `run` record and every object the receipt pins) inside
+    `.mainboard/dispatch/sources/<key>/` on the host, which nothing collects. Collection was
+    fine, and nothing was held or rerun: the lake indexes all 16 fetched files, and the missing
+    objects sit only in the snapshots (`find ~/.mb-jobs -name '862d65c8*'`). FIXED locally:
+    `Target.results` widens an empty fetch, or one inside a test's `datasets/experiments/<x>`
+    home, to the home, and `Board.results` applies it to an explicit `--fetch` or batch `fetch`
+    too. 621, 631 and 632 keep their recorded fetch, so they cannot settle verified unless their
+    snapshot stores reach the lake. Do not redispatch an identical closure before then: its
+    snapshot key is reused, and `__results` replaces the real `heterogeneous_pipeline` folder
+    there with the link.
+    Still open: a run that rewrites its results folder conflicts with what the lake already
+    holds. 622 rewrote `stream-hypotheses-v26` after 621's first pull, so every pull of
+    `heterogeneous_pipeline` is refused as conflicting until that is resolved. Write each run's
+    output under a run-scoped folder, or collect before the next run of that test starts.
 13k. **`mb upgrade` (2026-10-10)**, three defects, two fixed locally:
     - It crashed on `[workspace] members` (`NonExistentKey: llm-head`), since the manifest model
       lists members the text never declares. FIXED: `ManifestText.versioned` answers False for

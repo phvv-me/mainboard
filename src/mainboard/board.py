@@ -1252,7 +1252,7 @@ class Board:
         spot: rent interruptible capacity on a metered provider.
         arch: the compute capabilities a metered provider's card must have.
         fetch: a results path recorded for `Job.pull`, the job file's own declaration when
-            unset, then the node's own evidence directory when the run serves one.
+            unset, then the node's own evidence directory when the run serves one (`results`).
         node: the ledger slug this run serves, carried into its record and receipts.
         needs: data paths a job reads on the host, joining the ones its file declares.
         watch: announces the far-side stages long enough to be worth saying: every step of a
@@ -1264,7 +1264,7 @@ class Board:
         plan = self.plan(env=env, container=container)
         shipment = self.shipment(command, plan, needs=needs)
         shipment.admit(self.root)
-        fetch = self.results(fetch or shipment.fetch, node=node) or None
+        fetch = self.results(fetch or shipment.fetch, node=node, command=command) or None
         shipment = shipment.model_copy(update={"fetch": fetch or ""})
         resources = self.resources(
             queue=queue,
@@ -1378,12 +1378,12 @@ class Board:
 
         A node is a directory and its evidence the directory inside it, so it answers for
         itself: making callers repeat it as `--fetch` is how a whole GH200 wave's receipts
-        stayed on the cluster (2026-09-05). An explicit path still wins.
+        stayed on the cluster (2026-09-05). An explicit path still wins, unless it is a folder
+        inside a test's home, which the receipts' store shares (`Target.results`).
         """
-        if not fetch and command:
-            target = Target.spelled(shlex.split(command), self.root)
-            if target is not None:
-                fetch = target.declaration(self.root).fetch
+        target = Target.spelled(shlex.split(command), self.root) if command else None
+        if target is not None:
+            fetch = target.results(fetch or target.declaration(self.root).fetch)
         return fetch or evidence_of(self.root, node)
 
     def verdicts(self) -> Verdicts:
