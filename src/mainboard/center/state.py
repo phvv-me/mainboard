@@ -28,7 +28,6 @@ from ..agents.harness import claude_key
 from ..core.project import Project
 from ..core.section import Section, Verdict
 from ..engines.compile.provisioner import Provisioner
-from ..manifest.held import Holdings
 
 if TYPE_CHECKING:
     from ..manifest.schema.root import Manifest
@@ -477,7 +476,6 @@ class Carried:
         return config.needed(
             [
                 *self.manifest.profiles(),
-                *Holdings(self.root, self.manifest.workspace.lake_home(self.root)).read(),
                 GITHUB,
             ]
         )

@@ -167,6 +167,10 @@ class Monitor:
         self.captured = Captured(self.cache.session)
         self.streams: dict[str, Bus] = {}
         self.quiet: dict[str, str] = {}
+        # What this pass collected, by host, root and path: the runs of one experiment share its
+        # folder, and a pass collected it once per run (a dozen scans of 190,000 files on
+        # miyabi's Lustre, 2026-10-09).
+        self.fetched: dict[tuple[str, str, str], str | None] = {}
         self.silent: dict[str, tuple[float, str]] = {}
 
     def silenced(self) -> dict[str, str]:
@@ -439,6 +443,7 @@ class Monitor:
         running = 0
         finished: list[Finished] = []
         self.quiet.clear()
+        self.fetched.clear()
         resumed, waiting, failed = self.held(scope)
         records = [record for record in self.cache.tracked() if scope is None or scope(record)]
         failed.extend(
@@ -569,6 +574,11 @@ class Monitor:
         path = job.handle.fetch_path
         if not path:
             return None
+        # A run finished before this pass asked, so a collection earlier in the pass holds it.
+        key = (job.handle.host, job.handle.root, path)
+        if key in self.fetched:
+            return self.fetched[key]
+        self.fetched[key] = None
         try:
             job.pull()
         except (HostUnreachable, ProcessExecutionError, MissionError, OSError) as fault:
@@ -576,6 +586,7 @@ class Monitor:
                 self.quiet[job.handle.host] = str(fault)
             logger.warning("could not pull {} from {}: {}", path, job.handle.host, fault)
             return None
+        self.fetched[key] = path
         return path
 
     def answering(self, job: Run) -> None:

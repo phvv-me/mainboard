@@ -99,6 +99,7 @@ class Session:
             **{f"session_{name}": value for name, value in self.baseline.items()},
         }
         self.writers: dict[str, TrialReceipts] = {}
+        self.stores: dict[str, Artifacts] = {}
         self.manifests: dict[str, Artifact] = {}
         self.lanes: tuple[LaneStatus, ...] = ()
         self.leaked: dict[str, str] = {}
@@ -158,7 +159,8 @@ class Session:
         A store's `latest.jsonl` is reminted only when this run covers every lane the store has
         known (`Dataset.full`); a partial run lands beside it as `partial-<run>.jsonl`. Receipt
         fragments stay immutable, so a concurrent fetch never sees a rewritten part. The run's
-        receipt partitions and artifacts are then kept in the workspace lake.
+        receipt partitions, event streams and the store objects it referenced are then kept in
+        the workspace lake.
         """
         refusals = []
         try:
@@ -176,8 +178,12 @@ class Session:
                 store.as_jsonl(store.root / PARTIAL.format(self.run), self.run)
             artifacts = store.root.parent / "artifacts" / self.run
             written += [writer.directory, *([artifacts] if artifacts.is_dir() else [])]
-        # The run's receipts and artifacts go to the lake as soon as they exist, so the tree's
-        # copies are only a cache; on a job host with no lake the center keeps them on collection.
+        # An object a concurrent run already moved into the lake is gone from the tree, and kept.
+        written += sorted(
+            path for store in self.stores.values() for path in store.written if path.is_file()
+        )
+        # The run's receipts and artifacts move into the center's lake as soon as they exist, the
+        # tree's copies dropped; on a job host the center keeps them on collection.
         EvidenceTree(self.declared.universe.root).keep(written)
         drifted = moved(self.declared.flags, self.baseline)
         if not drifted:
@@ -245,13 +251,19 @@ class Session:
             "arithmetic": self.baseline,
             "opened_at_ns": self.opened,
         }
-        directory = universe.dataset(node).root.parent / "artifacts" / self.run
-        self.manifests[node] = Artifacts(self.declared.tree, directory).write(
+        self.manifests[node] = self.store(node).write(
             json.dumps(manifest).encode(),
             media_type="application/json",
             schema_name="mainboard.run.v1",
         )
         return self.manifests[node]
+
+    def store(self, node: str) -> Artifacts:
+        """One node's content store beside its receipts, shared by every run on this host."""
+        if node not in self.stores:
+            evidence = self.declared.universe.dataset(node).root.parent
+            self.stores[node] = Artifacts(self.declared.tree, evidence)
+        return self.stores[node]
 
     def writer(self, node: str) -> TrialReceipts:
         """One claim's append-only store for this run, opened on first use.

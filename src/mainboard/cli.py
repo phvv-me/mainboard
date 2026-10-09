@@ -29,6 +29,8 @@ from .core.section import Section, Verdict, failed
 from .core.shell import become
 from .delimiter import Delimiter
 from .dispatch import vocabulary
+from .dispatch.collection.collector import Collector
+from .dispatch.collection.pack import link
 from .dispatch.commandline import joined, vetted
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
@@ -1962,6 +1964,32 @@ def build(root: Path | None = None) -> App:
         with progress("evicting tree copies the lake keeps"):
             evicted = Evidence(Lake.at(workspace_root())).evict(paths)
         output.print_rows([{"evicted": len(evicted)}], title="lake evict", columns=("evicted",))
+
+    @lake.command
+    def dedup(*paths: Path, dry_run: bool = False, output: Output = _COMPACT) -> None:
+        """Hard-link identical evidence files to one copy, to give a host's disk back.
+
+        Needs no lake, so a job host runs it over its own tree. Nothing is deleted: a duplicate's
+        name moves onto the copy only once both hash equal, a file named by its digest must hash
+        to it, and files still written or of a run that wrote within the hour are left alone.
+        Bytes are distinct inodes, before and after.
+
+        Args:
+            paths: evidence directories or files inside this workspace, on one filesystem.
+            dry_run: count what would be linked, linking nothing.
+        """
+        root = workspace_root()
+        cache = Collector(root).digests
+        rows: list[dict[str, str | int]] = [
+            {
+                "path": relative,
+                **link(str(root), relative=relative, cache=cache, dry=dry_run),
+            }
+            for relative in (
+                Path(os.path.abspath(path)).relative_to(root).as_posix() for path in paths
+            )
+        ]
+        output.print_rows(rows, title="lake dedup")
 
     @lake.command
     def replicate(directory: Path, output: Output = _COMPACT) -> None:

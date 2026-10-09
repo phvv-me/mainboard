@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
@@ -17,15 +18,26 @@ from .archive import ParquetArtifacts
 # provenance column every such read adds beside the table's own.
 NO_TABLE = "SELECT NULL::VARCHAR AS _trial WHERE false"
 
+# A file in the Hugging Face hub cache, `<kind>s--<repo, "/" spelled "--">/snapshots/<revision>/`;
+# a repository name may not hold `--`, so the spelling reads back exactly.
+_HUB = re.compile(r"(models|datasets|spaces)--([^/]+)/snapshots/([0-9a-f]{40})/(.+)$")
+
 
 class Artifact(FrozenModel):
-    """A portable content reference, relative to its declared project root."""
+    """A portable content reference, relative to its declared project root.
+
+    path: where the bytes stand: the node's content store (`objects/<sha256[:2]>/<sha256>` beside
+        its receipts) since 2026-10-09, before that a copy in each run's own `objects/`.
+    source: where pinned bytes were downloaded from, `hf://<repo>@<revision>/<file>` for a Hugging
+        Face file; empty for bytes a trial made.
+    """
 
     path: str
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     size: int = Field(ge=0)
     media_type: str = "application/octet-stream"
     schema_name: str = ""
+    source: str = ""
 
     @property
     def relative(self) -> PurePosixPath:
@@ -67,13 +79,26 @@ def relative_path(value: str) -> PurePosixPath:
     return path
 
 
+def pinned(path: Path) -> str:
+    """Where `path` was downloaded from when it is a Hugging Face hub cache file, else empty."""
+    found = _HUB.search(Path(os.path.abspath(path)).as_posix())
+    if found is None:
+        return ""
+    kind, repository, revision, name = found.groups()
+    prefix = "" if kind == "models" else f"{kind}/"
+    return f"hf://{prefix}{repository.replace('--', '/')}@{revision}/{name}"
+
+
 class Artifacts:
-    """One trial's content-addressed output directory, never an ambient latest store."""
+    """A content store under `directory/objects`, each artifact's bytes held once however many
+    trials and runs reference them; never an ambient latest store, since a reference names its
+    digest."""
 
     def __init__(self, root: Path, directory: Path) -> None:
         self.root = Path(os.path.abspath(root))
         self.directory = Path(os.path.abspath(directory))
         self.directory.relative_to(self.root)
+        self.written: set[Path] = set()
 
     @staticmethod
     def verify(receipts: Iterable[str], *, directory: Path, boundary: Path) -> None:
@@ -91,41 +116,71 @@ class Artifacts:
             for root in reversed([directory, *directory.parents])
             if root.is_relative_to(boundary)
         ]
-        for line in receipts:
-            payload = json.loads(line)["trial_receipt"]
-            for value in payload.get("artifacts", {}).values():
-                if not isinstance(value, dict):
-                    continue
-                reference = Artifact.model_validate(value)
-                relative = reference.relative
-                # The fetch directory is always a root and a validated reference never climbs
-                # out of it, so some root always matches; the outermost one is the project.
-                root = next(root for root in roots if (root / relative).is_relative_to(directory))
-                if not (root / relative).resolve().is_relative_to(directory.resolve()):
-                    raise ValueError(f"artifact link leaves the declared fetch: {relative}")
+        references = {
+            Artifact.model_validate(value)
+            for line in receipts
+            for value in json.loads(line)["trial_receipt"].get("artifacts", {}).values()
+            if isinstance(value, dict)
+        }
+        # A file the center did not need sent is indexed in its lake only; its bytes are one
+        # object there however many runs name it, so each digest is read back once.
+        absent: dict[str, tuple[Artifact, Path]] = {}
+        for reference in references:
+            relative = reference.relative
+            # The fetch directory is always a root and a validated reference never climbs out of
+            # it, so some root always matches; the outermost one is the project.
+            root = next(root for root in roots if (root / relative).is_relative_to(directory))
+            if not (root / relative).resolve().is_relative_to(directory.resolve()):
+                raise ValueError(f"artifact link leaves the declared fetch: {relative}")
+            if (root / relative).exists():
                 reference.read(root)
+            else:
+                absent[reference.sha256] = (reference, root)
+        for reference, root in absent.values():
+            reference.read(root)
 
-    def write(self, data: bytes, *, media_type: str, schema_name: str = "") -> Artifact:
-        """Publish bytes before returning their immutable reference."""
+    def write(
+        self, data: bytes, *, media_type: str, schema_name: str = "", source: str = ""
+    ) -> Artifact:
+        """Hold bytes in the store, once, before returning their immutable reference.
+
+        Bytes already held are read back and compared rather than written again; a held copy
+        that differs is damaged and replaced by these, which hash to its name.
+        """
         digest = hashlib.sha256(data).hexdigest()
-        target = self.directory / "objects" / digest
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
+        target = self.directory / "objects" / digest[:2] / digest
         try:
-            os.link(temporary, target)
-        except FileExistsError:
-            if target.read_bytes() != data:
-                raise ValueError(f"artifact collision or incomplete write: {target}") from None
-        finally:
-            temporary.unlink()
+            held = target.read_bytes() == data
+        except FileNotFoundError:
+            held = False
+        if not held:
+            _publish(target, data)
+        self.written.add(target)
         return Artifact(
             path=target.relative_to(self.root).as_posix(),
             sha256=digest,
             size=len(data),
             media_type=media_type,
             schema_name=schema_name,
+            source=source,
         )
+
+
+def _publish(target: Path, data: bytes) -> None:
+    """Write `data` beside `target` and link it into place.
+
+    A racing writer's copy is kept when it holds the same bytes, and a damaged one is replaced.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        os.link(temporary, target)
+    except FileExistsError:
+        if target.read_bytes() != data:
+            os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)

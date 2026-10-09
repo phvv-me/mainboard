@@ -342,7 +342,7 @@ class Doctor:
             verdict=Verdict.PASS,
             detail=(
                 f"{loaded.workspace.name}: {len(loaded.envs) + 1} environments, "
-                f"{len(loaded.profiles())} hosts, {len(loaded.tasks)} tasks"
+                f"{len(loaded.declared())} hosts, {len(loaded.tasks)} tasks"
             ),
         )
 

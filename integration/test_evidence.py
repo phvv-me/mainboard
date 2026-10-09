@@ -2,24 +2,34 @@
 tree, written back on request and verified by `mb lake check`."""
 
 import hashlib
+import io
 import json
 import os
 import shutil
+import sys
+import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from pathlib import Path
-from unittest.mock import patch
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+from zipfile import ZIP_ZSTANDARD, ZipFile
 
 import pytest
 
+from mainboard.core import MissionError, Project
+from mainboard.dispatch.collection.collector import Collector
+from mainboard.dispatch.collection.pack import HELD, pack
 from mainboard.dispatch.provenance import SourceTree, listing
+from mainboard.monitor import Monitor
 from mainboard.nodes import evidence_of
 from mainboard.state import DirectoryReplica, Evidence, EvidenceTree, Lake, schema
 from mainboard.state import blobs as blobs_module
 from mainboard.state import evidence as evidence_module
 from mainboard.state.blobs import Blobs
 from mainboard.state.relations import Relations, write_parquet
-from mainboard.trials.artifacts import Artifact
-from mainboard.trials.dataset import Dataset
+from mainboard.trials import Artifact, Dataset, Session
+from mainboard.trials.artifacts import Artifacts, pinned
 
 NODE = "research/lab/datasets/experiments/law"
 
@@ -102,6 +112,182 @@ def test_evict_deletes_only_what_the_lake_keeps_intact(workspace, evidence) -> N
     assert sorted(_snapshot(evidence)) == ["late.txt", "noise.bin"]
     lake.materialize([evidence / "receipts"])
     assert (evidence / "receipts" / "run=run1" / "part-00000.parquet").is_file()
+
+
+def _transfer(path: Path, files: Mapping[str, bytes], held: Mapping[str, str]) -> Path:
+    """A host's transfer as `pack` writes it: zstd members, then what it left unsent."""
+    with ZipFile(path, "w", ZIP_ZSTANDARD) as transfer:
+        for name, data in files.items():
+            transfer.writestr(name, data)
+        transfer.writestr(HELD, json.dumps(held))
+    return path
+
+
+def test_collection_keeps_transfers_in_the_lake_never_the_tree(
+    workspace, evidence, tmp_path
+) -> None:
+    lake = Evidence(Lake.at(workspace))
+    lake.ingest([evidence])
+    lake.evict([evidence])
+    collector = Collector(workspace)
+    indexed = {row.path: row.sha256 for row in lake.indexed(NODE)}
+    assert collector._kept(PurePosixPath(NODE)) == indexed
+    table = next(path for path in indexed if "/objects/" in path)
+    copy = f"{NODE}/evidence/artifacts/run2/objects/{indexed[table]}"
+    new = f"{NODE}/evidence/new.txt"
+    staging = Project().out(workspace) / "tmp"
+    live = staging / f"collect-{os.getpid()}-live"
+    for left in (staging / "collect-999999999-dead", live):
+        left.mkdir(parents=True)
+
+    merged = collector.merge(
+        _transfer(tmp_path / "t.zip", {new: b"fresh"}, {copy: indexed[table]}), path=NODE
+    )
+    assert merged == 2
+    assert not (workspace / new).exists() and not (workspace / copy).exists()
+    assert {row.path: row.sha256 for row in lake.indexed(NODE)} == {
+        **indexed,
+        new: hashlib.sha256(b"fresh").hexdigest(),
+        copy: indexed[table],
+    }
+    assert EvidenceTree(workspace).read(workspace / copy, indexed[table])
+    assert list(staging.iterdir()) == [live]
+    noise = f"{NODE}/evidence/noise.bin"
+    with pytest.raises(ValueError, match="the lake's copy kept"):
+        collector.merge(_transfer(tmp_path / "c.zip", {noise: b"other bytes"}, {}), path=NODE)
+    with pytest.raises(MissionError, match="keeps no object"):
+        collector.merge(_transfer(tmp_path / "m.zip", {}, {new + "2": "0" * 64}), path=NODE)
+
+
+def test_a_host_sends_only_what_the_lake_lacks(workspace, evidence, tmp_path, monkeypatch) -> None:
+    host = tmp_path / "host"
+    shutil.copytree(evidence, host / NODE / "evidence")
+    [table] = (host / NODE / "evidence" / "artifacts" / "run1" / "objects").iterdir()
+    again = host / NODE / "evidence" / "artifacts" / "run2" / "objects" / table.name
+    again.parent.mkdir(parents=True)
+    shutil.copy(table, again)
+    live = host / NODE / "evidence" / "artifacts" / "run2" / "trial" / "events" / "live.ndjson"
+    live.parent.mkdir(parents=True)
+    live.write_bytes(b'{"offset": 0}\n')
+    Evidence(Lake.at(workspace)).ingest([evidence])
+    kept = Collector(workspace)._kept(PurePosixPath(NODE))
+
+    def packed(known: Mapping[str, str]) -> ZipFile:
+        sink = io.BytesIO()
+        monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=sink))
+        pack(str(host), relative=NODE, kept=kept, known=known, cache=".mb/run/digests.json")
+        return ZipFile(io.BytesIO(sink.getvalue()))
+
+    with packed({}) as archive:
+        [snapshot] = [name for name in archive.namelist() if "/events/collected-" in name]
+        assert sorted(archive.namelist()) == sorted([snapshot, HELD])
+        assert {info.compress_type for info in archive.infolist()} == {ZIP_ZSTANDARD}
+        assert json.loads(archive.read(HELD)) == {again.relative_to(host).as_posix(): table.name}
+    with packed({snapshot: ""}) as archive:
+        assert archive.namelist() == [HELD]
+
+
+def test_a_pass_collects_each_folder_once() -> None:
+    monitor = Monitor.__new__(Monitor)
+    monitor.quiet, monitor.fetched = {}, {}
+    jobs = [Mock(handle=Mock(host="miyabi-g", root="/work", fetch_path=NODE)) for _ in range(3)]
+    assert [monitor.pull(job) for job in jobs] == [NODE] * 3
+    assert sum(job.pull.call_count for job in jobs) == 1
+
+
+def test_dedup_links_settled_duplicates_to_one_copy(mb, workspace) -> None:
+    artifacts = workspace / NODE / "evidence" / "artifacts"
+    data = os.urandom(5000)
+    digest = hashlib.sha256(data).hexdigest()
+    settled = time.time() - 7200
+    for run, payload in [("run1", data), ("run2", data), ("run3", data), ("run4", data[::-1])]:
+        copy = artifacts / run / "objects" / digest
+        copy.parent.mkdir(parents=True)
+        copy.write_bytes(payload)
+        os.utime(copy, (settled, settled))
+    flight = artifacts / "run5" / "objects" / digest
+    flight.parent.mkdir(parents=True)
+    flight.write_bytes(data)
+
+    ran = mb("lake", "dedup", f"{NODE}/evidence", "--json")
+    assert ran.code == 0, ran.said
+    [done] = json.loads(ran.out)
+    assert done == {
+        "path": f"{NODE}/evidence",
+        "files": 5,
+        "hashed": 4,
+        "linked": 2,
+        "damaged": 1,
+        "before": 25_000,
+        "after": 15_000,
+    }
+    copies = [artifacts / f"run{run}" / "objects" / digest for run in "123"]
+    assert len({copy.stat().st_ino for copy in copies}) == 1
+    assert flight.stat().st_nlink == 1
+    assert (artifacts / "run4" / "objects" / digest).read_bytes() == data[::-1]
+    [again] = json.loads(mb("lake", "dedup", f"{NODE}/evidence", "--json").out)
+    assert (again["linked"], again["before"], again["after"]) == (0, 15_000, 15_000)
+
+
+def test_artifacts_are_held_once_per_node(tmp_path) -> None:
+    store = Artifacts(tmp_path, tmp_path / "evidence")
+    revision = "a" * 40
+    source = f"hf://org/model@{revision}/tokenizer.json"
+    first = store.write(b"tokenizer", media_type="application/json", source=source)
+    digest = hashlib.sha256(b"tokenizer").hexdigest()
+    assert first.path == f"evidence/objects/{digest[:2]}/{digest}" and first.source == source
+    held = tmp_path / first.path
+    held.write_bytes(b"damaged bytes")
+    again = store.write(b"tokenizer", media_type="application/json")
+    assert again.path == first.path and again.source == ""
+    assert held.read_bytes() == b"tokenizer"
+    assert [path.name for path in tmp_path.rglob("*") if path.is_file()] == [digest]
+    assert store.written == {held}
+    hub = tmp_path / "hub"
+    assert pinned(hub / f"models--org--model/snapshots/{revision}/tokenizer.json") == source
+    assert (
+        pinned(hub / f"datasets--org--set/snapshots/{revision}/data/train.parquet")
+        == f"hf://datasets/org/set@{revision}/data/train.parquet"
+    )
+    assert pinned(tmp_path / "tokenizer.json") == ""
+
+
+@pytest.mark.parametrize("central", [True, False])
+def test_a_closed_run_moves_into_the_center_lake(workspace, central) -> None:
+    if central:
+        (workspace / ".git").mkdir()
+    lake = Lake.at(workspace).ready()
+    store = Artifacts(workspace, workspace / NODE / "evidence")
+    reference = store.write(b"table", media_type="application/octet-stream")
+    session = Session.__new__(Session)
+    session.staged, session.leased, session.writers = Mock(), None, {}
+    session.stores, session.baseline = {"law": store}, {}
+    session.declared = Mock(flags=(), universe=Mock(root=workspace / NODE))
+    assert session.close() == ""
+    held = workspace / reference.path
+    assert held.exists() is not central
+    assert [row.path for row in Evidence(lake).indexed(NODE)] == (
+        [reference.path] if central else []
+    )
+
+
+def test_settling_verifies_what_only_the_lake_holds(workspace, evidence) -> None:
+    lake = Evidence(Lake.at(workspace))
+    lake.ingest([evidence])
+    lake.evict([evidence])
+    [row] = Dataset(evidence / "receipts").rows()
+    reference = Artifact.model_validate(row["artifacts"])
+    lost = reference.model_copy(update={"sha256": "1" * 64, "path": "datasets/lost"})
+
+    def receipts(*references: Artifact) -> list[str]:
+        listed = {str(at): value.model_dump() for at, value in enumerate(references)}
+        return [json.dumps({"trial_receipt": {"artifacts": listed}})]
+
+    Artifacts.verify(
+        receipts(reference, reference), directory=workspace / NODE, boundary=workspace
+    )
+    with pytest.raises(FileNotFoundError):
+        Artifacts.verify(receipts(lost), directory=workspace / NODE, boundary=workspace)
 
 
 def test_readers_find_evidence_that_left_the_tree(workspace, evidence, tmp_path_factory) -> None:

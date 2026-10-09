@@ -48,6 +48,13 @@ campaign first; move an entry to the bottom section once fixed and verified.
    cutoken's own `pyproject.toml` exempts that file from PLC0414, because the alias is the
    explicit re-export ten kernel modules import. Lint must honor each package's nearest ruff
    config (hierarchical discovery), not force the root's.
+   2026-10-09, pyrefly: `[lint.tools.pyrefly]` runs `pyrefly check .` in each owner, and an
+   explicit path bypasses that owner's `project-excludes`: cutoken reports ~500 errors from its
+   device modules where its configured run (`pyrefly check`, no path) reports 1. Dropping the `.`
+   everywhere is wrong too: an owner without a pyrefly config (`scripts`) then climbs to an
+   ancestor config and checks 899 errors' worth of other code, where `.` checks its 0. Fix in the
+   runner: no path where the owner's own pyproject has `[tool.pyrefly]`, `.` otherwise (ty
+   applies its excludes either way: 682 both forms in research/cuda-tokenization).
 10. **Shipping `needs` to miyabi ran at ~2.4 MB/s** through the agent's ssh pipe: 2.1 GB of corpora
     took about 15 minutes per first dispatch. Compression, rsync, or a staged copy would help.
 10a. **Collecting from miyabi times out.** A `job list` settle pass on 2026-10-07 22:20 gave up on
@@ -65,6 +72,38 @@ campaign first; move an entry to the bottom section once fixed and verified.
     keeps a remote digest cache (path, size, mtime) under the workspace's `run/`, seeded once
     from a compute node (170,011 files, 20 GB), and runs on the host's workspace-environment
     Python, never the login node's OS `python3`.
+    Measured 2026-10-09 on a GH200 node over 182,903 files: the scan cost 2 min of per-file
+    metadata (lstat 49 s, resolve 35 s, stat 35 s; now one `lstat` per file through `scandir`,
+    containment checked once, `known` sent zlib-compressed: 133 s, 16 MB), and a pass moved
+    9.6 GB: 71,701 files under `evidence/artifacts/<run>/<trial>/objects/<sha256>`, each run
+    holding its own copy of objects the lake already kept (cutok's artifacts referenced 59.7 GB
+    of which 4.1 GB was unique). The 10-09 backlog was moved once as an archive (rsync) and merged.
+    FIXED locally (2026-10-09, unreleased, owner-approved):
+    - Artifacts by reference: a trial's bytes go once into its node's content store,
+      `<node>/evidence/objects/<sha256[:2]>/<sha256>` beside its receipts, shared by every run on
+      the host; the receipt references it (digest, size, media type, and `source`, e.g.
+      `hf://<repo>@<revision>/<file>`, read from a hub cache path or passed to `log.artifact`).
+      Per-run `objects/` of older runs read as before.
+    - A host sends no file whose digest the center's lake keeps: `pack` names it in
+      `mainboard-held.json` and `Evidence.adopt` indexes its path from the blob. An unchanged
+      live event log is not sent again (its `collected-<start>-<end>` name is known).
+    - Members are zstd level 3: 1.5 GB of cutok evidence went 3.9x smaller for 7.5 s of one
+      GH200 core (level 1: 3.5x, 3.7 s; level 6: 4.3x, 16.6 s).
+    - `mb lake dedup` hard-links identical settled files to one copy (verified digests, runs
+      quiet for an hour, nothing deleted). 10-09: miyabi 24.4 to 2.4 GiB of cutok evidence
+      (104,328 names linked, 225 s on a GH200 node), pedro-cvlab 3.78 to 0.62 GiB, crimson and
+      gold 81 MB to 80 MB.
+    - Collection keeps each transfer in the lake and writes nothing to the tree; it stages in
+      `<out>/tmp/collect-<pid>-*`, and a dead pass's staging is cleared when the next one starts
+      (31 root-level `.mb-collect-*` dirs, 7.2 GB, had piled up). A trial session on the center
+      moves its run into the lake (kept, then evicted); a dispatch mirror's staging lake keeps
+      nothing.
+    - A settle pass collects each host's fetch path once, not once per run: the 10-09 pass
+      before the fix collected the same folder from miyabi 24 times in 2,798 s; the next pass,
+      with it, took 147 s with one collection (76 s alone, of the 600 s deadline; the earlier
+      pass had already moved everything, so nothing new crossed).
+    Still open: a job's fetch still names the whole experiment folder, whose remote scan
+    (~50 s on miyabi's login node) is most of a collection now.
 11. **Settlement backlog**: `job list` keeps erroring on old runs ("settlement pending; remote
     evidence retained: result transfer failed" for pedro-cvlab 348, 363, 400, 446, 479 and
     crimson 1862) and on today's 594 and 3500391 ("Expecting value: line 1 column 1"), whose
@@ -118,6 +157,13 @@ campaign first; move an entry to the bottom section once fixed and verified.
     the center alone. Registered trials on hosts are blocked until then.
     FIXED locally (unreleased): `lake` applies only on the center, the checkout holding
     `.git`; a dispatch mirror ships without one and keeps its staging lake.
+13f5. **`mb lake ingest <relative path>` fails at its end** (2026-10-09). `mainboard lake ingest
+    research/cuda-tokenization/datasets` (run from the workspace root through `ssh localhost`)
+    raised `ValueError: 'research/cuda-tokenization/datasets' is not in the subpath of
+    '/Users/pedro/Developer/projects'` from a `relative_to` on the unresolved argument, after the
+    ingest windows had committed (the 611 files were indexed with intact blobs; a following
+    `evict` verified and dropped them). Resolve CLI paths against the workspace before any
+    `relative_to`, and record the import run.
 13f4. **Stale generated inputs on a host break every dispatch's environment pin** (2026-10-08).
     The compiled artifact ships as named files, so a file the center stopped generating stays in
     the host's `.mainboard/envs/default` forever. `GeneratedFiles.inputs` digests every file

@@ -18,7 +18,7 @@ from ..observe.frames import Frame, Kind
 from ..observe.spool import Spool
 from ..profile.profiler import Collection, Profiler
 from ..state.relations import ArrowStream, Relations, parquet_bytes
-from .artifacts import Artifact, Artifacts
+from .artifacts import Artifact, pinned
 from .session import params_of
 from .vocabulary import Outcome
 
@@ -60,7 +60,7 @@ class Log:
         node = universe.node_of(path)
         key = hashlib.sha256(trial.item.nodeid.encode()).hexdigest()
         directory = universe.dataset(node).root.parent / "artifacts" / session.run / key
-        self.artifacts = Artifacts(session.declared.tree, directory)
+        self.artifacts = session.store(node)
         self.spool = Spool(directory, "events")
         trial.artifacts["events"] = self.spool.dir.relative_to(self.artifacts.root).as_posix()
         self.counts: Counter[str] = Counter()
@@ -125,12 +125,19 @@ class Log:
         name: str = "",
         media_type: str = "application/octet-stream",
         schema_name: str = "",
+        source: str = "",
     ) -> Artifact:
-        """Attach immutable bytes or a generated file; infer a name when none is meaningful."""
+        """Attach immutable bytes or a generated file; infer a name when none is meaningful.
+
+        Bytes another trial already attached are referenced, not copied again.
+        source: where pinned bytes were downloaded from (`hf://<repo>@<revision>/<file>`),
+            read from the path itself for a Hugging Face hub cache file.
+        """
         reference = self.artifacts.write(
             data.read_bytes() if isinstance(data, Path) else data,
             media_type=media_type,
             schema_name=schema_name,
+            source=source or (pinned(data) if isinstance(data, Path) else ""),
         )
         label = name or self._name("artifact")
         self.trial.artifacts[label] = reference.model_dump()

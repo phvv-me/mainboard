@@ -29,7 +29,7 @@ import hashlib
 import mimetypes
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -199,7 +199,7 @@ class Evidence:
         rows = self.session.rows(query.where(under) if prefix else query)
         return [Located(path=path, sha256=digest, size=size) for path, digest, size in rows]
 
-    def ingest(self, paths: Iterable[Path]) -> Kept:
+    def ingest(self, paths: Iterable[Path], *, staged: Path | None = None) -> Kept:
         """Keep every file at or under `paths` in the lake, byte for byte, and index its path.
 
         Idempotent: an object already held costs nothing, and a path whose latest row already
@@ -209,9 +209,13 @@ class Evidence:
         interrupted ingest keeps the windows it committed and a rerun finishes the rest. The run
         is recorded in `imports`.
 
+        staged: a directory standing in for the workspace root, its files indexed where they
+            will stand in the tree; a collected transfer is kept from there, never entering it.
+
         Raises MissionError for a path that is missing or outside this workspace.
         """
         given = list(paths)
+        base = staged or self.root
         sources = self._files(given)
         self.lake.ready()
         index = schema.evidence
@@ -221,7 +225,7 @@ class Evidence:
             # Each window of files is read, then committed as one insert, so memory stays
             # bounded and an interrupted ingest never leaves half an object.
             for window in _windows(sources, lambda source: source.stat().st_size, STAGED_BYTES):
-                batch = list(pool.map(self._read, window))
+                batch = list(pool.map(partial(self._read, base=base), window))
                 held = self.session.run(
                     partial(self.blobs.held, digests={entry.sha256 for entry in batch})
                 )
@@ -242,13 +246,54 @@ class Evidence:
             [
                 {
                     "ts": datetime.now(UTC),
-                    "source": " ".join(self._relative(path) for path in given),
+                    "source": " ".join(_posix(path.relative_to(base)) for path in given),
                     "destination": "evidence_log",
                     "rows": kept.indexed,
                 }
             ],
         )
         return kept
+
+    def adopt(self, named: Mapping[str, str]) -> int:
+        """Index each path at the object with its digest this lake keeps, moving no bytes.
+
+        Answers how many paths gained a row. A host leaves unsent every file whose bytes the
+        lake keeps, so its path is all that crosses. Size and media type are those the object
+        was kept with, the type named by the new path's suffix first, as `ingest` names it.
+
+        Raises MissionError when the lake keeps no object for one of them.
+        """
+        if not named:
+            return 0
+        index = schema.evidence
+        held = self.session.run(partial(self.blobs.held, digests=set(named.values())))
+        known = {
+            digest: (size, media)
+            for digest, size, media in self.session.rows(
+                f"SELECT DISTINCT ON (sha256) sha256, size, media_type FROM {schema.ALIAS}"
+                ".evidence WHERE sha256 IN (SELECT unnest(?::VARCHAR[]))",
+                [sorted(held)],
+            )
+        }
+        if lost := sorted(path for path, digest in named.items() if digest not in known):
+            raise MissionError(f"the lake keeps no object {named[lost[0]][:12]} for {lost[0]}")
+        current = dict(self.session.rows(select(index.c.path, index.c.sha256)))
+        stamp = datetime.now(UTC)
+        rows = [
+            {
+                "ts": stamp,
+                "path": path,
+                "sha256": digest,
+                "size": known[digest][0],
+                "media_type": _media_type(
+                    Path(path), _MAGIC if known[digest][1] == _PARQUET else b""
+                ),
+                **_labels(path),
+            }
+            for path, digest in sorted(named.items())
+            if current.get(path) != digest
+        ]
+        return self.lake.append(schema.evidence_log, rows) if rows else 0
 
     def materialize(self, paths: Sequence[Path], into: Path | None = None) -> list[Path]:
         """Write every indexed file at or under `paths` back under `into` (the workspace root),
@@ -292,6 +337,10 @@ class Evidence:
         ]
         for source in evicted:
             source.unlink()
+            # Folders the file leaves empty go too; the workspace root never is, holding its
+            # manifest.
+            with suppress(OSError):
+                os.removedirs(source.parent)
         for given in paths:
             for folder in sorted(Path(given).rglob("*"), reverse=True):
                 with suppress(OSError):
@@ -356,10 +405,10 @@ class Evidence:
             if fault
         ]
 
-    def _read(self, source: Path) -> _Entry:
+    def _read(self, source: Path, base: Path) -> _Entry:
         """`source` read once: its digest, what it holds and, unless it is larger than
         `_HELD_BYTES`, its bytes; a larger file is hashed as a stream and streamed again when
-        staged."""
+        staged. Indexed at its place under `base`."""
         size = source.stat().st_size
         payload = source.read_bytes() if size <= _HELD_BYTES else None
         if payload is None:
@@ -370,7 +419,7 @@ class Evidence:
             digest, head = hashlib.sha256(payload).hexdigest(), payload[: len(_MAGIC)]
         return _Entry(
             source=source,
-            path=source.relative_to(self.root).as_posix(),
+            path=source.relative_to(base).as_posix(),
             sha256=digest,
             size=size,
             media_type=_media_type(source, head),
@@ -460,11 +509,26 @@ class EvidenceTree:
         return list(found.values())
 
     def keep(self, paths: Sequence[Path]) -> Kept | None:
-        """Keep `paths` in the nearest lake holding `base`, what that did; None when no
-        workspace holding `base` keeps a lake (a job host, whose evidence the center collects
-        and keeps then)."""
-        keepers = self.keepers
-        return keepers[0].ingest(paths) if keepers and paths else None
+        """Move `paths` into the center's lake, the nearest one holding `base`.
+
+        They are kept byte for byte, then their tree copies dropped, since the lake is the
+        evidence's home and the tree only its cache. None when the nearest lake is no center's:
+        a dispatch mirror's staging lake is not a home, and the center collects the mirror's tree.
+        """
+        keepers = self.keepers[:1]
+        if not (paths and keepers and keepers[0].lake.central):
+            return None
+        kept = keepers[0].ingest(paths)
+        keepers[0].evict(paths)
+        return kept
+
+    def holds(self, digests: Collection[str]) -> set[str]:
+        """The digests among `digests` some lake holding `base` keeps an object for."""
+        return {
+            digest
+            for evidence in self.keepers
+            for digest in evidence.session.run(partial(evidence.blobs.held, digests=digests))
+        }
 
     def restore(self, paths: Iterable[Path]) -> list[Path]:
         """Write back every file at or under `paths` that the tree lacks and a lake holding

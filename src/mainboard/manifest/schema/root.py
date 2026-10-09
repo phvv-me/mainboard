@@ -1,6 +1,8 @@
-from typing import TYPE_CHECKING, ClassVar
+from collections.abc import Callable, Mapping
+from functools import cache
+from typing import ClassVar
 
-from pydantic import model_validator
+from pydantic import PrivateAttr, model_validator
 
 from ...core.errors import MissionError
 from .admission import Admission
@@ -18,9 +20,6 @@ from .scope import PlatformScope, Scope
 from .template import Template
 from .tracking import Tracking
 from .workspace import Header
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 _DEFAULTS_KEY = "defaults"
 _RESERVED_ENVS = frozenset({"default", "dev"})
@@ -85,6 +84,8 @@ class Manifest(Scope):
     git: GitPolicy = GitPolicy()
     lint: Lint = Lint()
     ci: Ci = Ci()
+    # The held rentals' profiles, read on first need (see `holding`); none until then.
+    _held: Callable[[], Mapping[str, HostProfile]] = PrivateAttr(default=dict)
 
     @model_validator(mode="after")
     def env_values_set_or_clear(self) -> Manifest:
@@ -114,7 +115,7 @@ class Manifest(Scope):
         taken = _RESERVED_ENVS & self.envs.keys()
         if taken:
             raise ValueError(f"reserved environment names declared: {sorted(taken)}")
-        for alias, profile in self.profiles().items():
+        for alias, profile in self.declared().items():
             self._resolves(f"host {alias!r}", profile.container, profile.env)
         for name, tool in self.lint.tools.items():
             self._resolves(f"lint tool {name!r}", "", tool.env)
@@ -133,22 +134,37 @@ class Manifest(Scope):
                 f"{sorted(self.envs)}"
             )
 
-    def holding(self, held: Mapping[str, HostProfile]) -> Manifest:
-        """This manifest with the held machines' ssh profiles laid over `[hosts]`."""
-        return self.model_copy(update={"hosts": {**self.hosts, **held}}) if held else self
+    def holding(self, held: Callable[[], Mapping[str, HostProfile]]) -> Manifest:
+        """This manifest with the held machines' ssh profiles consulted after `[hosts]`.
+
+        held: reads them, once and only when a lookup reaches past the declared hosts, so a
+            command naming a declared host never opens the lake they live in.
+        """
+        manifest = self.model_copy()
+        manifest._held = cache(held)
+        return manifest
 
     def profile(self, alias: str) -> HostProfile:
-        """The resolved profile for `alias` (ssh alias or `local`), defaults if undeclared."""
-        profiles = self.profiles()
-        if alias in profiles:
-            return profiles[alias]
-        return HostProfile().inheriting(self.hosts.get(_DEFAULTS_KEY, HostProfile()))
+        """The resolved profile for `alias` (ssh alias, held rental or `local`), defaults if
+        neither declared nor held."""
+        declared = self.declared()
+        if alias in declared:
+            return declared[alias]
+        base = self.hosts.get(_DEFAULTS_KEY, HostProfile())
+        held = None if alias == "local" else self._held().get(alias)
+        return (held or HostProfile()).inheriting(base)
 
-    def profiles(self) -> dict[str, HostProfile]:
-        """Every concrete host profile with `[hosts.defaults]` already inherited."""
+    def declared(self) -> dict[str, HostProfile]:
+        """Every `[hosts]` profile with `[hosts.defaults]` already inherited."""
         base = self.hosts.get(_DEFAULTS_KEY, HostProfile())
         return {
             alias: profile.inheriting(base)
             for alias, profile in self.hosts.items()
             if alias != _DEFAULTS_KEY
         }
+
+    def profiles(self) -> dict[str, HostProfile]:
+        """Every concrete host profile, held rentals laid over the declared hosts."""
+        base = self.hosts.get(_DEFAULTS_KEY, HostProfile())
+        held = {alias: profile.inheriting(base) for alias, profile in self._held().items()}
+        return self.declared() | held

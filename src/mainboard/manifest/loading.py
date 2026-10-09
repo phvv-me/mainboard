@@ -15,12 +15,13 @@ if TYPE_CHECKING:
 def load(path: Path) -> Manifest:
     """Parse, interpolate, compose and validate the manifest at `path`, errors naming their spot.
 
-    Members join first (see `manifest.members`), then held machines join `[hosts]`, so a held
-    alias resolves like a declared one.
+    Members join first (see `manifest.members`), then held machines stand behind `[hosts]`,
+    read from the lake only when a lookup reaches them, so a held alias resolves like a
+    declared one and a declared one never waits on the lake.
     """
     composed = composition(path).composed()
     home = composed.workspace.lake_home(path.parent)
-    return composed.holding(Holdings(path.parent, home).profiles())
+    return composed.holding(Holdings(path.parent, home).profiles)
 
 
 def composition(path: Path) -> Composition:

@@ -1,5 +1,5 @@
 """Every DuckDB connection takes the workspace's settings, a machine's environment winning,
-and the lake lives where the workspace says."""
+the lake lives where the workspace says, and only an undeclared host waits on it."""
 
 from pathlib import Path
 
@@ -7,6 +7,7 @@ import pytest
 
 from mainboard.core.errors import MissionError
 from mainboard.core.project import Project
+from mainboard.manifest.loading import load
 from mainboard.state import schema
 from mainboard.state.database import connect, settings
 from mainboard.state.lake import Lake
@@ -50,5 +51,23 @@ def test_the_lake_lives_where_the_workspace_says(workspace: Path, tmp_path_facto
     (workspace / "mb.toml").write_text(
         f'[workspace]\nname = "it"\nlake = "{elsewhere.as_posix()}"\n', encoding="utf-8"
     )
+    # A dispatch mirror ships without `.git`, so the center's path does not reach it.
+    assert Lake.at(workspace).catalog.parent == Project().out(workspace)
+    (workspace / ".git").mkdir()
     lake = Lake.at(workspace)
     assert (lake.catalog, lake.data) == (elsewhere / "lake.sqlite", elsewhere / "lake")
+
+
+def test_only_an_undeclared_host_reads_the_holds(workspace: Path) -> None:
+    (workspace / "mb.toml").write_text(
+        '[workspace]\nname = "it"\n[hosts.box]\nkind = "ssh"\n', encoding="utf-8"
+    )
+
+    def unreachable() -> dict:
+        raise TimeoutError("the lake volume stopped answering")
+
+    manifest = load(workspace / "mb.toml").holding(unreachable)
+    assert manifest.profile("box").kind == "ssh"
+    assert manifest.profile("local").kind != "ssh"
+    with pytest.raises(TimeoutError):
+        manifest.profile("rented")

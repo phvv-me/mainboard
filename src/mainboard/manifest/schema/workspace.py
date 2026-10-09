@@ -24,9 +24,10 @@ class Header(Model):
     dotfiles: the owner's chezmoi dotfiles (`user/repo` or any repository `chezmoi init` takes),
         applied on every host `host setup` onboards and refreshed on each `host sync`, so every
         machine has the same shell, commands and editor. Left out of the compile digest.
-    lake: the directory the state lake lives in, its catalog `lake.sqlite` beside its data
-        `lake/`; `~` expands. Empty keeps it in the workspace's generated directory. Left out of
-        the compile digest, since no environment reads it.
+    lake: the directory the center's state lake lives in, its catalog `lake.sqlite` beside
+        its data `lake/`; `~` expands. Empty keeps it in the workspace's generated directory,
+        as every dispatch mirror does (see `lake_home`). Left out of the compile digest, since
+        no environment reads it.
     """
 
     name: str
@@ -41,5 +42,11 @@ class Header(Model):
     lake: str = Field(default="", exclude=True)
 
     def lake_home(self, root: Path) -> Path:
-        """Where the lake of the workspace at `root` lives."""
-        return Path(self.lake).expanduser() if self.lake else Project().out(root)
+        """Where the lake of the workspace at `root` lives.
+
+        `lake` names a place on the center, the checkout holding the workspace's repository. A
+        dispatch mirror ships without `.git` and keeps its staging lake in its generated
+        directory, since the center's path means nothing on the host.
+        """
+        center = (root / ".git").exists()
+        return Path(self.lake).expanduser() if self.lake and center else Project().out(root)

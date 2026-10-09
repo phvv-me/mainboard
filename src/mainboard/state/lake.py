@@ -390,6 +390,12 @@ class Lake(FrozenModel):
     def exists(self) -> bool:
         return bool(self.served) or self.catalog.is_file()
 
+    @property
+    def central(self) -> bool:
+        """Whether this is the center's lake, the home of the workspace's evidence: its checkout
+        holds the repository, which a dispatch mirror ships without (see `Header.lake_home`)."""
+        return (self.root / ".git").exists()
+
     def session(self) -> Session:
         """This process's one session on this lake, shared by every holder while any holds it.
 
