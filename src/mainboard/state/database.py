@@ -22,8 +22,9 @@ type Setting = str | int | float | bool
 # What every connection holds unless the workspace or the machine says otherwise.
 DEFAULTS: dict[str, Setting] = {"timezone": "UTC", "enable_progress_bar": False}
 # What every database starts with. DuckDB pins one worker thread to each core on a machine of more
-# than 64 cores, and a process this tool hosts must keep the affinity its own work sets: a
-# spawned worker of a cutok CPU baseline held 72 threads pinned one per core on the GH200 (Oct 10).
+# than 64 cores, from `import duckdb` on, and a process this tool is part of must keep the
+# affinity its own work sets: a spawned worker of a cutok CPU baseline held 71 threads pinned one
+# per core on the GH200 (2026-10-10). `_unpinned` releases the instance the import opened.
 STARTUP: dict[str, Setting] = {"pin_threads": "off"}
 PREFIX = "MB_DUCKDB_"
 
@@ -63,3 +64,19 @@ def settings() -> dict[str, Setting]:
     if wrong := sorted(name for name in merged if not name.isidentifier()):
         raise MissionError(f"DuckDB settings are plain names, not {', '.join(wrong)}")
     return merged
+
+
+def _unpinned() -> None:
+    """Relaunch the threads of the instance `import duckdb` opened, none pinned to a core.
+
+    A thread count change relaunches them, so it goes to one and back.
+    """
+    if (os.cpu_count() or 0) <= 64:
+        return
+    [(threads,)] = duckdb.execute("SELECT current_setting('threads')").fetchall()
+    duckdb.execute("SET pin_threads = 'off'")
+    duckdb.execute("SET threads = 1")
+    duckdb.execute(f"SET threads = {threads}")
+
+
+_unpinned()
