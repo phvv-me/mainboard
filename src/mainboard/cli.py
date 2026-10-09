@@ -2,16 +2,17 @@ import os
 import sys
 import time
 from contextlib import suppress
-from dataclasses import dataclass
 from functools import partial
 from importlib import metadata
 from io import TextIOWrapper
 from json import dumps, loads
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
+from typing import TYPE_CHECKING, Annotated, Literal, NoReturn, Self, TypedDict
 
 from cyclopts import App, Parameter
+from patos import FrozenModel
 from plumbum import local as localhost
+from pydantic import ConfigDict, model_validator
 from rich.console import Console
 
 from . import staleness, upkeep
@@ -53,6 +54,7 @@ from .render.values import to_row
 from .runtime.job import Job
 from .runtime.runner import Runner
 from .state import DirectoryReplica, Evidence, Lake
+from .state.evidence import within
 from .state.lake import PORT
 from .vigil import STALL_SECONDS
 
@@ -79,33 +81,32 @@ _EMPTY: tuple[object, ...] = (None, "", [], {}, ())
 
 
 @Parameter(name="*")
-@dataclass(frozen=True, kw_only=True)
-class Output:
+class Output(FrozenModel):
     """How a verb prints its document: compact rows for agents by default, JSON, or rich tables.
 
     The default is what an agent reads cheapest: a header line of field names, then one
     tab-separated line per row, no colour, no box drawing.
     """
 
-    json: bool = False
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    json_: Annotated[bool, Parameter(name="--json")] = False
     """print canonical JSON instead of the compact rows."""
     human: bool = False
     """print rich tables for a person at a terminal instead of the compact rows."""
     fields: str = ""
     """a comma-separated projection over the printed fields."""
 
-    def __post_init__(self) -> None:
-        """Refuse both modes at once before the verb does any work."""
-        mode_of(json_mode=self.json, human=self.human)
-
     @property
     def mode(self) -> str | None:
         """The render key, `None` for the compact default."""
-        return mode_of(json_mode=self.json, human=self.human)
+        return mode_of(json_mode=self.json_, human=self.human)
 
-    def projection(self, default: Sequence[str] = ()) -> Sequence[str]:
-        """The `--fields` names, trimmed and blanks dropped, `default` when none were given."""
-        return tuple(part.strip() for part in self.fields.split(",") if part.strip()) or default
+    def print_record(self, payload: Mapping[str, Node], *, title: str) -> None:
+        """Print one entity; the compact default leaves out its empty fields."""
+        if self.mode is None and not self.fields:
+            payload = {key: value for key, value in payload.items() if value not in _EMPTY}
+        record(payload, mode=self.mode, fields=self.projection(), title=title)
 
     def print_rows(
         self, payloads: Sequence[Mapping[str, Node]], *, title: str, columns: Sequence[str] = ()
@@ -125,20 +126,25 @@ class Output:
             ]
         rows(payloads, mode=self.mode, fields=fields, title=title)
 
-    def print_record(self, payload: Mapping[str, Node], *, title: str) -> None:
-        """Print one entity; the compact default leaves out its empty fields."""
-        if self.mode is None and not self.fields:
-            payload = {key: value for key, value in payload.items() if value not in _EMPTY}
-        record(payload, mode=self.mode, fields=self.projection(), title=title)
+    def projection(self, default: Sequence[str] = ()) -> Sequence[str]:
+        """The `--fields` names, trimmed and blanks dropped, `default` when none were given."""
+        return tuple(part.strip() for part in self.fields.split(",") if part.strip()) or default
+
+    @model_validator(mode="after")
+    def _one_mode(self) -> Self:
+        """Refuse both modes at once before the verb does any work."""
+        mode_of(json_mode=self.json_, human=self.human)
+        return self
 
 
 _COMPACT = Output()
 
 
 @Parameter(name="*")
-@dataclass(frozen=True, kw_only=True)
-class Declared:
+class Declared(FrozenModel):
     """A batch's declaration beyond its spec file: inline jobs, a selection, `[vars]` values."""
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
 
     job: tuple[str, ...] = ()
     """a `target:command` job, repeatable, for a batch declared without a file."""
@@ -162,6 +168,19 @@ class Declared:
 
 
 _SPEC_ONLY = Declared()
+
+
+class LaneResources(TypedDict):
+    """What each job of a test lane asks of its host, handed to `Board.submit` by keyword."""
+
+    queue: str
+    walltime: str
+    mem_gb: int
+    gpus: int
+    gpu_name: str
+    max_usd: float
+    spot: bool
+    arch: str
 
 
 def build(root: Path | None = None) -> App:
@@ -447,7 +466,7 @@ def build(root: Path | None = None) -> App:
         split: str,
         per_job: int,
         cell_timeout: float,
-        resources: dict[str, str | int | float],
+        resources: LaneResources,
         node: str,
         estimate: bool,
         wait: bool,
@@ -488,7 +507,7 @@ def build(root: Path | None = None) -> App:
                         watch=stage,
                         name=f"lane-{host}-{chosen.name}",
                         node=served,
-                        **resources,  # type: ignore[arg-type]
+                        **resources,
                     )
                 dispatched.append((host, chosen.name, submitted.handle.id))
         _COMPACT.print_rows(
@@ -601,7 +620,7 @@ def build(root: Path | None = None) -> App:
                 report = workspace.monitor().once()
                 quiet = {down.host: down.reason for down in report.unreachable_hosts}
                 taken = Listing(workspace, limit=limit, project=project, quiet=quiet).taken()
-            if output.json and not watch:
+            if output.json_ and not watch:
                 # The periodic pass reads this document: the rows and what the sweep moved.
                 sweep = {**report.model_dump(), "changed": report.changed}
                 print(
@@ -635,7 +654,7 @@ def build(root: Path | None = None) -> App:
         Args:
             json: print the listing and the sweep as JSON, what those runners read.
         """
-        jobs(output=Output(json=json))
+        jobs(output=Output(json_=json))
 
     @app.command
     def add(
@@ -1401,7 +1420,7 @@ def build(root: Path | None = None) -> App:
         workspace = board(on)
         root = workspace.plan(container="none").profile.root
         published = workspace.dispatcher.fetch_path(on, root=root, path=path)
-        Output(json=json).print_record(
+        Output(json_=json).print_record(
             {"host": on, "path": path, "new_files": published}, title="collection"
         )
 
@@ -1442,7 +1461,7 @@ def build(root: Path | None = None) -> App:
             print(results.export(source, out, project=project))
             return
         rows = loads(dumps(results.rows(source, project=project), default=str))
-        Output(json=json).print_rows(rows, title="results")
+        Output(json_=json).print_rows(rows, title="results")
 
     @paper.command
     def plot(
@@ -1985,9 +2004,7 @@ def build(root: Path | None = None) -> App:
                 "path": relative,
                 **link(str(root), relative=relative, cache=cache, dry=dry_run),
             }
-            for relative in (
-                Path(os.path.abspath(path)).relative_to(root).as_posix() for path in paths
-            )
+            for relative in (within(root, path) for path in paths)
         ]
         output.print_rows(rows, title="lake dedup")
 
@@ -2495,7 +2512,7 @@ def _gpus(board: Callable[[str], Board], names: Sequence[str], output: Output) -
             continue
         readings[name] = occupancy.model_dump(mode="json")
         listed.extend(occupancy_rows(name, occupancy))
-    if output.json:
+    if output.json_:
         # The wire form a remote read parses: readings keyed by host.
         print(dumps(readings))
         return

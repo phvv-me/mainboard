@@ -55,6 +55,11 @@ campaign first; move an entry to the bottom section once fixed and verified.
    ancestor config and checks 899 errors' worth of other code, where `.` checks its 0. Fix in the
    runner: no path where the owner's own pyproject has `[tool.pyrefly]`, `.` otherwise (ty
    applies its excludes either way: 682 both forms in research/cuda-tokenization).
+   FIXED locally (unreleased): a tool's `path-when-unconfigured` is appended to its command in an
+   owner whose own `pyproject.toml` has no `[tool.<name>]` table; the root `mainboard.toml` sets
+   it to `.` for pyrefly and drops the `.` from the command. `mb lint --check --only pyrefly` on
+   a cutoken device file reports nothing, on a `scripts/` file with a type error reports it as
+   before.
 10. **Shipping `needs` to miyabi ran at ~2.4 MB/s** through the agent's ssh pipe: 2.1 GB of corpora
     took about 15 minutes per first dispatch. Compression, rsync, or a staged copy would help.
 10a. **Collecting from miyabi times out.** A `job list` settle pass on 2026-10-07 22:20 gave up on
@@ -164,6 +169,11 @@ campaign first; move an entry to the bottom section once fixed and verified.
     ingest windows had committed (the 611 files were indexed with intact blobs; a following
     `evict` verified and dropped them). Resolve CLI paths against the workspace before any
     `relative_to`, and record the import run.
+    FIXED locally (unreleased): `ingest` resolves its paths before it files them, so the import
+    run is recorded under the workspace-relative source; `evict`, `materialize` and `dedup` share
+    `state.evidence.within`, which resolves a path (relative to where `mb` runs) against the
+    workspace and refuses one outside it with a `MissionError` (`dedup` raised a bare
+    `ValueError`). `test_every_lake_verb_takes_paths_relative_to_where_it_runs` covers all four.
 13f4. **Stale generated inputs on a host break every dispatch's environment pin** (2026-10-08).
     The compiled artifact ships as named files, so a file the center stopped generating stays in
     the host's `.mainboard/envs/default` forever. `GeneratedFiles.inputs` digests every file

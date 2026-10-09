@@ -1,19 +1,13 @@
 import abc
 import os
-from dataclasses import dataclass
+from collections.abc import Callable, Collection
 from enum import StrEnum, auto
-from typing import TYPE_CHECKING
 
-from patos import Registry
+from patos import FrozenModel, Registry
 
-from ..experiments.data import Needs
+from ..experiments.data import HfDataset, HfModel, Needs, RepoFile
 from ..probe.gating import wait_for_idle
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
-
-    from ..experiments.data import HfDataset, HfModel, RepoFile
-    from .run import Run
+from .run import Run
 
 
 class GateStatus(StrEnum):
@@ -24,8 +18,7 @@ class GateStatus(StrEnum):
     FAILED = auto()
 
 
-@dataclass(frozen=True, slots=True)
-class GateVerdict:
+class GateVerdict(FrozenModel):
     """One gate's check outcome, `reason` empty when passed.
 
     status: `blocked` legitimately withholds the trial without counting as a failure, `failed`
@@ -36,7 +29,7 @@ class GateVerdict:
     reason: str = ""
 
 
-class Gate(Registry, abc.ABC):
+class Gate(Registry, FrozenModel, abc.ABC):
     """Shared contract for a trial precondition: idle GPU, parity, offline mode, or data receipt.
 
     A new precondition kind is a new registered subclass, never a branch inside `runnable`. Each
@@ -70,7 +63,6 @@ def is_offline_declared() -> bool:
     return os.environ.get("HF_HUB_OFFLINE") == "1"
 
 
-@dataclass(frozen=True, slots=True)
 class Idle(Gate):
     """Blocks a trial until the GPU has been idle, never counting a busy GPU as a failure.
 
@@ -87,7 +79,6 @@ class Idle(Gate):
         )
 
 
-@dataclass(frozen=True, slots=True)
 class Parity(Gate):
     """Blocks a trial until its behavior matches a named reference implementation.
 
@@ -104,7 +95,6 @@ class Parity(Gate):
         )
 
 
-@dataclass(frozen=True, slots=True)
 class Offline(Gate):
     """Blocks a trial unless the process declares itself offline."""
 
@@ -114,7 +104,6 @@ class Offline(Gate):
         return self.evaluate(self.probe, blocked="offline mode is not declared")
 
 
-@dataclass(frozen=True, slots=True)
 class Receipt(Gate):
     """Blocks a trial until its declared dataset need is confirmed staged.
 

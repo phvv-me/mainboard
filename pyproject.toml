@@ -345,22 +345,6 @@ exclude = [
   "src/mainboard/batch/watch.py",
 ]
 
-# The lab domain types are `Annotated` metadata with star-argument construction and
-# `asdict`-driven receipts, the exact dataclass machinery research code already writes against.
-# The profiler and CUPTI tracer records are built once per span or activity record on the
-# measurement hot path, where pydantic validation would cost more than what is being measured.
-# Test doubles mirror SDK record shapes the real SDK never validates.
-# A `Flag` is a name and two bare callables, so a pydantic model would have to be told to accept
-# arbitrary types and would validate nothing it did not already know. The same reason the lab
-# vocabulary is excluded above.
-[tool.mcmr.rules."PY-MODE0005"]
-exclude = [
-  "src/mainboard/lab",
-  "src/mainboard/profile/profiler.py",
-  "src/mainboard/profile/providers/nvidia/tracer.py",
-  "src/mainboard/trials/flags.py",
-]
-
 # This package's collection policy is immutable by default: results are hashable patos
 # `FrozenModel` values whose homogeneous fields are tuples (see the PY-PYDA0007 entry), so a
 # `tuple` or `frozenset` constructor states the design at exactly the boundary the value is
@@ -600,5 +584,12 @@ exclude = ["*.md"]
 [tool.ruff.lint]
 preview = true
 # The same set patos, chefe and lote select, so one habit covers every house package, plus the
-# encoding rule this one adds because it reads and writes manifests on three operating systems.
-select = ["E", "F", "I", "UP", "B", "SIM", "PLW1514"]
+# encoding rule this one adds because it reads and writes manifests on three operating systems,
+# and the banned-api rule that keeps dataclasses out.
+select = ["E", "F", "I", "UP", "B", "SIM", "PLW1514", "TID251"]
+
+# The owner's rule is no dataclasses: a record is a patos model. The two remote scripts
+# (`dispatch/agent/program.py`, `dispatch/collection/pack.py`) run on hosts with the standard
+# library alone and use none; one that ever needs one takes a per-file ignore, not a model.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"dataclasses".msg = "Use patos's Model, FrozenModel, FlexModel or FrozenFlexModel (`from patos import ...`); pydantic refuses positional arguments, so construct with keywords."

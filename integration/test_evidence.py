@@ -97,6 +97,25 @@ def test_ingest_materialize_and_check_round_trip(
     assert json.loads(imports.out) == [{"destination": "evidence_log"}] * 2
 
 
+def test_every_lake_verb_takes_paths_relative_to_where_it_runs(mb, workspace, evidence) -> None:
+    relative = f"{NODE}/evidence"
+    ran = mb("lake", "ingest", relative, "--json")
+    assert ran.code == 0, ran.said
+    imports = mb("query", "SELECT source, rows FROM lake.imports", "--json")
+    assert json.loads(imports.out) == [{"source": relative, "rows": 4}]
+
+    assert mb("lake", "dedup", relative, "--dry-run").code == 0
+    ran = mb("lake", "evict", relative, "--json")
+    assert json.loads(ran.out) == [{"evicted": 4}]
+    ran = mb("lake", "materialize", relative, "--json")
+    assert len(json.loads(ran.out)) == 4
+
+
+def test_a_lake_verb_refuses_a_path_outside_the_workspace(mb) -> None:
+    ran = mb("lake", "dedup", "..", "--dry-run")
+    assert ran.code != 0 and "lies outside the workspace" in ran.said
+
+
 def test_evict_deletes_only_what_the_lake_keeps_intact(workspace, evidence) -> None:
     before = _snapshot(evidence)
     lake = Evidence(Lake.at(workspace))

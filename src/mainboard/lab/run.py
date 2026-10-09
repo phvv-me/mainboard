@@ -1,15 +1,16 @@
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from patos import FrozenModel
 
 from ..core.project import Project
 from ..profile.spans import Span
 from ..profile.spans import span as profile_span
+from .experiment import DeclaredExperiment
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from .experiment import DeclaredExperiment, Fixture
+    from .experiment import Fixture
 
 
 def default_dataset_resolver(name: str) -> Path:
@@ -17,8 +18,7 @@ def default_dataset_resolver(name: str) -> Path:
     return Path(Project().out_dir(Path.cwd())) / "data" / name
 
 
-@dataclass(frozen=True, slots=True)
-class Run:
+class Run(FrozenModel):
     """The per-trial context `runnable` hands to `setup` and `measure`.
 
     dataset_resolver: a declared dataset name to its local path, injected so a test never

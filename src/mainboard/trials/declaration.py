@@ -5,7 +5,7 @@
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from patos import FrozenModel, Runtime
+from patos import FrozenModel
 from pydantic import Field
 
 from ..profile.profiler import Collection
@@ -43,7 +43,7 @@ class Declaration(FrozenModel):
 
     universe: Universe
     words: Vocabulary = Field(default_factory=Vocabulary)
-    flags: tuple[Runtime[Flag], ...] = ()
+    flags: tuple[Flag, ...] = ()
     repo: Path | None = None
     markers: Mapping[str, str] = Field(default_factory=lambda: MARKERS.copy())
     resident: Callable[[], int] | None = None

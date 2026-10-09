@@ -2,8 +2,10 @@
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
+
+from patos import FrozenModel, Runtime
+from pydantic import Field
 
 from .profiler import Collection, Profiler
 from .protocols import DeviceProbe
@@ -24,8 +26,7 @@ class Point(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class Row[P: Point]:
+class Row[P: Point](FrozenModel):
     """One point's conditions beside what was observed there.
 
     A throughput number without its input specification is hard to reproduce and easy to
@@ -34,7 +35,7 @@ class Row[P: Point]:
     """
 
     label: str
-    point: P
+    point: Runtime[P]
     profile: Profile
     seconds: float = 0.0
 
@@ -50,8 +51,7 @@ class Row[P: Point]:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class Study[P: Point]:
+class Study[P: Point](FrozenModel):
     """A collection policy and the points to apply it at.
 
     collection: held once, so two points cannot silently differ in how they were measured.
@@ -59,9 +59,9 @@ class Study[P: Point]:
         profiling, so the caller resolves them).
     """
 
-    collection: Collection = field(default_factory=Collection)
-    points: tuple[P, ...] = ()
-    gpus: Sequence[DeviceProbe] = ()
+    collection: Collection = Field(default_factory=Collection)
+    points: tuple[Runtime[P], ...] = ()
+    gpus: Runtime[Sequence[DeviceProbe]] = ()
 
     @classmethod
     def over(

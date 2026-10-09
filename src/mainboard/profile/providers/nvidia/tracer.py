@@ -5,10 +5,11 @@ import threading
 from collections import defaultdict, deque
 from contextlib import ExitStack, suppress
 from ctypes import addressof, c_size_t
-from dataclasses import asdict, dataclass
 from importlib import import_module
 from itertools import islice
 from typing import TYPE_CHECKING, ClassVar, cast
+
+from patos import FrozenModel
 
 from ...trace import (
     Activity,
@@ -17,7 +18,6 @@ from ...trace import (
     KernelTrace,
     MemcpyTrace,
     TraceCollector,
-    memcpy_kind,
 )
 from ...tracer import Marker, Tracer, Vendor
 
@@ -107,35 +107,9 @@ def _on_buffer_completed(activities: Sequence[RawActivity]) -> None:
             for act in activities:
                 kind = int(act.kind)
                 if kind == _CONCURRENT_KERNEL:
-                    target.append(
-                        RawKernel(
-                            name=act.name,
-                            start_ns=act.start,
-                            end_ns=act.end,
-                            grid=f"{act.grid_x}x{act.grid_y}x{act.grid_z}",
-                            block=f"{act.block_x}x{act.block_y}x{act.block_z}",
-                            static_shared_mem=act.static_shared_memory,
-                            dynamic_shared_mem=act.dynamic_shared_memory,
-                            registers=act.registers_per_thread,
-                            correlation_id=getattr(act, "correlation_id", 0),
-                            device_id=getattr(act, "device_id", None),
-                            context_id=getattr(act, "context_id", None),
-                            stream_id=getattr(act, "stream_id", None),
-                        )
-                    )
+                    target.append(KernelTrace.from_activity(act))
                 elif kind == _MEMCPY:
-                    target.append(
-                        RawMemcpy(
-                            kind=memcpy_kind(int(act.copy_kind)),
-                            start_ns=act.start,
-                            end_ns=act.end,
-                            bytes_moved=getattr(act, "bytes", 0),
-                            correlation_id=getattr(act, "correlation_id", 0),
-                            device_id=getattr(act, "device_id", None),
-                            context_id=getattr(act, "context_id", None),
-                            stream_id=getattr(act, "stream_id", None),
-                        )
-                    )
+                    target.append(MemcpyTrace.from_activity(act))
                 elif kind in _label:
                     target.append(
                         RawGeneric(
@@ -163,41 +137,12 @@ def _disable(kinds: Sequence[int]) -> None:
     cleanup.__exit__(*sys.exc_info())
 
 
-@dataclass(frozen=True, slots=True)
-class RawKernel:
-    """`KernelTrace`'s fields, copied cheaply before CUPTI releases its buffer."""
+class RawGeneric(FrozenModel):
+    """Fields copied from one generic activity before deferred name resolution.
 
-    name: str
-    start_ns: int
-    end_ns: int
-    grid: str
-    block: str
-    static_shared_mem: int
-    dynamic_shared_mem: int
-    registers: int
-    correlation_id: int
-    device_id: int | None = None
-    context_id: int | None = None
-    stream_id: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RawMemcpy:
-    """`MemcpyTrace`'s fields, copied cheaply before CUPTI releases its buffer."""
-
-    kind: str
-    start_ns: int
-    end_ns: int
-    bytes_moved: int
-    correlation_id: int
-    device_id: int | None = None
-    context_id: int | None = None
-    stream_id: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RawGeneric:
-    """Fields copied from one generic activity before deferred name resolution."""
+    It stays apart from `ActivityRecord` because it carries what only the name resolution needs:
+    the activity kind and the callback id, resolved to a function name after the callback returns.
+    """
 
     kind_id: int
     kind: str
@@ -208,7 +153,7 @@ class RawGeneric:
     correlation_id: int
 
 
-type RawRecord = RawKernel | RawMemcpy | RawGeneric
+type Record = KernelTrace | MemcpyTrace | RawGeneric
 
 
 class CuptiCollector(TraceCollector):
@@ -223,7 +168,7 @@ class CuptiCollector(TraceCollector):
     ) -> None:
         self.lock = threading.Lock()
         self.kinds = kinds
-        self.records: deque[RawRecord] = deque(maxlen=max_records)
+        self.records: deque[Record] = deque(maxlen=max_records)
         self.dropped_records = 0
         self.native_dropped_records = 0
         self.enabled_kinds: tuple[int, ...] = ()
@@ -276,7 +221,7 @@ class CuptiCollector(TraceCollector):
             for record in records
         ]
 
-    def append(self, record: RawRecord) -> None:
+    def append(self, record: Record) -> None:
         """Append one raw record while keeping capture memory bounded."""
         if len(self.records) == self.records.maxlen:
             self.dropped_records += 1
@@ -328,15 +273,13 @@ class CuptiCollector(TraceCollector):
                 raise RuntimeError("activity collector tainted by callback conversion failure")
 
     def kernels(self, *, since: int | None = None, until: int | None = None) -> list[KernelTrace]:
-        records = self._records(since, until)
         return [
-            KernelTrace(**asdict(record)) for record in records if isinstance(record, RawKernel)
+            record for record in self._records(since, until) if isinstance(record, KernelTrace)
         ]
 
     def memcpys(self, *, since: int | None = None, until: int | None = None) -> list[MemcpyTrace]:
-        records = self._records(since, until)
         return [
-            MemcpyTrace(**asdict(record)) for record in records if isinstance(record, RawMemcpy)
+            record for record in self._records(since, until) if isinstance(record, MemcpyTrace)
         ]
 
     def reset(self) -> None:
@@ -406,7 +349,7 @@ class CuptiCollector(TraceCollector):
         self.enabled_kinds = ()
         self.running = False
 
-    def _records(self, since: int | None, until: int | None) -> tuple[RawRecord, ...]:
+    def _records(self, since: int | None, until: int | None) -> tuple[Record, ...]:
         """Copy only one delivered range; never re-materialize the entire outer trace."""
         with self.lock:
             if since is None:
@@ -425,7 +368,7 @@ class CuptiCollector(TraceCollector):
         # Global CUPTI delivery is wider than one context. Do not silently filter
         # foreign or unidentifiable GPU work and then call the remainder complete.
         for record in records:
-            if not isinstance(record, (RawKernel, RawMemcpy)):
+            if not isinstance(record, (KernelTrace, MemcpyTrace)):
                 continue
             if self.scope is None or (record.device_id, record.context_id) != self.scope[1:]:
                 raise RuntimeError("activity window contains a foreign or unknown CUDA context")

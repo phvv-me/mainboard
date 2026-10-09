@@ -2,21 +2,21 @@ import inspect
 import json
 import types
 import typing
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
 
+from patos import FrozenModel
 from pydantic import JsonValue
 
 from ..core.project import Project
 from .experiment import Experiment
-from .gates import GateStatus
+from .gates import GateStatus, GateVerdict
 from .run import Run
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from .gates import Gate, GateVerdict
+    from .gates import Gate
     from .lane import Lane
 
 # The whole published contract between a trial and anything reading its output: one JSON line
@@ -37,8 +37,7 @@ class Declarations(TypedDict, total=False):
     seed: int
 
 
-@dataclass(frozen=True, slots=True)
-class TrialOutcome:
+class TrialOutcome(FrozenModel):
     """Shared identity every trial result carries, whatever its outcome.
 
     gate_evidence: evaluated gate verdicts, ending at the first unmet precondition.
@@ -49,7 +48,7 @@ class TrialOutcome:
 
     run_id: str
     gate_evidence: tuple[GateVerdict, ...]
-    node: str = field(default="", kw_only=True)
+    node: str = ""
 
     def receipt(self) -> str:
         """This trial as its one `RECEIPT` JSON line.
@@ -57,7 +56,6 @@ class TrialOutcome:
         A new outcome kind declares a `verdict` and its fields, and its receipt follows without
         editing a renderer. `producer` is provenance, never something a reader branches on.
         """
-        shared = {"run_id", "gate_evidence", "node"}
         payload: dict[str, JsonValue] = {
             "run_id": self.run_id,
             "outcome": str(self.verdict),
@@ -67,12 +65,11 @@ class TrialOutcome:
                 {"status": str(verdict.status), "reason": verdict.reason}
                 for verdict in self.gate_evidence
             ],
-            **{name: value for name, value in asdict(self).items() if name not in shared},
+            **self.model_dump(exclude={"run_id", "gate_evidence", "node"}),
         }
         return json.dumps({RECEIPT: payload})
 
 
-@dataclass(frozen=True, slots=True)
 class TrialResult(TrialOutcome):
     """A trial that cleared every gate and ran to completion, with what `measure` returned."""
 
@@ -81,7 +78,6 @@ class TrialResult(TrialOutcome):
     metrics: dict[str, float]
 
 
-@dataclass(frozen=True, slots=True)
 class BlockedTrial(TrialOutcome):
     """A trial withheld by a gate that legitimately isn't ready yet, never a failure."""
 
@@ -90,7 +86,6 @@ class BlockedTrial(TrialOutcome):
     reason: str
 
 
-@dataclass(frozen=True, slots=True)
 class FailedTrial(TrialOutcome):
     """A trial whose gate check itself broke."""
 

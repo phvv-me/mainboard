@@ -1,7 +1,9 @@
 import hashlib
 import re
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
+from functools import cache
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -67,6 +69,7 @@ class Linter:
         self._tools = {name: tool for name, tool in self.table.tools.items() if name in self.steps}
         self.inventory = Inventory(root, manifest.git)
         self.owners = Owners(root, self.table.owners, self.table.markers)
+        self._configured = cache(self._configures)
         self._provisioner = Provisioner(root, manifest)
         self._environments: dict[str, Mapping[str, str]] = {}
         # The generated tree is never the workspace's own text, whether or not a `.gitignore`
@@ -169,13 +172,27 @@ class Linter:
                 step=name,
                 owner=self._relative(owner),
                 cwd=owner,
-                argv=tuple(self._expanded(argv, batch)),
+                argv=tuple(self._expanded(self._scoped(name, argv, owner), batch)),
                 env=tool.env,
                 timeout=tool.timeout,
             )
             for owner, matched in sorted(owned.items())
             for batch in self._batches(argv, owner, matched)
         ]
+
+    def _scoped(self, name: str, argv: Sequence[str], owner: Path) -> list[str]:
+        """`argv`, ending in tool `name`'s `path_when_unconfigured` in an owner that has no
+        `[tool.<name>]` table of its own."""
+        path = self._tools[name].path_when_unconfigured
+        return [*argv, path] if path and not self._configured(owner, name) else list(argv)
+
+    def _configures(self, owner: Path, name: str) -> bool:
+        """Whether `owner`'s own `pyproject.toml` has a `[tool.<name>]` table."""
+        try:
+            document = tomllib.loads((owner / "pyproject.toml").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        return name in document.get("tool", {})
 
     def _batches(
         self, argv: Sequence[str], owner: Path, matched: Sequence[Path]

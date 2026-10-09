@@ -8,17 +8,16 @@ import os
 import shutil
 import subprocess
 import sysconfig
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from patos import FrozenModel
 
 # The console script installed beside the interpreter running the tests.
 MB = shutil.which("mb", path=sysconfig.get_path("scripts"))
 
 
-@dataclass(frozen=True)
-class Ran:
+class Ran(FrozenModel):
     """One finished `mb` process."""
 
     code: int
@@ -60,7 +59,7 @@ def mb(workspace: Path):
             env={**os.environ, "NO_COLOR": "1", **(env or {})},
             check=False,
         )
-        ran = Ran(done.returncode, done.stdout, done.stderr)
+        ran = Ran(code=done.returncode, out=done.stdout, err=done.stderr)
         assert "Traceback (most recent call last)" not in ran.said, ran.said
         return ran
 

@@ -214,7 +214,7 @@ class Evidence:
 
         Raises MissionError for a path that is missing or outside this workspace.
         """
-        given = list(paths)
+        given = [Path(os.path.abspath(path)) for path in paths]
         base = staged or self.root
         sources = self._files(given)
         self.lake.ready()
@@ -303,7 +303,7 @@ class Evidence:
         """
         written: list[Path] = []
         for given in paths:
-            prefix = self._relative(given)
+            prefix = within(self.root, given)
             rows = self.indexed(prefix)
             if not rows:
                 raise MissionError(f"the lake indexes no evidence at or under {prefix}")
@@ -324,7 +324,7 @@ class Evidence:
         sources = self._files(paths)
         index = schema.evidence
         current = dict(self.session.rows(select(index.c.path, index.c.sha256)))
-        claimed = {self._relative(source): source for source in sources}
+        claimed = {within(self.root, source): source for source in sources}
         wanted = {current[path] for path in claimed if path in current}
         held = self.session.run(partial(self.blobs.held, digests=wanted))
         candidates = [source for path, source in claimed.items() if current.get(path) in held]
@@ -333,7 +333,7 @@ class Evidence:
         evicted = [
             source
             for source, digest in zip(candidates, digests, strict=True)
-            if digest == current[self._relative(source)]
+            if digest == current[within(self.root, source)]
         ]
         for source in evicted:
             source.unlink()
@@ -464,7 +464,7 @@ class Evidence:
         found: set[Path] = set()
         for given in paths:
             path = Path(os.path.abspath(given))
-            self._relative(path)
+            within(self.root, path)
             if path.is_file():
                 found.add(path)
             elif path.is_dir():
@@ -472,14 +472,6 @@ class Evidence:
             else:
                 raise MissionError(f"no evidence at {path}")
         return sorted(found)
-
-    def _relative(self, path: Path) -> str:
-        """`path` (absolute, or relative to the current directory) relative to the workspace."""
-        absolute = Path(os.path.abspath(path))
-        try:
-            return _posix(absolute.relative_to(self.root))
-        except ValueError:
-            raise MissionError(f"{absolute} lies outside the workspace at {self.root}") from None
 
     def _write(self, row: Located, target: Path) -> None:
         """Write `row`'s object to `target`, refusing when the lake lost it."""
@@ -613,6 +605,19 @@ def _posix(relative: Path) -> str:
     """A relative path as the index spells it, the workspace root itself as empty."""
     spelled = relative.as_posix()
     return "" if spelled == "." else spelled
+
+
+def within(root: Path, path: Path) -> str:
+    """`path` (absolute, or relative to the current directory) as the index spells it under the
+    workspace `root`.
+
+    Raises MissionError for a path outside the workspace.
+    """
+    absolute = Path(os.path.abspath(path))
+    try:
+        return _posix(absolute.relative_to(root))
+    except ValueError:
+        raise MissionError(f"{absolute} lies outside the workspace at {root}") from None
 
 
 def _digest(path: Path) -> str:

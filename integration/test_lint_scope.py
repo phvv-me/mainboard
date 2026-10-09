@@ -61,3 +61,32 @@ def test_a_check_that_broke_or_timed_out_keeps_its_failure(workspace: Path) -> N
 
     assert linter._narrowed(broken, frozenset({"a.py"})).failed
     assert linter._narrowed(late, frozenset({"a.py"})).failed
+
+
+def test_a_checker_names_its_path_only_where_its_own_configuration_is_absent(
+    workspace: Path,
+) -> None:
+    (workspace / "mb.toml").write_text(
+        '[workspace]\nname = "it"\n\n[lint.tools.checker]\ncheck = "checker run"\n'
+        'files = ["*.py"]\npath-when-unconfigured = "."\n',
+        encoding="utf-8",
+    )
+    for owner, pyproject in {"configured": "[tool.checker]\n", "bare": "[tool.other]\n"}.items():
+        (workspace / owner).mkdir()
+        (workspace / owner / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+        (workspace / owner / "module.py").write_text("x = 1\n", encoding="utf-8")
+    (workspace / "loose.py").write_text("x = 1\n", encoding="utf-8")
+    linter = Linter(workspace, load(Project().manifest(workspace)))
+
+    files = [
+        workspace / "configured/module.py",
+        workspace / "bare/module.py",
+        workspace / "loose.py",
+    ]
+    argv = {job.owner: job.argv for job in linter._invocations("checker", files)}
+
+    assert argv == {
+        "configured": ("checker", "run"),
+        "bare": ("checker", "run", "."),
+        ".": ("checker", "run", "."),
+    }

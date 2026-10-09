@@ -373,6 +373,7 @@ files = ["*.py", "*.pyi"]
 [lint.tools.pyrefly]
 check = "pyrefly check"                        # no {files}: checks the whole owner
 files = ["*.py", "*.pyi", "pyproject.toml"]
+path-when-unconfigured = "."                   # appended where the owner has no [tool.pyrefly]
 ```
 
 ```console
@@ -395,7 +396,10 @@ repository.
 Only the repositories the workspace owns are read: reference code and a vendored
 `third_party/` are someone else's. A check that reads its whole owner (pyrefly,
 ty, mcmr) answers for the files the pass reads and no others, so linting a few
-files is red only for those.
+files is red only for those. A checker given no path obeys its owner's own
+excludes but climbs to an ancestor's configuration when the owner has none, so
+`path-when-unconfigured` names the path only in an owner whose `pyproject.toml`
+lacks `[tool.<name>]`.
 
 ## Every coding agent alike
 

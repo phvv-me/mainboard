@@ -25,6 +25,10 @@ class LintTool(Declared):
     fix: rewrites the files it is given, in the fix phase, in declaration order, before checks.
     files: gitignore-style patterns the tool reads, `*.py` matching at any depth.
     exclude: gitignore-style patterns skipped on top of `[lint].exclude`.
+    path_when_unconfigured: a path the command takes in an owner whose own `pyproject.toml` has
+        no `[tool.<name>]` table. A checker run in a directory without its configuration climbs to
+        an ancestor's, so it is told where to look, while one with its configuration is given no
+        path because a named path bypasses that configuration's excludes.
     timeout: seconds before the command and its children are killed.
     """
 
@@ -32,6 +36,7 @@ class LintTool(Declared):
     fix: str = ""
     files: tuple[str, ...]
     exclude: tuple[str, ...] = ()
+    path_when_unconfigured: str = ""
     env: str = "default"
     timeout: float = 120.0
 

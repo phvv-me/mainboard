@@ -16,8 +16,9 @@ import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=asks the machine's own package managers, fixed argv only since=2026-09-29
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from pathlib import Path
+
+from patos import FrozenModel
 
 from . import staleness
 from .core.host import LINUX
@@ -55,8 +56,7 @@ def _fwupd(out: str) -> int:
     return sum(1 for device in devices if device.get("Releases"))
 
 
-@dataclass(frozen=True)
-class Manager:
+class Manager(FrozenModel):
     """One system package manager: how to ask what is pending, and how to apply it.
 
     name: what the row calls it.
@@ -77,11 +77,11 @@ class Manager:
 
 MANAGERS = (
     Manager(
-        "apt",
-        "apt-get",
-        ("apt", "list", "--upgradable"),
-        _apt,
-        (
+        name="apt",
+        program="apt-get",
+        pending=("apt", "list", "--upgradable"),
+        count=_apt,
+        steps=(
             "sudo apt-get update",
             "sudo apt-get -y full-upgrade",
             "sudo apt-get -y autoremove --purge",
@@ -89,26 +89,32 @@ MANAGERS = (
         ),
     ),
     Manager(
-        "dnf",
-        "dnf",
-        ("dnf", "-q", "check-update"),
-        _lines,
-        ("sudo dnf -y upgrade --refresh", "sudo dnf -y autoremove"),
+        name="dnf",
+        program="dnf",
+        pending=("dnf", "-q", "check-update"),
+        count=_lines,
+        steps=("sudo dnf -y upgrade --refresh", "sudo dnf -y autoremove"),
     ),
     Manager(
-        "brew",
-        "brew",
-        ("brew", "outdated", "--quiet"),
-        _lines,
-        ("brew update", "brew upgrade", "brew cleanup"),
+        name="brew",
+        program="brew",
+        pending=("brew", "outdated", "--quiet"),
+        count=_lines,
+        steps=("brew update", "brew upgrade", "brew cleanup"),
     ),
-    Manager("snap", "snap", ("snap", "refresh", "--list"), _snap, ("sudo snap refresh",)),
     Manager(
-        "firmware",
-        "fwupdmgr",
-        ("fwupdmgr", "get-updates", "--json"),
-        _fwupd,
-        ("sudo fwupdmgr refresh --force", "sudo fwupdmgr update"),
+        name="snap",
+        program="snap",
+        pending=("snap", "refresh", "--list"),
+        count=_snap,
+        steps=("sudo snap refresh",),
+    ),
+    Manager(
+        name="firmware",
+        program="fwupdmgr",
+        pending=("fwupdmgr", "get-updates", "--json"),
+        count=_fwupd,
+        steps=("sudo fwupdmgr refresh --force", "sudo fwupdmgr update"),
         audit_only=True,
     ),
 )

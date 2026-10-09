@@ -7,18 +7,18 @@
 # forget. The session refuses, rather than warns, when a flag ends off its baseline, naming the
 # flag, both values and the first trial that settled under the wrong one.
 
+from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from patos import FrozenModel
+from pydantic import JsonValue
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
-
-    from pydantic import JsonValue
+    from collections.abc import Iterator, Mapping, Sequence
 
 
-@dataclass(frozen=True, slots=True)
-class Flag:
+class Flag(FrozenModel):
     """One process-global value a trial's readings depend on, and how it is read and moved.
 
     A knob honored only at process start is declared with no `write`, which makes it ASSERTED:
