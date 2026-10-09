@@ -718,11 +718,10 @@ Each query sees a fresh inventory. It is not a transaction across all servers.
 
 `job collect` also imports runs started directly on a node, using the same collection
 path as the settling pass. Remote filesystem operations use Python's standard library and
-native `Path`; OpenSSH carries the bytes without remote rsync, tar, Bash, or an
-installed Mainboard. The host profile supplies `root` and `python` (default
-`python3`). The latter is a trusted interpreter command in the SSH login shell;
-quote paths containing spaces as that shell requires. Python 3.9 or later is
-needed for collection, independently of the experiment environment.
+native `Path`; OpenSSH carries the bytes without remote rsync or tar. The host profile
+supplies `root`. The exporter runs on the host's workspace-environment Python, or on the
+uv-managed CPython that `host setup` puts there before anything ships; Mainboard never runs
+anything on a host's system interpreter.
 
 Artifact references use canonical forward-slash relative paths on every OS.
 Queries read collected local bytes, while the original repository path remains

@@ -3,11 +3,9 @@
 The center imports this module to walk and hash its own workspace, and sends this very source over
 SSH to a target, which reports what it holds, takes what changed as one tar stream, prunes what the
 center's rules say to prune, and pins snapshots under a kernel file lock. Nothing here imports
-beyond the standard library or uses syntax newer than 3.9, since the far side runs whatever Python
-the machine shipped with, nothing installed.
+beyond the standard library, since the far side runs it on mainboard's own Python there
+(`Dialect.python`) before the tool may be installed.
 """
-
-from __future__ import annotations
 
 import fcntl
 import hashlib
@@ -59,9 +57,6 @@ FILE, DIRECTORY, LINK = "f", "d", "l"
 
 # A named group inside one compiled ignore pattern, which a joined expression cannot repeat.
 _NAMED = re.compile(r"(?<!\\)\(\?P<[^>]+>")
-
-# A memory that cannot be read is an empty one; a tuple so the handler stays one clause.
-_UNREADABLE = (OSError, ValueError)
 
 
 class RulesSpec(TypedDict):
@@ -217,7 +212,7 @@ class Digests:
         try:
             with open(path, encoding="utf-8") as stored:
                 self.held: dict[str, list[int | str]] = json.load(stored)
-        except _UNREADABLE:
+        except OSError, ValueError:
             self.held = {}
         self.seen: set[str] = set()
 

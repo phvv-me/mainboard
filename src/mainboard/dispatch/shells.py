@@ -2,16 +2,19 @@
 # and the board need are spelled. Every host answers `bash -lc` over plumbum's persistent session.
 
 import shlex
+from importlib.metadata import metadata
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Self
 
 from ..core.errors import MissionError
+from ..core.project import Project
 from ..core.shell import foreground
 from ..engines.compile.backend import POSIX_INSTALLER
 from .schedulers.base import failure_reason
 from .ssh import client
+from .targets import placed
 from .transport import BoundedSshMachine
-from .wrapping import activation, connection, guarded, wrap
+from .wrapping import USER_BINS, activation, connection, guarded, wrap
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -19,7 +22,7 @@ if TYPE_CHECKING:
     from ..context.plan import ExecutionPlan
     from .transport import Machine, SshTransport
 
-# uv's official installer, used only when a host has neither uv nor pip to install the tool with.
+# uv's official installer, the one way uv reaches a host that has none.
 _UV_INSTALLER = "curl -LsSf https://astral.sh/uv/install.sh | sh"
 
 
@@ -30,9 +33,30 @@ class Dialect:
     noop = "true"
     # The probe and the line that fetch uv onto a host that has none.
     uv_bootstrap = ("command -v curl", _UV_INSTALLER)
-    # The probe for a usable pip and the user-site install line it completes.
-    pip = ("python3 -m pip --version", "python3 -m pip install --user --break-system-packages")
     pixi_installer = POSIX_INSTALLER
+    # The interpreters the tool runs on, as its own metadata requires them.
+    requires_python = metadata(Project().package)["Requires-Python"]
+
+    def python(self, prefix: str, *, host: str) -> str:
+        """The command that starts mainboard's own Python on `host`, under any login shell.
+
+        The workspace environment at `prefix` when the host has it, else the uv-managed CPython
+        the tool is installed onto, which onboarding puts there before anything ships. Never the
+        machine's own `python3`, whose version and packages nobody here chose. The arguments
+        written after the command reach the interpreter as they are.
+        """
+        found = f"{placed(prefix, home='$HOME')}/bin/python"
+        wanted = self.requires_python
+        refusal = (
+            f"$0: {host} has neither {found} nor a uv-managed CPython {wanted}; "
+            f"run {Project().name} host setup {host}"
+        )
+        script = (
+            f'p="{found}"; [ -x "$p" ] || '
+            f'p=$(PATH={":".join(USER_BINS)}:$PATH; uv python find --managed-python "{wanted}") '
+            f'|| {{ echo "{refusal}" >&2; exit 127; }}; exec "$p" "$@"'
+        )
+        return f"sh -c {shlex.quote(script)} {Project().package}"
 
     def stage(self, plan: ExecutionPlan, root: str, *, command: str, activate: bool) -> str:
         """The line that runs `command` from the workspace, its environment entered when asked."""
@@ -59,10 +83,6 @@ class Dialect:
 
     def is_file(self, path: str) -> str:
         return f"test -f {shlex.quote(path)}"
-
-    def chain(self, *commands: str) -> str:
-        """`commands` run in order, each only after the previous one succeeded."""
-        return " && ".join(commands)
 
     def proof(self, plan: ExecutionPlan, root: str) -> str:
         """The activation script whose presence proves `plan`'s environment was provisioned."""
@@ -111,6 +131,13 @@ class HostShell:
 
     def stage(self, command: str, *, activate: bool) -> str:
         return self.dialect.stage(self.plan, self.root, command=command, activate=activate)
+
+    def place(self) -> None:
+        """Make the workspace root, so a machine that has none yet can stand in it."""
+        retcode, _, err = self.execute(f"mkdir -p {shlex.quote(self.root)}")
+        if retcode:
+            reason = failure_reason(err, retcode)
+            raise MissionError(f"cannot make {self.root} on {self.plan.host!r}: {reason}")
 
     @property
     def proof(self) -> str:

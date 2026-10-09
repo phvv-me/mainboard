@@ -289,7 +289,7 @@ class Standalone:
     @staticmethod
     def _imported_alone(member: Member, package: Package, clone: Path) -> Section:
         """Whether `uv` installs the clone into an empty environment and every package imports."""
-        python = ["--python", package.python] if package.python else []
+        python = ["--managed-python", *(["--python", package.python] if package.python else [])]
         argv = ["run", "--isolated", "--no-project", *python, "--with", str(clone)]
         try:
             with local.cwd(str(clone.parent)):

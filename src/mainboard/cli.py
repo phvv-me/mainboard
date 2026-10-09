@@ -1390,10 +1390,10 @@ def build(root: Path | None = None) -> App:
 
         Args:
             path: workspace-relative results file or directory, using forward slashes on every OS.
-            on: declared SSH host; root and bootstrap Python come from its profile, a `~` root
-                expanded by that Python when no setup has placed it yet. Python is a command in
-                that host's SSH login shell, usually python3; quote an absolute interpreter path as
-                that shell requires. No remote Mainboard is needed.
+            on: declared SSH host; its profile gives the root, a `~` root expanded there when no
+                setup has placed it yet. The host runs the exporter on its workspace
+                environment's Python, else on the uv-managed CPython its setup put there, never
+                on a system interpreter.
             json: print a machine-readable collection summary.
         """
         workspace = board(on)

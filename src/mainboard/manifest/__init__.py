@@ -1,5 +1,5 @@
 from .loading import load
-from .schema.container import Container, EnvMode, Guardrail
+from .schema.container import Container, Guardrail
 from .schema.environment import Env
 from .schema.figures.figure import FigureSpec
 from .schema.figures.layer import Layer
@@ -19,7 +19,6 @@ __all__ = [
     "Container",
     "Defaults",
     "Env",
-    "EnvMode",
     "Guardrail",
     "FigureSpec",
     "Layer",

@@ -1,12 +1,12 @@
 # Landing a dispatch on a machine rented for one job: the same thing `mb host setup` does to a
 # declared host, done to a box that will exist for the next half hour.
 #
-# A rented container has no workspace, tool or environment, so the command comes last: mirror
-# the workspace, install the tool from it, provision the environment from the lock this
-# workspace already solved, pin the tree the job runs from, and only then hand the waiting
-# entrypoint the line that runs it. Anything earlier is the failure this module ends, a
-# `mainboard run` that reached a bare image and answered `bash: mainboard: command not found`
-# while the meter ran.
+# A rented container has no workspace, tool or environment, so the command comes last: put uv
+# and its CPython there, mirror the workspace, install the tool from it onto that CPython,
+# provision the environment from the lock this workspace already solved, pin the tree the job
+# runs from, and only then hand the waiting entrypoint the line that runs it. Anything earlier is
+# the failure this module ends, a `mainboard run` that reached a bare image and answered
+# `bash: mainboard: command not found` while the meter ran.
 #
 # A rental gets no record: it is gone by the next sweep, so nothing here saves a `HostSetup`,
 # checks a queue daemon or probes hardware. Its own backend still owns the log, the exit marker
@@ -154,7 +154,7 @@ class Landing:
             self.backend.cancel(handle)
 
     def equip(self, rental: Rental, *, shipment: Shipment) -> None:
-        """Mirror, install, provision, pin, launch: everything the machine needs, in that order.
+        """Python, mirror, install, provision, pin, launch: all the machine needs, in that order.
 
         shipment: its provenance is read once, minutes before the pin uses it, since a dirty
             tree's key digests its own delta, which could move under a second reading.
@@ -168,7 +168,9 @@ class Landing:
             root = placed(self.plan.profile.root, home=home_of(remote))
             listing = self.dispatcher.stage_listing(shipment)
             script = self.script(shipment, root=root, listing=listing)
-            self.transferable(remote)
+            bootstrap = Bootstrap(HostShell(remote, self.plan, root), floor=self.floor)
+            self.watch(f"putting uv's CPython on {rental.handle}")
+            bootstrap.python()
             self.watch(f"mirroring the workspace to {where}:{root}")
             shipped = self.dispatcher.mirror(
                 self.plan,
@@ -178,9 +180,6 @@ class Landing:
                 extra=[script, *([listing] if listing else []), *shipment.files],
                 fetch=shipment.fetch,
             )
-            # Every command below stands in the workspace the mirror just created, which is why
-            # nothing before this line may `cd` into a root that did not exist yet.
-            bootstrap = Bootstrap(HostShell(remote, self.plan, root), floor=self.floor)
             self.watch(f"installing the tool on {rental.handle}")
             bootstrap.tool()
             self.watch(f"provisioning {self.plan.env} on {rental.handle}")
@@ -205,27 +204,6 @@ class Landing:
                     )
                 self.dispatcher.cache.delivery(registered, "pending")
                 self.start(remote, pinned=pinned, script=f"{pinned}/{Snapshots.script(script)}")
-
-    def transferable(self, remote: Machine) -> None:
-        """Make sure the machine can receive a mirror at all, since its Python runs the far end.
-
-        A rented image almost always ships one; one that does not gets it through apt, which
-        every provider base image this house rents is built on, and an image with neither
-        refuses with what the machine said, before the mirror. It runs on the bare connection,
-        since the workspace a later step would `cd` into does not exist until the mirror.
-        """
-        probe = f"{self.plan.profile.python} -c pass"
-        retcode, _, _ = remote["bash"][["-lc", probe]].run(retcode=None)
-        if retcode == 0:
-            return
-        self.watch("installing python on the rental")
-        install = "apt-get update -qq && apt-get install -y -qq python3"
-        retcode, _, err = remote["bash"][["-lc", install]].run(retcode=None)
-        if retcode:
-            raise MissionError(
-                f"the rented machine has no python and could not install one: "
-                f"{str(err).strip()[-400:]}"
-            )
 
     def verify(self, remote: Machine, pinned: str) -> None:
         """Prove the pinned tree activates before the entrypoint is asked to run a job from it.

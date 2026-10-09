@@ -58,18 +58,23 @@ class Collector:
         EvidenceTree(self.root).keep(published)
         return len(published)
 
-    def pull(self, host: str, *, root: str, path: str, python: str = "python3") -> int:
+    def pull(self, host: str, *, root: str, path: str, python: str) -> int:
         """Collect a remote path and return the number of new local files.
 
         root: destination workspace, interpreted remotely.
         path: project-relative selection with forward slashes.
-        python: trusted interpreter command in the remote SSH login shell.
-            Path arguments travel through standard input instead of shell interpolation.
+        python: the command starting mainboard's own Python on the host (`Dialect.python`),
+            never a system one. Path arguments travel through standard input instead of shell
+            interpolation.
         """
         relative = relative_path(path)
         script = Path(__file__).with_name("pack.py").read_text(encoding="utf-8")
         known = self._known(relative)
-        script += f"\npack({root!r}, relative={relative.as_posix()!r}, known={known!r})\n"
+        cache = (Project().out(self.root) / "run" / "collect-digests.json").relative_to(self.root)
+        script += (
+            f"\npack({root!r}, relative={relative.as_posix()!r}, known={known!r}, "
+            f"cache={cache.as_posix()!r})\n"
+        )
         self.root.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix=f".{Project().name}-collect-", dir=self.root) as temporary:
             archive = Path(temporary) / "transfer.zip"

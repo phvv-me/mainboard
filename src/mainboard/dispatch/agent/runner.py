@@ -1,7 +1,7 @@
-# How the center asks a target's agent one thing. The target runs whatever Python its shell
-# answers to with a one-line bootstrap, and everything else travels on standard input in one
-# framed stream: the agent's own source, the request as one JSON line, then any payload. Nothing
-# is installed on the far side and nothing is quoted for its shell but the bootstrap.
+# How the center asks a target's agent one thing. The target runs mainboard's own Python there
+# (`Dialect.python`) with a one-line bootstrap, and everything else travels on standard input in
+# one framed stream: the agent's own source, the request as one JSON line, then any payload.
+# Nothing is quoted for the target's shell but the bootstrap.
 
 import io
 import json
@@ -110,12 +110,12 @@ class Agent:
     """The standard-library agent on one target, asked one request at a time.
 
     link: how the target is reached.
-    python: the interpreter command the target's login shell runs the agent with.
+    python: the command starting mainboard's own Python on the target (`Dialect.python`).
     patience: seconds an exchange may pass without a byte moving either way before the target
         counts as stalled. The exchange itself is unbounded, since a slow uplink is only slow.
     """
 
-    def __init__(self, link: Link, *, python: str = "python3", patience: float = 60.0) -> None:
+    def __init__(self, link: Link, *, python: str, patience: float = 60.0) -> None:
         self.link = link
         self.python = python
         self.patience = patience

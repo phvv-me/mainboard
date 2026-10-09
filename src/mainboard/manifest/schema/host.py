@@ -42,8 +42,6 @@ class HostProfile(Declared):
         the one the host already uses when it has one (`dispatch.targets.resolve`); a leading
         `~` is the host's own home as its setup probed it.
     platform: the pixi platform (`linux-64`), probed at setup when empty.
-    python: the bootstrap interpreter in the remote ssh login shell, quoted as that shell needs;
-        standard-library collection needs no environment or Mainboard there.
     vars: read by this machine's backends (an API key, rental parameters), never shipped.
     exports: set for every job after its environment is entered, for facts about the host's
         world (`HF_HUB_OFFLINE = "1"` where compute nodes must never ask the Hub).
@@ -55,7 +53,6 @@ class HostProfile(Declared):
     kind: str = "auto"
     root: str = Project().jobs_roots[0]
     platform: str = ""
-    python: str = "python3"
     account: str = ""
     login_shell: bool = True
     login_memory_gb: float = 0.0

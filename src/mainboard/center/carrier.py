@@ -24,7 +24,8 @@ from . import remote
 if TYPE_CHECKING:
     from ..probe.census import Json
 
-# The Python every call runs under, the one this tool itself requires, which uv fetches once.
+# The Python every call runs under, the one this tool itself requires, which uv fetches once and
+# manages, never the machine's own.
 PYTHON = "3.14"
 
 # The prefix the answer line carries, the one line of stdout the caller reads.
@@ -82,7 +83,10 @@ class Carrier:
     @property
     def argv(self) -> tuple[str, ...]:
         """The ssh command line, the one part of a call a process listing shows."""
-        line = f'"{self.uv}" run --no-project --quiet --python {PYTHON} python -c "{_BOOTSTRAP}"'
+        line = (
+            f'"{self.uv}" run --no-project --quiet --managed-python --python {PYTHON} '
+            f'python -c "{_BOOTSTRAP}"'
+        )
         return (*self.transport.command(self.host), line)
 
     def call[Answer](

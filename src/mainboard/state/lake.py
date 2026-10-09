@@ -52,7 +52,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Se
 from contextlib import ExitStack, closing, contextmanager, suppress
 from datetime import UTC, date, datetime
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock, Thread
 from typing import Any
 
 import duckdb
@@ -141,6 +141,8 @@ _LOCKED_WAIT_S = 1.0
 # The live session on each catalog, gone when its last holder is, and the lock creating one.
 _SESSIONS: weakref.WeakValueDictionary[tuple[str, int], Session] = weakref.WeakValueDictionary()
 _SHARING = RLock()
+_ANSWERED: set[Path] = set()
+_ANSWER_SECONDS = 10.0
 
 # The SQLite WAL-index header fields `check` reads from the catalog's `-shm` file: `mxFrame`, the
 # last valid frame in the WAL, at byte 16, and `nBackfill`, how many frames were already copied
@@ -720,6 +722,7 @@ class Lake(FrozenModel):
         if self.served:
             self._reach(connection)
             return
+        self._answering()
         self._load(connection, _EXTENSIONS)
         connection.execute(f"SET ducklake_max_retry_count = {_RETRIES}")
         options = [
@@ -733,6 +736,37 @@ class Lake(FrozenModel):
         options.append("META_JOURNAL_MODE 'WAL'" if write else "READ_ONLY")
         target = quoted(f"ducklake:sqlite:{self.catalog.as_posix()}")
         connection.execute(f"ATTACH {target} AS {ALIAS} ({', '.join(options)})")
+
+    def _answering(self) -> None:
+        """Raise MissionError unless a read of the lake's home returns, once per home and process.
+
+        macOS privacy leaves a read on an external volume waiting forever, never refusing it, in
+        a process whose responsible app lacks Full Disk Access (a tmux server, a launchd job),
+        while `stat` still answers.
+        """
+        if self.home in _ANSWERED:
+            return
+        probe = self.catalog if self.catalog.is_file() else self.home
+        answered = Event()
+
+        def read() -> None:
+            with suppress(OSError):
+                if probe.is_dir():
+                    next(probe.iterdir(), None)
+                else:
+                    with probe.open("rb") as held:
+                        held.read(1)
+            answered.set()
+
+        Thread(target=read, daemon=True).start()
+        if not answered.wait(_ANSWER_SECONDS):
+            raise MissionError(
+                f"the lake at {self.home} gave no answer in {_ANSWER_SECONDS:.0f} s; on macOS, "
+                "run this through `ssh localhost`, whose sessions hold Full Disk Access when "
+                "Remote Login allows it, or grant it to the app this process runs under (under "
+                "tmux, the tmux binary) and restart that app"
+            )
+        _ANSWERED.add(self.home)
 
     @contextmanager
     def serving(self, port: int = PORT, token: str = "") -> Generator[tuple[str, str]]:

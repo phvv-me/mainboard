@@ -112,26 +112,21 @@ def activation_stage(plan: ExecutionPlan, root: str) -> str:
     """The shell stage that activates `plan`'s environment before a wrapped command runs.
 
     It sources the environment's generated activation, else puts its prefix's `bin/` on PATH.
-    With neither, the default environment runs on a bare PATH, since an interactive command may
-    need nothing activated; a named one refuses, naming the command that provisions it, because
-    naming it states which interpreter the user wants, and falling through is how a command asking
-    for `vserve` silently runs the system python.
+    With neither it refuses, naming the command that provisions it, the default environment as
+    much as a named one: a bare PATH is how a command asking for `python` silently runs the
+    machine's own interpreter, which nothing here may run.
 
     A dispatched job never comes through here: its runner enters the environment itself and
-    refuses the default one just the same, since a queued run on the host's system python costs a
-    whole scheduler round trip to find out.
+    refuses just the same, since a queued run on the host's system python costs a whole
+    scheduler round trip to find out.
     """
     prefix = shlex.quote(plan.prefix(root))
     script = shlex.quote(activation(root, env=plan.env))
-    prepend = f"export PATH={prefix}/bin:$PATH"
-    closing = (
-        prepend
-        if plan.env == "default"
-        else f"echo {shlex.quote(missing(plan, plan.prefix(root)))} >&2; exit 1"
-    )
+    refusal = shlex.quote(missing(plan, plan.prefix(root)))
     return (
         f"if [ -f {script} ]; then source {script}; "
-        f"elif [ -d {prefix}/bin ]; then {prepend}; else {closing}; fi"
+        f"elif [ -d {prefix}/bin ]; then export PATH={prefix}/bin:$PATH; "
+        f"else echo {refusal} >&2; exit 1; fi"
     )
 
 
@@ -149,13 +144,12 @@ def absent(prefix: str, env: str) -> str:
 def missing(plan: ExecutionPlan, prefix: str) -> str:
     """The refusal a machine with nothing to activate at `prefix` prints, naming the fix."""
     tool = Project().name
-    where, fix = (
-        (prefix, f"install {plan.env}")
-        if plan.host == "local"
-        else (f"{prefix} on {plan.host}", f"setup {plan.host} --env {plan.env}")
-    )
+    named = "" if plan.env == plan.profile.env else f" --env {plan.env}"
+    if plan.host == "local":
+        return f"this machine has no {plan.env} environment at {prefix}; run {tool} install{named}"
     return (
-        f"{tool} found no {plan.env} environment at {where}. Run `{tool} {fix}` to provision it."
+        f"{plan.host} has no {plan.env} workspace environment at {prefix}; "
+        f"run {tool} host setup {plan.host}{named}"
     )
 
 

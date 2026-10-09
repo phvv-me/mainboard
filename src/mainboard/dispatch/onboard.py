@@ -1,12 +1,13 @@
-# Onboarding a host: mirror the workspace, put the tool on the machine, provision the manifest's
-# environment there, and read the host back through the activation that install just wrote. It
-# runs over the transports dispatch already owns rather than a second, parallel way to reach a
-# host, and succeeds the shell script the previous generation shipped.
+# Onboarding a host: put uv's CPython there, mirror the workspace, put the tool on the machine,
+# provision the manifest's environment there, and read the host back through the activation
+# that install just wrote. It runs over the transports dispatch already owns rather than a
+# second, parallel way to reach a host, and succeeds the shell script the previous generation
+# shipped.
 
 import hashlib
 import shlex
 import shutil
-from importlib.metadata import metadata, requires
+from importlib.metadata import requires
 from typing import TYPE_CHECKING
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -195,9 +196,8 @@ def installers(
 ) -> Strategy[Installer]:
     """The ordered install routes for `shell`'s host, best first.
 
-    uv leads because its isolated tool environment needs no host interpreter new enough to run
-    the tool. Bootstrapping uv beats a user-site pip install, the last route and the only one
-    bound to whatever `python3` the host ships.
+    uv installs every one, onto the uv-managed CPython `Bootstrap.python` put there, so the tool
+    never runs on the host's own interpreter and nothing lands in its user site.
 
     The family offered is a fact about the workspace, not the machine. One that vendors the
     tool's source installs from it, so a host never runs a tool older than the manifest it
@@ -211,46 +211,28 @@ def installers(
     """
     strategy: Strategy[Installer] = Strategy(f"{_TOOL} installer")
     wanted_extras = f"[{','.join(extras)}]" if extras else ""
-    dialect = shell.dialect
-    fetch_probe, fetch = dialect.uv_bootstrap
-    pip_probe, pip = dialect.pip
-    python = shlex.quote(metadata(_TOOL)["Requires-Python"])
+    has_uv = shell.dialect.has("uv")
     # `--reinstall` because uv reuses a cached build of an unchanged version number.
-    uv = f"uv tool install --force --reinstall --python {python}"
+    install = (
+        "uv tool install --force --reinstall --managed-python "
+        f"--python {shlex.quote(shell.dialect.requires_python)}"
+    )
     if vendored:
-        quoted = shlex.quote(f"{source}{wanted_extras}")
-        editable = f"{uv} --editable {quoted}"
-        strategy.register("uv", Installer(shell, probe=dialect.has("uv"), command=editable))
-        strategy.register(
-            "uv-bootstrap",
-            Installer(shell, probe=fetch_probe, command=dialect.chain(fetch, editable)),
-        )
-        strategy.register(
-            "pip",
-            Installer(
-                shell, probe=pip_probe, command=f"{pip} --force-reinstall --editable {quoted}"
-            ),
-        )
+        editable = f"{install} --editable {shlex.quote(f'{source}{wanted_extras}')}"
+        strategy.register("uv", Installer(shell, probe=has_uv, command=editable))
         return strategy
-    wanted = shlex.quote(f"{_TOOL}{wanted_extras}{specifier(floor)}")
-    indexed = f"{uv} {wanted}"
+    indexed = f"{install} {shlex.quote(f'{_TOOL}{wanted_extras}{specifier(floor)}')}"
     strategy.register("present", Existing(shell, floor=floor))
-    strategy.register("uv-index", Installer(shell, probe=dialect.has("uv"), command=indexed))
-    strategy.register(
-        "uv-bootstrap-index",
-        Installer(shell, probe=fetch_probe, command=dialect.chain(fetch, indexed)),
-    )
-    strategy.register(
-        "pip-index", Installer(shell, probe=pip_probe, command=f"{pip} --upgrade {wanted}")
-    )
+    strategy.register("uv-index", Installer(shell, probe=has_uv, command=indexed))
     return strategy
 
 
 class Bootstrap:
     """Puts this workspace's tool and environment onto a machine that already answers ssh.
 
-    Install the tool through the first route the machine supports, then have it compile the
-    synced manifest and install the environment from the lock this workspace already solved. A
+    Put uv and the CPython it manages there before anything ships, install the tool onto that
+    interpreter through the first route the machine supports, then have it compile the synced
+    manifest and install the environment from the lock this workspace already solved. A
     declared host and a machine rented for one job both drive this one class.
 
     policy: what the machine's install may do to the shipped lock: `locked` refuses one this
@@ -277,6 +259,27 @@ class Bootstrap:
     def env(self) -> str:
         """The environment being provisioned, the plan's own."""
         return self.shell.plan.env
+
+    def python(self) -> None:
+        """Put uv and the uv-managed CPython the tool runs on onto the machine, first of all.
+
+        Mainboard runs there on that interpreter until the workspace environment exists
+        (`Dialect.python`), the agent shipping the mirror included, and the tool is installed
+        onto it. The root is made first, since every line stands in it. A machine with neither
+        uv nor curl to fetch it is refused: nothing stands in, never its own `python3` and never
+        a pip into its user site.
+        """
+        shell = self.shell
+        shell.place()
+        if not shell.ok(shell.dialect.has("uv")):
+            probe, fetch = shell.dialect.uv_bootstrap
+            if not shell.ok(probe):
+                raise MissionError(
+                    f"{shell.plan.host!r} has neither uv nor curl to fetch it, and {_TOOL} runs "
+                    "on no other Python there; install uv on it, then set it up again"
+                )
+            shell.run(fetch)
+        shell.run(f"uv python install --no-bin {shlex.quote(shell.dialect.requires_python)}")
 
     def tool(self) -> Resolution[Installer]:
         """Install the tool through the first route the machine supports, keeping the rejections.
@@ -354,9 +357,9 @@ def herded(host: str) -> None:
 class Onboarding:
     """Brings one host from bare ssh access to a workspace that runs jobs.
 
-    The steps a person would take by hand, in order: probe the host, mirror the workspace, install
-    the tool from that mirror, have it install the manifest's environment, then read the host
-    back through the activation it now carries.
+    The steps a person would take by hand, in order: probe the host, put uv's CPython there,
+    mirror the workspace, install the tool from that mirror, have it install the manifest's
+    environment, then read the host back through the activation it now carries.
 
     The environment is the plan's own, the host profile's declared choice unless overridden, so
     a host declaring `env = "serving"` gets serving and can never drift from what later commands
@@ -536,6 +539,8 @@ class Onboarding:
         root = rooted(self.plan.profile, host=host)
         with open_shell(self.plan, root) as shell:
             bootstrap = Bootstrap(shell, policy=self.policy, floor=self.floor)
+            self.watch(f"putting uv's CPython on {host}")
+            bootstrap.python()
             self._mirror(host, root)
             self.watch(f"installing {_TOOL} on {host}")
             winner = bootstrap.tool()
@@ -599,8 +604,9 @@ class Onboarding:
         """Re-mirror and re-provision `host`, its bootstrap and hardware probe skipped.
 
         The fast path back to a host whose manifest moved since setup: the hardware is not probed
-        again, and the tool is reinstalled only when its declared requirements moved since the
-        host last installed it (`HostSetup.requires`). Refuses a host never onboarded.
+        again, uv's CPython is only confirmed, and the tool is reinstalled only when its declared
+        requirements moved since the host last installed it (`HostSetup.requires`). Refuses a
+        host never onboarded.
 
         THE RECORD IS RE-READ AFTER THE MIRROR, NOT BEFORE. `mirror` stamps `synced_at` on
         its own, mid-block, and building the saved record from a copy taken before that would
@@ -614,11 +620,13 @@ class Onboarding:
             self.plan = self.resolved(recorded.capabilities)
         root = rooted(self.plan.profile, host=host)
         with open_shell(self.plan, root) as shell:
+            bootstrap = Bootstrap(shell, policy=self.policy, floor=self.floor)
+            bootstrap.python()
             self._mirror(host, root)
             tool: dict[str, str | tuple[tuple[str, str], ...]] = {}
             if recorded.requires != (requirements := _requirements()):
                 self.watch(f"reinstalling {_TOOL} on {host}, its requirements moved")
-                winner = Bootstrap(shell, policy=self.policy, floor=self.floor).tool()
+                winner = bootstrap.tool()
                 tool = {
                     "installer": winner.winner,
                     "rejected": winner.rejected,
@@ -627,7 +635,7 @@ class Onboarding:
                 }
             pixi = self.align_pixi(shell, host=host)
             self.watch(self._installing(host))
-            Bootstrap(shell, policy=self.policy).environment()
+            bootstrap.environment()
             # A daemon that died or a host cleaned since setup would refuse every submit.
             self.verify_queue(shell, host=host)
             self.apply_dotfiles(shell, host=host)

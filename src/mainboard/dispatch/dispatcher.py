@@ -18,6 +18,7 @@ from patos import FrozenModel
 from sqlalchemy import Column, Table, select
 
 from ..context.admission import admit
+from ..context.plan import environment_prefix
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.generated import GeneratedFiles
@@ -37,6 +38,7 @@ from .mirror import Mirror
 from .provenance import Source, SourceTree
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, Watcher, announce, now, state_dir, state_path, workspace
+from .shells import Dialect
 from .shipment import Shipment
 from .snapshots import Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
@@ -225,11 +227,12 @@ class Dispatcher:
     def fetch_path(
         self, host: str, *, root: str, path: str, ssh: SshTransport | None = None
     ) -> int:
-        """Collect a file or directory through the host profile's Python, on either OS.
+        """Collect a file or directory through the host's workspace environment, on either OS.
 
         Source synchronization stays separate from this evidence collection.
         """
-        python = load(Project().manifest(self.root)).profile(host).python
+        env = load(Project().manifest(self.root)).profile(host).env
+        python = Dialect().python(environment_prefix(root, env), host=host)
         try:
             published = Collector(self.root, ssh).pull(
                 host, root=root, path=path.rstrip("/"), python=python
@@ -353,12 +356,14 @@ class Dispatcher:
     def agent(self, plan: ExecutionPlan, *, ssh: SshTransport | None = None) -> Agent:
         """The standard-library agent on `plan.host`, what every mirror and pin talks to.
 
+        It runs on the host's own environment for `plan` under its workspace root, or before
+        that exists, on the uv-managed CPython onboarding put there first.
+
         ssh: the policy a rental's endpoint rides; a declared host's alias answers for itself.
         """
         policy = ssh or SshTransport()
-        return Agent(
-            SshLink(plan.host, policy), python=plan.profile.python, patience=policy.deadline
-        )
+        python = Dialect().python(plan.prefix(plan.profile.root), host=plan.host)
+        return Agent(SshLink(plan.host, policy), python=python, patience=policy.deadline)
 
     def scope(
         self, plan: ExecutionPlan, roots: Sequence[str], *, hidden: Sequence[str] = ()

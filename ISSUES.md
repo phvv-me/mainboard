@@ -43,7 +43,11 @@ campaign first; move an entry to the bottom section once fixed and verified.
    flags should match.
 9. **`mb lint <dir>` rewrites files the change never touched**, including frozen analysis sources
    (`lifecycle_figures.py`, reverted by hand). Directory lint should check, not fix, untouched
-   files, or refuse to rewrite sealed sources.
+   files, or refuse to rewrite sealed sources. 2026-10-08: it also rewrote
+   `cutoken/src/cutoken/types.py` (`from numba import cuda as cuda` to the plain form) although
+   cutoken's own `pyproject.toml` exempts that file from PLC0414, because the alias is the
+   explicit re-export ten kernel modules import. Lint must honor each package's nearest ruff
+   config (hierarchical discovery), not force the root's.
 10. **Shipping `needs` to miyabi ran at ~2.4 MB/s** through the agent's ssh pipe: 2.1 GB of corpora
     took about 15 minutes per first dispatch. Compression, rsync, or a staged copy would help.
 10a. **Collecting from miyabi times out.** A `job list` settle pass on 2026-10-07 22:20 gave up on
@@ -55,6 +59,12 @@ campaign first; move an entry to the bottom section once fixed and verified.
     "quiet" for the rest of the pass. Settlement then stays pending (cold-native 3500492 ran
     12 of 12 cases but none reached the center). Worked around with a manual `rsync --partial`
     of that folder. Fetch should name a job's own run directories, not the experiment's.
+    Fixed locally (unreleased): collection counts paths the lake indexes as known, so an evicted tree no longer
+    pulls the whole folder back; the remote side still hashes every known file on the login
+    node, which is what makes a pass slow. FIXED locally (2026-10-09, unreleased): `pack.py`
+    keeps a remote digest cache (path, size, mtime) under the workspace's `run/`, seeded once
+    from a compute node (170,011 files, 20 GB), and runs on the host's workspace-environment
+    Python, never the login node's OS `python3`.
 11. **Settlement backlog**: `job list` keeps erroring on old runs ("settlement pending; remote
     evidence retained: result transfer failed" for pedro-cvlab 348, 363, 400, 446, 479 and
     crimson 1862) and on today's 594 and 3500391 ("Expecting value: line 1 column 1"), whose
@@ -82,13 +92,56 @@ campaign first; move an entry to the bottom section once fixed and verified.
     elsewhere, `host setup --center` should carry it from `Lake.home` (or leave an external
     volume where it is). `doctor` should also report the lake's home and refuse clearly when the
     volume is unmounted.
+13f2. **An unresponsive lake volume hangs every verb, without a timeout** (2026-10-08 ~10:00).
+    With `[workspace] lake` on `/Volumes/PORTABLE` and that drive mounted but not answering I/O
+    (even `ls` blocks), `mb host sync <host>`, `mb lint` and three concurrent syncs all sat at
+    0% CPU for over ten minutes after loading the DuckLake and SQLite extensions. Lint and sync
+    should not need the lake at all unless they restore files; where they do, opening the lake
+    should time out and name the volume, and `doctor` should report it.
+    Cause found: macOS privacy (TCC) denies Full Disk Access to processes Ghostty is
+    responsible for, so opening a file on the external volume waits forever while `stat`
+    still answers. FIXED locally (unreleased): the manifest consults held rentals only for an
+    alias neither declared nor `local`, so sync, lock, lint and run never open the lake.
+    2026-10-09: the same wait hit every pytest trial started inside tmux (the agent sessions):
+    the tmux server is its own responsible process and holds no Full Disk Access, so attaching
+    the catalog never returned. FIXED locally (unreleased): `Lake.attach` reads the lake's home
+    once per process first and raises after 10 s, naming the missing access. Granting tmux the
+    access would restart the terminal, so agent sessions run lake verbs through `ssh localhost`,
+    whose sessions hold Full Disk Access (Remote Login allows it); the message says so.
+13f3. **Every job host inherits the center's absolute `[workspace] lake`** (2026-10-08).
+    Since the lake moved to `/Volumes/PORTABLE/mainboard-lake` (9ffcc472d) the shipped manifest
+    names that path on every host, and a pytest trial there dies in `pytest_configure`
+    (`trials/provenance.source` -> `dispatch/provenance.archive` -> `Lake.ready` -> `create`)
+    with `Unable to open database "/Volumes/PORTABLE/mainboard-lake/lake.sqlite"` on Linux.
+    The key names the center's lake only: sync should ship the manifest without it (a host keeps
+    its staging lake in its generated directory, as before), or `lake_home` should apply it on
+    the center alone. Registered trials on hosts are blocked until then.
+    FIXED locally (unreleased): `lake` applies only on the center, the checkout holding
+    `.git`; a dispatch mirror ships without one and keeps its staging lake.
+13f4. **Stale generated inputs on a host break every dispatch's environment pin** (2026-10-08).
+    The compiled artifact ships as named files, so a file the center stopped generating stays in
+    the host's `.mainboard/envs/default` forever. `GeneratedFiles.inputs` digests every file
+    there, so miyabi-g's `package-lock.json` (2026-09-29, from before the pnpm second stage)
+    and `activation-windows.json` (2026-10-01) give `df134abbb018105e` against the center's
+    `e5b7ed78`, and `job submit` refuses: "could not build default ... describes environment".
+    `host sync` and `host setup` both pass, since neither removes them. Fix: prune generated
+    inputs the center no longer ships when the artifact lands; until then, delete them by hand.
 13e. **Palettes are only validated by hand.** The 2026-10-08 Hugging Face colour change came from
     running the dataviz skill's `validate_palette.js` outside mainboard. `[plots.*]` colours and
     palettes should be checked (lightness band, chroma, colour-blind and normal-vision
     separation, contrast) when a style loads and in `mb lint`.
+13f. **Hashing could move to DuckDB with a fast hash** (owner idea, 2026-10-08). xxh3 as a change
+    detector for evict, collection and the KeptDigests cache, with SHA-256 kept as the identity
+    every receipt, seal and lake object is addressed by. Measure first: evict hashed 151,166
+    files in 36 s, while materializing one report folder took over 600 s, so hashing is not the
+    current bottleneck. The remote `pack.py` must stay standard-library only. Source: DuckDB's
+    `hashfuncs` community extension (Query.Farm) has `xxh3_64`, `xxh3_128` and `xxh3_128_hex`,
+    the last matching Python `xxhash.xxh3_128().hexdigest()`; it needs `INSTALL ... FROM
+    community`, while `Relations` disables extension autoinstall.
 13. The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...
     mainboard-agent`). It works, but contradicts the rule that nothing runs on the OS interpreter;
     document it as the one exception or ship the agent's own interpreter.
+    FIXED locally (unreleased, 2026-10-09): `Dialect.python` runs the env's Python, else uv's CPython.
 14. A path wheel on one platform and an index wheel on another is refused ("one source per
     package"), so TokTier's released x86_64 wheel had to be pinned by path too. Fine, but the
     message could suggest that pattern.

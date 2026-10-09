@@ -27,7 +27,14 @@ class ExecutionPlan(FrozenModel):
         """The environment prefix under the executing machine's workspace `root`.
 
         Always a bound host path outside any image, which lets a fixed off-the-shelf image serve
-        every dependency change. Its state directory is the name this workspace keeps, which a
-        host's mirror of it keeps too.
+        every dependency change.
         """
-        return f"{root}/{Project().out_dir()}/envs/{self.env}/.pixi/envs/{self.env}"
+        return environment_prefix(root, self.env)
+
+
+def environment_prefix(root: str, env: str) -> str:
+    """Where the workspace environment `env` lives under a machine's workspace `root`.
+
+    Its state directory is the name this workspace keeps, which a host's mirror of it keeps too.
+    """
+    return f"{root}/{Project().out_dir()}/envs/{env}/.pixi/envs/{env}"

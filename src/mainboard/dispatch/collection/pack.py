@@ -1,4 +1,4 @@
-"""Standard-library result exporter, also sent to a remote Python over SSH stdin."""
+"""Standard-library result exporter, also sent over SSH stdin to mainboard's Python on a host."""
 
 import fnmatch
 import hashlib
@@ -12,23 +12,66 @@ from types import MappingProxyType
 from zipfile import ZIP_STORED, ZipFile
 
 
-def pack(root: str, *, relative: str, known: Mapping[str, str] = MappingProxyType({})) -> None:
-    """Stream regular files under one workspace-relative path without following links."""
+def pack(
+    root: str,
+    *,
+    relative: str,
+    known: Mapping[str, str] = MappingProxyType({}),
+    cache: str = "",
+) -> None:
+    """Stream regular files under one workspace-relative path without following links.
+
+    cache: workspace-relative file of remote digests, so a known file is hashed again only
+        after its size or modification time changed.
+    """
     base = Path(root).expanduser().resolve(strict=True)
+    digests = Digests(base / cache if cache else None, base=base)
     with ZipFile(sys.stdout.buffer, "w", compression=ZIP_STORED) as archive:
         for path in _paths(base, relative):
             expected = known.get(path.relative_to(base).as_posix())
-            if expected is not None:
-                with path.open("rb") as source:
-                    digest = hashlib.sha256()
-                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                if digest.hexdigest() == expected:
-                    continue
+            if expected is not None and digests.of(path) == expected:
+                continue
             if path.parent.name == "events" and path.name == "live.ndjson":
                 _snapshot(archive, path, base=base)
             else:
                 _immutable(archive, path, base=base)
+    digests.save()
+
+
+class Digests:
+    """SHA-256 of workspace files, reused while a file keeps its size and modification time."""
+
+    def __init__(self, path: Path | None, *, base: Path) -> None:
+        self.path = path
+        self.base = base
+        try:
+            self.held = json.loads(path.read_text(encoding="utf-8")) if path else {}
+        except OSError, ValueError:
+            self.held = {}
+        self.changed = False
+
+    def of(self, path: Path) -> str:
+        stat = path.stat()
+        key = path.relative_to(self.base).as_posix()
+        held = self.held.get(key)
+        if held and held[:2] == [stat.st_size, stat.st_mtime_ns]:
+            return held[2]
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        self.held[key] = [stat.st_size, stat.st_mtime_ns, digest.hexdigest()]
+        self.changed = True
+        return digest.hexdigest()
+
+    def save(self) -> None:
+        """Write the cache atomically, so a concurrent pass reads the old one or the new one."""
+        if not (self.path and self.changed):
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        staged = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        staged.write_text(json.dumps(self.held), encoding="utf-8")
+        os.replace(staged, self.path)
 
 
 def _paths(base: Path, relative: str) -> Iterator[Path]:
