@@ -21,6 +21,10 @@ type Setting = str | int | float | bool
 
 # What every connection holds unless the workspace or the machine says otherwise.
 DEFAULTS: dict[str, Setting] = {"timezone": "UTC", "enable_progress_bar": False}
+# What every database starts with. DuckDB pins one worker thread to each core on a machine of more
+# than 64 cores, and a process this tool hosts must keep the affinity its own work sets: a
+# spawned worker of a cutok CPU baseline held 72 threads pinned one per core on the GH200 (Oct 10).
+STARTUP: dict[str, Setting] = {"pin_threads": "off"}
 PREFIX = "MB_DUCKDB_"
 
 
@@ -36,7 +40,7 @@ def connect(
 
     config: the startup options the caller requires, which DuckDB reads before any setting.
     """
-    connection = duckdb.connect(database, config=dict(config or {}))
+    connection = duckdb.connect(database, config={**STARTUP, **(config or {})})
     for name, value in settings().items():
         literal = str(value).lower() if isinstance(value, bool) else str(value)
         connection.execute(f"SET {name} = {quoted(literal)}")

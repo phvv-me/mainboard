@@ -5,6 +5,7 @@ from pathlib import Path
 
 import duckdb
 
+from ..state.database import STARTUP
 from .frames import Frame, parse_tail
 
 _PART_BYTES = 512 * 1024
@@ -21,9 +22,10 @@ class FrameFile:
         """Return the original wire file, including a possible incomplete final frame."""
         if self.path.is_dir():
             parts = (self.path / "part-*.parquet").as_posix()
-            rows = duckdb.execute(
-                "SELECT ordinal, wire FROM read_parquet(?) ORDER BY ordinal", [parts]
-            ).fetchall()
+            with duckdb.connect(config=STARTUP) as connection:
+                rows = connection.execute(
+                    "SELECT ordinal, wire FROM read_parquet(?) ORDER BY ordinal", [parts]
+                ).fetchall()
             if [ordinal for ordinal, _ in rows] != list(range(len(rows))):
                 raise ValueError(f"incomplete event archive: {self.path}")
             return b"".join(wire for _, wire in rows)
@@ -43,18 +45,19 @@ class FrameFile:
         size = max(len(raw), 1)
         target = self.path.with_name(self.path.name + ".parquet")
         target.mkdir()
-        for part, start in enumerate(range(0, size, _PART_BYTES)):
-            chunks = [
-                raw[offset : offset + _CHUNK_BYTES]
-                for offset in range(start, min(start + _PART_BYTES, size), _CHUNK_BYTES)
-            ]
-            first = start // _CHUNK_BYTES
-            written = (target / f"part-{part:05d}.parquet").as_posix().replace("'", "''")
-            duckdb.execute(
-                "COPY (SELECT unnest(?::UINTEGER[]) AS ordinal, unnest(?::BLOB[]) AS wire) "
-                f"TO '{written}' (FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 19)",
-                [list(range(first, first + len(chunks))), chunks],
-            )
+        with duckdb.connect(config=STARTUP) as connection:
+            for part, start in enumerate(range(0, size, _PART_BYTES)):
+                chunks = [
+                    raw[offset : offset + _CHUNK_BYTES]
+                    for offset in range(start, min(start + _PART_BYTES, size), _CHUNK_BYTES)
+                ]
+                first = start // _CHUNK_BYTES
+                written = (target / f"part-{part:05d}.parquet").as_posix().replace("'", "''")
+                connection.execute(
+                    "COPY (SELECT unnest(?::UINTEGER[]) AS ordinal, unnest(?::BLOB[]) AS wire) "
+                    f"TO '{written}' (FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 19)",
+                    [list(range(first, first + len(chunks))), chunks],
+                )
         if FrameFile(target).read_bytes() != raw:
             raise ValueError(f"event archive changed bytes: {self.path}")
         return target
