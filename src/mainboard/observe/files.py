@@ -22,7 +22,7 @@ class FrameFile:
         """Return the original wire file, including a possible incomplete final frame."""
         if self.path.is_dir():
             parts = (self.path / "part-*.parquet").as_posix()
-            with duckdb.connect(config=STARTUP) as connection:
+            with duckdb.connect(config={**STARTUP}) as connection:
                 rows = connection.execute(
                     "SELECT ordinal, wire FROM read_parquet(?) ORDER BY ordinal", [parts]
                 ).fetchall()
@@ -45,7 +45,7 @@ class FrameFile:
         size = max(len(raw), 1)
         target = self.path.with_name(self.path.name + ".parquet")
         target.mkdir()
-        with duckdb.connect(config=STARTUP) as connection:
+        with duckdb.connect(config={**STARTUP}) as connection:
             for part, start in enumerate(range(0, size, _PART_BYTES)):
                 chunks = [
                     raw[offset : offset + _CHUNK_BYTES]

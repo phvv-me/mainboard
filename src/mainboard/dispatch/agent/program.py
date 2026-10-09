@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from typing import IO, TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 
     Json = str | int | bool | None | Sequence["Json"] | Mapping[str, "Json"]
 
@@ -584,7 +584,7 @@ def hashed(entry: Entry, root: str, digests: Digests) -> Entry | None:
 
 
 @contextmanager
-def locked(path: str) -> Iterator[None]:
+def locked(path: str) -> Generator[None]:
     """Hold an exclusive kernel lock on `path` for the block, released however it ends.
 
     A kernel lock rather than a lock file's mere existence, so a process killed mid-transfer

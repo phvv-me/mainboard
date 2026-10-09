@@ -16,7 +16,7 @@ _STDOUT_FD = 1
 _STDERR_FD = 2
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Generator, Sequence
 
     from .values import Row
 
@@ -49,7 +49,7 @@ def render_table(
 
 
 @contextmanager
-def progress(description: str) -> Iterator[Callable[[str], None]]:
+def progress(description: str) -> Generator[Callable[[str], None]]:
     """A stderr progress reporter around a block of unknown duration, yielding the stage setter.
 
     Each stage prints as its own line, led by the seconds since the block began, and a block
@@ -70,7 +70,7 @@ def progress(description: str) -> Iterator[Callable[[str], None]]:
 
 
 @contextmanager
-def diverted() -> Iterator[None]:
+def diverted() -> Generator[None]:
     """Send everything written to stdout inside the block to stderr instead.
 
     Stdout carries only the document a verb prints when done, so `--json` parses whole. The

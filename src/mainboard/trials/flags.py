@@ -15,7 +15,7 @@ from patos import FrozenModel
 from pydantic import JsonValue
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Generator, Mapping, Sequence
 
 
 class Flag(FrozenModel):
@@ -40,7 +40,7 @@ def reading(flags: Sequence[Flag]) -> dict[str, JsonValue]:
 
 
 @contextmanager
-def held(*flags: Flag) -> Iterator[dict[str, JsonValue]]:
+def held(*flags: Flag) -> Generator[dict[str, JsonValue]]:
     """Hold every flag's current value for the block, writing each writable one back on exit.
 
     Yields the recorded baseline, asserted knobs included.

@@ -289,6 +289,10 @@ campaign first; move an entry to the bottom section once fixed and verified.
       manifest unsolvable until the floor was lowered by hand.
     - Open: a PyPI floor above what conda-forge builds is unsolvable when a conda package
       already brings it (`tokenizers >=0.23.3` beside conda's transformers, built to 0.23.1).
+      Even when conda-forge does build it, `mb lock` keeps the conda package at its locked
+      version and refuses the raised PyPI floor (`filelock >=4.1.0` against a locked conda
+      4.0.12, 2026-10-10); `mb update --env default` moves it. A raise of a conda-provided PyPI
+      requirement should re-solve that conda package.
     - Open: `--env X` alone narrows to `[envs.X.deps]`, since `searched` defaults the ecosystem
       to conda, and never reaches `[envs.X.python.deps]` or `[envs.X.on.*]`.
 13l. **`mb lock` then `mb install` never resolves the second stage** (2026-10-10). `lock`
