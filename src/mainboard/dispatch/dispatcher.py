@@ -36,7 +36,16 @@ from .collection.collector import Collector
 from .jobs import JobSpec
 from .mirror import Mirror
 from .provenance import Source, SourceTree
-from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
+from .schedulers import (
+    Held,
+    HostUnreachable,
+    Pbs,
+    failure_reason,
+    kind_of,
+    pick,
+    read_log,
+    registry,
+)
 from .shared import HandleId, Watcher, announce, now, state_dir, state_path, workspace
 from .shells import Dialect
 from .shipment import Shipment
@@ -51,6 +60,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from ..context.plan import ExecutionPlan
+    from .schedulers import Scheduler
     from .transport import Machine
 
 # The tool a host runs its own jobs through, so nothing below spells the binary's name: the
@@ -534,8 +544,9 @@ class Dispatcher:
             attempt=resources.attempt,
             exports=plan.exports,
         )
+        asked = resources.queue or ""
         script = self.write_job_script(
-            spec, pbs=plan.profile.kind == "pbs", gpu_in_select=gpu_in_select
+            spec, pbs=isinstance(pick(plan.profile, asked), Pbs), gpu_in_select=gpu_in_select
         )
         handle = self.submit(
             plan,
@@ -561,7 +572,11 @@ class Dispatcher:
             ],
         )
         return Handle(
-            id=handle, host=plan.host, root=root, kind=plan.profile.kind, fetch_path=fetch
+            id=handle,
+            host=plan.host,
+            root=root,
+            kind=kind_of(plan.profile, asked),
+            fetch_path=fetch,
         )
 
     def state(self, handle: Handle) -> JobState:
@@ -668,36 +683,87 @@ class Dispatcher:
                 digest=dispatched.source.digest,
                 script=prepared if staged else "",
             )
-            self._prime(remote, plan, pinned, root, watch, prefix=prefix)
+            asked = resources.queue or ""
+            scheduler = pick(plan.profile, asked)
+            # A held line's runner provisions its environment inside the allocation; nothing is
+            # built on the login node for it.
+            if not isinstance(scheduler, Held):
+                self._prime(remote, plan, pinned, root, watch, prefix=prefix)
+            record = RunRecord(
+                handle="",
+                target=plan.host,
+                kind=kind_of(plan.profile, asked),
+                script=dispatched.spelling if shipment is not None else prepared,
+                args=" ".join(shlex.quote(a) for a in args),
+                submitted_at=now(),
+                fetch_path=fetch,
+                name=name,
+                node=node,
+                source=pin_key(dispatched.source, prefix),
+                commit=dispatched.source.commit,
+                digest=dispatched.source.digest,
+                project=self.project,
+            )
             try:
-                handle = pick(plan.profile).submit(
+                handle = self._handed(
+                    scheduler,
                     remote,
                     pinned,
+                    record,
                     script=Snapshots.script(prepared) if staged else prepared,
                     args=args,
                     resources=resources,
                 )
             except SystemExit as error:
                 raise SystemExit(f"submission to host {plan.host!r} failed: {error}") from None
-            self.cache.record(
-                RunRecord(
-                    handle=handle,
-                    target=plan.host,
-                    kind=plan.profile.kind,
-                    script=dispatched.spelling if shipment is not None else prepared,
-                    args=" ".join(shlex.quote(a) for a in args),
-                    submitted_at=now(),
-                    fetch_path=fetch,
-                    name=name,
-                    node=node,
-                    source=pin_key(dispatched.source, prefix),
-                    commit=dispatched.source.commit,
-                    digest=dispatched.source.digest,
-                    project=self.project,
-                )
-            )
         logger.info("{} -> {} on {} ({})", prepared, handle, plan.host, dispatched.source.identity)
         return handle
+
+    def _handed(
+        self,
+        scheduler: Scheduler,
+        remote: Machine,
+        pinned: str,
+        record: RunRecord,
+        *,
+        script: str,
+        args: Sequence[str],
+        resources: Resources,
+    ) -> str:
+        """Give the job to `scheduler`, answer its handle, and leave the run recorded.
+
+        A held line's job is recorded before its entry is written, as a creation intent, so work
+        queued for a node is never outside the registry: a refusal closes the intent, while a
+        reply lost in transit leaves it `submitting` for reconciliation by its label instead of
+        resubmitting.
+        """
+        if not isinstance(scheduler, Held):
+            handle = scheduler.submit(
+                remote, pinned, script=script, args=args, resources=resources
+            )
+            self.cache.record(record.model_copy(update={"handle": handle}))
+            return handle
+        label = f"mainboard-{uuid4().hex}"
+        pending = record.model_copy(
+            update={
+                "handle": label,
+                "creation": label,
+                "state": vocabulary.PREPARED,
+                "verdict": vocabulary.PREPARED,
+            }
+        )
+        self.cache.record(pending)
+        intent = Allocation(cache=self.cache, record=pending)
+        intent.begin()
+        try:
+            handle = scheduler.enqueue(
+                remote, pinned, script=script, resources=resources, label=label
+            )
+        except MissionError:
+            intent.refused()
+            intent.interrupted()
+            raise
+        return intent.created(handle)
 
     def allocating(
         self,

@@ -127,13 +127,16 @@ class JobSpec(FrozenModel):
         return "\n".join(lines) + "\n"
 
     def job(self, *, pbs: bool) -> Job:
-        """The record the host's tool runs; under `pbs`, PBS owns the walltime and the output."""
+        """The record the host's tool runs; under `pbs`, the output goes to the log and exit
+        artifact a later poll reads. The runner enforces the walltime everywhere: a queue that
+        also enforces it kills first, and a held line, which no queue bounds per job, relies on
+        it."""
         return Job(
             command=self.cmd,
             root=self.root,
             activation=self.activation(),
             container=self.container,
-            walltime="" if pbs else self.walltime,
+            walltime=self.walltime,
             logs=f"{self.root}/{state_dir()}/logs" if pbs else "",
             pythonpath=self.pythonpath,
             isolate_pythonpath=self.isolate_pythonpath,

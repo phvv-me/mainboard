@@ -35,12 +35,14 @@ from .dispatch.collection.pack import link
 from .dispatch.commandline import joined, vetted
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
+from .dispatch.spool import Spool
 from .durable import schedule
 from .engines.compile.policy import LockPolicy
 from .engines.compile.provisioner import Provisioner
 from .help import Help
 from .holds import Holds
 from .jobs import lanes as lanes_module
+from .line import Line
 from .lint import Inventory, Linter
 from .listing import Listing
 from .log import configure
@@ -53,6 +55,7 @@ from .render import diverted, mode_of, plain, progress, record, rows, totals
 from .render.values import to_row
 from .runtime.job import Job
 from .runtime.runner import Runner
+from .serve import Server
 from .state import DirectoryReplica, Evidence, Lake
 from .state.evidence import within
 from .state.lake import PORT
@@ -1174,6 +1177,7 @@ def build(root: Path | None = None) -> App:
         max_usd: float = 0.0,
         spot: bool = False,
         env: str = "",
+        walltime: str = "",
         output: Output = _COMPACT,
     ) -> None:
         """Rent a machine and keep it as an ssh host until a deadline, set up and ready for jobs.
@@ -1183,8 +1187,14 @@ def build(root: Path | None = None) -> App:
         onboards like `setup`, and is recorded with its deadline, which `monitor` and `compute`
         both enforce by releasing it, so a forgotten hold stops billing on time.
 
+        On a PBS host (`miyabi-g`) it instead keeps the user's one interactive allocation for the
+        time asked, renewing it as each walltime ends, and runs submitted jobs in it one at a
+        time: `job submit --on miyabi-g --queue held -- <command>`. The line takes the one
+        interactive slot, so `shell --on miyabi-g` is refused while it is held. A line already
+        held is reported, not doubled; a first allocation that does not come closes it again.
+
         Args:
-            provider: the provider host to rent through, `vast` say.
+            provider: the provider host to rent through, `vast` say, or a PBS host to keep.
             for_: how long to keep it once it is ready, `3h`, `90m` or `1h30m`.
             as_: the alias to reach it by, `<provider>-<card>` when omitted.
             gpu_name: the card to rent, in the provider's own spelling.
@@ -1195,7 +1205,14 @@ def build(root: Path | None = None) -> App:
                 when 0.
             spot: rent interruptible capacity, cheaper and taken back at the provider's will.
             env: the environment to set up, the provider profile's own when omitted.
+            walltime: on a PBS host, how long each allocation lasts, `HH:MM:SS`; the queue's
+                ceiling when omitted.
         """
+        if (kept := Line.of(board("local"), provider)) is not None:
+            with progress(f"keeping the interactive slot on {provider}") as stage:
+                opened = kept.open(for_, walltime=walltime, watch=stage)
+            output.print_record(opened.model_dump(), title="hold")
+            return
         with progress(f"holding a {gpu_name or arch or provider} machine") as stage:
             held = Holds(board("local")).hold(
                 provider,
@@ -1312,12 +1329,34 @@ def build(root: Path | None = None) -> App:
     def release(alias: str, *, output: Output = _COMPACT) -> None:
         """End a held machine now: stop its billing, settle its record and drop its alias.
 
+        On a PBS host it ends the held line instead: nothing more is claimed, jobs not yet taken
+        are cancelled, a job running now finishes and keeps its results retrievable, and the idle
+        allocation is freed so the interactive slot is the user's again.
+
         Args:
-            alias: the held machine's alias, as `hold` printed it.
+            alias: the held machine's alias, as `hold` printed it, or the PBS host.
         """
+        if (kept := Line.of(board("local"), alias)) is not None:
+            with progress(f"releasing the line on {alias}"):
+                output.print_record(kept.release().model_dump(), title="release")
+            return
         with progress(f"releasing {alias}"):
             held = Holds(board("local")).release(alias)
         _held(held, output, title="release")
+
+    @host.command(name="serve", show=False)
+    def serving(spool: str, *, gen: int, walltime: str) -> int:
+        """Serve a held line's queue inside this PBS allocation, the verb its keeper runs.
+
+        Claims the oldest queued job that fits the time left, runs it through its own runner,
+        and ends before the allocation does. It refuses to run anywhere but an allocated node.
+
+        Args:
+            spool: the line's spool directory on the shared filesystem.
+            gen: the allocation generation the keeper opened this for.
+            walltime: how long this allocation lasts, `HH:MM:SS`, from now.
+        """
+        return Server(Spool(Path(spool)), gen=gen, walltime=walltime).run()
 
     @host.command(name="list")
     def compute(

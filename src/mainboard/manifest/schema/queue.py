@@ -9,6 +9,8 @@ class QueuePolicy(Declared):
     max_walltime: miyabi's `short-g` rejects exactly `08:00:00`, so its ceiling is `07:59:59`.
     mem_ceiling_gb: the cgroup memory ceiling actually accepted at submit.
     submittable: false for a router queue that is listed but not targetable.
+    scheduler: the backend that takes this queue's jobs instead of the host's own, `held` for a
+        line kept by `host hold`; empty for the host's kind.
     """
 
     max_walltime: str = ""
@@ -16,6 +18,7 @@ class QueuePolicy(Declared):
     gpus_per_node: int = 0
     max_jobs: int = 0
     submittable: bool = True
+    scheduler: str = ""
     notes: str = ""
 
     def admits_walltime(self, walltime: str) -> bool:

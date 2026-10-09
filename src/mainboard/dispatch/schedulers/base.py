@@ -6,6 +6,8 @@ import re
 import shlex
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from plumbum.commands.processes import ProcessTimedOut
+
 from ...core.project import Project
 from .. import vocabulary
 from ..shared import since, state_dir
@@ -18,18 +20,38 @@ if TYPE_CHECKING:
     from ..transport import Machine
 
 
-def login_run(remote: Machine, body: str) -> str:
-    """Run `body` in a login shell on `remote` and return its stdout; every probe goes here.
+# How long a probe may take before the link counts as down: an ssh that answers while the
+# filesystem behind the command hangs is a fault, not an empty answer.
+_LOGIN_SECONDS = 90.0
 
-    A transport failure (exit 255, a transport phrase in stderr) raises `HostUnreachable` rather
-    than yield the empty output a parser reads as a vanished job, which is how a refused ssh
-    session used to end a wait early. A command that ran and exited non-zero (`qstat` on an
-    unknown id) returns its stdout unchanged.
+
+def login_ask(
+    remote: Machine, body: str, *, stdin: str = "", seconds: float = _LOGIN_SECONDS
+) -> tuple[int, str, str]:
+    """Run `body` in a login shell on `remote`, answering its exit status, stdout and stderr.
+
+    A transport failure (exit 255, a transport phrase in stderr) or a command outliving
+    `seconds` raises `HostUnreachable` rather than yield the empty output a parser reads as a
+    vanished job, which is how a refused ssh session used to end a wait early. A command that
+    ran and exited non-zero (`qstat` on an unknown id) is an answer.
+
+    stdin: text fed to the command.
     """
-    retcode, out, err = remote["bash"][["-lc", body]].run(retcode=None)
+    command = remote["bash"][["-lc", body]]
+    try:
+        retcode, out, err = (command << stdin if stdin else command).run(
+            retcode=None, timeout=seconds
+        )
+    except ProcessTimedOut as late:
+        raise HostUnreachable(f"no answer from the host in {seconds:g}s") from late
     if is_transport_failure(retcode, err):
         raise HostUnreachable(err.strip()[-200:] or "ssh transport failure")
-    return out
+    return retcode, out, err
+
+
+def login_run(remote: Machine, body: str) -> str:
+    """Run `body` in a login shell on `remote` and return its stdout; every probe goes here."""
+    return login_ask(remote, body)[1]
 
 
 def within(root: str, command: str) -> str:

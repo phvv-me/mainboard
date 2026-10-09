@@ -47,8 +47,8 @@ if TYPE_CHECKING:
     type Transport = Callable[[Request], HttpResponse]
 
 # Kinds the `Scheduler` path dispatches; `auto` stays here, as `Scheduler.pick` treats an
-# unprobed kind as ssh.
-_SSH_FAMILY_KINDS = frozenset({"auto", "local", "pbs", "slurm", "ssh"})
+# unprobed kind as ssh. `held` is the kind a queue declaring that scheduler records on its runs.
+_SSH_FAMILY_KINDS = frozenset({"auto", "held", "local", "pbs", "slurm", "ssh"})
 # A provider that stops answering costs one slow row rather than a wedged command: enough for a
 # cold offer search, short enough that a fleet survey finishes while someone watches.
 _TIMEOUT_S = 10.0

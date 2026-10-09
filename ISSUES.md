@@ -4,6 +4,51 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found building `host hold` for PBS, 2026-10-09
+
+### Mainboard
+
+1. **`mb host sync miyabi-g` cannot run.** Its first step, `uv python install --no-bin '>=3.14'`,
+   fails with `No download found for request: cpython->=3.14-linux-aarch64-gnu`: uv has no
+   aarch64 CPython 3.14 build. The sync-only path should skip the managed-Python install when
+   the host's environment already runs a satisfying interpreter. Worked around by calling
+   `Dispatcher.mirror(plan, root)` directly, which is all a code-only update needs.
+2. **`Pbs.cancel` ignores `qdel`'s exit status** (`dispatch/schedulers/pbs.py`), so a refused
+   cancel reads as done. `Line` checks its own `qdel`; `Pbs.cancel` should raise unless the job
+   had already finished.
+3. **`snapshots.queued_here()` only asks the local pueue daemon.** A pinned tree that a queued PBS
+   job, or a held job waiting in the spool inbox, will run from is invisible to pruning once the
+   age thresholds pass. Include `claims/` and `inbox/` entries of the spool (their `cwd`) and the
+   scripts of queued PBS jobs.
+4. **`mb shell --on miyabi-g` knows nothing of a held line.** PBS refuses the second interactive
+   job with its raw quota text. `Board.interact` could read the spool's `line.json` and say who
+   holds the slot and until when.
+5. **`login_run` had no deadline**, so a responsive ssh over a hung Lustre read waited forever
+   (the review's point 11). Fixed: `login_ask` bounds every probe at 90 s and raises
+   `HostUnreachable`.
+6. **The workspace ruff (newer than the package's pinned one) flags `Iterator` on context
+   managers** in `dispatch/agent/program.py`, `render/human.py` and `trials/flags.py`; the
+   package's own `ruff` passes. Align the two versions.
+7. Held jobs get no walltime from a queue, so the runner now enforces it under PBS too
+   (`jobs/spec.py`); a PBS queue that kills first never lets the runner's deadline fire, but the
+   `JobSpec` docstring still describes the old split.
+8. **`qsub -I -- <command>` needs an absolute executable.** `pbs_mom` execs the command itself
+   with a bare PATH (`/bin:/usr/bin:/usr/local/bin`), so `-- bash script` ends "exec of bash
+   failed" while `-- /bin/bash script` runs on the node with a pty as stdin (measured 2026-10-09,
+   job 3517082). A tmux pane started by a long-lived server also has no `/opt/pbs/bin` on PATH
+   (`zsh: command not found: qsub`), so the keeper runs under `bash -l`. `Pbs.interactive`'s
+   docstring still says PBS takes no command; it does, absolutely spelled.
+9. **A held submit costs 70-80 s of dispatch** (mirror of a few paths, two login-shell
+   activations in `_verify`, the pin) where the old spool took a second. Measure which step
+   dominates; a hot line wants a cheaper path for a repeated command.
+10. **Miyabi's `qstat` wrapper caches.** A job shows `RUNNING` with a frozen ELAPSE for minutes
+    after it ended (3517146 read `00:04:59` after the keeper logged its end; 3516531 stayed
+    `01:58:42` for four minutes). `Held` asks PBS only about allocations whose claims have no
+    exit artifact, so it is safe, but any wait on a PBS state lags by that cache.
+11. **PBS refuses a new `qsub -I` for about 30 s after the previous interactive job ends**
+    (`exit 39`, the `njobs_int-g` count). A line's renewal gap is therefore the keeper's retry
+    interval (10 s) plus that; measure the real gap before promising continuity.
+
 ## Found during the cutok GH200 transfer, 2026-10-07
 
 ### Fixed locally, not pushed (mainboard `ef2809d`, root `d3dda40be`)
