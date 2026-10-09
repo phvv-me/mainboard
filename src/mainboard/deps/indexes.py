@@ -134,7 +134,8 @@ def _fetched(url: str, *, accept: str) -> Json:
 
 
 def _newest(versions: Sequence[str], *, name: str, where: str) -> str:
-    """The newest readable release among `versions`, refusing when the index listed none."""
+    """The newest readable final release among `versions`, as pixi's solver prefers, else the
+    newest pre-release when the index lists nothing final; refusing when it listed none."""
     readable = []
     for version in versions:
         try:
@@ -143,4 +144,5 @@ def _newest(versions: Sequence[str], *, name: str, where: str) -> str:
             continue
     if not readable:
         raise MissionError(f"{where} publishes no readable release of {name!r}")
-    return str(max(readable))
+    final = [version for version in readable if not version.is_prerelease]
+    return str(max(final or readable))

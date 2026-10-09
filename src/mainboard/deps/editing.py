@@ -30,7 +30,10 @@ class ManifestText:
 
     def versioned(self, path: tuple[str, ...], name: str) -> bool:
         """Whether `name` in the table at `path` names a version to raise: a bare requirement
-        or a table carrying one, not a path, git or url source."""
+        or a table carrying one, not a path, git or url source, nor a workspace member the
+        manifest declares only through `[workspace] members`."""
+        if not self.declares(path, name):
+            return False
         declared = self.table(path)[name]
         return isinstance(declared, str) or (isinstance(declared, dict) and "version" in declared)
 

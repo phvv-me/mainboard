@@ -250,6 +250,24 @@ campaign first; move an entry to the bottom section once fixed and verified.
     (2026-10-09): the v25 roster audit reached `bulk-baselines-20261006-v17/support-snapshot.json`
     last and wrote `admitted: false`. Resolve every pinned input (from the lake) before the audit
     reads anything.
+13j. **A job's `fetch` folder on the host is not scoped to the run** (2026-10-09, cutok smoke 621
+    and 622 on pedro-cvlab): a second run of the same test overwrote the first's uncollected
+    files. Settling 621 then failed on every pass with "no lake around .../stream-hypotheses-v26
+    holds e5abe45f...", since neither the host nor a lake still held what its manifest pinned.
+    The rerun's collection was refused as conflicting evidence. Both runs only settled as failed,
+    with "result transfer failed". Write each run's fetch under a run-scoped staging folder on
+    the host, or collect before the next run of that target starts.
+13k. **`mb upgrade` (2026-10-10)**, three defects, two fixed locally:
+    - It crashed on `[workspace] members` (`NonExistentKey: llm-head`), since the manifest model
+      lists members the text never declares. FIXED: `ManifestText.versioned` answers False for
+      an undeclared name.
+    - It raised `python` to `>=3.15.0rc3, <4`. FIXED: `_newest` takes the newest final release,
+      and a pre-release only when nothing final is listed.
+    - Open: a raised entry keeps its comment at its old character offset, so a longer pin breaks
+      the column.
+    - Also, the manifest is written before the solve, so a failed solve leaves every
+      `mb run` re-locking against a manifest that cannot solve until it is restored by hand.
+      Write only after a successful lock, or restore the text on failure.
 13. The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...
     mainboard-agent`). It works, but contradicts the rule that nothing runs on the OS interpreter;
     document it as the one exception or ship the agent's own interpreter.
