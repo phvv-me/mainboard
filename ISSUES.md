@@ -271,17 +271,44 @@ campaign first; move an entry to the bottom section once fixed and verified.
     holds. 622 rewrote `stream-hypotheses-v26` after 621's first pull, so every pull of
     `heterogeneous_pipeline` is refused as conflicting until that is resolved. Write each run's
     output under a run-scoped folder, or collect before the next run of that test starts.
-13k. **`mb upgrade` (2026-10-10)**, three defects, two fixed locally:
+13k. **`mb upgrade` (2026-10-10)**, five defects fixed locally, one open:
     - It crashed on `[workspace] members` (`NonExistentKey: llm-head`), since the manifest model
       lists members the text never declares. FIXED: `ManifestText.versioned` answers False for
       an undeclared name.
+    - A member the text names by version (`mainboard = "*"`, `patos = "*"` in every lean
+      environment, `sqlalchemy` in `[python.deps]`) was raised to PyPI's release
+      (`patos >=0.0.14, <0.0.15`), which the local member need not satisfy. FIXED: `upgrade`
+      skips every member's distribution.
+    - Open: `Index.pin` caps a date version at its own next day (`pdfminer.six >=20260107,
+      <20260108`), which is an exact pin in effect. A date-like first component should get a
+      floor alone, as an unreadable date stamp already does.
+    - Open: `Index.latest` takes what one source lists, never what every platform can install.
+      `Conda` asks `pixi search` for this machine's platform alone (qpdf 12.4.2 had no linux-64
+      build yet), and `Python` reads the PEP 691 `versions` list, yanked releases included
+      (pytest-timeout 2.5.0, cypari2 2.2.6, syrupy 2026.4.6.124150327040). Both made the raised
+      manifest unsolvable until the floor was lowered by hand.
+    - Open: a PyPI floor above what conda-forge builds is unsolvable when a conda package
+      already brings it (`tokenizers >=0.23.3` beside conda's transformers, built to 0.23.1).
+    - Open: `--env X` alone narrows to `[envs.X.deps]`, since `searched` defaults the ecosystem
+      to conda, and never reaches `[envs.X.python.deps]` or `[envs.X.on.*]`.
+13l. **`mb lock` then `mb install` never resolves the second stage** (2026-10-10). `lock`
+    returns before the second stage, and `install` resolves it only when its own call moved the
+    pixi lock, so the regenerated `package.json` met `pnpm install --frozen-lockfile` and
+    failed (`ERR_PNPM_OUTDATED_LOCKFILE`). `mb update <env>` (which always counts as moved) got
+    through. `lock` should solve the second-stage locks too (`pnpm install --lockfile-only`), or
+    `install` should resolve a stage whose inputs changed since its lock.
     - It raised `python` to `>=3.15.0rc3, <4`. FIXED: `_newest` takes the newest final release,
       and a pre-release only when nothing final is listed.
-    - Open: a raised entry keeps its comment at its old character offset, so a longer pin breaks
-      the column.
-    - Also, the manifest is written before the solve, so a failed solve leaves every
-      `mb run` re-locking against a manifest that cannot solve until it is restored by hand.
-      Write only after a successful lock, or restore the text on failure.
+    - A raised entry kept its comment at its old character offset, so a longer pin broke the
+      column. FIXED: `ManifestText.put` shrinks or widens the space before the comment by what
+      the value grew, one space at least.
+    - The manifest was written before the solve, so a failed solve left every `mb run`
+      re-locking against a manifest that cannot solve until it was restored by hand. FIXED:
+      `Dependencies.settled` puts the manifest and `mb.lock` back when the reload, solve or
+      install fails (or is interrupted), as pixi does, for `add`, `remove` and `upgrade` alike.
+      Since a failed upgrade now leaves nothing to fix by hand, `upgrade --frozen` (as `add` and
+      `remove` have) writes the raised manifest alone, so the hand edits a raise needs join one
+      later `mb lock`.
 13. The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...
     mainboard-agent`). It works, but contradicts the rule that nothing runs on the OS interpreter;
     document it as the one exception or ship the agent's own interpreter.

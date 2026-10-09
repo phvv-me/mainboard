@@ -756,6 +756,7 @@ def build(root: Path | None = None) -> App:
         dev: bool = False,
         exclude: tuple[str, ...] = (),
         no_install: bool = False,
+        frozen: bool = False,
         output: Output = _COMPACT,
     ) -> None:
         """Raise requirements to their newest releases, re-lock and install, as `pixi upgrade`.
@@ -773,6 +774,8 @@ def build(root: Path | None = None) -> App:
             dev: only the development-only tables.
             exclude: a requirement to leave as written when raising every one, repeatable.
             no_install: re-lock without installing.
+            frozen: edit the manifest alone, leaving the lock as it stands, so hand edits join
+                one later `lock`.
         """
         with progress(f"upgrading {', '.join(names) or 'every requirement'}"):
             changes = (
@@ -785,6 +788,7 @@ def build(root: Path | None = None) -> App:
                     dev=dev,
                     exclude=exclude,
                     install=not no_install,
+                    frozen=frozen,
                 )
             )
         _changed(changes, output, title="upgrade")

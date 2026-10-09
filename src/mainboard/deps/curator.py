@@ -1,15 +1,18 @@
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+from packaging.utils import canonicalize_name
 from patos import FrozenModel
 
 from ..core.errors import MissionError
 from ..engines.compile.provisioner import Provisioner
+from ..manifest.loading import composition
 from .editing import ManifestText
 from .indexes import Index
 from .slots import Slot, candidates, declared
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Generator, Sequence
     from pathlib import Path
 
     from ..board import Board
@@ -201,14 +204,16 @@ class Dependencies:
         frozen: bool = False,
     ) -> list[Change]:
         """Write the edited manifest, reload it (failing fast on a bad edit), then re-lock,
-        unless `frozen` leaves the lock for a later solve."""
-        self.path.write_text(manifest.text(), encoding="utf-8", newline="\n")
-        self.board.shared.pop("manifest", None)
-        self.board.shared.pop("resolver", None)
-        reloaded = self.board.manifest
-        if frozen:
-            return changes
-        return [*changes, *self.resolved(reloaded, env=env, install=install)]
+        unless `frozen` leaves the lock for a later solve.
+
+        A bad edit or a failed solve or install puts the manifest and lock back as they were, as
+        pixi does, so no `run` is left re-locking against a manifest that cannot solve.
+        """
+        with self._kept(self.path, self.board.project.lock(self.board.root)):
+            self.path.write_text(manifest.text(), encoding="utf-8", newline="\n")
+            reloaded = self._reloaded()
+            moved = [] if frozen else self.resolved(reloaded, env=env, install=install)
+        return [*changes, *moved]
 
     def slot(self, *, ecosystem: str, env: str, dev: bool) -> Slot:
         """Where a new requirement of this shape belongs, preferring a table already there."""
@@ -239,12 +244,16 @@ class Dependencies:
         dev: bool = False,
         exclude: Sequence[str] = (),
         install: bool = True,
+        frozen: bool = False,
     ) -> list[Change]:
         """Raise requirements to the newest releases their ecosystems publish, then re-lock, as
         `pixi upgrade` does: the named ones, or every declared one but `exclude` when none is.
 
-        A requirement with no version to raise (a path, git or url source) is left as written,
-        and one written as a table keeps every field but its version.
+        A requirement with no version to raise (a path, git or url source, or a workspace member
+        named by version) is left as written, and one written as a table keeps every field but
+        its version.
+
+        frozen: edit the manifest alone, leaving the lock as it stands (`--frozen`).
         """
         if names:
             targets = [
@@ -260,13 +269,35 @@ class Dependencies:
                 if name not in exclude
             ]
         manifest = ManifestText(self.path.read_text(encoding="utf-8"))
+        # A member installs from its own directory wherever it is named, so no index speaks for it.
+        members = {
+            member.package.name for member in composition(self.path).members if member.package
+        }
         changes: list[Change] = []
         for name, slot in targets:
-            if not manifest.versioned(slot.path, name):
+            if canonicalize_name(name) in members or not manifest.versioned(slot.path, name):
                 continue
             before = manifest.constraint(slot.path, name)
             after = self.pinned(name, slot)
             if after != before:
                 manifest.put(slot.path, name, spec=after)
                 changes.append(Change(name=name, where=slot.table, before=before, after=after))
-        return self.settled(manifest, changes, env=env, install=install)
+        return self.settled(manifest, changes, env=env, install=install, frozen=frozen)
+
+    @contextmanager
+    def _kept(self, *paths: Path) -> Generator[None]:
+        """Put `paths` back as they were, and the manifest read again, when the block fails."""
+        kept = {path: path.read_bytes() for path in paths if path.is_file()}
+        try:
+            yield
+        except MissionError, KeyboardInterrupt:
+            for path, written in kept.items():
+                path.write_bytes(written)
+            self._reloaded()
+            raise
+
+    def _reloaded(self) -> Manifest:
+        """The manifest read again from its file, everything the board derived from it dropped."""
+        self.board.shared.pop("manifest", None)
+        self.board.shared.pop("resolver", None)
+        return self.board.manifest

@@ -58,16 +58,23 @@ class ManifestText:
     def put(self, path: tuple[str, ...], name: str, *, spec: str) -> None:
         """Declare `name` as `spec` in the table at `path`, creating the table when absent.
 
-        A replaced entry keeps its alignment and comment, and one written as a table (`{ version
-        = ..., extras = [...] }`) keeps every field but its version; a new one is padded to the
-        column and lands beneath the last requirement, above the trailing heading comment.
+        A replaced entry keeps its alignment and its comment's column, and one written as a table
+        (`{ version = ..., extras = [...] }`) keeps every field but its version; a new one is
+        padded to the column and lands beneath the last requirement, above the trailing heading
+        comment.
         """
         table = self.table(path, create=True)
         if name in table:
+            width = len(table[name].as_string())
             if isinstance(table[name], dict):
                 table[name]["version"] = spec
             else:
                 table[name] = spec
+            # tomlkit keeps the whitespace before a comment, which moves it by the value's growth.
+            trivia = table[name].trivia
+            if trivia.comment:
+                grown = len(table[name].as_string()) - width
+                trivia.comment_ws = " " * max(len(trivia.comment_ws) - grown, 1)
             return
         key = tomlkit.key(name)
         key.sep = " " * max(ManifestText._column(table) - len(name) - _ASSIGN, 1) + "= "
