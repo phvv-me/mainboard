@@ -1052,6 +1052,7 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         queue: str = "",
         walltime: str = "",
+        nodes: int = 1,
         keep: bool = False,
         locked: bool = False,
         frozen: bool = False,
@@ -1076,6 +1077,7 @@ def build(root: Path | None = None) -> App:
             env: the environment name, the profile's declared choice when omitted.
             queue: on a queued host, the queue the allocation targets, the profile's when omitted.
             walltime: on a queued host, the session's wall-clock limit, the profile's when omitted.
+            nodes: on a queued host, how many compute nodes the allocation spans.
             keep: on a host, hold the session in tmux on the far side so a dropped terminal leaves
                 the allocation up, and reattach to one already held.
             locked: here, refuse a lock that no longer answers the manifest.
@@ -1084,11 +1086,13 @@ def build(root: Path | None = None) -> App:
             as_is: here, `--frozen` and `--no-install` together.
         """
         if on != "local":
-            board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
-        elif command or queue or walltime or keep:
+            board(on).interact(
+                *command, env=env, queue=queue, walltime=walltime, nodes=nodes, keep=keep
+            )
+        elif command or queue or walltime or nodes > 1 or keep:
             raise MissionError(
-                "a command, a queue, a walltime and --keep belong to a host's shell; run a "
-                f"command here with `{project.name} run -- <command>`"
+                "a command, a queue, a walltime, --nodes and --keep belong to a host's shell; run "
+                f"a command here with `{project.name} run -- <command>`"
             )
         else:
             policy = LockPolicy.of(locked=locked, frozen=frozen or as_is)

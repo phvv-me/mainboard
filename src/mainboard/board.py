@@ -616,6 +616,7 @@ class Board:
         env: str = "",
         queue: str = "",
         walltime: str = "",
+        nodes: int = 1,
         keep: bool = False,
         replace: Callable[[str, list[str]], NoReturn] = become,
     ) -> NoReturn:
@@ -630,6 +631,8 @@ class Board:
         the allocation stays up, and `keep` again reattaches instead of allocating another node.
 
         command: a command to run instead of handing over the terminal, its own flags included.
+        nodes: compute nodes a queued host allocates; a held session of several is its own,
+            beside the one-node session.
         keep: hold the session in tmux on the far side and reattach to one already held.
         replace: the process-replacing exec, injectable so a test can read the argv it built.
         """
@@ -654,6 +657,7 @@ class Board:
             queue=queue or defaults.interact_queue or defaults.queue,
             walltime=walltime or defaults.walltime,
             gpus=defaults.gpus,
+            nodes=nodes,
             account=plan.profile.account,
         )
         admit(
@@ -671,7 +675,7 @@ class Board:
             # `new-session -A` attaches to the named session when it exists and only otherwise
             # starts one, so the same verb both opens and returns to a held allocation; named by
             # the package, so a session held under an older release is still the one found.
-            held = f"{self.project.package}-{self.host}"
+            held = f"{self.project.package}-{self.host}" + (f"-n{nodes}" if nodes > 1 else "")
             staged = f"tmux new-session -A -s {shlex.quote(held)} {shlex.quote(staged)}"
         # A bounded transport suits a poll, not a session, so the user's ssh config owns this one.
         argv = dialect.session(self.host, staged)

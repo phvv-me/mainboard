@@ -139,6 +139,8 @@ def build_qsub_flags(resources: Resources) -> list[str]:
         flags += ["-W", f"group_list={resources.account}"]
     if resources.mem_gb is not None:
         flags += ["-l", f"select={resources.nodes}:mem={resources.mem_gb}gb"]
+    elif resources.nodes > 1:
+        flags += ["-l", f"select={resources.nodes}"]
     return flags
 
 
