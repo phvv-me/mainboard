@@ -194,6 +194,17 @@ campaign first; move an entry to the bottom section once fixed and verified.
     `hashfuncs` community extension (Query.Farm) has `xxh3_64`, `xxh3_128` and `xxh3_128_hex`,
     the last matching Python `xxhash.xxh3_128().hexdigest()`; it needs `INSTALL ... FROM
     community`, while `Relations` disables extension autoinstall.
+13g. **`mb lake materialize` reads one object per query** (2026-10-09, v25 settlement): about 10
+    files/s, so 69,000 files projected past 2 h, and eight parallel runs gained nothing (load
+    average above 90). A windowed `Blobs.read` restored the same files in about 2 min; reuse
+    `replicate`'s windowed read. Since `Artifact.read` already falls back to the lake by digest,
+    an audit needs no materialized tree at all, only pinned path readers do.
+13h. **A bare `mb query` over the whole `trials` or `artifacts` view costs 3-9 CPU minutes**
+    (2026-10-09). Filter by seal or project, or index the views by seal.
+13i. **An audit that needs a pinned file absent from the tree fails after all its work**
+    (2026-10-09): the v25 roster audit reached `bulk-baselines-20261006-v17/support-snapshot.json`
+    last and wrote `admitted: false`. Resolve every pinned input (from the lake) before the audit
+    reads anything.
 13. The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...
     mainboard-agent`). It works, but contradicts the rule that nothing runs on the OS interpreter;
     document it as the one exception or ship the agent's own interpreter.
