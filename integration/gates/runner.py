@@ -1,3 +1,5 @@
+"""Run one gate lane inside the bounded, OS-isolated worker that run.sh launches."""
+
 import contextlib
 import importlib.metadata
 import io
@@ -5,7 +7,6 @@ import json
 import os
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -17,246 +18,112 @@ from guard import Guard
 
 import mainboard
 
+# Seconds of the budget that launching, preflight and cleanup keep for themselves.
+_RESERVE = 30
+_TOOLS = ["pytest", "ruff", "pyrefly", "ty", "mypy", "mcmr"]
+_INHERITED = ["PATH", "LANG", "SYSTEMROOT", "DYLD_FALLBACK_LIBRARY_PATH"]
+_HOMES = {
+    "HOME": "home", "TMPDIR": "tmp", "XDG_CACHE_HOME": "cache", "XDG_CONFIG_HOME": "config",
+    "XDG_DATA_HOME": "data", "PIXI_CACHE_DIR": "cache/pixi", "UV_CACHE_DIR": "cache/uv",
+    "MPLCONFIGDIR": "cache/matplotlib", "MYPY_CACHE_DIR": "cache/mypy",
+}
+_POSTGRES = ["postgres", "pg_ctl", "initdb", "psql"]
+# What the inspect lane runs in this process, where every child process is refused.
+_HARNESS = "integration/gates/test_harness.py"
+_WITNESSES = [
+    f"{_HARNESS}::test_a_write_outside_the_roots_is_refused",
+    f"{_HARNESS}::test_a_provider_name_is_refused",
+    f"{_HARNESS}::test_the_installed_hook_runs_first",
+    "integration/test_commands.py::"
+    "test_an_environment_narrowing_the_mirror_still_ships_every_lock_input",
+]
+
 
 class Gate:
+    """One lane of the gate: its worker's environment, sandbox, bounds and report."""
+
     def __init__(self) -> None:
         self.tree = Path(os.environ["MB_GATE_WORKTREE"]).resolve()
         self.root = Path(os.environ["MB_GATE_ROOT"]).resolve()
         self.report = Path(os.environ["MB_GATE_REPORT"]).resolve()
-        self.extension_seed = Path.home() / (
-            "Library/Caches/mb/duckdb" if sys.platform == "darwin" else ".cache/mb/duckdb"
-        )
+        self.budget = int(os.environ["MB_GATE_BUDGET"]) - _RESERVE
+        self.started = time.monotonic()
         self.baseline = json.loads(
             (self.tree / "integration/gates/baseline.json").read_text(encoding="utf-8")
         )
+        versions = {name: importlib.metadata.version(name) for name in _TOOLS}
         self.result = {
-            "import": mainboard.__file__,
-            "python": sys.executable,
-            "temporary_root": str(self.root),
-            "versions": {
-                name: importlib.metadata.version(name)
-                for name in ("pytest", "ruff", "pyrefly", "ty", "mypy", "mcmr")
-            },
+            "import": mainboard.__file__, "python": sys.executable,
+            "temporary_root": str(self.root), "budget_seconds": self.budget + _RESERVE,
+            "versions": versions,
         }
-        assert Path(mainboard.__file__).resolve() == self.tree / "src/mainboard/__init__.py"
-        assert all(
-            version == self.baseline["versions"][name]
-            for name, version in self.result["versions"].items()
-        ), "M00-VERSIONS: tool version changed; explicitly rebaseline before accepting results"
-        sys.stdout.write(f"mainboard.__file__ = {mainboard.__file__}\n")
+        self._verify(versions)
+
+    def run(self, mode: str, selection: list[str]) -> int:
+        """Run lane `mode` and return the exit code its worker ended with."""
+        if mode == "inspect":
+            return self._inspect()
+        if mode in {"suite", "target"}:
+            return self._pytest(mode, selection)
+        return self._execute(mode, self._checker(mode), self.budget, isolated=False)
 
     def save(self, name: str) -> None:
+        self.result["wall_seconds"] = round(time.monotonic() - self.started, 3)
         (self.report / f"{name}.json").write_text(
             json.dumps(self.result, indent=2) + "\n", encoding="utf-8"
         )
 
-    def environment(self) -> dict[str, str]:
-        environment = {
-            key: os.environ[key]
-            for key in ("PATH", "LANG", "SYSTEMROOT", "DYLD_FALLBACK_LIBRARY_PATH")
-            if key in os.environ
-        }
-        for key, child in {
-            "HOME": "home", "TMPDIR": "tmp", "XDG_CACHE_HOME": "cache",
-            "XDG_CONFIG_HOME": "config", "XDG_DATA_HOME": "data",
-            "PIXI_CACHE_DIR": "cache/pixi", "UV_CACHE_DIR": "cache/uv",
-            "MPLCONFIGDIR": "cache/matplotlib", "MYPY_CACHE_DIR": "cache/mypy",
-        }.items():
-            path = self.root / child
-            path.mkdir(parents=True, exist_ok=True)
-            environment[key] = str(path)
-        environment.update(
-            PYTHONPATH=f"{self.tree / 'src'}:{self.tree / 'integration/gates'}",
-            PYTHONDONTWRITEBYTECODE="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", NO_COLOR="1",
-            MB_GATE_ROOT=str(self.root), MB_GATE_REPORT=str(self.report),
-            MB_GATE_WORKTREE=str(self.tree), MB_GATE_OS=sys.platform,
-            MB_GATE_PROJECTS=os.environ["MB_GATE_PROJECTS"],
-            MB_GATE_BOOTSTRAP="0",
-        )
-        return environment
+    @staticmethod
+    def _wait(child: subprocess.Popen[bytes], limit: int) -> int:
+        """The exit code of `child`, or 124 once `limit` passed and its group was ended."""
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            return child.wait(timeout=limit)
+        os.killpg(child.pid, signal.SIGTERM)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            child.wait(timeout=3)
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+        return 124
 
-    def sandbox(self, command: list[str]) -> list[str]:
-        if sys.platform == "darwin":
-            # Seatbelt restrictions are inherited by native libraries and all descendants.
-            root = json.dumps(str(self.root))
-            report = json.dumps(str(self.report))
-            profile = self.root / "worker.sb"
-            profile.write_text(
-                '(version 1)\n(allow default)\n(deny file-write*)\n(deny network*)\n'
-                f'(allow file-write* (subpath {root}) (subpath {report}) '
-                '(literal "/dev/null"))\n'
-                f'(allow network* (local unix-socket (subpath {root})) '
-                f'(remote unix-socket (subpath {root})))\n', encoding="utf-8"
-            )
-            return ["/usr/bin/sandbox-exec", "-f", str(profile), *command]
-        if sys.platform == "linux" and (bwrap := shutil.which("bwrap")):
-            # A fresh root exposes runtime/source directories, not home, host sockets or devices.
-            mounts = {
-                Path(path).resolve() for path in (*sys.path, sys.base_prefix, str(self.tree))
-                if path and Path(path).is_dir()
-            }
-            mounts.update(Path(path) for path in ("/usr", "/bin", "/lib", "/lib64", "/etc")
-                          if Path(path).exists())
-            bindings = [part for path in sorted(mounts) for part in
-                        ("--ro-bind", str(path), str(path))]
-            return [
-                bwrap, "--die-with-parent", "--new-session", "--unshare-net", "--unshare-pid",
-                "--tmpfs", "/", *bindings, "--tmpfs", "/tmp", "--tmpfs", "/run",
-                "--dev", "/dev", "--proc", "/proc", "--bind", str(self.root), str(self.root),
-                "--bind", str(self.report), str(self.report), *command,
-            ]
-        raise RuntimeError("M00-OS: needs macOS sandbox-exec or Linux bubblewrap")
-
-    def execute(self, name: str, command: list[str], limit: int, *, isolated: bool = True) -> int:
-        started = time.monotonic()
-        environment = self.environment()
-        with (self.report / f"{name}.log").open("w", encoding="utf-8") as output:
-            child = subprocess.Popen(
-                self.sandbox(command) if isolated else command, cwd=self.tree, env=environment,
-                stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
-            )
-            try:
-                code = child.wait(timeout=limit)
-            except subprocess.TimeoutExpired:
-                os.killpg(child.pid, signal.SIGTERM)
-                try:
-                    child.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    os.killpg(child.pid, signal.SIGKILL)
-                    child.wait(timeout=3)
-                code = 124
-        self.result[name] = {
-            "argv": command, "limit_seconds": limit, "exit_code": code,
-            "seconds": round(time.monotonic() - started, 3),
-        }
-        return code
-
-    def preflight(self) -> bool:
-        # -S removes sitecustomize: these must be kernel refusals, not Python guard refusals.
-        probe = self.tree / "integration/gates/native_probe.py"
-        code = self.execute("isolation", [sys.executable, "-S", str(probe), str(self.root)], 20)
-        if code:
-            self.result["blocked"] = "M00-OS: OS isolation unavailable; no suite/checker launched"
-            sys.stderr.write((self.report / "isolation.log").read_text(encoding="utf-8"))
-        return code == 0
-
-    def seed_extensions(self) -> None:
-        # Copy preinstalled extensions; a gate never downloads code on demand.
-        if not self.extension_seed.is_dir():
-            raise RuntimeError(
-                f"M00-EXTENSIONS: offline DuckDB cache missing: {self.extension_seed}"
-            )
-        cache = self.root / (
-            "home/Library/Caches/mb/duckdb" if sys.platform == "darwin" else "cache/mb/duckdb"
-        )
-        shutil.copytree(self.extension_seed, cache, dirs_exist_ok=True)
-
-    def inspect(self) -> int:
-        # This lane never executes native test scenarios or subprocesses. It is not the gate.
-        guard = Guard.from_environment()
-        guard.deny_processes = True
-        guard.install()
-        environment = self.environment()
-        os.environ.clear()
-        os.environ.update(environment)
-        os.environ["MB_GATE_INSPECT"] = "1"
-        signal.setitimer(signal.ITIMER_REAL, 100)
-        proofs = []
-        for path in (
-            Path(os.environ["MB_GATE_PROJECTS"]) / ".mainboard/M00-forbidden",
-            self.tree / "M00-forbidden",
-        ):
-            with pytest.raises(PermissionError, match="M00 denies"):
-                path.write_text("forbidden", encoding="utf-8")
-            proofs.append(str(path))
-        with pytest.raises(PermissionError, match="M00 denies real transport"):
-            subprocess.run(["ssh", "gold", "true"], check=True)
-        with pytest.raises(PermissionError, match="M00 denies DNS"):
-            socket.create_connection(("api.vast.ai", 443), timeout=1)
-        # The inspection-specific hook rejects every child, including transport attempts.
-        self.result["python_denied_writes"] = proofs
-        collector = Collection()
-        self.result["collection_exit"] = pytest.main([
-            "-c", str(self.tree / "pyproject.toml"), "-p", "no:randomly",
-            "-p", "no:cacheprovider", "--collect-only", "-q", str(self.tree / "integration"),
-        ], plugins=[collector])
-        self.result["collected"] = collector.nodes
+    def _accounting(self, listing: str) -> dict[str, object]:
+        """Every baseline case must still be collected; additions are listed apart."""
+        collected = {line for line in listing.splitlines() if "::" in line}
         original = {case["nodeid"] for case in self.baseline["cases"]}
-        collected = set(collector.nodes)
-        assert not original - collected, f"unaccounted baseline cases: {original - collected}"
-        self.result["baseline_accounting"] = {
-            "historical_counts": self.baseline["counts"],
-            "original_collected": len(original & collected),
-            "new_collected": len(collected - original),
-            "missing": sorted(original - collected),
+        assert original <= collected, f"unaccounted baseline cases: {sorted(original - collected)}"
+        return {
+            "historical_counts": self.baseline["counts"], "original_collected": len(original),
+            "new_collected": len(collected - original), "collected": sorted(collected),
             "execution": "collection only; historical outcomes are not fresh gate passes",
         }
-        binaries = Path(sys.executable).parent
-        self.result["postgres"] = {
-            "binaries": {name: str(binaries / name) for name in
-                         ("postgres", "pg_ctl", "initdb", "psql")},
-            "missing": [name for name in ("postgres", "pg_ctl", "initdb", "psql")
-                        if not (binaries / name).is_file()],
-            "lifecycle": "requires successful OS preflight; never start during inspection",
-        }
-        self.cli_witness()
-        checks = sys.modules["integration.gates.test_harness"]
-        scratch = self.root / "guard-check"
-        scratch.mkdir()
-        checks.test_live_paths_symlinks_and_transports_are_refused(scratch)
-        (scratch / "escape").unlink()
-        self.result["python_guard_witness"] = "passed, including safe symlink cleanup"
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        return int(self.result["collection_exit"])
 
-    def cli_witness(self) -> None:
-        # Reuse the existing manifest -> parser -> Board -> plan -> JSON assertion in-process.
-        # No native process is permitted in this limited inspection lane.
-        from integration.conftest import Ran
-        from integration.test_commands import (
-            test_an_environment_narrowing_the_mirror_still_ships_every_lock_input,
-        )
-        from mainboard.cli import build
+    def _arguments(self) -> list[str]:
+        return [
+            "-c", str(self.tree / "pyproject.toml"), "-p", "no:randomly", "-p", "no:cacheprovider",
+            "--basetemp", str(self.root / "pytest"),
+        ]
 
-        workspace = self.root / "workspace"
-        workspace.mkdir()
+    def _bubblewrap(self, bwrap: str, command: list[str]) -> list[str]:
+        """A fresh root exposing runtime and source directories, never home, sockets or devices."""
+        runtime = [*sys.path, sys.base_prefix, str(self.tree)]
+        mounts = {Path(path).resolve() for path in runtime if path and Path(path).is_dir()}
+        system = [Path(path) for path in ["/usr", "/bin", "/lib", "/lib64", "/etc"]]
+        mounts.update(path for path in system if path.exists())
+        bindings = [
+            part for mount in sorted(mounts) for part in ("--ro-bind", str(mount), str(mount))
+        ]
+        return [
+            bwrap, "--die-with-parent", "--new-session", "--unshare-net", "--unshare-pid",
+            "--tmpfs", "/", *bindings, "--tmpfs", "/tmp", "--tmpfs", "/run",
+            "--dev", "/dev", "--proc", "/proc", "--bind", str(self.root), str(self.root),
+            "--bind", str(self.report), str(self.report), *command,
+        ]
 
-        def mb(*args: str) -> Ran:
-            out, err = io.StringIO(), io.StringIO()
-            with (
-                contextlib.chdir(workspace), contextlib.redirect_stdout(out),
-                contextlib.redirect_stderr(err),
-            ):
-                try:
-                    code = build()(args, exit_on_error=False)
-                except SystemExit as exit_status:
-                    code = exit_status.code
-            return Ran(code=code or 0, out=out.getvalue(), err=err.getvalue())
-
-        test_an_environment_narrowing_the_mirror_still_ships_every_lock_input(mb, workspace)
-        self.result["cli_witness"] = {
-            "nodeid": "test_an_environment_narrowing_the_mirror_still_ships_every_lock_input",
-            "mode": "in-process, every subprocess denied; not a console-process gate pass",
-            "result": "passed",
-        }
-
-    def run(self, mode: str, selection: tuple[str, ...]) -> int:
-        if mode == "inspect":
-            return self.inspect()
-        if mode in {"suite", "target"}:
-            if not self.preflight():
-                return 78
-            self.seed_extensions()
-            targets = list(selection) or [str(self.tree / "integration")]
-            command = [
-                sys.executable, "-m", "pytest", "-c", str(self.tree / "pyproject.toml"),
-                "-q", "-p", "no:randomly", "-p", "no:cacheprovider",
-                "--basetemp", str(self.root / "pytest"),
-                "--junitxml", str(self.report / f"{mode}.xml"), *targets,
-            ]
-            return self.execute(mode, command, 850 if mode == "suite" else 90)
+    def _checker(self, mode: str) -> list[str]:
+        """A fixed, read-only checker invocation: never an arbitrary command or test scenario."""
         config = str(self.tree / "pyproject.toml")
-        commands = {
+        findings = self.report / "mcmr-findings.json"
+        return {
             "ruff": ["ruff", "check", "--config", config, "--no-cache", "--output-format",
                      "json", "src", "integration"],
             "pyrefly": ["pyrefly", "check", "--config", config, "--min-severity", "warn",
@@ -267,30 +134,147 @@ class Gate:
                      "--show-error-codes", "--no-color-output", "src"],
             "mcmr": ["mcmr", "check", str(self.tree), "--deterministic", "--no-contextual",
                      "--no-external", "--no-writeback", "--repair", "none", "--format",
-                     "concise", "--output", str(self.report / "mcmr-findings.json")],
+                     "concise", "--output", str(findings)],
+        }[mode]
+
+    def _collect(self) -> tuple[int, str]:
+        """pytest's exit code and node listing for the whole suite, without running a test."""
+        listing = io.StringIO()
+        arguments = [*self._arguments(), "--collect-only", str(self.tree / "integration")]
+        with contextlib.redirect_stdout(listing):
+            code = pytest.main(arguments)
+        return int(code), listing.getvalue()
+
+    def _environment(self) -> dict[str, str]:
+        """The worker's environment, rebuilt from an allowlist, every state path in the root."""
+        environment = {key: os.environ[key] for key in _INHERITED if key in os.environ}
+        for key, child in _HOMES.items():
+            (self.root / child).mkdir(parents=True, exist_ok=True)
+            environment[key] = str(self.root / child)
+        environment.update(
+            PYTHONPATH=f"{self.tree / 'src'}:{self.tree / 'integration/gates/worker'}",
+            PYTHONDONTWRITEBYTECODE="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", NO_COLOR="1",
+            MB_GATE_ROOT=str(self.root), MB_GATE_REPORT=str(self.report),
+            MB_GATE_WORKTREE=str(self.tree), MB_GATE_OS=sys.platform,
+            MB_GATE_PROJECTS=os.environ["MB_GATE_PROJECTS"],
+        )
+        return environment
+
+    def _execute(
+        self, name: str, command: list[str], limit: int, *, isolated: bool = True
+    ) -> int:
+        """Run `command` in its own process group, ended whole once `limit` seconds pass."""
+        started = time.monotonic()
+        with (self.report / f"{name}.log").open("w", encoding="utf-8") as output:
+            child = subprocess.Popen(
+                self._sandbox(command) if isolated else command, cwd=self.tree,
+                env=self._environment(), stdout=output, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            code = self._wait(child, limit)
+        self.result[name] = {
+            "argv": command, "limit_seconds": limit, "exit_code": code,
+            "seconds": round(time.monotonic() - started, 3),
         }
-        if mode not in commands:
-            raise ValueError(f"unknown gate mode: {mode}")
-        # Fixed read-only checker invocations, not arbitrary commands or test scenarios.
-        return self.execute(mode, commands[mode], 280, isolated=False)
+        return code
+
+    def _inspect(self) -> int:
+        """Collect, then run the reviewed witnesses here with every child process refused.
+
+        This lane has no OS isolation, so a pass here is not a suite pass.
+        """
+        self._refuse_children()
+        code, listing = self._collect()
+        witnesses = pytest.main([*self._arguments(), *(str(self.tree / n) for n in _WITNESSES)])
+        binaries = Path(sys.executable).parent
+        self.result.update(
+            collection_exit=code, baseline_accounting=self._accounting(listing),
+            witnesses={"nodes": _WITNESSES, "exit_code": int(witnesses)},
+            postgres={"missing": [n for n in _POSTGRES if not (binaries / n).is_file()]},
+        )
+        return max(code, int(witnesses))
+
+    def _preflight(self) -> bool:
+        """Prove the OS refuses an external write and connection before any test code runs."""
+        probe = self.tree / "integration/gates/native_probe.py"
+        code = self._execute("isolation", [sys.executable, "-S", str(probe), str(self.root)], 20)
+        if code:
+            self.result["blocked"] = "M00-OS: OS isolation unavailable; no suite/checker launched"
+            sys.stderr.write((self.report / "isolation.log").read_text(encoding="utf-8"))
+        return code == 0
+
+    def _pytest(self, mode: str, selection: list[str]) -> int:
+        if not self._preflight():
+            return 78
+        self._seed_extensions()
+        command = [
+            sys.executable, "-m", "pytest", *self._arguments(),
+            "--junitxml", str(self.report / f"{mode}.xml"),
+            *(selection or [str(self.tree / "integration")]),
+        ]
+        return self._execute(mode, command, self.budget)
+
+    def _refuse_children(self) -> None:
+        guard = Guard.from_environment()
+        guard.deny_processes = True
+        guard.install()
+        environment = self._environment()
+        os.environ.clear()
+        os.environ.update(environment, MB_GATE_INSPECT="1")
+        signal.setitimer(signal.ITIMER_REAL, self.budget)
+
+    def _sandbox(self, command: list[str]) -> list[str]:
+        if sys.platform == "darwin":
+            return self._seatbelt(command)
+        if sys.platform == "linux" and (bwrap := shutil.which("bwrap")):
+            return self._bubblewrap(bwrap, command)
+        raise RuntimeError("M00-OS: needs macOS sandbox-exec or Linux bubblewrap")
+
+    def _seatbelt(self, command: list[str]) -> list[str]:
+        """Wrap `command` in a Seatbelt profile that refuses outside writes and the network.
+
+        Only the root, the report, /dev/null and ptys are writable, and only Unix sockets below
+        the root are reachable. Native libraries and every descendant inherit the restriction.
+        """
+        root, report = json.dumps(str(self.root)), json.dumps(str(self.report))
+        profile = self.root / "worker.sb"
+        profile.write_text(
+            "(version 1)\n(allow default)\n(deny file-write*)\n(deny network*)\n"
+            f'(allow file-write* (subpath {root}) (subpath {report}) (literal "/dev/null") '
+            '(literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$"))\n'
+            f"(allow network* (local unix-socket (subpath {root})) "
+            f"(remote unix-socket (subpath {root})))\n",
+            encoding="utf-8",
+        )
+        return ["/usr/bin/sandbox-exec", "-f", str(profile), *command]
+
+    def _seed_extensions(self) -> None:
+        """Copy the preinstalled DuckDB extensions; a gate never downloads code on demand."""
+        darwin = sys.platform == "darwin"
+        seed = Path.home() / ("Library/Caches/mb/duckdb" if darwin else ".cache/mb/duckdb")
+        if not seed.is_dir():
+            raise RuntimeError(f"M00-EXTENSIONS: offline DuckDB cache missing: {seed}")
+        cache = self.root / ("home/Library/Caches/mb/duckdb" if darwin else "cache/mb/duckdb")
+        shutil.copytree(seed, cache, dirs_exist_ok=True)
+
+    def _verify(self, versions: dict[str, str]) -> None:
+        """Refuse a worktree other than this one and any checker that drifted from the baseline."""
+        assert Path(mainboard.__file__).resolve() == self.tree / "src/mainboard/__init__.py"
+        assert versions == {name: self.baseline["versions"][name] for name in _TOOLS}, (
+            "M00-VERSIONS: tool version changed; explicitly rebaseline before accepting results"
+        )
+        sys.stdout.write(f"mainboard.__file__ = {mainboard.__file__}\n")
 
 
-class Collection:
-    def __init__(self) -> None:
-        self.nodes: list[str] = []
-
-    def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> None:
-        self.nodes = [item.nodeid for item in items]
-
-
-def main(mode: str = "suite", *selection: str) -> None:
+def _main(mode: str = "suite", *selection: str) -> None:
+    """Run lane `mode` (suite, target, inspect or a checker); `target` takes pytest node ids."""
     gate = Gate()
     try:
-        code = gate.run(mode, selection)
+        code = gate.run(mode, list(selection))
     finally:
         gate.save(mode)
     raise SystemExit(code)
 
 
 if __name__ == "__main__":
-    App(default_command=main)()
+    App(default_command=_main)()
