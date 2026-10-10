@@ -1,0 +1,57 @@
+--- a/research/cuda-tokenization/experiments/card_scaling/harness.py
++++ b/research/cuda-tokenization/experiments/card_scaling/harness.py
+@@ -170,32 +170,36 @@
+         input_bytes: int,
+         schema: str,
+     ) -> None:
+-        """Three warmups, then seven timed calls, one table row each under the cell's keys."""
++        """Three warmups, then seven timed calls back to back, then one table of the seven rows.
++
++        Nothing runs between two timed calls: the tens of milliseconds of a table row (a database
++        opened per row) change what the next call costs on a many-core host.
++        """
+         for _ in range(settings.warmups):
+             engine.encode(texts)
++        rows = []
+         for index in range(settings.calls):
+             start = perf_counter()
+             tokens, output = engine.encode(texts)
+             seconds = perf_counter() - start
+-            self.log.table(
+-                [
+-                    {
+-                        "model": self.model,
+-                        **cell,
+-                        "repetition": self.repetition,
+-                        "call": index,
+-                        "input_bytes": input_bytes,
+-                        "documents": len(texts),
+-                        "tokens": tokens,
+-                        "latency_ms": seconds * 1e3,
+-                        "mb_per_second": input_bytes / 1e6 / seconds,
+-                        "accepted": True,
+-                    }
+-                ],
+-                name="-".join(str(value) for value in (*cell.values(), "latency", index)),
+-                schema_name=schema,
++            rows.append(
++                {
++                    "model": self.model,
++                    **cell,
++                    "repetition": self.repetition,
++                    "call": index,
++                    "input_bytes": input_bytes,
++                    "documents": len(texts),
++                    "tokens": tokens,
++                    "latency_ms": seconds * 1e3,
++                    "mb_per_second": input_bytes / 1e6 / seconds,
++                    "accepted": True,
++                }
+             )
+             del output
++        self.log.table(
++            rows, name="-".join(str(value) for value in (*cell.values(), "latency")), schema_name=schema
++        )
+ 
+ 
+ class Documents(Acquisition):

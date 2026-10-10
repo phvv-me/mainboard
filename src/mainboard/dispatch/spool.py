@@ -11,6 +11,7 @@ import secrets
 import shlex
 import time
 from collections.abc import Sequence
+from enum import StrEnum, auto
 from pathlib import Path
 from tempfile import mkstemp
 from typing import ClassVar
@@ -81,6 +82,19 @@ class Beat(FrozenModel):
     at: float
     state: str
     running: str = ""
+
+
+class Fence(StrEnum):
+    """How far a cancel got, as `Remote.fence` prints it.
+
+    EXITED: the runner already wrote the exit artifact, which stands untouched.
+    FENCED: no allocation took the entry and none can now.
+    CLAIMED: an allocation owns it and ends it on the tombstone.
+    """
+
+    EXITED = auto()
+    FENCED = auto()
+    CLAIMED = auto()
 
 
 def handle() -> str:
@@ -178,45 +192,66 @@ class Remote:
         )
 
     def fence(self, name: str) -> str:
-        """Tombstone `name`, then claim it as cancelled unless an allocation already did.
+        """Cancel `name`, leaving a finished job's exit artifact alone.
 
-        Prints `exited` when the runner already finished it, `fenced` when it can no longer run,
-        `claimed` when an allocation owns it and will end it on the tombstone.
+        Prints a `Fence`. A write that failed exits 4 with nothing printed: only a printed word
+        says the entry can no longer run.
         """
-        claim = shlex.quote(Claim(cancelled=True, at=time.time()).model_dump_json())
         quoted = shlex.quote(name)
         return "\n".join(
             (
                 f"umask 077; cd {shlex.quote(self.path)} || exit 4",
+                f"if [ -f {shlex.quote(self.logs)}/{quoted}.exit ]; then "
+                f"echo {Fence.EXITED}; exit 0; fi",
                 "mkdir -p cancel claims || exit 4",
-                f": > cancel/{quoted}",
-                f"if [ -f {shlex.quote(self.logs)}/{quoted}.exit ]; then echo exited; exit 0; fi",
-                "t=$(mktemp claims/.tmp.XXXXXX) || exit 4",
-                f'printf %s {claim} > "$t"',
-                f'if ln "$t" claims/{quoted}.json 2>/dev/null; then echo fenced; '
-                "else echo claimed; fi",
-                'rm -f "$t"',
+                f": > cancel/{quoted} || exit 4",
+                self._claim_cancelled(),
+                f"claim_cancelled {quoted}",
+                f"case $? in 0) echo {Fence.FENCED};; 1) echo {Fence.CLAIMED};; *) exit 4;; esac",
             )
         )
 
     def stop(self) -> str:
-        """End the line: the marker, then every unclaimed entry tombstoned and fenced."""
-        claim = shlex.quote(Claim(cancelled=True, at=time.time()).model_dump_json())
+        """End the line: the marker, then each entry no allocation has claimed fenced as cancelled.
+
+        A claimed entry is left alone, tombstone included, so its job runs to its own end. Exits
+        4 when the marker or any fence could not be written.
+        """
         return "\n".join(
             (
                 f"umask 077; cd {shlex.quote(self.path)} || exit 4",
-                ": > stop",
+                ": > stop || exit 4",
                 "mkdir -p cancel claims inbox || exit 4",
+                self._claim_cancelled(),
+                "failed=0",
                 "for f in inbox/*.json; do",
                 '  [ -f "$f" ] || continue',
                 '  h=$(basename "$f" .json)',
-                '  : > cancel/"$h"',
-                "  t=$(mktemp claims/.tmp.XXXXXX) || exit 4",
-                f'  printf %s {claim} > "$t"',
-                '  ln "$t" claims/"$h".json 2>/dev/null',
-                '  rm -f "$t"',
+                '  claim_cancelled "$h"',
+                '  case $? in 0) : > cancel/"$h" || failed=4;; 1) ;; *) failed=4;; esac',
                 "done",
-                "exit 0",
+                "exit $failed",
+            )
+        )
+
+    @staticmethod
+    def _claim_cancelled() -> str:
+        """The shell function `claim_cancelled <name>`, the one way a cancel takes an entry.
+
+        It returns 0 when its cancelled claim won, 1 when an allocation's claim was there first,
+        4 when neither holds, so a failed write is never mistaken for a claimed entry.
+        """
+        claim = shlex.quote(Claim(cancelled=True, at=time.time()).model_dump_json())
+        return "\n".join(
+            (
+                "claim_cancelled() {",
+                "  t=$(mktemp claims/.tmp.XXXXXX) || return 4",
+                f'  if printf %s {claim} > "$t" && ln "$t" claims/"$1".json 2>/dev/null; then c=0',
+                '  elif [ -e claims/"$1".json ]; then c=1',
+                "  else c=4; fi",
+                '  rm -f "$t"',
+                "  return $c",
+                "}",
             )
         )
 

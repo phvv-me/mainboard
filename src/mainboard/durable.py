@@ -25,6 +25,7 @@ from plumbum.commands.processes import ProcessTimedOut
 from .core.errors import MissionError
 from .core.host import LINUX, MACOS
 from .core.project import Project
+from .dispatch.state.monitor import last_settlement
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -103,7 +104,9 @@ class Settling(FrozenModel):
     active: whether the service manager has it armed and running it.
     root: the workspace the installed pass sweeps, empty when nothing is installed.
     every: the period between passes as the installed unit spells it, empty when none is.
-    last_run: when a pass last ran, as the service manager reports it, empty when none ever did.
+    last_run: when the service manager last started a pass or a pass last wrote its log, which
+        passes that find the lock held keep refreshing, empty when it never did.
+    last_success: when a pass last ran to its end, empty when none ever did.
     log: the command that reads what passes said, empty when nothing is installed.
     detail: the one line behind the answer.
     fix: the single command that gets a durable pass running, empty when one already does.
@@ -114,6 +117,7 @@ class Settling(FrozenModel):
     root: str = ""
     every: str = ""
     last_run: str = ""
+    last_success: str = ""
     log: str = ""
     detail: str
     fix: str = ""
@@ -130,6 +134,11 @@ class Settler(ABC):
     def __init__(self, root: Path) -> None:
         """root: the workspace whose dispatched jobs this settler settles."""
         self.root = root
+
+    @property
+    def last_success(self) -> str:
+        """When a pass last ran to its end, which only the pass itself can say."""
+        return last_settlement(Project().out(self.root) / "run")
 
     @abstractmethod
     def install(self, every: Every) -> Settling:
@@ -230,16 +239,19 @@ class SystemdUser(Settler):
         lingering = self._lingering()
         state = "active" if active else "installed but not armed"
         linger = "" if lingering else ", and a reboot stops it until this user lingers"
+        success = self.last_success
         return Settling(
             installed=True,
             active=active,
             root=self._setting(self.service, "WorkingDirectory"),
             every=every,
             last_run=last_run,
+            last_success=success,
             log=log,
             detail=(
                 f"{self.timer.name} {state}, one pass every {every}, read with `{log}`, "
-                f"last run {last_run or 'never'}{linger}"
+                f"last service trigger {last_run or 'never'}, "
+                f"last successful pass {success or 'unknown'}{linger}"
             ),
             fix=self._repair(active=active, lingering=lingering),
         )
@@ -422,16 +434,19 @@ class LaunchdAgent(Settler):
             last_run = datetime.fromtimestamp(stamp, UTC).isoformat(timespec="seconds")
         log = f"tail {self.log}"
         state = "loaded" if active else "installed but not loaded"
+        success = self.last_success
         return Settling(
             installed=True,
             active=active,
             root=str(agent.get("WorkingDirectory", "")),
             every=every,
             last_run=last_run,
+            last_success=success,
             log=log,
             detail=(
                 f"{self.label} {state}, one pass every {every}, read with `{log}`, "
-                f"last run {last_run or 'never'}"
+                f"last log activity {last_run or 'never'}, "
+                f"last successful pass {success or 'unknown'}"
             ),
             fix="" if active else f"launchctl bootstrap {self._domain} {self.plist}",
         )

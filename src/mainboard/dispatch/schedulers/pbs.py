@@ -13,7 +13,7 @@ from ...core.project import Project
 from .. import vocabulary
 from ..shared import state_dir
 from ..vocabulary import JobState, Resources
-from .base import bare, login_run, read_log, within
+from .base import bare, login_ask, login_run, read_log, within
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -46,6 +46,9 @@ _PBS_FINISHED = {PbsState.FINISHED, PbsState.EXITING}
 
 # PBS states in which the job has not started, the ones an estimated start time is about.
 _PBS_PENDING = {PbsState.QUEUED, PbsState.HELD, PbsState.WAITING, PbsState.MOVED}
+
+# What `qdel` prints for a job that already left the queue, which a stop has nothing to add to.
+_QDEL_GONE = ("finished", "Unknown")
 
 
 def parse_job_state(value: str) -> PbsState | str:
@@ -144,6 +147,16 @@ def build_qsub_flags(resources: Resources) -> list[str]:
     return flags
 
 
+def qdel(remote: Machine, handle: str) -> None:
+    """Delete PBS job `handle`, returning only once `qdel` accepted it or the job was already gone.
+
+    Any other refusal raises, so a caller never reports a cancel the scheduler did not take.
+    """
+    code, _, err = login_ask(remote, f"qdel {shlex.quote(handle)}")
+    if code and not any(gone in err for gone in _QDEL_GONE):
+        raise MissionError(f"qdel {handle} failed ({code}): {err.strip()}")
+
+
 class Pbs:
     """Dispatch jobs to a PBS cluster via `qsub`."""
 
@@ -168,7 +181,7 @@ class Pbs:
         return JobState(handle=handle, verdict="vanished")
 
     def cancel(self, remote: Machine, root: str, *, handle: str) -> None:
-        remote["bash"][["-lc", f"qdel {shlex.quote(handle)}"]](retcode=None)
+        qdel(remote, handle)
 
     def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
         """`qsub -I` under the batch flags; `env` is activated inside, beyond `qsub`'s reach.

@@ -122,7 +122,7 @@ def test_evict_deletes_only_what_the_lake_keeps_intact(workspace, evidence) -> N
     lake.ingest([evidence])
     (evidence / "noise.bin").write_bytes(b"changed after ingest")
     (evidence / "late.txt").write_bytes(b"never ingested")
-    evicted = lake.evict([evidence])
+    evicted = lake.evict(lake.finalize([evidence]))
     assert {path.name for path in evicted} == {
         "empty.txt",
         "part-00000.parquet",
@@ -147,7 +147,7 @@ def test_collection_keeps_transfers_in_the_lake_never_the_tree(
 ) -> None:
     lake = Evidence(Lake.at(workspace))
     lake.ingest([evidence])
-    lake.evict([evidence])
+    lake.evict(lake.finalize([evidence]))
     collector = Collector(workspace)
     indexed = {row.path: row.sha256 for row in lake.indexed(NODE)}
     assert collector._kept(PurePosixPath(NODE)) == indexed
@@ -293,7 +293,7 @@ def test_a_closed_run_moves_into_the_center_lake(workspace, central) -> None:
 def test_settling_verifies_what_only_the_lake_holds(workspace, evidence) -> None:
     lake = Evidence(Lake.at(workspace))
     lake.ingest([evidence])
-    lake.evict([evidence])
+    lake.evict(lake.finalize([evidence]))
     [row] = Dataset(evidence / "receipts").rows()
     reference = Artifact.model_validate(row["artifacts"])
     lost = reference.model_copy(update={"sha256": "1" * 64, "path": "datasets/lost"})
@@ -481,18 +481,18 @@ def test_ingest_records_each_chunks_checksum(workspace, monkeypatch) -> None:
     assert Evidence(lake).verify() == []
 
 
-def test_check_records_the_checksums_of_chunks_kept_before_them(workspace, evidence) -> None:
+def test_check_leaves_the_checksums_of_chunks_kept_before_them_unrecorded(
+    workspace, evidence
+) -> None:
     lake = Lake.at(workspace)
     Evidence(lake).ingest([evidence])
     _damage(lake, "DELETE FROM lake.checksums", [])
     assert Evidence(lake).verify() == []
-    [(chunks, sums)] = lake.query(
+    assert lake.query(
         "SELECT (SELECT count(*) FROM lake.blobs), (SELECT count(*) FROM lake.checksums)"
-    )
-    assert sums == chunks == 4
+    ) == [(4, 0)]
     assert Evidence(lake).verify() == []
-    [(sums,)] = lake.query("SELECT count(*) FROM lake.checksums")
-    assert sums == 4
+    assert lake.query("SELECT count(*) FROM lake.checksums") == [(0,)]
 
 
 def test_check_finds_a_chunk_whose_bytes_changed(workspace, monkeypatch) -> None:

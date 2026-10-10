@@ -104,9 +104,16 @@ Stopping `job show --wait` does not cancel a job or stop rental billing.
 dispatch's preflight enter; the pinned copy a job activates is built by the first
 dispatch of each lock (`built <env> on <host>`), from the packages setup fetched.
 
-Source snapshots are not deleted automatically. A local job cache cannot prove
-that another workstation has no job using a remote snapshot. Monitor inode
-usage. Remove a snapshot only after checking all dispatchers and queues.
+Every pin publishes a durable retention record on the host before anything is
+queued from it, naming the source tree and environment prefix. A job's start
+prunes only what no record, pueue task, held submission, staged script or
+registry run names, and nothing at all when one of those cannot be read. No
+scheduler verdict releases a record, so pinned trees and environments stay
+until the submission authority retires them: monitor inode and disk usage.
+Records protect the roots where they stand, `dispatch/sources` and
+`prefixes/<environment>`, so switching to a release with retention rebuilds
+nothing. It assumes one release prunes a host at a time, which draining the old
+controllers before each host changes release guarantees.
 
 ## Many jobs, many machines, one flow
 

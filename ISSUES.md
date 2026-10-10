@@ -15,11 +15,28 @@ campaign first; move an entry to the bottom section once fixed and verified.
    `Dispatcher.mirror(plan, root)` directly, which is all a code-only update needs.
 2. **`Pbs.cancel` ignores `qdel`'s exit status** (`dispatch/schedulers/pbs.py`), so a refused
    cancel reads as done. `Line` checks its own `qdel`; `Pbs.cancel` should raise unless the job
-   had already finished.
+   had already finished. FIXED on `refactor/mb-M02`, not yet switched live (M02, B16): `Pbs.cancel`
+   and `Line._stop` share one checked `qdel`, which raises on a refusal and on a lost
+   connection. The same package fixes B04 (`host release` tombstoned the running job and killed it:
+   a release now fences only the entries no allocation claimed), B13 (`Held.cancel` ignored a
+   failed fence write) and B18 (pueue Locked and Stashed tasks read as failed). A cancel its
+   scheduler refused now raises before `Verdicts` records `cancelled`. `Slurm.cancel` and
+   `Local.cancel` still acknowledge unchecked, and a host that does not answer still settles as
+   `cancelled` with a note that nothing was stopped there.
 3. **`snapshots.queued_here()` only asks the local pueue daemon.** A pinned tree that a queued PBS
    job, or a held job waiting in the spool inbox, will run from is invisible to pruning once the
    age thresholds pass. Include `claims/` and `inbox/` entries of the spool (their `cwd`) and the
-   scripts of queued PBS jobs.
+   scripts of queued PBS jobs. FIXED on `refactor/mb-M03b`, not yet switched live (M03, B05):
+   each pin writes a retention record before launch, and pruning keeps whatever a record, pueue
+   task, spool entry, staged script or registry run names, and everything when one cannot be
+   read. Records protect the existing `dispatch/sources` and `prefixes/<environment>` roots in
+   place, so no host needs a sync for a new address and no environment is rebuilt; trees pinned
+   before the switch hold no record and age out under the same inventory. Retention assumes one
+   release prunes a host at a time, which the drain-and-switch cutover guarantees: until a host
+   changes release, its old `provide` prunes without reading the records. Nothing retires a pin
+   yet, so pinned trees and prefixes grow until the submission authority lands. Also
+   fixed: `Prefixes.prune` listed the environment names under `prefixes/` instead of the digests
+   under one environment, so a third environment on a host lost its whole directory.
 4. **`mb shell --on miyabi-g` knows nothing of a held line.** PBS refuses the second interactive
    job with its raw quota text. `Board.interact` could read the spool's `line.json` and say who
    holds the slot and until when.
@@ -324,12 +341,25 @@ campaign first; move an entry to the bottom section once fixed and verified.
     GH200 jobs read as `finished` with verdict `running`, and `job show --wait` heartbeated a
     finished job until its timeout. The listing should name the holder (pid, start time) and
     say its states are cached. A pass should also stop when its parent session dies.
+    PARTLY FIXED locally (unreleased, M34 bridge, 2026-10-10): the holder of the lock records
+    pid, host, start, phase, heartbeat and deadline beside it; `job list` (and `--json`, and
+    `--batch`) and `wait` name it and list cached states without asking a host; `sweep.running`
+    is never null; a pass ends its process when its parent dies or after 15 minutes; the last
+    pass that ran to its end is stamped apart from the service's own last run. Still open until
+    M24 replaces the file lock with an advisory lock: a pass stuck inside a native call that
+    holds the GIL, the processes a pass starts, and `job show`, which still reads cached states
+    without saying so.
 13n. **A settling pass costs minutes on a lake of small files** (2026-10-10). With 34,192
     Parquet files (49 GB) one pass took 164 s, 447 s of it system time spent opening files
     (`CachingFileSystem::OpenFile`, `ScanReadAheadJob`). Each settled run replays its receipt
     stream (`bus.replay()`), so the cost grows with runs times files. The pass should read each
     stream once and never scan blob files. `mb lake compact` (6.6 s) only took the count to
     32,054, so the files are blob data, which compaction does not merge.
+    PARTLY FIXED locally (unreleased, M34 bridge, 2026-10-10): a pass replays each stream once
+    and keeps its latest state and evidence lines in memory as it publishes, so 100 runs sharing
+    a stream cost one replay instead of 300. Still open until M23 replaces the replay with
+    durable cursors: that replay (`Journal.replay`, a scan of the events table) is unchanged, and
+    what opens the blob files is not diagnosed.
 13o. **Archive members are unreadable once eviction removes their archive parts** (2026-10-10).
     53,444 early-September cutok artifacts (396 MB, 1,415 runs, 15 nodes) have no standalone blob:
     they live inside the 1,631 parts of `datasets/experiments/artifacts.parquet/<xx>/part-N.parquet`

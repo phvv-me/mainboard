@@ -14,10 +14,12 @@
 import hashlib
 import json
 import shutil
+from functools import partial
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
+from ...core.retention import RetentionPins
 from .backend import Pixi
 from .compiler import Compiler
 from .ecosystems import SecondStage
@@ -31,6 +33,7 @@ from .state import SyncState
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
+    from ...core.retention import Retention
     from ...manifest import Manifest
     from .generated import Writer
 
@@ -126,15 +129,26 @@ class Prefixes:
         self.root = root
         self.manifest = manifest
         self.environment = environment
+        self.retention = RetentionPins(root, Project().out_dir(root))
 
     @property
     def base(self) -> Path:
-        return self.path("").parent
+        """The directory holding this environment's addressed prefixes, one per digest."""
+        return self.path("")
 
     def path(self, digest: str) -> Path:
         """Where the environment `digest` names is built, whether or not it has been yet."""
         out = Project().out_dir(self.root)
         return Path(prefix_path(str(self.root), self.environment, digest, out=out))
+
+    @property
+    def _building(self) -> GeneratedFiles:
+        """The files whose lock orders every build and sweep of every environment's prefixes.
+
+        One level above `base`, where every release's builds take it, so a build by an older
+        release excludes this one's.
+        """
+        return GeneratedFiles(directory=self.base.parent)
 
     def built(self, digest: str) -> bool:
         """Whether the environment `digest` names is finished and safe to activate."""
@@ -170,8 +184,7 @@ class Prefixes:
         if self.built(digest):
             return target
         SecondStage(self.root, projected, source, Pixi(source)).frozen_inputs(self.environment)
-        self.base.mkdir(parents=True, exist_ok=True)
-        with GeneratedFiles(directory=self.base).locked() as files:
+        with self._building.locked() as files:
             if self.built(digest):
                 return target
             target.mkdir(parents=True, exist_ok=True)
@@ -204,35 +217,53 @@ class Prefixes:
             text = entry.read_text(encoding="utf-8")
             files.write(target / entry.name, anchored(text, root=self.root, generated_dir=shard))
 
-    def referenced(self, sources: Path) -> set[str]:
+    def referenced(self, sources: Path) -> set[str] | None:
         """Every environment digest a pinned tree under `sources` still activates.
 
-        Read off the trees, which queued jobs actually name, not the run registry.
+        None when a tree's environment link cannot be read, which keeps every prefix.
         """
-        found: set[str] = set()
-        for out in Project().out_dirs:
-            for link in sources.glob(f"*/{out}/envs/*/.pixi"):
-                try:
-                    resolved = link.readlink()
-                except OSError:
-                    continue
-                found.add(resolved.parent.name)
-        return found
+        try:
+            return {
+                link.readlink().parent.name
+                for out in Project().out_dirs
+                for link in sources.glob(f"*/{out}/envs/*/.pixi")
+            }
+        except OSError:
+            return None
 
-    def prune(self, *, live: Collection[str]) -> list[str]:
+    def prune(self, *, live: Collection[str], inventory: Retention) -> list[str]:
         """Remove and name every built environment nothing still names, the newest `KEEP` kept.
 
         live: digests a snapshot or unsettled run activates, never removed whatever their age.
+        inventory: what `Snapshots.inventory` found, the same one source pruning used; an unknown
+            in it, or in the pins, removes nothing.
         """
+        # A direct build holds this lock before it has a source snapshot at all. Waiting it out
+        # comes first, since the pin lock is what a dispatch's launch waits on.
+        with self._building.locked():
+            return self.retention.swept(inventory, partial(self._sweep, live))
+
+    def _sweep(self, live: Collection[str], inventory: Retention) -> list[str]:
+        referenced = self.referenced(self.retention.base)
+        if referenced is None:
+            return []
         try:
             found = sorted(
-                (entry for entry in self.base.iterdir() if entry.is_dir()),
+                (
+                    entry
+                    for entry in self.base.iterdir()
+                    if not entry.is_symlink() and entry.is_dir() and entry.name[0] != "."
+                ),
                 key=lambda entry: entry.stat().st_mtime,
                 reverse=True,
             )
         except OSError:
             return []
-        doomed = [entry for entry in found[KEEP:] if entry.name not in live]
+        doomed = [
+            entry
+            for entry in found[KEEP:]
+            if entry.name not in {*live, *referenced} and not inventory.protects(entry)
+        ]
         for entry in doomed:
             shutil.rmtree(entry, ignore_errors=True)
         return [entry.name for entry in doomed]

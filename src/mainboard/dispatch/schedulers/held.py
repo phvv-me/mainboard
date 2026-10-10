@@ -18,7 +18,7 @@ from ...core.errors import MissionError
 from ...core.project import Project
 from ...runtime.job import walltime_seconds
 from .. import vocabulary
-from ..spool import Claim, LineSpec, Remote, Submission, spool_path
+from ..spool import Claim, Fence, LineSpec, Remote, Submission, spool_path
 from ..spool import handle as new_handle
 from ..transport import HostUnreachable
 from ..vocabulary import JobState, Resources
@@ -58,10 +58,17 @@ class Held(Pbs):
         """Stop the job, answering only once it can no longer run.
 
         That is fenced before any allocation took it, or finished with its exit artifact
-        written; an allocation ends a claimed one on its tombstone.
+        written; an allocation ends a claimed one on its tombstone. A fence the spool did not
+        confirm raises instead of reporting a cancel.
         """
-        said = login_ask(remote, Remote(spool_path(root)).fence(handle))[1].strip()
-        if said != "claimed":
+        code, out, err = login_ask(remote, Remote(spool_path(root)).fence(handle))
+        said = out.strip()
+        if code or said not in Fence:
+            raise MissionError(
+                f"could not fence {handle} in the hold spool (exit {code}), so it is not "
+                f"cancelled: {(err.strip() or said)[-200:]}"
+            )
+        if said != Fence.CLAIMED:
             return
         deadline = time.monotonic() + _CANCEL_SECONDS
         while time.monotonic() < deadline:

@@ -206,7 +206,8 @@ class Verdicts:
 
         A cancel may discard incomplete work but records that loss rather than calling the
         evidence complete. A held dispatch, and a run whose host is no longer declared, have no
-        machine to contact.
+        machine to contact. A stop its scheduler refused raises before any verdict is recorded,
+        so the run is still in flight for the next ask.
 
         ended: the verdict a run still in flight settles on.
         exit_code: the exit status that verdict carries, the recorded one when None.
@@ -257,8 +258,8 @@ class Verdicts:
         code = record.exit_code if exit_code is None else exit_code
         word = vocabulary.CANCELLED if ended == vocabulary.CANCELLED else vocabulary.FINISHED
         state = JobState(handle=record.handle, state=word, exit_code=code, verdict=verdict)
-        stored = cache.resolve(record, word, code, verdict)
         unheard = self._killed(run, monitor)
+        stored = cache.resolve(record, word, code, verdict)
         if monitor.release(run):
             if cache.run(handle, record.target).evidence == "copied":
                 monitor.evidence(record, receipts, status="verified")
@@ -556,6 +557,12 @@ class Verdicts:
             # Said once: a wait on a run whose host went silent otherwise reads as a job that
             # is merely slow, until the timeout.
             report = monitor.once(scope=scope)
+            if report.busy is not None:
+                # The holder moves the states being waited on, so they are cached here: it is
+                # said every pass in place of a heartbeat for a job that may already have ended.
+                say(report.busy.note)
+                poll(interval)
+                continue
             if not stream and report.resumed:
                 handle, host = report.resumed[0].handle, report.resumed[0].target
                 scope = self.__scope(handle, host=host, stream=False)

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from .board import Board
-    from .dispatch.state import RunRecord
+    from .dispatch.state import RunRecord, SettlementBusy
     from .dispatch.vocabulary import JobState
     from .pulse import Pulse
 
@@ -91,6 +91,7 @@ class Listing:
         project: str = "",
         pulses: Pulses | None = None,
         quiet: Mapping[str, str] | None = None,
+        busy: SettlementBusy | None = None,
     ) -> None:
         """limit: how many settled runs to show behind the live ones.
 
@@ -100,6 +101,8 @@ class Listing:
 
         quiet: the hosts the settling pass just found unanswering, each with why, which this
             listing reports without knocking on them a second time.
+
+        busy: the process the settling pass found holding settlement, None when it held it.
         """
         self.board = board
         self.limit = limit
@@ -107,11 +110,16 @@ class Listing:
         self.cache = board.dispatcher.cache
         self.pulses = pulses or Pulses(board)
         self.quiet = quiet or {}
+        self.busy = busy
 
     def taken(self) -> Listed:
-        """The listing as it stands: every live run resolved now, then the settled tail."""
+        """The listing as it stands: every live run resolved now, then the settled tail.
+
+        While another process holds settlement no host is asked: its pass is about to move the
+        very states a probe would read, so the rows are the cache's and the note names the holder.
+        """
         live = self.cache.live(self.project)
-        resolved = Sweep(self.board, live, down=self.quiet)
+        resolved = Sweep(self.board, [] if self.busy else live, down=self.quiet)
         running = [
             record
             for record in live
@@ -134,9 +142,9 @@ class Listing:
             *(self.landed(record) for record in self.cache.settled(self.limit, self.project)),
         ]
         owed = Counter(record.target for record in unasked)
-        return Listed(
-            rows=tuple(rows), note=self.note(shown=len(rows), quiet=resolved.down, owed=owed)
-        )
+        note = self.note(shown=len(rows), quiet=resolved.down, owed=owed)
+        held = self.busy.note if self.busy else ""
+        return Listed(rows=tuple(rows), note="; ".join(filter(None, (held, note))))
 
     @staticmethod
     def flying(
