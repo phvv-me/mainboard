@@ -1,0 +1,3203 @@
+{
+  "audit": {
+    "date": "2026-10-10",
+    "revision": "c97cb81daed05e8b9d0ed21f87a7427075487562",
+    "source_root": "/Users/pedro/Developer/mb-refactor",
+    "report_root": "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb",
+    "source_changes": [],
+    "proposed_commits": [],
+    "mode": "Read-only bug hunt; source and git left unchanged; temporary tests and fake hosts only.",
+    "status_definitions": {
+      "open": "A source defect, requested follow-up, or unverified operational task remains.",
+      "fixed-unverified": "A corresponding fix is present or reported, but its relevant behavior/deployment has not been verified here.",
+      "fixed-verified": "The named behavior was checked with a local temporary test; does not certify live deployment.",
+      "obsolete": "The specific request no longer applies at the audited revision; reason stated."
+    },
+    "scope_limits": [
+      "No real host/lake mutation or production backlog repair.",
+      "External Cutok/host/upstream historical facts are conservatively open unless a specific fix is reported; no current network facts are asserted.",
+      "Benchmarks in ISSUES.md are historical. The audit only asserts measured local repro results.",
+      "Source-policy and requested feature gaps are distinguished from reproduced defects. Passing witness tests assert the current bug symptoms, not desired post-fix behavior."
+    ]
+  },
+  "summary": {
+    "bugs": 55,
+    "failure_classes": 22,
+    "numbered_issues_triaged": 56,
+    "severity_counts": {
+      "data loss": 10,
+      "wrong verdict": 12,
+      "silent stall": 15,
+      "wasted compute": 6,
+      "misleading output": 12
+    },
+    "triage_counts": {
+      "open": 46,
+      "fixed-verified": 7,
+      "fixed-unverified": 2,
+      "obsolete": 1
+    },
+    "reproduced_findings": 37
+  },
+  "bugs": [
+    {
+      "id": "B01",
+      "key": "evict-corrupt",
+      "title": "Eviction deletes the last intact copy; re-ingest cannot repair the corrupt lake object",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/state/evidence.py:222",
+        "src/mainboard/state/evidence.py:317",
+        "src/mainboard/state/evidence.py:331",
+        "src/mainboard/state/blobs.py:153"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_evict_deletes_only_good_copy_when_lake_blob_is_corrupt",
+        "repro/test_lake_deps.py::test_reingest_does_not_repair_corrupted_blob"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Blobs.held tests only whether any row bears a digest. Ingest trusts that result and skips replacement; evict verifies the tree digest but never the stored payload or chunk completeness.",
+      "failure_class_id": "F02",
+      "abstraction_failure": "Presence mistaken for verified custody",
+      "proposed_fix": "Make a verified-object contract distinguish present, complete, and intact. Verify lake size/chunks/checksum before eviction; allow ingest to repair damaged objects transactionally. Recheck tree identity immediately before unlink.",
+      "issue_refs": [
+        "cutok-13c"
+      ]
+    },
+    {
+      "id": "B02",
+      "key": "capture_identity_collision",
+      "title": "Captured evidence aliases different hosts and submission attempts",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss",
+        "wrong verdict"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/dispatch/state/captured.py:25",
+        "src/mainboard/dispatch/state/captured.py:62",
+        "src/mainboard/dispatch/state/captured.py:81",
+        "src/mainboard/tracking/base.py:19",
+        "src/mainboard/monitor.py:196"
+      ],
+      "reproductions": [
+        "repro/settlement_identity.py::test_empty_transcript_for_one_host_reuses_another_hosts_receipt"
+      ],
+      "observed": "Two hosts alpha and beta both have unnamed handle 7. Settle alpha with receipt ALPHA-RUN/alpha-only, then beta whose transcript is empty. Beta settles finished, evidence=verified, and its job.evidence event lists ALPHA-RUN/alpha-only. No network was used.",
+      "root_cause": "Captured uses (stream, handle) and default stream is run-<handle>, dropping target and submitted_at. Monitor.capture treats an unavailable/empty transcript as permission to reuse that ambiguous saved log.",
+      "failure_class_id": "F01",
+      "abstraction_failure": "Submission identity lost across boundaries",
+      "proposed_fix": "Give every submission a durable RunId (target, native handle, submission nonce/time). Key captured logs and receipt associations by RunId, and permit fallback only after an exact identity match. Distinguish unavailable log from valid empty output.",
+      "issue_refs": []
+    },
+    {
+      "id": "B03",
+      "key": "provider_log_failure_release",
+      "title": "A transient provider log failure is treated as complete evidence and releases the rental",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss",
+        "wrong verdict"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/board.py:205",
+        "src/mainboard/monitor.py:197",
+        "src/mainboard/monitor.py:266",
+        "src/mainboard/monitor.py:268",
+        "src/mainboard/monitor.py:529"
+      ],
+      "reproductions": [
+        "repro/settlement_log_loss.py::test_missing_provider_log_is_verified_then_destroyed"
+      ],
+      "observed": "Fake provider logs('7') raises MissionError('temporary provider log endpoint unavailable'). File pull succeeds. For ordinary train.py, monitor calls cancel('7'), reports ok, evidence=verified, and has no captured transcript.",
+      "root_cause": "ProviderJob.transcript collapses unavailable, unsupported, and genuinely empty logs into ''. Verification requires a receipt only for a successful native test with fetch; it cannot know that required log capture failed.",
+      "failure_class_id": "F02",
+      "abstraction_failure": "Presence mistaken for verified custody",
+      "proposed_fix": "Return a typed capture outcome (captured, valid-empty, unsupported, retryable-error). When supported logs fail to transfer, retain the rental and pending settlement until retry or its explicit release deadline. At the deadline, release with unverified evidence and recorded loss, not verified.",
+      "issue_refs": []
+    },
+    {
+      "id": "B04",
+      "key": "held-release-kills-running-job",
+      "title": "host release kills its running job despite promising to let it finish",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/line.py:131-135",
+        "src/mainboard/dispatch/spool.py:210-216",
+        "src/mainboard/serve.py:146-152",
+        "integration/test_held.py:291-303",
+        "repro/host_repros.py::test_release_tombstones_running_job_and_kills_it"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_release_tombstones_running_job_and_kills_it"
+      ],
+      "observed": "Run a local fake held script that prints ready, sleeps two seconds, then writes a completion marker. Execute Remote.stop as release does. The process exits -15, and the completion marker is absent.",
+      "root_cause": "Remote.stop writes cancel/<handle> for every inbox entry before trying its cancelled claim. Claimed submissions remain in inbox, so this tombstones running work even though the claim link fails. Server.execute sees the tombstone and sends SIGTERM.",
+      "failure_class_id": "F07",
+      "abstraction_failure": "Scheduler state and cancellation have separate contracts",
+      "proposed_fix": "Set stop to prevent new starts, then atomically claim each unclaimed entry as cancelled; tombstone only entries for which that fence won. Preserve already claimed work. Test release while a real local Server executes, not only immediate state parsing.",
+      "issue_refs": []
+    },
+    {
+      "id": "B05",
+      "key": "pruning-cannot-see-held-or-pbs-users",
+      "title": "Automatic pruning deletes source snapshots still referenced by held/PBS jobs",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/board.py:934-941",
+        "src/mainboard/dispatch/snapshots.py:174-201",
+        "src/mainboard/dispatch/snapshots.py:282-312",
+        "repro/host_repros.py::test_prune_deletes_a_queued_held_jobs_old_source_tree"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_prune_deletes_a_queued_held_jobs_old_source_tree"
+      ],
+      "observed": "A nine-day-old snapshot named by an unclaimed held inbox submission is deleted when three newer snapshots exist and no pueue executable is found. The submission remains queued with its cwd now absent.",
+      "root_cause": "The only liveness inventory is local pueue; its absence is treated as empty rather than insufficient evidence, omitting PBS jobs and spool inbox/claims. Board.build then also prunes environments based on surviving trees.",
+      "failure_class_id": "F06",
+      "abstraction_failure": "Garbage collection lacks complete reachability",
+      "proposed_fix": "Build a complete scheduler/spool reference inventory under the same admission/pruning boundary, and fail closed when a relevant source cannot be queried. Preserve the actual running build and every submitted/claimed tree and prefix.",
+      "issue_refs": [
+        "host-hold 3"
+      ]
+    },
+    {
+      "id": "B06",
+      "key": "overlapping_needs",
+      "title": "Overlapping needs corrupt the mirror input link",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/dispatch/agent/program.py:764-769",
+        "src/mainboard/dispatch/agent/program.py:873-879",
+        "src/mainboard/jobs/closure.py:329-339"
+      ],
+      "reproductions": [
+        "repro/dispatch_snapshot.py"
+      ],
+      "observed": "needs=('data','data/input') rewrote mirror data/input from real-input into a self-symlink, and pin succeeded. Backing input bytes survived.",
+      "root_cause": "Live-path strings do not encode ownership or parent-child overlap; _relink follows an already-linked parent into the mirror.",
+      "failure_class_id": "F04",
+      "abstraction_failure": "Filesystem spelling mistaken for ownership",
+      "proposed_fix": "Canonicalize/collapse live roots and enforce snapshot ancestry before unlinking; skip links already reached through an approved parent.",
+      "issue_refs": []
+    },
+    {
+      "id": "B07",
+      "key": "external-migration",
+      "title": "Center migration omits an externally configured lake",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/center/state.py:54",
+        "src/mainboard/center/state.py:308",
+        "src/mainboard/state/lake.py:358",
+        "src/mainboard/doctor.py:94"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Carried.workspace inventories Project.out and snapshots out/lake.sqlite, not Lake.home. Moving the lake outside generated state makes migration omit the durable catalog and blobs while other parcels can report success. This is migration omission, not proof that the original volume was erased.",
+      "failure_class_id": "F16",
+      "abstraction_failure": "Storage ownership has no bounded access contract",
+      "proposed_fix": "Inventory durable state through Lake's storage contract, snapshot catalog consistently, carry or explicitly retain external data, and verify destination readiness and configured volume before declaring migration successful.",
+      "issue_refs": [
+        "cutok-13d"
+      ]
+    },
+    {
+      "id": "B08",
+      "key": "lint-seal",
+      "title": "Directory lint can rewrite unchanged sealed inputs and analysis sources",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/cli.py:1608",
+        "src/mainboard/lint/linter.py:79",
+        "src/mainboard/lint/linter.py:153",
+        "src/mainboard/lint/text.py:46"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Explicit directories expand to all tracked files and writing tools/hygiene run by default; no snapshot/seal registry protects frozen inputs. Exclusions/-text protect known examples but do not enforce immutable ownership generally.",
+      "failure_class_id": "F22",
+      "abstraction_failure": "Maintenance ignores immutable artifact ownership",
+      "proposed_fix": "Make sealed/registered inputs immutable by contract and lint them read-only. Default broad directory lint to check for unchanged files while applying fixes only to explicitly editable scope.",
+      "issue_refs": [
+        "cutok-9.frozen",
+        "cutok-24.followup"
+      ]
+    },
+    {
+      "id": "B09",
+      "key": "evidence-symlinks",
+      "title": "Lake path containment is lexical and follows symlinks outside the requested boundary",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/state/evidence.py:460",
+        "src/mainboard/state/evidence.py:610",
+        "src/mainboard/state/evidence.py:310",
+        "src/mainboard/state/blobs.py:205"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_ingest_accepts_symlink_to_file_outside_workspace",
+        "repro/test_lake_deps.py::test_materialize_into_follows_directory_symlink_outside_destination"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "within uses abspath rather than resolving filesystem links. Ingest accepts an external file via symlink, and materialize follows a destination parent symlink before replacing the file outside the destination.",
+      "failure_class_id": "F04",
+      "abstraction_failure": "Filesystem spelling mistaken for ownership",
+      "proposed_fix": "Validate resolved containment for every source and destination parent; use no-follow/directory-handle operations to close check/write races. Reject escaped members before any ingestion or restore.",
+      "issue_refs": []
+    },
+    {
+      "id": "B10",
+      "key": "restore-overwrite",
+      "title": "Materialize replaces an edited file without reporting a conflict",
+      "status": "open",
+      "severity": "data loss",
+      "impacts": [
+        "data loss"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/state/evidence.py:298",
+        "src/mainboard/state/evidence.py:310",
+        "src/mainboard/state/blobs.py:205",
+        "src/mainboard/cli.py:2005"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_materialize_overwrites_modified_tree_file"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Any file whose bytes differ from the indexed digest is overwritten with os.replace, including a newer uncollected result at the same path.",
+      "failure_class_id": "F03",
+      "abstraction_failure": "Mutable output paths used as evidence identity",
+      "proposed_fix": "Default materialization to missing-or-identical files, report conflicting paths before writing, and expose an explicit restore/overwrite operation for deliberate replacement.",
+      "issue_refs": []
+    },
+    {
+      "id": "B11",
+      "key": "pulse_attempt_collision",
+      "title": "A new reused handle inherits the old attempt's silence and can be declared stalled immediately",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/pulse.py:99",
+        "src/mainboard/pulse.py:106",
+        "src/mainboard/pulse.py:162",
+        "src/mainboard/vigil.py:109"
+      ],
+      "reproductions": [
+        "repro/settlement_identity.py::test_reused_handle_inherits_old_submission_silence_clock"
+      ],
+      "observed": "Record old alpha/7 at fake clock 1000. Read a different submitted_at for alpha/7 at clock 4000 with same-length startup output. Its first pulse reports quiet_s=3000 and gpu_pct=0, which satisfies Vigil.stuck's stall test.",
+      "root_cause": "Pulse key is target/handle; unchanged byte count preserves the prior attempt's grew timestamp.",
+      "failure_class_id": "F01",
+      "abstraction_failure": "Submission identity lost across boundaries",
+      "proposed_fix": "Key pulse history by the same RunId as settlement and reset the silence baseline for each new attempt. Use this identity in Vigil's per-job emitted-cell cursor too.",
+      "issue_refs": []
+    },
+    {
+      "id": "B12",
+      "key": "gpu-coordination-domain-does-not-match-card",
+      "title": "GPU leases do not contend across universes or overlapping device masks",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/trials/lease.py:28-32",
+        "src/mainboard/trials/lease.py:65",
+        "src/mainboard/trials/session.py:120",
+        "repro/host_repros.py::test_overlapping_gpu_masks_and_universes_take_independent_leases"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_overlapping_gpu_masks_and_universes_take_independent_leases"
+      ],
+      "observed": "CUDA_VISIBLE_DEVICES=0 and 0,1 acquire different files under one root. Two universe roots acquire separate files for CUDA_VISIBLE_DEVICES=0. All three acquisitions succeed.",
+      "root_cause": "The key is experiment root plus raw mask spelling, rather than physical host/device identity. Separate experiments, mask reorderings, an unset mask, and overlapping masks bypass contention.",
+      "failure_class_id": "F05",
+      "abstraction_failure": "Resource ownership is neither global nor atomic",
+      "proposed_fix": "Use one host-wide coordinator keyed by canonical physical GPU UUID, acquire all overlapping devices atomically, and have dispatch and trial admission share it. A separate external-process preflight must remain because arbitrary nonparticipating processes cannot honor a file lease.",
+      "issue_refs": []
+    },
+    {
+      "id": "B13",
+      "key": "held-cancel-ignores-fence-failure",
+      "title": "Held cancellation reports success when its durable fence failed",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/dispatch/schedulers/held.py:57-65",
+        "src/mainboard/dispatch/spool.py:184-197",
+        "repro/host_repros.py::test_held_cancel_reports_success_when_fence_failed"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_held_cancel_reports_success_when_fence_failed"
+      ],
+      "observed": "A fake login_ask returns exit 4, empty stdout, and read-only filesystem. Held.cancel returns normally.",
+      "root_cause": "cancel discards status/stderr and treats every output other than claimed as completion. A failed cd, mkdir, or mktemp can leave no fence and still acknowledge cancellation.",
+      "failure_class_id": "F07",
+      "abstraction_failure": "Scheduler state and cancellation have separate contracts",
+      "proposed_fix": "Require exit zero and an explicit exited/fenced/claimed protocol response; propagate other statuses as a failed or uncertain cancellation and do not persist a cancelled verdict without durable proof.",
+      "issue_refs": []
+    },
+    {
+      "id": "B14",
+      "key": "lane_options",
+      "title": "Lane submission silently drops execution and data options",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/cli.py:370-390",
+        "src/mainboard/cli.py:484-485",
+        "src/mainboard/cli.py:503-514"
+      ],
+      "reproductions": [
+        "repro/dispatch_cli.py"
+      ],
+      "observed": "Fake Board.submit received no env, container, fetch, or needs despite explicit CLI options; name/attempt are also omitted.",
+      "root_cause": "Single-job and lane paths maintain incompatible partial representations of a dispatch request.",
+      "failure_class_id": "F10",
+      "abstraction_failure": "Dispatch branches lose request fields",
+      "proposed_fix": "Carry one typed dispatch request into collection and child jobs; derive only target/cell/name differences.",
+      "issue_refs": []
+    },
+    {
+      "id": "B15",
+      "key": "namespace_guard",
+      "title": "Namespace packages bypass the first-party closure guard",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/jobs/closure.py:432-440",
+        "src/mainboard/jobs/call.py:89-102"
+      ],
+      "reproductions": [
+        "repro/dispatch_closure.py"
+      ],
+      "observed": "Armed Guard imported unshipped src/ns/hidden.py; closure.first_party omitted ns.",
+      "root_cause": "First-party inventory includes regular packages only, while Python permits namespace packages from editable roots.",
+      "failure_class_id": "F11",
+      "abstraction_failure": "Closure proof differs from import and acquisition semantics",
+      "proposed_fix": "Inventory namespace portions and validate namespace search locations/child origins against the shipped closure.",
+      "issue_refs": []
+    },
+    {
+      "id": "B16",
+      "key": "pbs-cancel-unchecked-qdel",
+      "title": "PBS acknowledges cancellation even when qdel refuses",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/dispatch/schedulers/pbs.py:170-171",
+        "src/mainboard/line.py:194-197",
+        "repro/host_repros.py::test_pbs_cancel_swallows_nonzero_qdel"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_pbs_cancel_swallows_nonzero_qdel"
+      ],
+      "observed": "Pbs.cancel invokes qdel with retcode=None and consumes no return status. A refusal cannot change its successful return.",
+      "root_cause": "Pbs.cancel bypasses the checked cancellation protocol already used by Line._stop.",
+      "failure_class_id": "F07",
+      "abstraction_failure": "Scheduler state and cancellation have separate contracts",
+      "proposed_fix": "Route through checked login_ask; distinguish already-finished/unknown from a real refusal and surface refusal or uncertainty instead of reporting cancelled.",
+      "issue_refs": [
+        "host-hold 2"
+      ]
+    },
+    {
+      "id": "B17",
+      "key": "pbs-select-override-drops-gpus",
+      "title": "PBS command-line select overrides erase GPU requests rendered in the script",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/dispatch/schedulers/pbs.py:131-143",
+        "src/mainboard/dispatch/schedulers/pbs.py:210-212",
+        "src/mainboard/dispatch/jobs/spec.py:182-188",
+        "src/mainboard/dispatch/dispatcher.py:525-549",
+        "repro/host_repros.py::test_qsub_override_drops_gpu_resource"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_qsub_override_drops_gpu_resource"
+      ],
+      "observed": "Resources(gpus=2, nodes=1, mem_gb=32) emits command-line select=1:mem=32gb with no ngpus, while JobSpec.directives emits select=1:ngpus=2:mem=32gb. The method itself documents command-line flags as overriding the script.",
+      "root_cause": "Two independent resource renderers disagree: JobSpec includes GPUs and the host gpu_in_select policy, while build_qsub_flags reconstructs select using only node count and memory. Interactive requests have no header to compensate at all.",
+      "failure_class_id": "F08",
+      "abstraction_failure": "Admission and execution disagree about resources",
+      "proposed_fix": "Use one policy-aware PBS resource renderer for script headers and command-line requests, or emit each resource only once. Preserve queue-assigned GPUs on hosts that intentionally set gpu_in_select=false.",
+      "issue_refs": []
+    },
+    {
+      "id": "B18",
+      "key": "pueue-waiting-is-failed",
+      "title": "Pueue Locked and Stashed tasks are classified as terminal failures",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/dispatch/schedulers/pueue.py:39-42",
+        "src/mainboard/dispatch/schedulers/pueue.py:123-129",
+        "repro/host_repros.py::test_waiting_pueue_tasks_are_reported_as_terminal_failure"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_waiting_pueue_tasks_are_reported_as_terminal_failure"
+      ],
+      "observed": "PueueTask(state=Locked) and PueueTask(state=Stashed), both with no result or exit code, return failed.",
+      "root_cause": "The cancellation implementation recognizes these states as waiting, but verdict mapping puts only Running/Queued/Paused in its nonterminal set. Every other state falls into success-or-failure.",
+      "failure_class_id": "F07",
+      "abstraction_failure": "Scheduler state and cancellation have separate contracts",
+      "proposed_fix": "Map every supported scheduler state through one exhaustive lifecycle table and permit terminal success/failure only for Done with its result. Reuse that mapping for cancellation, listing, settlement and stage text.",
+      "issue_refs": []
+    },
+    {
+      "id": "B19",
+      "key": "registered_freeze_identity",
+      "title": "Registered acquisition does not enforce a selected frozen source identity",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "wasted compute"
+      ],
+      "kind": "source-policy gap",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/dispatch/provenance.py:78-85",
+        "src/mainboard/dispatch/provenance.py:125-149",
+        "src/mainboard/dispatch/shipment.py:99-120"
+      ],
+      "reproductions": [],
+      "observed": "seal hashes files as they stand on disk, including newly created files. registered checks only that node.md matches those freshly captured bytes. A pre-capture half-edit is accepted; only post-capture edits refuse.",
+      "root_cause": "A captured current-tree identity proves which bytes ran but does not prove they match the acquisition's registered/frozen intended source.",
+      "failure_class_id": "F11",
+      "abstraction_failure": "Closure proof differs from import and acquisition semantics",
+      "proposed_fix": "Add an immutable acquisition source reference resolved before closure creation and compare it with registered source policy; use captured bundle identity without requiring Git as the universal source authority.",
+      "issue_refs": [],
+      "confidence": "code inspection; requirement/capability gap, not a claim that present bytes are mislabeled"
+    },
+    {
+      "id": "B20",
+      "key": "nested_text_inference",
+      "title": "Relations text preservation stops at top-level keys",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/state/relations.py:47",
+        "src/mainboard/state/relations.py:54",
+        "src/mainboard/state/relations.py:152"
+      ],
+      "reproductions": [
+        "repro/settlement_followups.py::test_nested_iso_string_is_inferred_as_date_and_no_longer_json"
+      ],
+      "observed": "Relations.rows([{'nested': {'date':'2026-10-07'}}]) followed by records returns datetime.date(2026,10,7), and json.dumps raises TypeError. Top-level date/instant/time/UUID receipt tests pass.",
+      "root_cause": "The VARCHAR override only marks keys whose immediate value is str. DuckDB still infers temporal types inside nested structures, while records advertises JsonValue but returns raw fetchall values.",
+      "failure_class_id": "F19",
+      "abstraction_failure": "JSON and native analytical types share one boundary",
+      "proposed_fix": "Define the relation boundary explicitly: recursively preserve JSON strings and normalize records into JsonValue, or expose native values under a distinct typed API and audit JSON serialization callers. Do not silently rewrite historical timestamps without preserving their original representation.",
+      "issue_refs": [
+        "cutok 1 follow-up"
+      ]
+    },
+    {
+      "id": "B21",
+      "key": "sweep_identity_relookup",
+      "title": "Settling an old reused handle rebuilds and reports the newer submission",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "silent stall",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/monitor.py:133",
+        "src/mainboard/board.py:694",
+        "src/mainboard/monitor.py:552",
+        "src/mainboard/dispatch/state/cache.py:338",
+        "src/mainboard/verdicts.py:608"
+      ],
+      "reproductions": [
+        "repro/settlement_identity.py::test_reused_handle_rebuilds_older_submission_with_newer_fetch",
+        "repro/settlement_identity.py::test_settling_old_submission_advances_new_submission_cursor"
+      ],
+      "observed": "Sweep([old]) rebuilds old.outputs as new.new-output. Scoped settlement of old terminal row sets the newer running row.reported='ok'; old row remains unreported and tracked. The old settlement captures NEW-RUN's receipt. A waiter treats any terminal reported cursor as final even while the newer verdict remains running.",
+      "root_cause": "The registry stores full (target, handle, submitted_at), but Sweep calls Board.job(handle,target) and the final report resolves cache.run(handle,target) again; both choose the newest reused handle.",
+      "failure_class_id": "F01",
+      "abstraction_failure": "Submission identity lost across boundaries",
+      "proposed_fix": "Carry the selected immutable submission through rebuild, capture, transition, and report. Backend calls must prove the scheduler handle still belongs to that attempt; a stale attempt must never operate on a newer job. Report the exact current submission returned by resolve, not another handle lookup.",
+      "issue_refs": []
+    },
+    {
+      "id": "B22",
+      "key": "gpu-lease-publication-and-ownership-race",
+      "title": "Two simultaneous GPU sessions can both acquire the same lease; the former owner can delete the newer lease",
+      "status": "open",
+      "severity": "wrong verdict",
+      "impacts": [
+        "wrong verdict",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/trials/lease.py:65-82",
+        "src/mainboard/trials/lease.py:84-100",
+        "src/mainboard/trials/session.py:114-120",
+        "repro/host_repros.py::test_partial_lease_publication_grants_two_owners_and_old_release_deletes_new"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_partial_lease_publication_grants_two_owners_and_old_release_deletes_new"
+      ],
+      "observed": "Pause acquirer A after O_EXCL creates its file but before fdopen writes. B treats the empty lease as stale, unlinks it and acquires. Resume A: both acquire calls succeed. A.release removes B's lease.",
+      "root_cause": "Exclusive creation publishes a partially written record; unreadable records are treated as unowned; stale replacement is check/unlink/create without serialization; the second _write return is ignored and release has no ownership token check.",
+      "failure_class_id": "F05",
+      "abstraction_failure": "Resource ownership is neither global nor atomic",
+      "proposed_fix": "Centralize acquisition/reclaim/release in an atomic ownership protocol. Publish complete records atomically, serialize stale reclamation, retry losing claimants, and require matching ownership identity on release; distinguish PID reuse with process start identity.",
+      "issue_refs": []
+    },
+    {
+      "id": "B23",
+      "key": "settlement_busy_opaque",
+      "title": "A held settlement lock is invisible while live listing and cached verdict disagree",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall",
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/monitor.py:413",
+        "src/mainboard/dispatch/state/cache.py:434",
+        "src/mainboard/dispatch/state/monitor.py:85",
+        "src/mainboard/listing.py:111",
+        "src/mainboard/cli.py:623",
+        "src/mainboard/verdicts.py:558",
+        "src/mainboard/durable.py:379"
+      ],
+      "reproductions": [
+        "repro/settlement_followups.py::test_lock_contention_reports_no_owner_or_cached_warning"
+      ],
+      "observed": "A separate FileLock holder makes Monitor.once return running=None with empty failure/down lists. Listing independently probes fake terminal state and renders finished, note='', while cache.verdict remains running. Report contains no owner/start/duration/cache marker.",
+      "root_cause": "FileLock is exposed as a bare lock. Contention is reduced to a debug message and nullable running count; CLI/wait do not interpret it. Durable pass has no whole-pass deadline or parent-session lifetime contract.",
+      "failure_class_id": "F18",
+      "abstraction_failure": "Public state vocabulary omits freshness and ownership",
+      "proposed_fix": "Introduce a lease/claim with owner PID/start/heartbeat and a typed busy result consumed by listing and wait. Bound the pass in a supervised process and stop it when its owning session dies; report fresh scheduler observation separately from stale settlement truth.",
+      "issue_refs": [
+        "cutok 13m"
+      ]
+    },
+    {
+      "id": "B24",
+      "key": "materialize-nplusone",
+      "title": "Artifact reads and materialization perform one lake query sequence per object",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/state/evidence.py:298",
+        "src/mainboard/state/evidence.py:350",
+        "src/mainboard/state/blobs.py:134",
+        "src/mainboard/state/blobs.py:205",
+        "src/mainboard/trials/artifacts.py:139",
+        "src/mainboard/state/evidence.py:357"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "materialize calls _write for each row; Blobs.write lists ordinals then queries each chunk. Artifact verification loops digest recalls; query views materialize many receipt files individually. Existing windowed replicate logic is not reused. Historical timings are not re-measured here.",
+      "failure_class_id": "F17",
+      "abstraction_failure": "History and files substitute for indexed current state",
+      "proposed_fix": "Provide bulk verified read/materialize APIs with bounded windows and chunk streaming for large objects. Query selected run/project indexes before touching files; share reads within a pass.",
+      "issue_refs": [
+        "cutok-13a",
+        "cutok-13b",
+        "cutok-13g",
+        "cutok-13h"
+      ]
+    },
+    {
+      "id": "B25",
+      "key": "deps-rollback",
+      "title": "Dependency rollback leaves new locks and misses filesystem failures",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/deps/curator.py:287",
+        "src/mainboard/deps/curator.py:212",
+        "src/mainboard/engines/compile/compiler.py:96"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_rollback_leaves_new_lock_created_by_failed_operation",
+        "repro/test_lake_deps.py::test_rollback_does_not_restore_on_oserror"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "_kept records only existing manifest/mb.lock paths and catches only MissionError/KeyboardInterrupt. A failed first install leaves a newly written mb.lock for the reverted manifest; OSError leaves the edited manifest. Generated locks/state and installed prefixes also are outside rollback.",
+      "failure_class_id": "F13",
+      "abstraction_failure": "Environment transaction lacks stage and artifact identity",
+      "proposed_fix": "Stage edits and all lock artifacts in an operation workspace; publish atomically under one lock only after validation. At minimum restore existence/nonexistence, cover actual failure types, invalidate generated state, and report irreversible installation changes.",
+      "issue_refs": [
+        "cutok-13l.rollback"
+      ]
+    },
+    {
+      "id": "B26",
+      "key": "fetch-shared-output",
+      "title": "Experiment-wide fetch scans every run and rejects rewritten shared output paths",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "source-backed defect",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/jobs/target.py:109",
+        "src/mainboard/dispatch/agent/program.py:998",
+        "src/mainboard/dispatch/collection/collector.py:91",
+        "src/mainboard/dispatch/transport.py:152"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Widening fetch repairs sibling evidence stores by collecting an entire experiment home, but every run shares that mutable location. Broad per-pass scans and a fixed transfer deadline remain; conflicting rewrites are not versioned per run.",
+      "failure_class_id": "F03",
+      "abstraction_failure": "Mutable output paths used as evidence identity",
+      "proposed_fix": "Give each submission immutable output/evidence roots identified by RunId and collect only that manifest with resumable object transfers. Keep a separate shared content store addressed by digest.",
+      "issue_refs": [
+        "cutok-10a",
+        "cutok-13j"
+      ]
+    },
+    {
+      "id": "B27",
+      "key": "held-admits-impossible-walltime",
+      "title": "Held accepts jobs that can never fit any allocation in the line",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/dispatch/schedulers/held.py:87-107",
+        "src/mainboard/dispatch/spool.py:285-287",
+        "src/mainboard/serve.py:97-109",
+        "repro/host_repros.py::test_held_accepts_job_that_never_fits_any_allocation"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_held_accepts_job_that_never_fits_any_allocation"
+      ],
+      "observed": "With a two-hour line composed of five-minute allocations, enqueue accepts a six-minute job. Spool.fits rejects the entry even at a fresh allocation's full 300 seconds; renewal cannot ever run it.",
+      "root_cause": "Admission checks only remaining line lifetime, whereas execution requires job walltime plus 120-second grace to fit an individual allocation. The actual line capacity is absent from admission.",
+      "failure_class_id": "F08",
+      "abstraction_failure": "Admission and execution disagree about resources",
+      "proposed_fix": "Admit against min(line deadline remaining, allocation walltime) including grace before publishing. Validate requested memory/nodes/GPUs against the held allocation's recorded envelope as well.",
+      "issue_refs": []
+    },
+    {
+      "id": "B28",
+      "key": "held-walltime-wraps-daily",
+      "title": "Held allocation lengths at or above 24 hours wrap modulo one day",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/line.py:100-106",
+        "src/mainboard/line.py:248-250",
+        "repro/host_repros.py::test_line_walltime_wraps_at_24_hours"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_line_walltime_wraps_at_24_hours"
+      ],
+      "observed": "_hms(25 * 3600) returns 01:00:00 rather than 25:00:00; 24 hours becomes zero.",
+      "root_cause": "Wall-clock formatting via gmtime/strftime is used for a duration.",
+      "failure_class_id": "F08",
+      "abstraction_failure": "Admission and execution disagree about resources",
+      "proposed_fix": "Render duration components using divmod and preserve total hours; use that duration type in admission, keeper caps, and JobSpec.",
+      "issue_refs": []
+    },
+    {
+      "id": "B29",
+      "key": "daemon-provenance",
+      "title": "Host setup accepts an answering pueued without validating its executable or tool links",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "source-backed defect",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/dispatch/onboard.py:442",
+        "src/mainboard/dispatch/onboard.py:448",
+        "src/mainboard/dispatch/wrapping.py:23"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Successful daemon status short-circuits readiness; dangling PATH links and a daemon running a deleted/old binary are not reconciled. Historical hosts were not queried.",
+      "failure_class_id": "F21",
+      "abstraction_failure": "Preparation is not validated readiness",
+      "proposed_fix": "Model daemon identity/version/executable and tool-link health in readiness; repair invalid links and plan a safe daemon replacement when its queue is idle.",
+      "issue_refs": [
+        "cutok-15",
+        "cutok-16"
+      ]
+    },
+    {
+      "id": "B30",
+      "key": "host-retains-retired-generated-inputs",
+      "title": "Host sync retains retired generated files that poison the environment identity",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/dispatch/onboard.py:598-601",
+        "src/mainboard/dispatch/dispatcher.py:448-460",
+        "src/mainboard/dispatch/mirror.py:98-100",
+        "src/mainboard/dispatch/agent/program.py:644-654",
+        "src/mainboard/engines/compile/generated/files.py:29-41",
+        "repro/host_repros.py::test_generated_inputs_continue_to_include_retired_artifact"
+      ],
+      "reproductions": [
+        "repro/host_repros.py::test_generated_inputs_continue_to_include_retired_artifact"
+      ],
+      "observed": "A retired package-lock.json remains an addressed input beside a current pixi.toml. Generated files are shipped as named members and the target survey only looks up currently named members, so a retired member never enters the deletion delta.",
+      "root_cause": "An artifact that represents a complete generated input set is transferred using additive individual-file semantics, while its consumer hashes all nonhidden regular files.",
+      "failure_class_id": "F13",
+      "abstraction_failure": "Environment transaction lacks stage and artifact identity",
+      "proposed_fix": "Ship generated artifacts as a versioned complete manifest with explicit owned membership; atomically replace/prune only that owned input set while retaining installed environments and host-specific activation/bookkeeping.",
+      "issue_refs": [
+        "cutok 13f4"
+      ]
+    },
+    {
+      "id": "B31",
+      "key": "conda-python-source",
+      "title": "PyPI upgrade ignores packages whose actual provider is conda",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/deps/curator.py:110",
+        "src/mainboard/deps/curator.py:215",
+        "src/mainboard/engines/compile/compiler.py:79"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "A python requirement gets its floor independently from PyPI, then normal solve retains conda constraints/locked providers; upgrade never requests a targeted conda update. A published PyPI version is not necessarily compatible with the conda-provided distribution.",
+      "failure_class_id": "F14",
+      "abstraction_failure": "Published version mistaken for a solvable requirement",
+      "proposed_fix": "Resolve dependency identity across ecosystems from the lock; upgrade provider and consumers in one candidate solve, explicitly updating the conda provider when its Python requirement moves.",
+      "issue_refs": [
+        "cutok-13k.provider"
+      ]
+    },
+    {
+      "id": "B32",
+      "key": "receipt_replay_amplification",
+      "title": "Settlement repeatedly replays every event in a shared stream",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall",
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/monitor.py:490",
+        "src/mainboard/monitor.py:221",
+        "src/mainboard/monitor.py:630",
+        "src/mainboard/batch/receipts.py:134"
+      ],
+      "reproductions": [
+        "repro/settlement_followups.py::test_each_settled_run_replays_the_entire_shared_stream_three_times"
+      ],
+      "observed": "Four terminal batch runs with 100 existing sample events produce 12 full Journal.replay calls and read 1,240 Event rows. Non-batch track adds another replay. There is no per-pass replay snapshot/cursor index.",
+      "root_cause": "Each run reconstructs evidence state once, and each copied/verified event publication reconstructs it again. Cost grows with runs times stream history.",
+      "failure_class_id": "F17",
+      "abstraction_failure": "History and files substitute for indexed current state",
+      "proposed_fix": "Replay each selected stream once per pass, index latest topic/job/RunId in memory, and update that index as events publish. Longer term persist a queryable projection/current cursor. Profile DuckLake blob file opens separately: Journal.replay selects events, not blobs, so this audit does not assert their exact cause.",
+      "issue_refs": [
+        "cutok 13n"
+      ]
+    },
+    {
+      "id": "B33",
+      "key": "sync-unconditionally-bootstrap-python",
+      "title": "Sync still requires a uv-managed interpreter even when the workspace Python is usable",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/dispatch/onboard.py:263-282",
+        "src/mainboard/dispatch/onboard.py:618-625",
+        "src/mainboard/dispatch/shells.py:40-59",
+        "ISSUES.md:11-15"
+      ],
+      "reproductions": [],
+      "observed": "_sync unconditionally calls Bootstrap.python, which unconditionally runs uv python install. Dialect.python already prefers an existing workspace interpreter. The historical aarch64 download availability was not queried during this audit.",
+      "root_cause": "Bootstrap establishment and incremental sync share an unconditional installation step, rather than sharing a required interpreter capability check.",
+      "failure_class_id": "F13",
+      "abstraction_failure": "Environment transaction lacks stage and artifact identity",
+      "proposed_fix": "Resolve and validate an existing suitable workspace/managed interpreter before installing; install only when neither meets requirements, then let sync reuse the resolved interpreter.",
+      "issue_refs": [
+        "host-hold 1"
+      ]
+    },
+    {
+      "id": "B34",
+      "key": "lake-timeout",
+      "title": "The lake read probe does not bound attach or later volume stalls",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/state/lake.py:390",
+        "src/mainboard/state/lake.py:400",
+        "src/mainboard/state/lake.py:712",
+        "src/mainboard/state/lake.py:746"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "_answering is cached permanently after one successful read; stat/is_file happen before it, and actual DuckLake ATTACH has no process deadline. The TCC-specific first-read guard cannot bound later or metadata I/O hangs.",
+      "failure_class_id": "F16",
+      "abstraction_failure": "Storage ownership has no bounded access contract",
+      "proposed_fix": "Put each lake operation that can block on volume I/O behind a cancellable process boundary with a total deadline and structured inaccessible-volume result; avoid opening the lake for unrelated verbs.",
+      "issue_refs": [
+        "cutok-13f2.remaining"
+      ]
+    },
+    {
+      "id": "B35",
+      "key": "conda-platform",
+      "title": "Upgrade chooses conda versions available only on the center's platform",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/deps/indexes.py:71",
+        "src/mainboard/deps/curator.py:119"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Conda.latest invokes search with channels but no target platform; the chosen floor is applied to a multi-platform manifest.",
+      "failure_class_id": "F14",
+      "abstraction_failure": "Published version mistaken for a solvable requirement",
+      "proposed_fix": "Select a release satisfiable on every declared target platform and validate the whole candidate lock before replacing manifest state.",
+      "issue_refs": [
+        "cutok-13k.platform"
+      ]
+    },
+    {
+      "id": "B36",
+      "key": "python-yanked",
+      "title": "Upgrade selects a yanked PyPI release",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/deps/indexes.py:82"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_python_latest_ignores_yanked_files"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Python.latest consumes the simple API versions list without inspecting release files, yanked markers, interpreter requirements, or platform artifacts.",
+      "failure_class_id": "F14",
+      "abstraction_failure": "Published version mistaken for a solvable requirement",
+      "proposed_fix": "Build candidates from usable non-yanked files and validate them against target platforms/interpreters and the complete solve before publishing the manifest.",
+      "issue_refs": [
+        "cutok-13k.yanked"
+      ]
+    },
+    {
+      "id": "B37",
+      "key": "second-stage",
+      "title": "lock then install leaves second-stage locks stale; existing-prefix run only syncs pixi",
+      "status": "open",
+      "severity": "silent stall",
+      "impacts": [
+        "silent stall"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/engines/compile/provisioner.py:329",
+        "src/mainboard/engines/compile/provisioner.py:353",
+        "src/mainboard/engines/compile/provisioner.py:284",
+        "src/mainboard/engines/compile/ecosystems/node.py:158"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_lock_then_install_never_resolves_second_stage"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "lock returns before stage resolution. The subsequent install bases resolve solely on whether that invocation moved pixi.lock, so it chooses frozen Node install against changed package.json. Existing-prefix synchronized also never syncs the second stage.",
+      "failure_class_id": "F13",
+      "abstraction_failure": "Environment transaction lacks stage and artifact identity",
+      "proposed_fix": "Model and persist separate input/lock/install digests per ecosystem. lock resolves every stage; install checks every stage independently of whether pixi.lock moved.",
+      "issue_refs": [
+        "cutok-13l"
+      ]
+    },
+    {
+      "id": "B38",
+      "key": "fresh_orphans",
+      "title": "Fresh timeout kills pytest but leaves child workers alive",
+      "status": "open",
+      "severity": "wasted compute",
+      "impacts": [
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/jobs/call.py:204-211",
+        "src/mainboard/dispatch/transport.py:58-64"
+      ],
+      "reproductions": [
+        "repro/dispatch_fresh_timeout.py"
+      ],
+      "observed": "Fresh returned124 after4 seconds; spawned worker remained alive. Repro killed it in finally.",
+      "root_cause": "Timeout owns one PID while a cell owns a process tree.",
+      "failure_class_id": "F12",
+      "abstraction_failure": "Work lifetime is reduced to a PID or exit code",
+      "proposed_fix": "Use a shared bounded process runner with whole-tree/group termination and reaping on timeout/interruption.",
+      "issue_refs": []
+    },
+    {
+      "id": "B39",
+      "key": "lane_wait",
+      "title": "Lane --wait skips remaining handles after first failure",
+      "status": "open",
+      "severity": "wasted compute",
+      "impacts": [
+        "wasted compute",
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/cli.py:519-521"
+      ],
+      "reproductions": [
+        "repro/dispatch_cli.py"
+      ],
+      "observed": "Two fake handles submitted, first wait returned1, only first handle waited.",
+      "root_cause": "A required wait side effect is embedded in short-circuit exit-code reduction.",
+      "failure_class_id": "F12",
+      "abstraction_failure": "Work lifetime is reduced to a PID or exit code",
+      "proposed_fix": "Always evaluate every show(wait=True), then combine return codes.",
+      "issue_refs": []
+    },
+    {
+      "id": "B40",
+      "key": "pytest_plugin_closure",
+      "title": "Literal pytest plugin dependencies are not walked transitively",
+      "status": "open",
+      "severity": "wasted compute",
+      "impacts": [
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/jobs/closure.py:203-210",
+        "src/mainboard/jobs/closure.py:81-94"
+      ],
+      "reproductions": [
+        "repro/dispatch_closure.py"
+      ],
+      "observed": "Plugin shipped, its helper.py omitted, Guard raised ModuleNotFoundError.",
+      "root_cause": "Pytest-plugin edges use resolve instead of the common transitive dependency walk.",
+      "failure_class_id": "F11",
+      "abstraction_failure": "Closure proof differs from import and acquisition semantics",
+      "proposed_fix": "Seed resolved plugin modules into Walker.reach with their owning root.",
+      "issue_refs": []
+    },
+    {
+      "id": "B41",
+      "key": "runner_segments",
+      "title": "Malformed runner segments are accepted until pytest runs on the host",
+      "status": "open",
+      "severity": "wasted compute",
+      "impacts": [
+        "wasted compute",
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/board.py:1365",
+        "src/mainboard/jobs/call.py:167-170",
+        "src/mainboard/jobs/target.py:80-81",
+        "src/mainboard/jobs/call.py:142-145"
+      ],
+      "reproductions": [
+        "repro/dispatch_runner.py"
+      ],
+      "observed": "--timeout720 -- -q passed preflight and shipment creation, then collected0 cases and exited4 with file or directory not found: -q.",
+      "root_cause": "Runner controls and pytest arguments share an untyped token bag and lose delimiter ownership.",
+      "failure_class_id": "F09",
+      "abstraction_failure": "Command structure is lost between parsers",
+      "proposed_fix": "Preserve runner and application segments in a parsed invocation; refuse malformed runner-only syntax before shipment while allowing pytest-timeout in the pytest segment.",
+      "issue_refs": []
+    },
+    {
+      "id": "B42",
+      "key": "pinned-preflight",
+      "title": "Pinned-input preflight neither requires restoration nor checks recorded digests",
+      "status": "open",
+      "severity": "wasted compute",
+      "impacts": [
+        "wasted compute"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/trials/pytest_plugin.py:111",
+        "src/mainboard/trials/pytest_plugin.py:130",
+        "src/mainboard/state/evidence.py:525"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "_pinned keeps only path and ignores sha256; _restored restores missing paths but ignores the result. EvidenceTree.restore suppresses MissionError and leaves missing objects for the eventual reader. An audit can still run expensive work before finding an absent/corrupt pinned input.",
+      "failure_class_id": "F21",
+      "abstraction_failure": "Preparation is not validated readiness",
+      "proposed_fix": "Resolve every pin by path and digest before acquisition; verify all hashes and fail collection with a complete missing/conflicting-input list. Keep runtime restore separate from a readiness contract.",
+      "issue_refs": [
+        "cutok-13i"
+      ]
+    },
+    {
+      "id": "B43",
+      "key": "lane_argv",
+      "title": "Split lanes flatten target and pytest arguments into one target token",
+      "status": "open",
+      "severity": "wasted compute",
+      "impacts": [
+        "wasted compute",
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/cli.py:367",
+        "src/mainboard/cli.py:484",
+        "src/mainboard/cli.py:491-501",
+        "src/mainboard/jobs/lanes.py:collect"
+      ],
+      "reproductions": [
+        "repro/dispatch_cli.py"
+      ],
+      "observed": "--rerun produced collector token 'test_demo.py::test -- --rerun' and an equivalently quoted malformed job command.",
+      "root_cause": "Structured argv is serialized to shell text and reused as a single semantic target.",
+      "failure_class_id": "F09",
+      "abstraction_failure": "Command structure is lost between parsers",
+      "proposed_fix": "Parse target and pytest argv once and preserve both through collection and each fresh-cell invocation.",
+      "issue_refs": []
+    },
+    {
+      "id": "B44",
+      "key": "deps-filter",
+      "title": "--env/--lang/--dev silently omit matching ecosystem or platform dependencies",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/deps/curator.py:189",
+        "src/mainboard/deps/slots.py:30",
+        "src/mainboard/deps/slots.py:76"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_env_narrowing_loses_python_and_platform_tables"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "searched builds exact candidate paths and defaults an unspecified ecosystem to conda. Thus --env lab omits lab's Python and platform tables; --lang python also excludes environment/overlay paths unless specifically represented.",
+      "failure_class_id": "F15",
+      "abstraction_failure": "Selectors collapse independent dimensions",
+      "proposed_fix": "Filter the full declared-slot inventory by independent scope predicates, retaining all unspecified dimensions. Validate --env even when selection yields no requirements.",
+      "issue_refs": [
+        "cutok-13k.env"
+      ]
+    },
+    {
+      "id": "B45",
+      "key": "date-pin",
+      "title": "Calendar versions receive a next-day upper bound",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/deps/indexes.py:54"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_calendar_version_gets_one_day_ceiling"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Version('20260107') parses as a one-component integer, so generic semver ceiling becomes <20260108 and practically prevents future releases.",
+      "failure_class_id": "F14",
+      "abstraction_failure": "Published version mistaken for a solvable requirement",
+      "proposed_fix": "Represent version policy by ecosystem/package version scheme; use a floor for calendar versions instead of incrementing the date.",
+      "issue_refs": [
+        "cutok-13k.date"
+      ]
+    },
+    {
+      "id": "B46",
+      "key": "palette-validation",
+      "title": "Declared palettes load without the requested perceptual validation",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "requested feature gap",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/manifest/schema/plot.py:8",
+        "src/mainboard/plots/table.py:81"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "PlotStyle validates data shape but does not check contrast, lightness, chroma or distinguishability; no lint step enforces the owner's declared palette policy.",
+      "failure_class_id": "F21",
+      "abstraction_failure": "Preparation is not validated readiness",
+      "proposed_fix": "Add a style-validation contract with explicit palette checks reused by load and lint, using the existing house validator rather than duplicating rules.",
+      "issue_refs": [
+        "cutok-13e"
+      ]
+    },
+    {
+      "id": "B47",
+      "key": "held-interactive-admission",
+      "title": "Interactive shell cannot diagnose an already-held PBS slot",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "source-backed defect",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/board.py:644",
+        "src/mainboard/line.py:131"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Board.interact does not inspect the held-line spool before requesting a second interactive allocation.",
+      "failure_class_id": "F08",
+      "abstraction_failure": "Admission and execution disagree about resources",
+      "proposed_fix": "Consult the shared held-allocation inventory and report owner/expiry and supported reuse path before qsub.",
+      "issue_refs": [
+        "host-hold-4"
+      ]
+    },
+    {
+      "id": "B48",
+      "key": "job-walltime-documentation",
+      "title": "JobSpec documentation still describes the old PBS timeout split",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "source-backed defect",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/dispatch/jobs/spec.py:29",
+        "src/mainboard/dispatch/jobs/spec.py:129"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "The runner now enforces a deadline under PBS, while the public type documentation says queue enforcement replaces it.",
+      "failure_class_id": "F18",
+      "abstraction_failure": "Public state vocabulary omits freshness and ownership",
+      "proposed_fix": "Document the single runner deadline plus independent scheduler limit and keep examples linked to the resource contract.",
+      "issue_refs": [
+        "host-hold-7"
+      ]
+    },
+    {
+      "id": "B49",
+      "key": "cache-inventory",
+      "title": "Lake has no verified inventory of tree files eligible for eviction",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "requested feature gap",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/state/evidence.py:192",
+        "src/mainboard/state/evidence.py:317",
+        "src/mainboard/cli.py:2019"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Evidence.indexed lists lake paths and evict returns already-deleted paths, but there is no read-only inventory distinguishing identical cached copies, changed local files, and damaged/missing lake objects.",
+      "failure_class_id": "F02",
+      "abstraction_failure": "Presence mistaken for verified custody",
+      "proposed_fix": "Expose a verified custody inventory and byte totals that eviction consumes directly, so reporting and deletion share one proof.",
+      "issue_refs": [
+        "cutok-13c"
+      ]
+    },
+    {
+      "id": "B50",
+      "key": "delimiter_collision",
+      "title": "Ordinary command help can be intercepted by mainboard",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/delimiter.py:130-134"
+      ],
+      "reproductions": [
+        "repro/dispatch_cli.py"
+      ],
+      "observed": "Delimiter.placed(run git --help -- README.md) leaves no command boundary before git.",
+      "root_cause": "Delimiter ownership is guessed from option-name overlap instead of command grammar.",
+      "failure_class_id": "F09",
+      "abstraction_failure": "Command structure is lost between parsers",
+      "proposed_fix": "Limit target-before-options compatibility to actual job targets and forward ordinary command suffixes verbatim.",
+      "issue_refs": []
+    },
+    {
+      "id": "B51",
+      "key": "pbs-interactive-command",
+      "title": "PBS interactive API rejects commands that its own keeper can execute",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "source-backed defect",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/dispatch/schedulers/pbs.py:173",
+        "src/mainboard/line.py:166",
+        "src/mainboard/line.py:289"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "Pbs.interactive claims PBS cannot take a command and refuses it, while the keeper constructs qsub -I -- /bin/bash itself. Documentation and abstraction disagree.",
+      "failure_class_id": "F08",
+      "abstraction_failure": "Admission and execution disagree about resources",
+      "proposed_fix": "Centralize interactive request construction with an absolute executable contract and login-shell PATH policy, and have the keeper reuse it.",
+      "issue_refs": [
+        "host-hold-8"
+      ]
+    },
+    {
+      "id": "B52",
+      "key": "sql-attach",
+      "title": "Query detects lake usage by text substring, breaking quoted names and opening the lake for literals",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/results.py:83",
+        "src/mainboard/results.py:98"
+      ],
+      "reproductions": [
+        "repro/test_lake_deps.py::test_query_quoted_lake_name_is_not_attached",
+        "repro/test_lake_deps.py::test_query_string_literal_needlessly_opens_lake"
+      ],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "The check 'lake.' in sql.lower() misses SQL-qualified names spelled \"lake\".runs and treats the string literal 'lake.example' as a dependency.",
+      "failure_class_id": "F20",
+      "abstraction_failure": "Structured query dependencies inferred from substrings",
+      "proposed_fix": "Derive required catalog attachments from parsed SQL/table references, supporting quoted names and excluding strings/comments.",
+      "issue_refs": []
+    },
+    {
+      "id": "B53",
+      "key": "mismatch-diagnostic",
+      "title": "Source mismatch refusal omits change context and recovery action",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "source-backed defect",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/dispatch/agent/program.py:868",
+        "src/mainboard/dispatch/snapshots.py:277"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "The refusal says only source blob mismatch and path, leaving the operator unable to distinguish a concurrent edit from stale mirror/corruption without manual inspection.",
+      "failure_class_id": "F18",
+      "abstraction_failure": "Public state vocabulary omits freshness and ownership",
+      "proposed_fix": "Include expected/actual digest, observed file time and capture time, and an explicit rebuild/retry action; preserve the refusal.",
+      "issue_refs": [
+        "cutok-6"
+      ]
+    },
+    {
+      "id": "B54",
+      "key": "jobs_schema_vocabulary",
+      "title": "The jobs query view exposes server while other job surfaces use target or host",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "defect or demonstrated hazard",
+      "verification": "reproduced locally",
+      "evidence": [
+        "src/mainboard/results.py:343",
+        "src/mainboard/results.py:351",
+        "src/mainboard/listing.py:53",
+        "src/mainboard/dispatch/state/cache.py:84"
+      ],
+      "reproductions": [
+        "repro/settlement_followups.py::test_jobs_query_exposes_server_but_no_host_or_target"
+      ],
+      "observed": "SELECT * FROM jobs returns server, handle, submitted_at, backend_state, verdict, evidence, settled, results, metadata. SELECT host,handle FROM jobs raises MissionError/Binder Error. There is no target column either.",
+      "root_cause": "Independent display/query adapters rename the same target field without a shared public schema.",
+      "failure_class_id": "F18",
+      "abstraction_failure": "Public state vocabulary omits freshness and ownership",
+      "proposed_fix": "Choose one canonical target field for job records, listings, JSON, and SQL, deriving those projections from the same typed definition. Clarify jobs vs lake.runs and execution verdict vs settlement state.",
+      "issue_refs": []
+    },
+    {
+      "id": "B55",
+      "key": "upgrade-preview",
+      "title": "upgrade has no non-mutating preview",
+      "status": "open",
+      "severity": "misleading output",
+      "impacts": [
+        "misleading output"
+      ],
+      "kind": "requested feature gap",
+      "verification": "source inspection; not reproduced end to end",
+      "evidence": [
+        "src/mainboard/cli.py:752",
+        "src/mainboard/deps/curator.py:197"
+      ],
+      "reproductions": [],
+      "observed": "See the linked source and witness test, where provided; no production timing or historical state is asserted.",
+      "root_cause": "--frozen writes the manifest and --no-install still solves; neither provides the requested dry-run contract.",
+      "failure_class_id": "F13",
+      "abstraction_failure": "Environment transaction lacks stage and artifact identity",
+      "proposed_fix": "Produce a candidate manifest/lock diff without publishing it, using the same candidate transaction as upgrade.",
+      "issue_refs": [
+        "cutok-8"
+      ]
+    }
+  ],
+  "failure_classes": [
+    {
+      "id": "F01",
+      "name": "Submission identity lost across boundaries",
+      "invariant": "A scheduler handle is reused; only an immutable submission identity may key capture, state, liveness, or evidence.",
+      "bug_ids": [
+        "B02",
+        "B21",
+        "B11"
+      ]
+    },
+    {
+      "id": "F02",
+      "name": "Presence mistaken for verified custody",
+      "invariant": "Destructive release or eviction requires a complete, intact copy, with failed capture distinct from empty output.",
+      "bug_ids": [
+        "B01",
+        "B03",
+        "B49"
+      ]
+    },
+    {
+      "id": "F03",
+      "name": "Mutable output paths used as evidence identity",
+      "invariant": "A run owns immutable output roots; restoration and collection must not silently replace another run or a local edit.",
+      "bug_ids": [
+        "B10",
+        "B26"
+      ]
+    },
+    {
+      "id": "F04",
+      "name": "Filesystem spelling mistaken for ownership",
+      "invariant": "A path string does not prove resolved containment, especially after a parent is linked to a shared tree.",
+      "bug_ids": [
+        "B09",
+        "B06"
+      ]
+    },
+    {
+      "id": "F05",
+      "name": "Resource ownership is neither global nor atomic",
+      "invariant": "One host-wide physical-device authority must atomically acquire, renew and release ownership tokens.",
+      "bug_ids": [
+        "B22",
+        "B12"
+      ]
+    },
+    {
+      "id": "F06",
+      "name": "Garbage collection lacks complete reachability",
+      "invariant": "All scheduler queues, spool claims and running source/prefix users must participate in retention.",
+      "bug_ids": [
+        "B05"
+      ]
+    },
+    {
+      "id": "F07",
+      "name": "Scheduler state and cancellation have separate contracts",
+      "invariant": "Terminal state, durable cancellation and graceful draining need one exhaustive transition model.",
+      "bug_ids": [
+        "B04",
+        "B13",
+        "B18",
+        "B16"
+      ]
+    },
+    {
+      "id": "F08",
+      "name": "Admission and execution disagree about resources",
+      "invariant": "Use one resource envelope and serializer for admission, allocation, batch scripts and interactive requests.",
+      "bug_ids": [
+        "B27",
+        "B17",
+        "B28",
+        "B47",
+        "B51"
+      ]
+    },
+    {
+      "id": "F09",
+      "name": "Command structure is lost between parsers",
+      "invariant": "Preserve invocation target, runner controls and application argv in a parsed value rather than serializing and guessing boundaries.",
+      "bug_ids": [
+        "B43",
+        "B41",
+        "B50"
+      ]
+    },
+    {
+      "id": "F10",
+      "name": "Dispatch branches lose request fields",
+      "invariant": "Derive child requests from one complete dispatch request, changing only the fields a lane actually owns.",
+      "bug_ids": [
+        "B14"
+      ]
+    },
+    {
+      "id": "F11",
+      "name": "Closure proof differs from import and acquisition semantics",
+      "invariant": "One dependency graph and source identity policy must cover namespace imports, plugins and a registered frozen acquisition.",
+      "bug_ids": [
+        "B15",
+        "B40",
+        "B19"
+      ]
+    },
+    {
+      "id": "F12",
+      "name": "Work lifetime is reduced to a PID or exit code",
+      "invariant": "A work unit owns all its children and required waits; failure aggregation cannot suppress cleanup or observation.",
+      "bug_ids": [
+        "B38",
+        "B39"
+      ]
+    },
+    {
+      "id": "F13",
+      "name": "Environment transaction lacks stage and artifact identity",
+      "invariant": "Each stage has its own inputs, lock and installation digest, and a complete owned artifact set must publish or roll back together.",
+      "bug_ids": [
+        "B37",
+        "B25",
+        "B30",
+        "B33",
+        "B55"
+      ]
+    },
+    {
+      "id": "F14",
+      "name": "Published version mistaken for a solvable requirement",
+      "invariant": "Version policy must account for release scheme, non-yanked artifacts, every platform, provider ecosystem and whole-lock compatibility.",
+      "bug_ids": [
+        "B36",
+        "B35",
+        "B31",
+        "B45"
+      ]
+    },
+    {
+      "id": "F15",
+      "name": "Selectors collapse independent dimensions",
+      "invariant": "Environment, ecosystem, platform and development scope are independent filters over declared requirements.",
+      "bug_ids": [
+        "B44"
+      ]
+    },
+    {
+      "id": "F16",
+      "name": "Storage ownership has no bounded access contract",
+      "invariant": "The lake service must own its configured location, migration, attachment deadline and inaccessible-volume result.",
+      "bug_ids": [
+        "B07",
+        "B34"
+      ]
+    },
+    {
+      "id": "F17",
+      "name": "History and files substitute for indexed current state",
+      "invariant": "Batch reads and per-pass projections must replace repeated whole-history replay and file-at-a-time analytical reads.",
+      "bug_ids": [
+        "B24",
+        "B32"
+      ]
+    },
+    {
+      "id": "F18",
+      "name": "Public state vocabulary omits freshness and ownership",
+      "invariant": "Listings, waits and SQL need one explicit state vocabulary, including observation freshness and settlement ownership.",
+      "bug_ids": [
+        "B23",
+        "B54",
+        "B48",
+        "B53"
+      ]
+    },
+    {
+      "id": "F19",
+      "name": "JSON and native analytical types share one boundary",
+      "invariant": "JSON values must round-trip recursively; native dates/UUIDs/decimals need a distinct analytical contract.",
+      "bug_ids": [
+        "B20"
+      ]
+    },
+    {
+      "id": "F20",
+      "name": "Structured query dependencies inferred from substrings",
+      "invariant": "Catalog usage must come from parsed relation references rather than textual matches in SQL.",
+      "bug_ids": [
+        "B52"
+      ]
+    },
+    {
+      "id": "F21",
+      "name": "Preparation is not validated readiness",
+      "invariant": "Required input bytes, daemon identity and declared quality policies must be verified before the consuming operation starts.",
+      "bug_ids": [
+        "B42",
+        "B29",
+        "B46"
+      ]
+    },
+    {
+      "id": "F22",
+      "name": "Maintenance ignores immutable artifact ownership",
+      "invariant": "Tools that can rewrite a path must know whether it belongs to a frozen artifact before writing.",
+      "bug_ids": [
+        "B08"
+      ]
+    }
+  ],
+  "issue_triage": [
+    {
+      "issue": "host-hold-1",
+      "issue_log_line": 11,
+      "issue_log_title": "**`mb host sync miyabi-g` cannot run.** Its first step, `uv python install --no-bin '>=3.14'`,",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/dispatch/onboard.py:624",
+        "src/mainboard/dispatch/onboard.py:282"
+      ],
+      "assessment": "Sync still invokes unconditional uv Python install; download availability itself not rechecked.",
+      "scope": "code",
+      "bug_ids": [
+        "B33"
+      ]
+    },
+    {
+      "issue": "host-hold-2",
+      "issue_log_line": 16,
+      "issue_log_title": "**`Pbs.cancel` ignores `qdel`'s exit status** (`dispatch/schedulers/pbs.py`), so a refused",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/dispatch/schedulers/pbs.py:170-171"
+      ],
+      "assessment": "Unchecked qdel reproduced with a fake remote.",
+      "scope": "code",
+      "bug_ids": [
+        "B16"
+      ]
+    },
+    {
+      "issue": "host-hold-3",
+      "issue_log_line": 19,
+      "issue_log_title": "**`snapshots.queued_here()` only asks the local pueue daemon.** A pinned tree that a queued PBS",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/board.py:939-941",
+        "src/mainboard/dispatch/snapshots.py:282-312"
+      ],
+      "assessment": "Temporary held inbox snapshot was actually pruned by the current code.",
+      "scope": "code",
+      "additional_reviews": [
+        {
+          "status": "open",
+          "evidence": [
+            "src/mainboard/dispatch/snapshots.py:282-312",
+            "src/mainboard/dispatch/snapshots.py:193-201",
+            "src/mainboard/board.py:938-941"
+          ],
+          "assessment": "dispatch_snapshot.py prunes oldest cwd despite held inbox row naming it; pueue absent returns empty busy text."
+        }
+      ],
+      "bug_ids": [
+        "B05"
+      ]
+    },
+    {
+      "issue": "host-hold-4",
+      "issue_log_line": 23,
+      "issue_log_title": "**`mb shell --on miyabi-g` knows nothing of a held line.** PBS refuses the second interactive",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/board.py:644-681"
+      ],
+      "assessment": "Board.interact selects and stages an interactive scheduler command without reading Line or the spool.",
+      "scope": "code",
+      "bug_ids": []
+    },
+    {
+      "issue": "host-hold-5",
+      "issue_log_line": 26,
+      "issue_log_title": "**`login_run` had no deadline**, so a responsive ssh over a hung Lustre read waited forever",
+      "status": "fixed-verified",
+      "evidence": [
+        "src/mainboard/dispatch/schedulers/base.py:25-54",
+        "repro/host_repros.py::test_fixed_login_probe_has_explicit_deadline"
+      ],
+      "assessment": "login_ask passes timeout=90.0; source catches ProcessTimedOut as HostUnreachable. No live network failure tested.",
+      "scope": "code",
+      "bug_ids": []
+    },
+    {
+      "issue": "host-hold-6",
+      "issue_log_line": 29,
+      "issue_log_title": "**The workspace ruff (newer than the package's pinned one) flags `Iterator` on context",
+      "status": "fixed-unverified",
+      "evidence": [
+        "src/mainboard/dispatch/agent/program.py:587",
+        "src/mainboard/render/human.py:52",
+        "src/mainboard/render/human.py:73",
+        "src/mainboard/trials/flags.py:43",
+        "pyproject.toml:105"
+      ],
+      "assessment": "Affected context managers now use Generator, but alignment of package/workspace installed Ruff versions was not established.",
+      "scope": "code/tooling",
+      "bug_ids": []
+    },
+    {
+      "issue": "host-hold-7",
+      "issue_log_line": 32,
+      "issue_log_title": "Held jobs get no walltime from a queue, so the runner now enforces it under PBS too",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/dispatch/jobs/spec.py:29-33",
+        "src/mainboard/dispatch/jobs/spec.py:129-139"
+      ],
+      "assessment": "Runner receives walltime for PBS as well; top-level JobSpec docstring still describes old backend split.",
+      "scope": "documentation",
+      "bug_ids": []
+    },
+    {
+      "issue": "host-hold-8",
+      "issue_log_line": 35,
+      "issue_log_title": "**`qsub -I -- <command>` needs an absolute executable.** `pbs_mom` execs the command itself",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/line.py:166",
+        "src/mainboard/line.py:289",
+        "src/mainboard/dispatch/schedulers/pbs.py:173-184"
+      ],
+      "assessment": "Keeper uses login bash and absolute /bin/bash correctly. Pbs.interactive still says command is impossible and rejects it; no live PBS validation attempted.",
+      "scope": "documentation/API",
+      "bug_ids": []
+    },
+    {
+      "issue": "host-hold-9",
+      "issue_log_line": 41,
+      "issue_log_title": "**A held submit costs 70-80 s of dispatch** (mirror of a few paths, two login-shell",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:41-43",
+        "src/mainboard/dispatch/dispatcher.py:670-710"
+      ],
+      "assessment": "No remote timing measurement performed; dispatch still mirrors/verifies/pins. The reported 70-80 seconds is historical, not a measured current result.",
+      "scope": "operational",
+      "bug_ids": []
+    },
+    {
+      "issue": "host-hold-10",
+      "issue_log_line": 44,
+      "issue_log_title": "**Miyabi's `qstat` wrapper caches.** A job shows `RUNNING` with a frozen ELAPSE for minutes",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:44-47",
+        "src/mainboard/dispatch/schedulers/held.py:137-140",
+        "src/mainboard/dispatch/schedulers/pbs.py:192-201"
+      ],
+      "assessment": "Held omits allocations whose claims have exits, but ordinary PBS state still relies on qstat. Current wrapper cache behavior not probed.",
+      "scope": "external/operational",
+      "bug_ids": []
+    },
+    {
+      "issue": "host-hold-11",
+      "issue_log_line": 48,
+      "issue_log_title": "**PBS refuses a new `qsub -I` for about 30 s after the previous interactive job ends**",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:48-50",
+        "src/mainboard/line.py:291"
+      ],
+      "assessment": "Ten-second retry remains; no measurement of the site's interactive quota release gap.",
+      "scope": "external/operational",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-1",
+      "issue_log_line": 56,
+      "issue_log_title": "**Every trial's receipt failed to serialize.** `Relations.rows` staged rows as NDJSON and let",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/state/relations.py:47-65 pins top-level text columns to VARCHAR.",
+        "integration/test_relations.py::test_text_a_receipt_wrote_reads_back_as_written passed for instant/date/time/UUID.",
+        "repro/settlement_followups.py::test_nested_iso_string_is_inferred_as_date_and_no_longer_json proves remaining nested/raw JsonValue mismatch.",
+        "src/mainboard/results.py:349 uses untyped NDJSON plus explicit extraction now; events at :269 similarly explicit, so that listed typed-read_json follow-up is obsolete there."
+      ],
+      "assessment": "Partial fix verified; follow-ups remain.",
+      "scope": "Partial fix verified; follow-ups remain.",
+      "limitations": "Historical TIMESTAMPTZ parts were not inspected or migrated. No production repair is inferred.",
+      "subitems": [
+        {
+          "part": "top-level string fields preserve their JSON spelling",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_relations.py::test_text_a_receipt_wrote_reads_back_as_written"
+          ]
+        },
+        {
+          "part": "records JsonValue contract and nested inference",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/state/relations.py:152",
+            "repro/settlement_followups.py"
+          ]
+        },
+        {
+          "part": "rewrite or retire historical TIMESTAMPTZ receipt parts",
+          "status": "open",
+          "evidence": [
+            "ISSUES.md:62"
+          ],
+          "assessment": "Production parts were neither inspected nor repaired."
+        },
+        {
+          "part": "typed read_json in Results jobs/events",
+          "status": "obsolete",
+          "evidence": [
+            "src/mainboard/results.py:261",
+            "src/mainboard/results.py:349"
+          ],
+          "assessment": "Current Results extracts fields explicitly from NDJSON objects rather than the earlier inference path."
+        },
+        {
+          "part": "schema-typed lake cells",
+          "status": "fixed-unverified",
+          "evidence": [
+            "src/mainboard/state/lake.py:288",
+            "src/mainboard/state/lake.py:302"
+          ],
+          "assessment": "Schema-defined staging supplies column types; no claim that historical parts were migrated."
+        }
+      ],
+      "bug_ids": [
+        "B20"
+      ]
+    },
+    {
+      "issue": "cutok-2",
+      "issue_log_line": 66,
+      "issue_log_title": "**`mb job show --wait` crashed** with `AttributeError: dropped`: `schema.latest` assumed every",
+      "status": "fixed-verified",
+      "evidence": [
+        "src/mainboard/state/schema.py:213-215 conditionally filters dropped.",
+        "integration/test_duckdb_settings.py::test_the_latest_record_of_a_log_without_drops_is_kept passed.",
+        "The pulse-attempt repro executes Pulses.taken/recalled against a real temporary lake twice without AttributeError."
+      ],
+      "assessment": "schema.latest no longer assumes dropped exists.",
+      "scope": "schema.latest no longer assumes dropped exists.",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-3",
+      "issue_log_line": 68,
+      "issue_log_title": "**DuckDB settings had no home** (owner request). Done: `state.database.connect` is the one",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/state/database.py:34-65 creates configured connections and merges UTC defaults/workspace/env.",
+        "integration/test_duckdb_settings.py default UTC, environment override and invalid setting tests passed.",
+        "src/mainboard/state/relations.py:43 routes Results/query through connect; src/mainboard/results.py:46 uses Relations.",
+        "src/mainboard/state/lake.py:726-727 still deliberately overrides TimeZone/progress."
+      ],
+      "assessment": "Connection factory, UTC default, environment settings and query routing are fixed-verified. Effective-setting doctor output and lake override documentation remain open follow-ups.",
+      "scope": "Central connection factory and default/environment settings.",
+      "limitations": "Doctor effective-setting output and help documentation follow-ups were not verified; these presentation follow-ups are not claimed complete.",
+      "subitems": [
+        {
+          "part": "central connection settings and query path",
+          "status": "fixed-verified",
+          "evidence": [
+            "src/mainboard/state/database.py:34",
+            "integration/test_duckdb_settings.py"
+          ]
+        },
+        {
+          "part": "document lake timezone/progress override and doctor effective settings",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/state/lake.py:726",
+            "src/mainboard/doctor.py:86",
+            "src/mainboard/help.py:1"
+          ]
+        }
+      ],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-4",
+      "issue_log_line": 73,
+      "issue_log_title": "Release: mainboard's `publish.yml` runs on every push to `main`. Pushing `ef2809d` needs the",
+      "status": "obsolete",
+      "evidence": [
+        ".github/workflows/publish.yml:9",
+        "pyproject.toml:14"
+      ],
+      "assessment": "The audit target is already 0.5.4, so the concrete 0.5.2 release decision is historical. The release-on-main/version-tag behavior still exists; this audit authorizes no publishing.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-5",
+      "issue_log_line": 79,
+      "issue_log_title": "**`__pycache__/*.pyc` under `packages/mainboard` enter job source closures**, so the seal digest",
+      "status": "fixed-verified",
+      "evidence": [
+        "src/mainboard/dispatch/sync.py:37-45",
+        "src/mainboard/dispatch/sync.py:212-222"
+      ],
+      "assessment": "dispatch_closure.py excludes nested packages/mainboard/__pycache__ bytes without git.",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-6",
+      "issue_log_line": 83,
+      "issue_log_title": "Editing any closure file while a dispatch pins sources is refused with `source blob mismatch`",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/dispatch/agent/program.py:868-869",
+        "src/mainboard/dispatch/snapshots.py:277-278"
+      ],
+      "assessment": "Only source blob mismatch plus file; no mtime or retry advice.",
+      "bug_ids": [
+        "B53"
+      ]
+    },
+    {
+      "issue": "cutok-7",
+      "issue_log_line": 85,
+      "issue_log_title": "**`mb upgrade` raised cutok's Python to `>=3.15.0rc3`**, a pre-release, and still left the lock",
+      "status": "fixed-verified",
+      "evidence": [
+        "src/mainboard/deps/indexes.py:136",
+        "repro/test_lake_deps.py::test_existing_fixes_final_release_and_undeclared_member"
+      ],
+      "assessment": "Stable 3.14.4 beats 3.15.0rc3 in the isolated test. The function intentionally chooses a prerelease if there are no finals, so this verifies the reported stable-versus-RC incident, not a universal prerelease ban.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-8",
+      "issue_log_line": 87,
+      "issue_log_title": "**`mb upgrade` has no `--dry-run`**, which `pixi upgrade` has; \"mb verbs are pixi's\" says the",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/cli.py:752",
+        "src/mainboard/deps/curator.py:240"
+      ],
+      "assessment": "upgrade offers --frozen and --no-install, both different from a no-write preview; no dry_run parameter exists. Feature gap remains.",
+      "subitems": [],
+      "bug_ids": [
+        "B55"
+      ]
+    },
+    {
+      "issue": "cutok-9",
+      "issue_log_line": 89,
+      "issue_log_title": "**`mb lint <dir>` rewrites files the change never touched**, including frozen analysis sources",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/cli.py:1608",
+        "src/mainboard/lint/linter.py:79",
+        "src/mainboard/lint/owners.py:26",
+        "src/mainboard/lint/linter.py:183",
+        "integration/test_lint_scope.py:66"
+      ],
+      "assessment": "Mixed entry. Broad directory rewriting and lack of seal protection remain open. The per-owner invocation machinery and pyrefly fallback fix are present.",
+      "subitems": [
+        {
+          "part": "frozen/unmodified files",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/lint/linter.py:153"
+          ],
+          "assessment": "Explicit directories are mutable scope; no immutable source ownership check."
+        },
+        {
+          "part": "nearest ruff config",
+          "status": "fixed-unverified",
+          "evidence": [
+            "src/mainboard/lint/linter.py:172",
+            "src/mainboard/lint/owners.py:26",
+            "/Users/pedro/Developer/projects/mainboard.toml:1184"
+          ],
+          "assessment": "Runner uses nearest owner cwd; currently observed root ruff commands have no forced --config. Root config is outside c97cb81 and the historical cutoken case was not executed."
+        },
+        {
+          "part": "pyrefly path when unconfigured",
+          "status": "fixed-verified",
+          "evidence": [
+            "src/mainboard/lint/linter.py:183",
+            "integration/test_lint_scope.py::test_a_checker_names_its_path_only_where_its_own_configuration_is_absent"
+          ],
+          "assessment": "Focused existing test passed in the temporary-workspace baseline run."
+        }
+      ],
+      "bug_ids": [
+        "B08"
+      ]
+    },
+    {
+      "issue": "cutok-10",
+      "issue_log_line": 108,
+      "issue_log_title": "**Shipping `needs` to miyabi ran at ~2.4 MB/s** through the agent's ssh pipe: 2.1 GB of corpora",
+      "status": "fixed-unverified",
+      "evidence": [
+        "src/mainboard/dispatch/mirror.py:34-37",
+        "src/mainboard/dispatch/mirror.py:171-179"
+      ],
+      "assessment": "gzip level1 present; remote throughput not measured.",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-10a",
+      "issue_log_line": 110,
+      "issue_log_title": "**Collecting from miyabi times out.** A `job list` settle pass on 2026-10-07 22:20 gave up on",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/monitor.py:570-593 caches one pull per host/root/path.",
+        "src/mainboard/dispatch/collection/pack.py:35-71 uses digest cache, held references and ZIP_ZSTANDARD level 3.",
+        "src/mainboard/dispatch/collection/collector.py:91-120 still packages the complete selected tree on each pass.",
+        "src/mainboard/dispatch/transport.py:152-154 keeps a fixed 600s bulk bound; no resumable remote-byte transfer.",
+        "Three targeted evidence integration checks validate once-per-folder, held-digest suppression, and collection into lake rather than tree."
+      ],
+      "assessment": "Transfer mitigations present; large-scope scan/fixed deadline remain.",
+      "scope": "Transfer mitigations present; large-scope scan/fixed deadline remain.",
+      "limitations": "No real Miyabi performance/volume verification; original pending runs were not mutated.",
+      "additional_reviews": [
+        {
+          "status": "open",
+          "evidence": [
+            "src/mainboard/dispatch/transport.py:152-154",
+            "src/mainboard/jobs/target.py:130-132"
+          ],
+          "assessment": "Fixed600-second deadline floor and experiment-wide fetch remain; no live throughput check."
+        },
+        {
+          "status": "fixed-unverified",
+          "evidence": [
+            "src/mainboard/dispatch/collection/pack.py:54-70",
+            "src/mainboard/dispatch/collection/pack.py:161-173"
+          ],
+          "assessment": "Known digest skipping, zstd, size/mtime digest cache present; no remote verification."
+        }
+      ],
+      "subitems": [
+        {
+          "part": "known-path/held-digest suppression",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_evidence.py::test_a_host_sends_only_what_the_lake_lacks"
+          ]
+        },
+        {
+          "part": "remote digest cache and metadata scan",
+          "status": "fixed-unverified",
+          "evidence": [
+            "src/mainboard/dispatch/collection/pack.py:161"
+          ],
+          "assessment": "Implementation present; no remote cache warmup or login-node throughput benchmark."
+        },
+        {
+          "part": "node-wide artifact content store/by-reference receipts",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_evidence.py::test_artifacts_are_held_once_per_node"
+          ]
+        },
+        {
+          "part": "zstd transfer members",
+          "status": "fixed-verified",
+          "evidence": [
+            "src/mainboard/dispatch/collection/pack.py:35",
+            "integration/test_evidence.py::test_a_host_sends_only_what_the_lake_lacks"
+          ],
+          "assessment": "Local pack/unpack behavior exercised; GH200 compression ratios not remeasured."
+        },
+        {
+          "part": "dedup hard links intact settled files",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_evidence.py::test_dedup_links_settled_duplicates_to_one_copy"
+          ],
+          "assessment": "Local fixture, not the reported fleet byte totals."
+        },
+        {
+          "part": "transfers land in lake staging, not source tree",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_evidence.py::test_collection_keeps_transfers_in_the_lake_never_the_tree"
+          ]
+        },
+        {
+          "part": "closed center runs enter lake and evict tree cache",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_evidence.py::test_a_closed_run_moves_into_the_center_lake"
+          ],
+          "assessment": "Normal-copy control only; corrupt-copy eviction remains B01."
+        },
+        {
+          "part": "one collection per host/fetch path/pass",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_evidence.py::test_a_pass_collects_each_folder_once"
+          ]
+        },
+        {
+          "part": "experiment-wide scan/fixed deadline/resumable recovery",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/jobs/target.py:130",
+            "src/mainboard/dispatch/transport.py:152"
+          ]
+        }
+      ],
+      "bug_ids": [
+        "B26"
+      ]
+    },
+    {
+      "issue": "cutok-11",
+      "issue_log_line": 157,
+      "issue_log_title": "**Settlement backlog**: `job list` keeps erroring on old runs (\"settlement pending; remote",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/monitor.py:253-260 rejects malformed receipts/failed transfer.",
+        "src/mainboard/monitor.py:523-527 leaves them pending with cursor unchanged.",
+        "ISSUES.md explicitly identifies old handles needing settlement or retirement."
+      ],
+      "assessment": "Operational backlog unverified; no repair authorized.",
+      "scope": "Operational backlog unverified; no repair authorized.",
+      "limitations": "Production registry/remote receipts not read or mutated. Serialization fix alone does not reconstruct missing receipts, and no backlog-completion claim can be made.",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-12",
+      "issue_log_line": 161,
+      "issue_log_title": "DuckDB prints a nanobind leak report at interpreter exit in every job log (\"leaked function",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/state/lake.py:916-929 now finalizes/closes Session resources.",
+        "src/mainboard/state/relations.py:42-44 opens a connection, but Relations still has no explicit close/context ownership API.",
+        "36 existing focused checks and 11 repro checks completed without the historical nanobind leak report."
+      ],
+      "assessment": "Leak report not reproduced in small checks; no verified fix identified.",
+      "scope": "Leak report not reproduced in small checks; no verified fix identified.",
+      "limitations": "Absence in these short isolated runs does not verify shutdown for the real workload; kept/lazy relation lifetimes and interpreter teardown remain unverified.",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-13a",
+      "issue_log_line": 163,
+      "issue_log_title": "**Reading a cohort's artifacts back is slow on the center.** Re-rendering the admitted v18",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/trials/artifacts.py:47",
+        "src/mainboard/trials/artifacts.py:139",
+        "src/mainboard/state/evidence.py:350"
+      ],
+      "assessment": "Reads remain per digest and verification loops unique references; shared sessions reduce attach cost but do not batch blob reads. Historical 24 s/process not rebenchmarked.",
+      "subitems": [],
+      "additional_reviews": [
+        {
+          "status": "open",
+          "evidence": [
+            "src/mainboard/trials/artifacts.py:47-64 resolves tree/archive/lake and hashes each read.",
+            "src/mainboard/results.py:137-156 loops selected artifacts individually."
+          ],
+          "assessment": "Artifact reads still have a per-object path/lake lookup; no measured fix claimed.",
+          "scope": "Artifact reads still have a per-object path/lake lookup; no measured fix claimed.",
+          "limitations": "The reported 24s per process workload was not reproduced. No production artifacts were loaded."
+        }
+      ],
+      "bug_ids": [
+        "B24"
+      ]
+    },
+    {
+      "issue": "cutok-13b",
+      "issue_log_line": 167,
+      "issue_log_title": "**Materializing a whole experiment's datasets** wrote 9.6 GB without reaching the one file a",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/state/evidence.py:298",
+        "src/mainboard/trials/artifacts.py:62"
+      ],
+      "assessment": "Exact-file materialization and read-through artifacts are available, but broad materialize eagerly writes every indexed file and has no byte estimate/cap; external Path-based renderers were not audited.",
+      "subitems": [],
+      "bug_ids": [
+        "B24"
+      ]
+    },
+    {
+      "issue": "cutok-13c",
+      "issue_log_line": 171,
+      "issue_log_title": "**The center's disk is nearly full** (2026-10-08 03:20: 12 GiB free of 460, 98%). The lake",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/cli.py:2019",
+        "src/mainboard/state/evidence.py:317",
+        "src/mainboard/state/evidence.py:192",
+        "integration/test_evidence.py::test_evict_deletes_only_what_the_lake_keeps_intact"
+      ],
+      "assessment": "Eviction and external home exist, and the existing unchanged/changed-file test passed. A user-facing inventory of verified tree cache copies is still absent. The newly reproduced corrupt-blob eviction defect means current eviction is not generally safe.",
+      "subitems": [
+        {
+          "part": "evict verb and matching-file behavior",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_evidence.py::test_evict_deletes_only_what_the_lake_keeps_intact"
+          ],
+          "assessment": "Normal case only; corrupt-copy safety is open."
+        },
+        {
+          "part": "historical volume move/free space",
+          "status": "fixed-unverified",
+          "evidence": [
+            "ISSUES.md:176",
+            "src/mainboard/manifest/schema/workspace.py:44"
+          ],
+          "assessment": "Issue log reports move, but no real volume or current disk usage was inspected."
+        },
+        {
+          "part": "tree cache inventory",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/cli.py:2019"
+          ],
+          "assessment": "No comparison listing accompanies the eviction API."
+        }
+      ],
+      "bug_ids": [
+        "B01",
+        "B49"
+      ]
+    },
+    {
+      "issue": "cutok-13d",
+      "issue_log_line": 179,
+      "issue_log_title": "**`[workspace] lake` (2026-10-08) is not yet known to center migration.**",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/center/state.py:308",
+        "src/mainboard/doctor.py:86",
+        "src/mainboard/state/lake.py:358"
+      ],
+      "assessment": "Migration inventories only Project.out, while external Lake.home is elsewhere. Doctor does not include a dedicated lake-home/mount readiness section.",
+      "subitems": [],
+      "bug_ids": [
+        "B07"
+      ]
+    },
+    {
+      "issue": "cutok-13f2",
+      "issue_log_line": 184,
+      "issue_log_title": "**An unresponsive lake volume hangs every verb, without a timeout** (2026-10-08 ~10:00).",
+      "status": "open",
+      "evidence": [
+        "integration/test_duckdb_settings.py::test_only_an_undeclared_host_reads_the_holds passed.",
+        "src/mainboard/state/lake.py:746-775 probes catalog read in a daemon thread with a ten-second wait; isolated delayed-open test passed.",
+        "src/mainboard/durable.py:369-382 uses ssh localhost and refuses failed key-login preflight; fake-shell generated-plist test passed.",
+        "src/mainboard/state/lake.py:408 catalog.stat, :697 exists(), :755 catalog.is_file() occur before/around the probe; later lake I/O has no whole-operation wall deadline and successful probe is cached for process lifetime."
+      ],
+      "assessment": "Specific TCC and launchd mitigations verified; general unresponsive-volume timeout remains incomplete.",
+      "scope": "Specific TCC and launchd mitigations verified; general unresponsive-volume timeout remains incomplete.",
+      "limitations": "Specific local fixes may be marked fixed-verified individually, but not the original blanket claim that every unresponsive volume fails within a bound. No launchd/FDA production change was made.",
+      "subitems": [
+        {
+          "part": "declared host/lint/run avoid holds lake read",
+          "status": "fixed-verified",
+          "evidence": [
+            "integration/test_duckdb_settings.py::test_only_an_undeclared_host_reads_the_holds"
+          ]
+        },
+        {
+          "part": "first lake read probe has ten-second wait",
+          "status": "fixed-verified",
+          "evidence": [
+            "repro/settlement_followups.py",
+            "src/mainboard/state/lake.py:746"
+          ]
+        },
+        {
+          "part": "launchd localhost SSH pass and key-login preflight",
+          "status": "fixed-verified",
+          "evidence": [
+            "repro/settlement_followups.py",
+            "src/mainboard/durable.py:369"
+          ],
+          "assessment": "Generated definition and refusal verified with fakes; real installed launchd service/FDA not audited."
+        },
+        {
+          "part": "all lake operations have an I/O deadline",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/state/lake.py:746",
+            "src/mainboard/state/lake.py:744"
+          ]
+        }
+      ],
+      "bug_ids": [
+        "B34"
+      ]
+    },
+    {
+      "issue": "cutok-13f3",
+      "issue_log_line": 204,
+      "issue_log_title": "**Every job host inherits the center's absolute `[workspace] lake`** (2026-10-08).",
+      "status": "fixed-verified",
+      "evidence": [
+        "src/mainboard/manifest/schema/workspace.py:44-52",
+        "repro/host_repros.py::test_fixed_mirror_lake_does_not_inherit_center_absolute_path"
+      ],
+      "assessment": "A temporary mirror without .git ignores a configured center-only absolute lake and returns its generated directory. Does not certify current remote deployment.",
+      "scope": "code",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-13f5",
+      "issue_log_line": 214,
+      "issue_log_title": "**`mb lake ingest <relative path>` fails at its end** (2026-10-09). `mainboard lake ingest",
+      "status": "fixed-verified",
+      "evidence": [
+        "src/mainboard/state/evidence.py:217",
+        "src/mainboard/state/evidence.py:610",
+        "integration/test_evidence.py::test_every_lake_verb_takes_paths_relative_to_where_it_runs",
+        "integration/test_evidence.py::test_a_lake_verb_refuses_a_path_outside_the_workspace"
+      ],
+      "assessment": "Both focused existing tests passed, including ingest import recording and dedup/materialize/evict relative paths. This does not cover symlink containment.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-13f4",
+      "issue_log_line": 226,
+      "issue_log_title": "**Stale generated inputs on a host break every dispatch's environment pin** (2026-10-08).",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/dispatch/mirror.py:98-100",
+        "src/mainboard/engines/compile/generated/files.py:29-41",
+        "src/mainboard/dispatch/agent/program.py:644-654"
+      ],
+      "assessment": "Current named-file shipment does not reconcile retired generated inputs.",
+      "scope": "code",
+      "bug_ids": [
+        "B30"
+      ]
+    },
+    {
+      "issue": "cutok-13e",
+      "issue_log_line": 234,
+      "issue_log_title": "**Palettes are only validated by hand.** The 2026-10-08 Hugging Face colour change came from",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/manifest/schema/plot.py:8",
+        "src/mainboard/plots/table.py:81"
+      ],
+      "assessment": "PlotStyle checks shape/basic numeric fields and table checks number of color slots, but no perceptual separation/contrast/color-vision audit is implemented. Feature request, not a reproduced measurement failure.",
+      "subitems": [],
+      "bug_ids": [
+        "B46"
+      ]
+    },
+    {
+      "issue": "cutok-13f",
+      "issue_log_line": 238,
+      "issue_log_title": "**Hashing could move to DuckDB with a fast hash** (owner idea, 2026-10-08). xxh3 as a change",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/state/evidence.py:623",
+        "src/mainboard/dispatch/collection/pack.py:1",
+        "src/mainboard/state/blobs.py:1"
+      ],
+      "assessment": "An optimization proposal remains unimplemented/unbenchmarked here. SHA-256 remains evidence identity, as required. No claim that xxh3 is currently the bottleneck or a correctness fix.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-13g",
+      "issue_log_line": 246,
+      "issue_log_title": "**`mb lake materialize` reads one object per query** (2026-10-09, v25 settlement): about 10",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/state/evidence.py:298",
+        "src/mainboard/state/blobs.py:134",
+        "src/mainboard/state/blobs.py:205",
+        "src/mainboard/state/evidence.py:357"
+      ],
+      "assessment": "Current materialization still calls _write per file and chunks queries per ordinal; windowed replication exists but is not reused by materialize.",
+      "subitems": [],
+      "bug_ids": [
+        "B24"
+      ]
+    },
+    {
+      "issue": "cutok-13h",
+      "issue_log_line": 251,
+      "issue_log_title": "**A bare `mb query` over the whole `trials` or `artifacts` view costs 3-9 CPU minutes**",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/results.py:160",
+        "src/mainboard/results.py:209",
+        "src/mainboard/state/evidence.py:556"
+      ],
+      "assessment": "View construction inventories/materializes every matching receipt before SQL filtering; project and experiment scope help. No 3\u20139 minute real-volume benchmark attempted.",
+      "subitems": [],
+      "additional_reviews": [
+        {
+          "status": "open",
+          "evidence": [
+            "src/mainboard/results.py:219-249 discovers every matching receipt partition and materializes DISTINCT trials.",
+            "src/mainboard/results.py:284-340 builds broad intermediate artifact tables before final caller SQL filtering."
+          ],
+          "assessment": "Large query cost not verified fixed.",
+          "scope": "Large query cost not verified fixed.",
+          "limitations": "No benchmark against production cohort, so no elapsed-time claim."
+        }
+      ],
+      "bug_ids": [
+        "B24"
+      ]
+    },
+    {
+      "issue": "cutok-13i",
+      "issue_log_line": 253,
+      "issue_log_title": "**An audit that needs a pinned file absent from the tree fails after all its work**",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/trials/pytest_plugin.py:111",
+        "src/mainboard/trials/pytest_plugin.py:130",
+        "src/mainboard/state/evidence.py:525"
+      ],
+      "assessment": "Proactive restoration was added, but it ignores the pin hash and swallows restoration failures. Required existence/integrity is not a collection precondition.",
+      "subitems": [
+        {
+          "part": "attempt restoration before running trials",
+          "status": "fixed-unverified",
+          "evidence": [
+            "src/mainboard/trials/pytest_plugin.py:111"
+          ],
+          "assessment": "Present; historical v25 artifact was not restored here."
+        },
+        {
+          "part": "fail early if required pin unavailable or wrong",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/trials/pytest_plugin.py:130",
+            "src/mainboard/state/evidence.py:525"
+          ],
+          "assessment": "No hash verification or failure when restoration yields no file."
+        }
+      ],
+      "bug_ids": [
+        "B42"
+      ]
+    },
+    {
+      "issue": "cutok-13j",
+      "issue_log_line": 257,
+      "issue_log_title": "**A test whose fetch is a folder beside its evidence store never settles** (2026-10-09, cutok",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/jobs/target.py:109-132",
+        "src/mainboard/board.py:1384-1386"
+      ],
+      "assessment": "New conventional targets correctly widen fetch to the evidence-store home (fixed-verified); existing recorded handles are not repaired, and shared-output conflicts remain open.",
+      "additional_reviews": [
+        {
+          "status": "open",
+          "evidence": [
+            "src/mainboard/jobs/target.py:130-132",
+            "src/mainboard/dispatch/agent/program.py:998-1018"
+          ],
+          "assessment": "All runs still share experiment-home mirror path; no run-scoped output identity."
+        }
+      ],
+      "subitems": [
+        {
+          "part": "new conventional target results mapping",
+          "status": "fixed-verified",
+          "evidence": [
+            "src/mainboard/jobs/target.py:109",
+            "repro/dispatch_snapshot.py"
+          ]
+        },
+        {
+          "part": "recover historical 621/631/632 snapshot stores",
+          "status": "open",
+          "evidence": [
+            "ISSUES.md:269"
+          ],
+          "assessment": "Not attempted; would require real-state mutations."
+        },
+        {
+          "part": "run-scoped output conflicts",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/dispatch/agent/program.py:998"
+          ]
+        }
+      ],
+      "bug_ids": [
+        "B26"
+      ]
+    },
+    {
+      "issue": "cutok-13k",
+      "issue_log_line": 278,
+      "issue_log_title": "**`mb upgrade` (2026-10-10)**, five defects fixed locally, one open:",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/deps/curator.py:189",
+        "src/mainboard/deps/curator.py:271",
+        "src/mainboard/deps/indexes.py:54"
+      ],
+      "assessment": "Two local fixes are present; four independent remaining upgrade defects are confirmed by source or isolated witnesses.",
+      "subitems": [
+        {
+          "part": "undeclared workspace member lookup",
+          "status": "fixed-verified",
+          "evidence": [
+            "repro/test_lake_deps.py::test_existing_fixes_final_release_and_undeclared_member"
+          ],
+          "assessment": "Missing table/name returns False rather than indexing a nonexistent key."
+        },
+        {
+          "part": "member distribution skip",
+          "status": "fixed-unverified",
+          "evidence": [
+            "src/mainboard/deps/curator.py:273",
+            "src/mainboard/manifest/members.py:119"
+          ],
+          "assessment": "Canonical member names are skipped. Full solver test not run to avoid real downloads/long install."
+        },
+        {
+          "part": "calendar version ceiling",
+          "status": "open",
+          "evidence": [
+            "repro/test_lake_deps.py::test_calendar_version_gets_one_day_ceiling"
+          ],
+          "assessment": ">=20260107,<20260108 reproduced."
+        },
+        {
+          "part": "all-platform conda availability",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/deps/indexes.py:71"
+          ],
+          "assessment": "search has no platform projection."
+        },
+        {
+          "part": "yanked Python releases",
+          "status": "open",
+          "evidence": [
+            "repro/test_lake_deps.py::test_python_latest_ignores_yanked_files"
+          ],
+          "assessment": "Yanked latest selected from fixture."
+        },
+        {
+          "part": "conda provider vs Python floor/update",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/deps/curator.py:110",
+            "src/mainboard/engines/compile/compiler.py:79"
+          ],
+          "assessment": "Independent PyPI floor, normal solve rather than provider-targeted update."
+        },
+        {
+          "part": "--env scope",
+          "status": "open",
+          "evidence": [
+            "repro/test_lake_deps.py::test_env_narrowing_loses_python_and_platform_tables"
+          ],
+          "assessment": "Three declared tables narrow to conda table only."
+        }
+      ],
+      "bug_ids": [
+        "B31",
+        "B35",
+        "B36",
+        "B44",
+        "B45"
+      ]
+    },
+    {
+      "issue": "cutok-13l",
+      "issue_log_line": 302,
+      "issue_log_title": "**`mb lock` then `mb install` never resolves the second stage** (2026-10-10). `lock`",
+      "status": "open",
+      "evidence": [
+        "src/mainboard/engines/compile/provisioner.py:353",
+        "src/mainboard/deps/curator.py:287"
+      ],
+      "assessment": "Lock/install defect reproduced; rollback handles some common failures but remains incomplete.",
+      "subitems": [
+        {
+          "part": "second-stage lock",
+          "status": "open",
+          "evidence": [
+            "repro/test_lake_deps.py::test_lock_then_install_never_resolves_second_stage"
+          ],
+          "assessment": "Stage never resolves after lock moves then install sees unchanged pixi lock."
+        },
+        {
+          "part": "stable Python release",
+          "status": "fixed-verified",
+          "evidence": [
+            "repro/test_lake_deps.py::test_existing_fixes_final_release_and_undeclared_member"
+          ],
+          "assessment": "Stable preferred over RC."
+        },
+        {
+          "part": "comment column",
+          "status": "fixed-verified",
+          "evidence": [
+            "src/mainboard/deps/editing.py:76",
+            "integration/test_lock_policy.py::test_a_raised_requirement_keeps_its_comment_column"
+          ],
+          "assessment": "All three parameterized existing cases passed."
+        },
+        {
+          "part": "rollback manifest/lock after solve",
+          "status": "open",
+          "evidence": [
+            "src/mainboard/deps/curator.py:287",
+            "repro/test_lake_deps.py::test_rollback_leaves_new_lock_created_by_failed_operation",
+            "repro/test_lake_deps.py::test_rollback_does_not_restore_on_oserror"
+          ],
+          "assessment": "Existing files restored on MissionError/KeyboardInterrupt, but new locks and OSError escape. Treat original local fix as partial."
+        },
+        {
+          "part": "upgrade --frozen",
+          "status": "fixed-unverified",
+          "evidence": [
+            "src/mainboard/cli.py:759",
+            "src/mainboard/deps/curator.py:215"
+          ],
+          "assessment": "Implemented manifest-only path; no external solve requested."
+        }
+      ],
+      "bug_ids": [
+        "B25",
+        "B37"
+      ]
+    },
+    {
+      "issue": "cutok-13m",
+      "issue_log_line": 320,
+      "issue_log_title": "**A held settlement lock makes `job list` answer from the cache without saying so**",
+      "status": "open",
+      "evidence": [
+        "repro/settlement_followups.py::test_lock_contention_reports_no_owner_or_cached_warning confirms the current behavior.",
+        "See settlement_busy_opaque."
+      ],
+      "assessment": "",
+      "bug_ids": [
+        "B23"
+      ]
+    },
+    {
+      "issue": "cutok-13n",
+      "issue_log_line": 327,
+      "issue_log_title": "**A settling pass costs minutes on a lake of small files** (2026-10-10). With 34,192",
+      "status": "open",
+      "evidence": [
+        "repro/settlement_followups.py::test_each_settled_run_replays_the_entire_shared_stream_three_times confirms repeated replay.",
+        "See receipt_replay_amplification."
+      ],
+      "assessment": "",
+      "limitations": "Historical 32k blob-open system-time cause requires separate profiling; the isolated repro proves event-history amplification only.",
+      "bug_ids": [
+        "B32"
+      ]
+    },
+    {
+      "issue": "cutok-13",
+      "issue_log_line": 333,
+      "issue_log_title": "The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...",
+      "status": "fixed-verified",
+      "evidence": [
+        "src/mainboard/dispatch/shells.py:40-59",
+        "repro/host_repros.py::test_fixed_agent_uses_workspace_python"
+      ],
+      "assessment": "Generated agent launcher executes the workspace prefix Python; source fallback is uv managed Python, with explicit refusal rather than OS python3. Does not certify current remote deployment.",
+      "scope": "code",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-14",
+      "issue_log_line": 337,
+      "issue_log_title": "A path wheel on one platform and an index wheel on another is refused (\"one source per",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:337",
+        "src/mainboard/engines/compile/pixi_manifest.py:184",
+        "src/mainboard/engines/compile/backend/process.py:41"
+      ],
+      "assessment": "Underlying solver's one-source restriction is intentional per issue. Mainboard forwards solver output and adds no suggested all-path-wheel workaround. Did not re-solve TokTier.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-15",
+      "issue_log_line": 343,
+      "issue_log_title": "**Dangling `~/.local/bin/pueue` \u2192 `~/mainboard-managed/...`** on pedro-cvlab and purple after the",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:343-345",
+        "src/mainboard/dispatch/onboard.py:442-468",
+        "src/mainboard/dispatch/wrapping.py:23-27"
+      ],
+      "assessment": "Historical links were reportedly removed by hand. Setup still has no dangling-link reconciliation; the code only tests pueue status, locates/installs pueued and starts it.",
+      "scope": "code and operational",
+      "bug_ids": [
+        "B29"
+      ]
+    },
+    {
+      "issue": "cutok-16",
+      "issue_log_line": 346,
+      "issue_log_title": "pedro-cvlab's `pueued` runs from a deleted binary (`~/.mainboard-jobs.aside-r5/...`, up since",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:346-347",
+        "src/mainboard/dispatch/onboard.py:448-451"
+      ],
+      "assessment": "No live daemon inspected or restarted. Setup returns when daemon status answers, without establishing the daemon executable's provenance.",
+      "scope": "operational",
+      "bug_ids": [
+        "B29"
+      ]
+    },
+    {
+      "issue": "cutok-17",
+      "issue_log_line": 348,
+      "issue_log_title": "`macmini` is a declared host that does not resolve from the Mac mini itself, so `doctor` always",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:348-349",
+        "/Users/pedro/Developer/projects/mainboard.toml:769-774",
+        "src/mainboard/compute.py:244-248"
+      ],
+      "assessment": "macmini remains declared as ssh and is surveyed as a profile. Actual current self-resolution was not queried.",
+      "scope": "operational/configuration",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-18",
+      "issue_log_line": 350,
+      "issue_log_title": "pedro-home still answers ssh and sits in `~/.ssh/config`, but left mainboard's hosts with the",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:350-351",
+        "/Users/pedro/Developer/projects/mainboard.toml"
+      ],
+      "assessment": "No pedro-home host declaration found. No ssh config or remote state modified; retain/decommission decision is still external to this source audit.",
+      "scope": "operational/policy",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-19",
+      "issue_log_line": 352,
+      "issue_log_title": "Miyabi announces a scheduled stop at 2026-10-28 09:00 JST, and short-g estimated start times of",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:352-354",
+        "src/mainboard/dispatch/schedulers/pbs.py:116-128"
+      ],
+      "assessment": "Historical October 28 stop and queue delays were not revalidated. These are site scheduling facts, not a demonstrated source fix.",
+      "scope": "external/operational",
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-19a",
+      "issue_log_line": 358,
+      "issue_log_title": "**TokTier's artifact cache is per host, and GH200 compute nodes are offline.** TokTier routes",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:358",
+        "src/mainboard/jobs/closure.py:230",
+        "src/mainboard/jobs/pins.py:1"
+      ],
+      "assessment": "Historical cache copy is reported but not verified. Mainboard supports explicit resources/needs/pins; no inference of TokTier's private per-host cache or native-route coverage gate. External campaign follow-up remains open.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-20",
+      "issue_log_line": 365,
+      "issue_log_title": "Analysis renderers were hard-coded to the RTX 4090 (host, UUID, 32 workers, titles). Being made",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:365",
+        "src/mainboard/probe/machine.py:1"
+      ],
+      "assessment": "External renderer source is not in c97cb81. Mainboard provides machine facts, but no evidence here verifies v22/v15 renderer changes. Conservative external status.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-21",
+      "issue_log_line": 367,
+      "issue_log_title": "Contract tests error on hosts without the center's datasets (the support pin lives under",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:367",
+        "src/mainboard/jobs/closure.py:230",
+        "src/mainboard/trials/pytest_plugin.py:111"
+      ],
+      "assessment": "External tests/env declaration not contained in this mainboard revision. Explicit resource declarations/restoration exist; cannot mark the historical host contract suite fixed.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-21a",
+      "issue_log_line": 370,
+      "issue_log_title": "Three `test_scaling_figures.py` contract tests fail for the input study on the committed",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:370"
+      ],
+      "assessment": "External test/renderer disagreement cannot be established from mainboard code; keep open for owner of that repository. No renderer or test was changed.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-22",
+      "issue_log_line": 376,
+      "issue_log_title": "Pre-existing type errors in `current_engine_refresh`: `os.sched_getaffinity` on macOS,",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:376"
+      ],
+      "assessment": "External source and type-check results are outside the c97cb81 repository. Not verified or declared obsolete.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-23",
+      "issue_log_line": 378,
+      "issue_log_title": "TokTier publishes only an x86_64 wheel; the GH200 uses a source build of the v0.2.9 tag",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:378"
+      ],
+      "assessment": "External upstream packaging action. No current registry/network assertion made; source-build workaround in issue log does not establish upstream wheel availability.",
+      "subitems": [],
+      "bug_ids": []
+    },
+    {
+      "issue": "cutok-24",
+      "issue_log_line": 380,
+      "issue_log_title": "**A pinned upstream input was edited by an end-of-file fixer.** Commit `e72cacd1a`",
+      "status": "open",
+      "evidence": [
+        "ISSUES.md:380",
+        "src/mainboard/lint/text.py:46",
+        "src/mainboard/lint/text.py:93",
+        "src/mainboard/lint/inventory.py:20"
+      ],
+      "assessment": "Exact-byte repair and -text exclusion are reported externally, not verified here. The generic hygiene adds a final newline unless protected; tool attribution and all-input registration audit remain open.",
+      "subitems": [
+        {
+          "part": "GPT-2 encoder bytes restored",
+          "status": "fixed-unverified",
+          "evidence": [
+            "ISSUES.md:385"
+          ],
+          "assessment": "External b5e18d458 repair claimed; not a mainboard commit."
+        },
+        {
+          "part": "tool attribution/all pinned inputs hash audit",
+          "status": "open",
+          "evidence": [
+            "ISSUES.md:386"
+          ],
+          "assessment": "Neither action is completed by reading mainboard; no live inputs were mutated."
+        }
+      ],
+      "bug_ids": [
+        "B08"
+      ]
+    }
+  ],
+  "recent_incidents": [
+    {
+      "incident": 1,
+      "title": "Orphaned settlement lock and stale waits",
+      "status": "open",
+      "bug_ids": [
+        "B23"
+      ],
+      "assessment": "Reproduced lock-contention result with no owner/cache warning; whole-pass supervision remains absent."
+    },
+    {
+      "incident": 2,
+      "title": "Slow settlement replay and small lake files",
+      "status": "open",
+      "bug_ids": [
+        "B32",
+        "B24"
+      ],
+      "assessment": "Repeated event replay is reproduced. The historical 32k blob-file system-time cause was not profiled; Journal selects events, so it is not claimed to directly scan blob bytes."
+    },
+    {
+      "incident": 3,
+      "title": "launchd cannot access external lake",
+      "status": "fixed-verified",
+      "bug_ids": [
+        "B34"
+      ],
+      "assessment": "Localhost SSH command generation and login preflight verified with fakes. No installed launchd/FDA production verification; general lake I/O deadline remains open."
+    },
+    {
+      "incident": 4,
+      "title": "Wrong runner segments and complete-case skipping",
+      "status": "open",
+      "bug_ids": [
+        "B41",
+        "B43",
+        "B14"
+      ],
+      "assessment": "Wrong segmentation reproduced as accepted shipment then pytest exit 4. Proper --fresh segmentation and complete-case skip/--rerun controls pass; completion reuse itself is intentional current behavior."
+    },
+    {
+      "incident": 5,
+      "title": "Agent half-edit shipped instead of frozen acquisition source",
+      "status": "open",
+      "bug_ids": [
+        "B19",
+        "B15"
+      ],
+      "assessment": "Current tree capture accurately identifies captured bytes, but does not enforce a registered expected source identity; freeze policy is the missing contract."
+    },
+    {
+      "incident": 6,
+      "title": "finished with running verdict; jobs lacks host/target",
+      "status": "open",
+      "bug_ids": [
+        "B23",
+        "B54"
+      ],
+      "assessment": "Both inconsistent listing and SQL columns reproduced in temporary state."
+    },
+    {
+      "incident": 7,
+      "title": "GPU acquisition collides with another process",
+      "status": "open",
+      "bug_ids": [
+        "B22",
+        "B12"
+      ],
+      "assessment": "Current cooperative lease is neither atomic nor host-wide by physical GPU. Nonparticipating external workloads still require occupancy admission/host coordination."
+    },
+    {
+      "incident": 8,
+      "title": "Unsolvable upgrade and second-stage lock gap",
+      "status": "open",
+      "bug_ids": [
+        "B36",
+        "B35",
+        "B31",
+        "B37",
+        "B25"
+      ],
+      "assessment": "Stable-over-RC fix verified; remaining candidate-selection, rollback and stage-resolution defects documented/reproduced separately."
+    },
+    {
+      "incident": 9,
+      "title": "Sibling fetch loses evidence; NULL Git fields reject verified snapshots",
+      "status": "open",
+      "bug_ids": [
+        "B26"
+      ],
+      "assessment": "New-target fetch widening fixed-verified. Current mainboard admission uses verified digest/closure and outcome rather than commit/worktree_dirty (source-verified, historical/external consumers unverified). Old fetch records and output conflicts remain open."
+    }
+  ],
+  "candidate_not_counted": {
+    "title": "Explicit resource directory omits ignored contents while explicit file pins them",
+    "evidence": [
+      "src/mainboard/jobs/closure.py:279-282"
+    ],
+    "repro": "dispatch_closure.py",
+    "status": "needs contract decision; helper docstring says everything kept under it"
+  },
+  "validation": {
+    "import_provenance": "/Users/pedro/Developer/mb-refactor/src/mainboard/__init__.py",
+    "core_repros": "14 passed in 4.03s (temporary lakes plus pure/fake dependency and SQL tests)",
+    "host_repros": {
+      "repro": "repro/host_repros.py",
+      "result": "15 passed in 0.72s",
+      "method": "Assertions describe observed bug symptoms and three fixed behaviors. Fake scheduler replies, temporary directories and bounded local subprocesses only; no remote calls, GPU access, source edits, git mutations, or real state writes.",
+      "command": "From /Users/pedro/Developer/projects: export PATH=/Users/pedro/Developer/projects/.mainboard/envs/default/.pixi/envs/default/bin:$PATH; mainboard proc timeout 90 mainboard run env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/Users/pedro/Developer/mb-refactor/src python -m pytest -q -p no:cacheprovider -p no:randomly /private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/host_repros.py"
+    },
+    "settlement": {
+      "existing_checks_passed": 36,
+      "audit_repro_checks_passed": 11,
+      "collection_checks_passed": 3,
+      "import_provenance": "/Users/pedro/Developer/mb-refactor/src/mainboard/__init__.py",
+      "invocation_prefix": "export PATH=/Users/pedro/Developer/projects/.mainboard/envs/default/.pixi/envs/default/bin:$PATH; run cwd /Users/pedro/Developer/projects: mainboard proc timeout 180 mainboard run env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/Users/pedro/Developer/mb-refactor/src python -m pytest <paths> -q -p no:cacheprovider -p no:randomly",
+      "repros": [
+        "repro/settlement_identity.py",
+        "repro/settlement_followups.py",
+        "repro/settlement_log_loss.py"
+      ],
+      "notes": "Repro assertions document currently observed faulty behavior, not desired behavior. Initial harness errors (old-record equality after evidence update, Launchd vs LaunchdAgent class name) were corrected; final 11 audit checks pass."
+    },
+    "dispatch": {
+      "scripts": 5,
+      "scenarios": 15,
+      "passed": 15,
+      "repro_directory": "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro",
+      "files": [
+        "dispatch_closure.py",
+        "dispatch_cli.py",
+        "dispatch_snapshot.py",
+        "dispatch_fresh_timeout.py",
+        "dispatch_runner.py"
+      ],
+      "command": "export PATH=/Users/pedro/Developer/projects/.mainboard/envs/default/.pixi/envs/default/bin:$PATH; mainboard proc timeout 40 mainboard run env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/Users/pedro/Developer/mb-refactor/src python <absolute-repro-file>",
+      "cwd": "/Users/pedro/Developer/projects",
+      "constraints": "No source/git/live state mutations; timeout worker killed in finally; embedded pytest disables cacheprovider and randomly."
+    },
+    "core_existing_suite": "Selected test_evidence, test_relations, test_duckdb_settings, test_lint_scope and test_lock_policy checks exited 0 (59 test progress markers). Git-mutating fixture and full solver/install cases excluded. These overlap settlement verification; totals are not summed as unique.",
+    "core_command": "export PATH=/Users/pedro/Developer/projects/.mainboard/envs/default/.pixi/envs/default/bin:$PATH\ncd /Users/pedro/Developer/projects\nmainboard proc timeout 90 mainboard run env PYTHONPATH=/Users/pedro/Developer/mb-refactor/src PYTHONDONTWRITEBYTECODE=1 python -m pytest /private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/test_lake_deps.py -q -p no:randomly -p no:cacheprovider"
+  },
+  "written_files": [
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/bugs.json",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/bugs.md",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/build_bug_report.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/core_findings.json",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/core_triage.json",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/supplemental_findings.json",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/dispatch_findings.json",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/dispatch_findings.md",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/host_findings.json",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/host_findings.md",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/settlement_findings.json",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/settlement_findings.md",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/test_lake_deps.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/host_repros.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/host_report.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/dispatch_cli.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/dispatch_closure.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/dispatch_fresh_timeout.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/dispatch_runner.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/dispatch_snapshot.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/settlement_identity.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/settlement_followups.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/settlement_log_loss.py",
+    "/private/tmp/claude-501/-Users-pedro-Developer-projects/b52c03f0-d920-5f82-9aac-285c87707d12/scratchpad/codex/mb/repro/settlement_results.txt"
+  ]
+}
