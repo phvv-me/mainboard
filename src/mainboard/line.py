@@ -20,7 +20,7 @@ from .context.admission import admit
 from .core.errors import MissionError
 from .core.project import Project
 from .dispatch.schedulers.base import login_ask
-from .dispatch.schedulers.pbs import build_qsub_flags
+from .dispatch.schedulers.pbs import build_qsub_flags, qdel
 from .dispatch.shared import announce
 from .dispatch.spool import Beat, LineSpec, Remote, spool_path
 from .dispatch.vocabulary import Resources
@@ -131,8 +131,8 @@ class Line:
     def release(self) -> LineStatus:
         """End the line and free its allocation, letting a running job finish.
 
-        Nothing more is claimed and the unclaimed are cancelled; the finishing job's results
-        stay retrievable.
+        Nothing more is claimed and the unclaimed are cancelled. A claimed job gets no tombstone,
+        so it runs to its own end and its results stay retrievable.
         """
         spool = Remote(spool_path(self.board.remote_root()))
         with connection(self.host) as remote:
@@ -185,16 +185,16 @@ class Line:
         """
         code, _, err = login_ask(remote, spool.stop())
         if code:
-            raise MissionError(f"{self.host} has no held line to release ({err.strip()[-200:]})")
+            raise MissionError(
+                f"could not stop the held line on {self.host} (exit {code}): {err.strip()[-200:]}"
+            )
         deadline = time.monotonic() + _ENDS
         status = self._status(remote, spool)
         while status.alloc and not status.running and time.monotonic() < deadline:
             time.sleep(_POLL)
             status = self._status(remote, spool)
         if status.alloc and not status.running:
-            freed = login_ask(remote, f"qdel {shlex.quote(status.alloc)}")
-            if freed[0] and "finished" not in freed[2] and "Unknown" not in freed[2]:
-                raise MissionError(f"qdel {status.alloc} failed ({freed[0]}): {freed[2].strip()}")
+            qdel(remote, status.alloc)
             status = self._status(remote, spool)
         return status
 
