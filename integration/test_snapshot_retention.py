@@ -1,7 +1,8 @@
 """B05: nothing a queued, held, PBS, offline or historical job still names is pruned.
 
 Every witness runs in a temporary workspace against fake hosts: no scheduler, lake or network is
-reached. A tree or prefix an inventory leaves unaccounted for is kept, never assumed unused.
+reached. A tree or prefix an inventory leaves unaccounted for is kept, never assumed unused. Pins
+protect the roots a host already has, `dispatch/sources` and `prefixes/<environment>`, in place.
 """
 
 import hashlib
@@ -17,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from mainboard.board import Board
-from mainboard.core import MissionError, Project
+from mainboard.core import Project
 from mainboard.core.retention import Retention
 from mainboard.dispatch import Snapshots
 from mainboard.dispatch.agent import program
@@ -35,7 +36,7 @@ _AGES = {"old": 9 * 86400, "stale": 9 * 86400, "new1": 3, "new2": 2, "new3": 1}
 
 
 class Host:
-    """A host workspace holding aged source trees and prefixes of the retained generation.
+    """A host workspace holding aged source trees and prefixes, none of them pinned.
 
     listing: what pueue answers about its queue, None for a host without pueue.
     runs: what the center's registry holds about runs on this host.
@@ -70,25 +71,27 @@ class Host:
         self._age(name)
 
     def bystanders(self) -> list[Path]:
-        """Age the legacy roots and another environment's prefixes, which no sweep may touch."""
-        other = Prefixes(self.root, self.prefixes.manifest, "historical")
-        roots = [self.out / "dispatch/sources/key", self.out / "prefixes/default/digest"]
-        roots += [other.path(name) for name in ("old", "stale", "new1")]
+        """Age the prefixes of two other environments, which no sweep of this one may touch."""
+        roots = [
+            Prefixes(self.root, self.prefixes.manifest, environment).path(name)
+            for environment in ("historical", "ancient")
+            for name in ("old", "stale", "new1")
+        ]
         for root in roots:
             root.mkdir(parents=True)
             self.expire(root, 9 * 86400)
         return roots
 
-    def freeze(self, link: Path | None = None) -> tuple[Path, Path]:
-        """Queue a job before retention: its frozen prefix, and the tree linked to `link`."""
-        frozen = self.out / "prefixes/default/old"
+    def freeze(self) -> tuple[Path, Path]:
+        """Queue a job before retention: its built prefix, and the tree whose link names it."""
+        frozen = self.prefixes.path("frozen")
         frozen.mkdir(parents=True)
         for name in ("pixi.toml", "pixi.lock", "activate.sh"):
             (frozen / name).write_bytes(_PAYLOAD)
-        (frozen / Project().marker("prefix")).write_text("old\n", encoding="utf-8")
-        source = self.out / "dispatch/sources/queued" / self.out.name / "envs/default"
+        (frozen / Project().marker("prefix")).write_text("frozen\n", encoding="utf-8")
+        source = self.tree("queued") / self.out.name / "envs/default"
         source.mkdir(parents=True)
-        (source / ".pixi").symlink_to(link or frozen / ".pixi")
+        (source / ".pixi").symlink_to(frozen / ".pixi")
         return frozen, source
 
     def inventory(self) -> Retention:
@@ -214,6 +217,13 @@ def register(host: Host, source: str, verdict: str | None) -> None:
     )
 
 
+def stage(host: Host, tree: Path) -> None:
+    """Stage the job script of a PBS job waiting for its allocation to run from `tree`."""
+    script = Path(host.snapshots.base).parent / "jobs" / "job-staged.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(f'cd "{tree}"\n', encoding="utf-8")
+
+
 def pin(host: Host, name: str, content: bytes) -> None:
     """Publish `content` as the host pin `name`."""
     pins = Path(host.snapshots.base) / ".retention"
@@ -222,7 +232,10 @@ def pin(host: Host, name: str, content: bytes) -> None:
 
 
 @pytest.fixture
-def host(tmp_path: Path) -> Host:
+def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Host:
+    # The workspace this process serves is the host's, so its state directory is the one the
+    # spool and the prefixes both name, whatever names the installed tool answers to.
+    monkeypatch.chdir(tmp_path)
     return Host(tmp_path)
 
 
@@ -259,6 +272,7 @@ def test_provide_without_pueue_deletes_nothing(host: Host) -> None:
         pytest.param(lambda host: register(host, "old", None), ["stale"], id="run-unreconciled"),
         pytest.param(lambda host: register(host, "old", "running"), ["stale"], id="run-running"),
         pytest.param(lambda host: register(host, "old", "ok"), ["stale"], id="run-settled"),
+        pytest.param(lambda h: stage(h, h.tree("old")), ["stale"], id="staged-script"),
     ],
 )
 def test_whatever_names_a_tree_keeps_it(
@@ -310,6 +324,12 @@ def test_a_pin_outlives_a_restart_with_the_center_offline(host: Host) -> None:
     assert (pinned / "job.py").read_bytes() == b"pass\n"
     assert sorted(host.prefixes.prune(live=(), inventory=Retention())) == ["new1", "stale"]
     assert host.survives("new2", "new3")
+    # The pin stands beside the trees it protects, with no generation directory in between.
+    assert (pinned.parent, host.prefixes.base) == (
+        host.out / "dispatch/sources",
+        host.out / "prefixes/default",
+    )
+    assert sorted(path.name for path in host.out.iterdir()) == ["dispatch", "prefixes"]
 
 
 def test_a_sweep_waits_out_a_pin_in_progress(host: Host) -> None:
@@ -319,14 +339,11 @@ def test_a_sweep_waits_out_a_pin_in_progress(host: Host) -> None:
     assert sorted(host.snapshots.prune(Retention())) == ["old", "stale"]
 
 
-def test_sweeps_stay_inside_their_generation_and_environment(host: Host) -> None:
+def test_a_prefix_sweep_stays_inside_its_environment(host: Host) -> None:
     bystanders = host.bystanders()
-    host.snapshots.prune(Retention())
     assert sorted(host.prefixes.prune(live=(), inventory=Retention())) == ["new1", "old", "stale"]
     assert host.prefixes.prune(live=(), inventory=Retention()) == []
     assert all(directory.is_dir() for directory in bystanders)
-    assert not Path(host.snapshots.base).is_relative_to(host.out / "dispatch/sources")
-    assert not host.prefixes.base.is_relative_to(host.out / "prefixes")
 
 
 @pytest.mark.parametrize(
@@ -343,23 +360,16 @@ def test_a_tree_environment_link_that_cannot_be_read_keeps_every_prefix(
     assert sorted(host.prefixes.prune(live=(), inventory=Retention())) == pruned
 
 
-def test_a_job_queued_before_retention_builds_at_its_frozen_address(host: Host) -> None:
+def test_a_job_queued_before_retention_finds_and_keeps_its_frozen_prefix(host: Host) -> None:
     frozen, source = host.freeze()
     with (
-        patch("mainboard.engines.compile.prefixes.digest_of", return_value="old"),
+        patch("mainboard.engines.compile.prefixes.digest_of", return_value="frozen"),
         patch("mainboard.engines.compile.prefixes.SecondStage.digest", return_value=""),
     ):
         assert host.prefixes.materialize(source) == frozen
+    host.expire(frozen, 9 * 86400)
+    assert sorted(host.prefixes.prune(live=(), inventory=Retention())) == ["new1", "old", "stale"]
     assert (frozen / "activate.sh").read_bytes() == _PAYLOAD
-
-
-def test_a_frozen_link_that_names_another_prefix_is_refused(host: Host) -> None:
-    _, source = host.freeze(host.root / "elsewhere")
-    with (
-        patch("mainboard.engines.compile.prefixes.digest_of", return_value="old"),
-        pytest.raises(MissionError, match="is not"),
-    ):
-        host.prefixes.materialize(source)
 
 
 def test_aliases_and_nested_roots_keep_the_tree_they_reach(host: Host) -> None:

@@ -39,7 +39,6 @@ from ..core.retention import Retention, RetentionPins
 from ..jobs.pins import staging
 from .agent import AgentRefused
 from .agent.program import WRAPPERS, ScopeSpec, reserved
-from .shared import state_dir
 from .spool import Spool, Submission, spool_path
 
 if TYPE_CHECKING:
@@ -156,7 +155,7 @@ class Sealed(Image):
 
 
 class Snapshots:
-    """The pinned source trees in one host's retained generation.
+    """The pinned source trees on one host, under `{root}/{state}/sources/`.
 
     Source files share inodes with the mirror; directories and frozen metadata add storage.
     Hardlinking also makes the pin correct: the mirror replaces a changed file by renaming a new
@@ -194,7 +193,7 @@ class Snapshots:
             self._named(spool.inbox, ".json", _cwd),
             # A claim names the tree of its submission; one whose submission is gone is unknown.
             self._named(spool.claims, ".json", lambda claim: _cwd(spool.inbox / claim.name)),
-            self._named(Path(self.root) / state_dir() / "jobs", ".sh", self._scripted),
+            self._named(Path(self.base).parent / "jobs", ".sh", self._scripted),
         )
         return reduce(Retention.including, observed, Retention())
 

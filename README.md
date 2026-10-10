@@ -110,8 +110,10 @@ prunes only what no record, pueue task, held submission, staged script or
 registry run names, and nothing at all when one of those cannot be read. No
 scheduler verdict releases a record, so pinned trees and environments stay
 until the submission authority retires them: monitor inode and disk usage.
-Pins live under `<state>/retained-v1/`, which a release without retention
-never lists, so a host not yet synced cannot collect them.
+Records protect the roots where they stand, `dispatch/sources` and
+`prefixes/<environment>`, so switching to a release with retention rebuilds
+nothing. It assumes one release prunes a host at a time, which draining the old
+controllers before each host changes release guarantees.
 
 ## Many jobs, many machines, one flow
 
