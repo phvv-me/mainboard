@@ -4,6 +4,25 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found setting up pedro-home-wsl, 2026-10-11
+
+### Mainboard
+
+1. **A fresh host's `host setup` fails once CPython 3.15 exists.** `Bootstrap.python` runs
+   `uv python install --no-bin '>=3.14'` (`dispatch/onboard.py`, `Dialect.requires_python` from the
+   package's `Requires-Python`), and with nothing installed uv 0.13.0 downloads the newest match,
+   3.15.0. The next step, `uv tool install --managed-python --python '>=3.14' --editable
+   packages/mainboard`, then fails: `cuda-bindings>=13.0` has no cp315 wheel (v13.4.3 ships
+   cp310 through cp314). Every host set up for the first time from now on hits it; hosts that
+   already hold a 3.14 keep working, since uv reuses an installed interpreter. Worked around on
+   pedro-home-wsl by installing the tool once onto `--python 3.14`, deleting the 3.15 folders
+   under `~/.local/share/uv/python`, and rerunning `host setup`. The fix is an upper bound where
+   the interpreter is requested (or on `Requires-Python`) until cuda-bindings ships cp315.
+2. **A failed tool install shows only uv's first line.** The refusal printed
+   `error: No solution found when resolving dependencies` and dropped the `cause:` and `hint:`
+   lines that name the real reason (here the missing cp315 wheel); the reproduction took a manual
+   `uv tool install` over ssh.
+
 ## Found building `host hold` for PBS, 2026-10-09
 
 ### Mainboard
