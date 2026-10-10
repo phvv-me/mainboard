@@ -21,3 +21,17 @@
    refactor gates and agent runs. Registered exclusive runs wait for the lease and refuse an
    unmanaged card.
 5. Every other question (Q04, Q06 to Q12, Q14, Q15): the design's recommendation stands.
+
+## Owner decisions of 2026-10-11
+
+6. The center's data goes on /Volumes/PORTABLE, with no watcher. The PostgreSQL data directory of
+   M36 and the center's large state move off the 96%-full internal disk onto PORTABLE. Services
+   staying down after a reboot until a console login is accepted, and no watcher is added. launchd
+   services reach PORTABLE through the ssh-localhost route that the settler already uses, or through
+   a Full Disk Access grant.
+7. Logging is zero-cost. The trial harness defect of 2026-10-11 (a DuckDB database opened per
+   table row, rows and censuses between timed calls) is fixed so that logging adds nothing inside
+   a timed region. Rows and censuses are buffered in memory and written after the timed loop, and
+   the harnesses keep outputs to verify after the loop. The affected v26 GH200 cells are acquired
+   again (E-grid, card scaling, NFC, cooperative offline). The engine stays frozen at v26, and its
+   per-call ledger cost (0.1-0.35 ms) is fixed after the paper.
