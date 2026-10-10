@@ -952,7 +952,7 @@ class Snapshot:
             sink.flush()
             os.fsync(sink.fileno())
         os.replace(pending, os.path.join(directory, hashlib.sha256(pin).hexdigest() + ".json"))
-        # Each level that gained an entry: the pin, its directory, the sources, the generation.
+        # Each directory that may have gained an entry: the pins, the sources, the state, the tree.
         for _ in range(4):
             self.__sync(directory)
             directory = os.path.dirname(directory)

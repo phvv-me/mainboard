@@ -1,17 +1,22 @@
 """The roots a host keeps whatever scheduler or center it can still reach.
 
 A launch pins its source tree and environment prefix on the host before anything is queued, and
-a sweep reads those pins back. Pins live under a generation directory that no release without
-retention lists or removes, so a host still running an older release cannot collect what the new
-one pinned. No scheduler verdict retires a pin: only the submission authority, which knows every
-evidence obligation has ended, may.
+a sweep reads those pins back. The pins protect the roots where they already stand, the host's
+`dispatch/sources` and `prefixes/<environment>`, so adopting them moves and rebuilds nothing. No
+scheduler verdict retires a pin: only the submission authority, which knows every evidence
+obligation has ended, may.
+
+Retention assumes one release per host. A release without it sweeps the same roots and neither
+reads the pins nor honors them, so two releases pruning one host at once could collect what the
+newer pinned. The drain-and-switch cutover guarantees it: every host changes release in one step
+after its old controllers drain.
 """
 
 import hashlib
 import os
 from contextlib import suppress
 from functools import cached_property, reduce
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from filelock import FileLock, Timeout
@@ -20,22 +25,8 @@ from patos import FrozenModel
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-# Beside, never inside, the legacy collection roots `dispatch/sources` and `prefixes/<env>`.
-_GENERATION = "retained-v1"
-
 # The pin directory the host's standard-library agent writes, which `Snapshot.__retain` spells.
 _PINS = ".retention"
-
-
-def retained(root: PurePath, out: str) -> PurePath:
-    """Name the generation directory holding a host's pinned sources and prefixes.
-
-    Path arithmetic alone, so any machine computes it before the host has been asked anything.
-
-    root: the host's workspace root.
-    out: the generated-state directory name under `root`.
-    """
-    return root / out / _GENERATION
 
 
 class Retention(FrozenModel):
@@ -98,7 +89,8 @@ class RetentionPins:
     SOURCES: ClassVar[str] = "sources"
 
     def __init__(self, root: Path, out: str) -> None:
-        self.base = Path(retained(root, out), self.SOURCES)
+        # Under the dispatch state `dispatch.shared.state_dir` names, which no transfer prunes.
+        self.base = root / out / "dispatch" / self.SOURCES
         self._lock = FileLock(
             self.base / ".pin.lock",
             is_singleton=True,
