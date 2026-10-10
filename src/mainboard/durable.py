@@ -8,6 +8,7 @@ import os
 import platform
 import plistlib
 import re
+import shlex
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from getpass import getuser
@@ -40,6 +41,9 @@ _SUGGESTED = "20m"
 _DEADLINE = 10.0
 # The timer properties a state read asks the user manager for.
 _SHOWN = ("--property=ActiveState", "--property=LastTriggerUSec")
+# A login to this same Mac, where a launchd agent's pass runs: an agent holds no Full Disk Access,
+# so a lake on an external volume never answers it, while a Remote Login session holds it.
+_LOOPBACK = ("/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "localhost")
 
 # `20m`, `1h`, `90s`: a whole number of one unit, the way systemd itself writes a period.
 _WRITTEN = re.compile(r"(\d+)([smh])")
@@ -327,7 +331,8 @@ class LaunchdAgent(Settler):
     The agent is loaded into the GUI domain while someone is logged in at the console and into the
     background user domain otherwise, which is all a center reached over ssh after a restart has.
     launchd keeps no journal, so what each pass says goes to `run/settler.log` in the workspace's
-    state directory. The label carries the same root stamp as the systemd units.
+    state directory. The label carries the same root stamp as the systemd units. The agent runs
+    the pass over `ssh localhost` (`_LOOPBACK`), so installing needs that key login to work.
     """
 
     def __init__(self, root: Path, agents: Path | None = None, shell: Shell = locally) -> None:
@@ -361,11 +366,20 @@ class LaunchdAgent(Settler):
         found = which(_TOOL)
         if found is None:
             raise MissionError(f"no {_TOOL} on PATH for an agent to run; install the tool first")
+        status, output = self.shell((*_LOOPBACK, "true"))
+        if status:
+            raise MissionError(
+                f"`ssh localhost` failed ({_complaint(output)}), and the pass runs there to reach "
+                "the lake; allow Remote Login with Full Disk Access and a key login to this Mac"
+            )
         self.agents.mkdir(parents=True, exist_ok=True)
         self.log.parent.mkdir(parents=True, exist_ok=True)
         agent = {
             "Label": self.label,
-            "ProgramArguments": [found, *_PASS],
+            "ProgramArguments": [
+                *_LOOPBACK,
+                f"cd {shlex.quote(str(self.root))} && {shlex.join([found, *_PASS])}",
+            ],
             "WorkingDirectory": str(self.root),
             "StartInterval": every.seconds,
             "RunAtLoad": True,

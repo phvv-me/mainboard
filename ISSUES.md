@@ -197,6 +197,10 @@ campaign first; move an entry to the bottom section once fixed and verified.
     once per process first and raises after 10 s, naming the missing access. Granting tmux the
     access would restart the terminal, so agent sessions run lake verbs through `ssh localhost`,
     whose sessions hold Full Disk Access (Remote Login allows it); the message says so.
+    2026-10-10: the launchd settler (`job list --every 20m`) met the same refusal on every pass,
+    since a launchd agent holds no Full Disk Access either. FIXED locally (unreleased): the agent
+    runs its pass over `ssh -o BatchMode=yes localhost`, and installing refuses while that login
+    fails.
 13f3. **Every job host inherits the center's absolute `[workspace] lake`** (2026-10-08).
     Since the lake moved to `/Volumes/PORTABLE/mainboard-lake` (9ffcc472d) the shipped manifest
     names that path on every host, and a pytest trial there dies in `pytest_configure`
