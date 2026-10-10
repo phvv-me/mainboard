@@ -1966,11 +1966,10 @@ def build(root: Path | None = None) -> App:
         """Compare what the lake's catalog references with what is on disk; exit 1 on a loss.
 
         A deleted data file breaks only its table and `count(*)` hides it, so this is what finds
-        one; a catalog WAL lost after a crash is named too. Then DuckDB recomputes every kept
-        chunk's checksum in parallel against the one recorded at ingest, reading every byte the
-        lake keeps once and none into Python, and every indexed evidence file must be held whole
-        at its size. A chunk kept before checksums existed has its checksum recorded by that
-        read, so the first check after an upgrade is also the backfill.
+        one; a catalog WAL lost after a crash is named too. Then every indexed evidence file's
+        object is read back a window at a time: whole at its size, each chunk matching the
+        checksum recorded at ingest, and all of it hashing to its digest. Nothing is written,
+        not even a checksum for a chunk kept before checksums existed.
 
         Args:
         """
@@ -1991,8 +1990,9 @@ def build(root: Path | None = None) -> App:
 
         Every file at or under each path lands once per content in the lake's `blobs`, and its
         workspace-relative path in `lake.evidence`; readers of receipts, artifacts and events
-        then find it there once it is gone from disk. A file already kept costs nothing, so a
-        rerun finishes an interrupted ingest. Nothing on disk is moved or changed.
+        then find it there once it is gone from disk. A file whose object the lake already holds
+        whole is not stored again, and one it holds damaged is stored afresh, so a rerun also
+        finishes an interrupted ingest. Nothing on disk is moved or changed.
 
         Args:
             paths: evidence files or directories inside this workspace.
@@ -2006,7 +2006,8 @@ def build(root: Path | None = None) -> App:
         """Write evidence the lake keeps back to where it stood in the tree.
 
         A file already there with the right bytes is left alone; every written file is verified
-        against its digest first.
+        against its digest first. A file already there with other bytes is never replaced: the
+        verb refuses, naming both digests, and writes nothing.
 
         Args:
             paths: indexed evidence files or directories, as they stood in this workspace.
@@ -2021,14 +2022,18 @@ def build(root: Path | None = None) -> App:
         """Delete tree copies of evidence the lake keeps, to give the disk back.
 
         A file goes only when the lake indexes that path with the same bytes and holds an
-        intact object; anything else stays. Readers recall evicted files from the lake, and
-        `materialize` writes them back.
+        intact object; anything else stays. Naming paths says nothing writes them any more.
+        Each file is moved aside, checked against the lake once more and only then removed, so
+        one changed meanwhile stays, and so do the parts of an artifact archive, whose members
+        readers open by path. Readers recall evicted files from the lake, and `materialize`
+        writes them back.
 
         Args:
-            paths: evidence files or directories inside this workspace.
+            paths: evidence files or directories inside this workspace, no longer written.
         """
+        keeper = Evidence(Lake.at(workspace_root()))
         with progress("evicting tree copies the lake keeps"):
-            evicted = Evidence(Lake.at(workspace_root())).evict(paths)
+            evicted = keeper.evict(keeper.finalize(paths))
         output.print_rows([{"evicted": len(evicted)}], title="lake evict", columns=("evicted",))
 
     @lake.command

@@ -11,27 +11,28 @@
 # evidence files became thousands of 34 KB data files at 68 MB a minute. They travel the way every
 # lake insert does (`lake.staged`), since DuckDB copies a whole BLOB on every slice of it, so
 # cutting chunks out of one spooled file in SQL ran out of memory. They are staged inside the
-# caller's transaction, so they commit together or not at all: an object is held once any row of
-# it is. Two writers racing on one object each add the same chunks, which a read takes once per
-# ordinal. A read hands back only bytes that hash to the digest asked for, so a damaged object
-# reads as absent rather than as wrong bytes.
+# caller's transaction, so they commit together or not at all.
 #
-# CHECKSUMS. Each staged chunk's MD5 lands in `checksums` in the same insert's transaction,
-# computed by DuckDB from the very bytes whose SHA-256 was just verified, so `audit` proves every
-# chunk intact by recomputing it in SQL, in parallel, without a byte crossing into Python (the
-# SHA-256 of a chunked object cannot be recomputed that way, since it runs across chunks). MD5
-# because a checksum must be one every DuckDB build computes: the `hashfuncs` community extension
-# (xxh3) has no build for the DuckDB 2.0 development release this tool runs, and DuckDB's own
-# `hash` may change between releases. A chunk written before checksums existed gets its checksum
-# from the first audit's read, trusting the bytes as their ingest verified them.
+# CUSTODY. An object is held only when it is intact, and one verifier decides that for every
+# reader and every destructive step: the ordinals run from zero without a gap, the copies of a
+# chunk agree with each other and with each checksum recorded for it, and all the chunks together
+# hash to the digest. Identical copies from two writers that raced on one object are one chunk; a
+# damaged object is not held, and staging it again replaces what the lake kept of it, inside the
+# staging transaction. Each chunk's MD5 lands in `checksums` in the same insert, computed by DuckDB
+# from the very bytes whose SHA-256 was just verified. MD5 because a checksum must be one every
+# DuckDB build computes: the `hashfuncs` community extension (xxh3) has no build for the DuckDB
+# 2.0 development release this tool runs, and DuckDB's own `hash` may change between releases. A
+# chunk kept before checksums existed leans on the whole digest alone, and nothing here records a
+# checksum for it: reading never writes.
 
 import hashlib
-import logging
 import os
 import re
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
+from io import BytesIO
+from itertools import groupby
+from operator import itemgetter
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import IO
 
 import duckdb
@@ -41,6 +42,7 @@ from sqlalchemy import func, select
 from ..core.errors import MissionError
 from . import schema
 from .lake import ALIAS, Lake, staged
+from .owned import OwnedFile
 
 # One chunk of an object, and the most bytes of chunks one insert stages.
 CHUNK_BYTES = 8 << 20
@@ -48,21 +50,23 @@ STAGED_BYTES = 256 << 20
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
-# The temporary tables a staged insert's chunks are decoded into (read once for `blobs` and once
-# for `checksums`), and an audit's recomputed checksums are kept in, one narrow row per chunk.
+# The temporary table a staged insert's chunks are decoded into, read once for `blobs` and once
+# for `checksums`.
 _STAGED = "staged_chunks"
-_SUMMED = "summed_chunks"
 
-logger = logging.getLogger(__name__)
+# One stored copy of a chunk: its digest, ordinal and bytes (None when the cell was lost), the MD5
+# DuckDB computes from those bytes now and every MD5 recorded for the chunk (None for a chunk
+# kept before checksums).
+type _Copy = tuple[str, int, bytes | None, str | None, list[str] | None]
 
 
 class Audit(FrozenModel):
-    """What the lake holds of one object, found without reading its bytes into Python.
+    """What the lake holds of one object, verified through its complete byte stream.
 
     chunks: distinct ordinals held, and `last` the highest; a gap shows as `chunks <= last`,
         a lost last chunk only as a short `size`.
     size: bytes across those chunks, one copy each.
-    intact: whether every copy of every chunk matches its recorded checksum.
+    intact: contiguous ordinals, agreeing copies and checksums, and a matching whole SHA-256.
     """
 
     chunks: int
@@ -85,130 +89,207 @@ class Blobs:
     def __init__(self, lake: Lake) -> None:
         self.lake = lake
 
-    def audit(self, connection: duckdb.DuckDBPyConnection) -> dict[str, Audit]:
-        """Every object the lake holds, each chunk's checksum recomputed by DuckDB in parallel.
+    def audit(
+        self, connection: duckdb.DuckDBPyConnection, digests: Collection[str]
+    ) -> dict[str, Audit]:
+        """Verify each object among `digests` the lake holds any row of; the absent are left out.
 
-        Reads every byte of `blobs` once, inside DuckDB. A chunk with no recorded checksum yet
-        (written before checksums existed) has it recorded from that same read, trusting the
-        bytes as their ingest verified them.
+        Writes nothing: not a byte, a row or a checksum.
         """
-        self.lake.execute(
-            connection,
-            f"CREATE OR REPLACE TEMP TABLE {_SUMMED} AS SELECT sha256, coalesce(ordinal, 0) "
-            f"AS ordinal, octet_length(bytes) AS size, md5(bytes) AS md5 FROM {ALIAS}.blobs",
-        )
-        recorded = self.lake.execute(
-            connection,
-            f"INSERT INTO {ALIAS}.checksums BY NAME SELECT DISTINCT ON (sha256, ordinal) "
-            f"sha256, ordinal, md5 FROM {_SUMMED} s WHERE NOT EXISTS (SELECT 1 FROM "
-            f"{ALIAS}.checksums c WHERE c.sha256 = s.sha256 AND c.ordinal = s.ordinal)",
-        ).fetchone()
-        if recorded and recorded[0]:
-            logger.info("recorded the checksum of %d chunks kept before checksums", recorded[0])
-        rows = self.lake.execute(
-            connection,
-            "SELECT sha256, count(*), max(ordinal), sum(size), bool_and(ok) FROM ("
-            "SELECT s.sha256, s.ordinal, any_value(s.size) AS size, "
-            "bool_and(coalesce(s.md5 = c.md5, false)) AS ok "
-            f"FROM {_SUMMED} s LEFT JOIN {ALIAS}.checksums c "
-            "ON c.sha256 = s.sha256 AND c.ordinal = s.ordinal GROUP BY ALL) GROUP BY sha256",
-        ).fetchall()
-        self.lake.execute(connection, f"DROP TABLE {_SUMMED}")
         return {
-            digest: Audit(chunks=chunks, last=last, size=size, intact=intact)
-            for digest, chunks, last, size, intact in rows
+            digest: self._verify(digest, copies)
+            for digest, copies in self._objects(connection, digests)
         }
 
     def chunks(self, connection: duckdb.DuckDBPyConnection, digest: str) -> Iterator[bytes]:
         """`digest`'s chunks in order, one query each, so memory holds one chunk at a time.
 
         An object's chunks share one staging, so the catalog's per-file statistics find them
-        without reading the rest of the table. Unverified: `write` hashes as it goes.
+        without reading the rest of the table. Unverified: the caller hashes as it goes.
         """
         kept = schema.blobs
         ordinal = func.coalesce(kept.c.ordinal, 0)
-        object_ = kept.c.sha256 == digest
-        ordinals = self.lake.execute(
-            connection, select(ordinal).distinct().where(object_).order_by(ordinal)
-        ).fetchall()
-        for (number,) in ordinals:
+        for number in self._ordinals(connection, digest):
             row = self.lake.execute(
-                connection, select(kept.c.bytes).where(object_, ordinal == number).limit(1)
+                connection,
+                select(kept.c.bytes).where(kept.c.sha256 == digest, ordinal == number).limit(1),
             ).fetchone()
             if row is not None:
                 yield row[0]
 
     def held(self, connection: duckdb.DuckDBPyConnection, digests: Collection[str]) -> set[str]:
-        """The digests among `digests` the lake holds an object for."""
-        if not digests:
-            return set()
-        found = self.lake.execute(
-            connection,
-            f"SELECT DISTINCT sha256 FROM {ALIAS}.blobs "
-            "WHERE sha256 IN (SELECT unnest(?::VARCHAR[]))",
-            [_digests(digests)],
-        )
-        return {digest for (digest,) in found.fetchall()}
+        """The digests among `digests` the lake holds an intact object for."""
+        return {
+            digest for digest, audit in self.audit(connection, digests).items() if audit.intact
+        }
+
+    def inspect(
+        self, connection: duckdb.DuckDBPyConnection, digest: str, sink: IO[bytes] | None = None
+    ) -> Audit:
+        """Verify one object while writing its bytes to `sink`; one the lake lacks is no object."""
+        for _, copies in self._objects(connection, [digest]):
+            return self._verify(digest, copies, sink)
+        return Audit(chunks=0, last=-1, size=0, intact=False)
 
     def read(
         self, connection: duckdb.DuckDBPyConnection, digests: Collection[str]
     ) -> dict[str, bytes]:
         """The intact objects among `digests`, by digest; one absent or damaged is left out."""
-        if not digests:
-            return {}
-        rows = self.lake.execute(
-            connection,
-            f"SELECT DISTINCT ON (sha256, o) sha256, o, bytes FROM (SELECT sha256, "
-            f"coalesce(ordinal, 0) AS o, bytes FROM {ALIAS}.blobs WHERE sha256 IN "
-            "(SELECT unnest(?::VARCHAR[]))) ORDER BY sha256, o",
-            [_digests(digests)],
-        ).fetchall()
-        assembled: dict[str, list[bytes]] = {}
-        for digest, _, payload in rows:
-            assembled.setdefault(digest, []).append(payload)
-        wholes = {digest: b"".join(parts) for digest, parts in assembled.items()}
-        return {
-            digest: whole
-            for digest, whole in wholes.items()
-            if hashlib.sha256(whole).hexdigest() == digest
-        }
+        found: dict[str, bytes] = {}
+        for digest, copies in self._objects(connection, digests):
+            with BytesIO() as sink:
+                if self._verify(digest, copies, sink).intact:
+                    found[digest] = sink.getvalue()
+        return found
 
     def stage(
         self, connection: duckdb.DuckDBPyConnection, objects: Mapping[str, bytes | Path]
     ) -> int:
-        """Append each digest's object, bytes already read or a file streamed from disk, as its
+        """Stage each digest's object, bytes already read or a file streamed from disk, as its
         chunks and their checksums; how many bytes they were.
 
-        Staged inside the caller's open transaction, one insert per `STAGED_BYTES`. Raises
-        MissionError when a file's bytes no longer hash to its digest, so the caller's
-        transaction is abandoned rather than committing an object under the wrong name.
+        Staged inside the caller's open transaction, one insert per `STAGED_BYTES`. A damaged
+        object the lake already holds under one of these digests is dropped first, so the
+        transaction replaces it whole or leaves it as it was. Raises MissionError when a file's
+        bytes no longer hash to its digest, so the caller's transaction is abandoned rather than
+        committing an object under the wrong name.
         """
+        damaged = [
+            digest
+            for digest, copies in self._objects(connection, objects)
+            if not self._verify(digest, copies).intact
+        ]
+        for table in ("blobs", "checksums") if damaged else ():
+            self.lake.execute(
+                connection,
+                f"DELETE FROM {ALIAS}.{table} WHERE sha256 IN (SELECT unnest(?::VARCHAR[]))",
+                [damaged],
+            )
         batch = _Batch(connection)
         size = sum(batch.keep(digest, path) for digest, path in objects.items())
         batch.flush()
         return size
 
-    def write(self, connection: duckdb.DuckDBPyConnection, digest: str, target: Path) -> bool:
-        """Write `digest`'s object to `target` one chunk at a time, False when the lake holds no
-        intact copy; `target` is replaced only by bytes that verified."""
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as stream:
-            temporary = Path(stream.name)
-            whole = self._copy(connection, digest, stream)
-        if not whole:
-            temporary.unlink()
-            return False
-        os.replace(temporary, target)
-        return True
+    def write(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        digest: str,
+        target: Path,
+        *,
+        root: Path | None = None,
+        size: int | None = None,
+        replace: bool = False,
+    ) -> bool:
+        """Write `digest`'s object to `target` under `root` (its folder by default).
 
-    def _copy(self, connection: duckdb.DuckDBPyConnection, digest: str, sink: IO[bytes]) -> bool:
-        """Stream `digest`'s object into `sink`, whether it was held and intact."""
-        hasher, seen = hashlib.sha256(), False
-        for payload in self.chunks(connection, digest):
+        False when the lake holds no intact copy of the right `size`. The bytes are verified in a
+        staged file beside `target`, then published whole. A different file already at `target`
+        is refused with MissionError, unless `replace` lets a cache drop what went stale.
+        """
+        owned = OwnedFile(target, root=root or target.parent)
+        with (
+            owned.parent(create=True) as directory,
+            owned.staging(directory=directory) as (staged_name, stream),
+        ):
+            audit = self.inspect(connection, digest, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+            if not audit.intact or (size is not None and audit.size != size):
+                return False
+            owned.publish(staged_name, directory=directory, digest=digest, replace=replace)
+            return True
+
+    @staticmethod
+    def _verify(digest: str, copies: Iterable[_Copy], sink: IO[bytes] | None = None) -> Audit:
+        """Judge an object from its stored copies in ordinal order, writing its bytes to `sink`.
+
+        Intact needs ordinals from zero without a gap, every copy of a chunk the same bytes and
+        agreeing with each recorded checksum, and the whole hashing to `digest`; a chunk with no
+        recorded checksum leans on that SHA-256 alone.
+        """
+        hasher, size, chunks, last, intact = hashlib.sha256(), 0, 0, -1, True
+        for ordinal, group in groupby(copies, key=itemgetter(1)):
+            stored = list(group)
+            payload = stored[0][2] or b""
+            intact = (
+                intact
+                and ordinal == chunks
+                and all(
+                    copy[2] == payload and all(recorded == copy[3] for recorded in copy[4] or ())
+                    for copy in stored
+                )
+            )
             hasher.update(payload)
-            seen = True
-            sink.write(payload)
-        return seen and hasher.hexdigest() == digest
+            size, chunks, last = size + len(payload), chunks + 1, ordinal
+            if sink is not None:
+                sink.write(payload)
+        return Audit(
+            chunks=chunks,
+            last=last,
+            size=size,
+            intact=intact and chunks > 0 and hasher.hexdigest() == digest,
+        )
+
+    def _copies(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        digests: Collection[str],
+        ordinal: int | None = None,
+    ) -> list[_Copy]:
+        """Every stored copy of the chunks of `digests`, or of their chunk `ordinal` alone."""
+        listed = _digests(digests)
+        return self.lake.execute(
+            connection,
+            "SELECT b.sha256, coalesce(b.ordinal, 0), b.bytes, md5(b.bytes), c.sums "
+            f"FROM {ALIAS}.blobs b LEFT JOIN (SELECT sha256, ordinal, list(DISTINCT md5) AS sums "
+            f"FROM {ALIAS}.checksums WHERE sha256 IN (SELECT unnest(?::VARCHAR[])) "
+            "GROUP BY ALL) c ON c.sha256 = b.sha256 AND c.ordinal = coalesce(b.ordinal, 0) "
+            "WHERE b.sha256 IN (SELECT unnest(?::VARCHAR[])) "
+            "AND (?::BIGINT IS NULL OR coalesce(b.ordinal, 0) = ?::BIGINT)",
+            [listed, listed, ordinal, ordinal],
+        ).fetchall()
+
+    def _objects(
+        self, connection: duckdb.DuckDBPyConnection, digests: Collection[str]
+    ) -> Iterator[tuple[str, Iterable[_Copy]]]:
+        """Each object among `digests` with any row, with its stored copies in ordinal order.
+
+        Objects come together in one query, except one of more chunks than a staging window
+        holds, which is read a chunk at a time so memory never holds the whole of it.
+        """
+        if not digests:
+            return
+        counted = dict(
+            self.lake.execute(
+                connection,
+                "SELECT sha256, count(DISTINCT coalesce(ordinal, 0)) "
+                f"FROM {ALIAS}.blobs WHERE sha256 IN (SELECT unnest(?::VARCHAR[])) "
+                "GROUP BY sha256",
+                [_digests(digests)],
+            ).fetchall()
+        )
+        window = STAGED_BYTES // CHUNK_BYTES
+        stored: dict[str, list[_Copy]] = {
+            digest: [] for digest, chunks in counted.items() if chunks <= window
+        }
+        for copy in self._copies(connection, stored) if stored else ():
+            stored[copy[0]].append(copy)
+        for digest, copies in stored.items():
+            yield digest, sorted(copies, key=itemgetter(1))
+        for digest in counted.keys() - stored.keys():
+            yield digest, self._streamed(connection, digest)
+
+    def _ordinals(self, connection: duckdb.DuckDBPyConnection, digest: str) -> list[int]:
+        kept = schema.blobs
+        ordinal = func.coalesce(kept.c.ordinal, 0)
+        rows = self.lake.execute(
+            connection, select(ordinal).distinct().where(kept.c.sha256 == digest).order_by(ordinal)
+        ).fetchall()
+        return [number for (number,) in rows]
+
+    def _streamed(self, connection: duckdb.DuckDBPyConnection, digest: str) -> Iterator[_Copy]:
+        for number in self._ordinals(connection, digest):
+            yield from self._copies(connection, [digest], number)
 
 
 class _Batch:

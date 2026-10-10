@@ -8,9 +8,19 @@
 # whether the bytes come from disk or from the lake. An ingest commits in groups of whole files,
 # each group one insert, so small files share Parquet data files instead of one each.
 #
-# INTEGRITY. `verify` never reads a byte into Python: DuckDB recomputes every chunk's checksum in
-# parallel against the one recorded when its bytes were verified on the way in, and each indexed
-# path is then checked for an object held whole (no ordinal missing) at its indexed size.
+# INTEGRITY. `verify` puts the object of every indexed path through the one blob verifier
+# (`state.blobs`), a window of objects at a time, and reports each path whose object is missing,
+# short or damaged. It never writes. A chunk with no checksum gets none recorded, and `ingest`
+# repairs.
+#
+# CUSTODY. A tree copy leaves only on proof. `inventory` reads where every indexed file stands
+# against the lake and changes nothing, and `evict` consumes that same inventory for the files
+# their producer has `finalize`d: each is moved by name into a private folder beside it, hashed
+# and checked against the lake once more, and only then removed, so a file replaced or written
+# meanwhile is put back and never unlinked. Without that handoff nothing is evicted, since
+# renaming fences no writer that still has the file open. The parts of an artifact archive are
+# never evicted: readers open its members by path. `materialize` goes the other way as carefully,
+# through `OwnedFile`, and refuses a changed file already there, naming both digests.
 #
 # READERS. What used to glob a directory asks an `EvidenceTree` instead: the files on disk, and
 # every file the lakes of the workspaces holding that directory index under it, materialized on
@@ -26,6 +36,7 @@
 # `DirectoryReplica` keeps them on a mounted disk (the center's external drive).
 
 import hashlib
+import logging
 import mimetypes
 import os
 from abc import ABC, abstractmethod
@@ -35,19 +46,30 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from functools import cache, cached_property, partial
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 import duckdb
 from patos import FrozenModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import Select, func, or_, select
 
 from ..core.errors import MissionError
 from ..core.project import Project
 from . import schema
-from .blobs import STAGED_BYTES, Blobs
+from .blobs import STAGED_BYTES, Audit, Blobs
 from .lake import Finding, Lake, Session, insert
+from .owned import OwnedFile, link_in, tree_of
 
 # Where the read-through cache lives under the state directory.
 CACHE = "evidence"
+
+# A file as the filesystem knows it: device, inode, size and modification time in nanoseconds.
+type Identity = tuple[int, int, int, int]
+
+logger = logging.getLogger(__name__)
+
+# The folder `trials.archive.ParquetArtifacts` packs artifacts into. Readers address their members
+# by path, opening its parts in the tree and never recalling them by digest, so the parts stay.
+_ARCHIVE = "artifacts.parquet"
 
 # How many files are read at once: opening a file is what costs on a scanned disk, and
 # the opens overlap. The largest file a read holds in memory; a larger one streams when staged.
@@ -90,6 +112,44 @@ class Located(FrozenModel):
     path: str
     sha256: str
     size: int
+
+
+class Inventory(FrozenModel):
+    """Where one indexed file stands, its tree copy against the lake's, as observed once.
+
+    sha256: the digest the lake indexes at the path, and `size` its bytes.
+    local_sha256: the digest of the file now at the path, empty where there is none to read:
+        no file at all, a link, or anything but a regular file.
+    local: whether the tree holds no file, the same bytes or other ones.
+    lake: whether the lake holds no row of the object, an intact object or a damaged one.
+    """
+
+    path: str
+    sha256: str
+    size: int
+    local_sha256: str
+    local: Literal["missing", "identical", "changed"]
+    lake: Literal["missing", "intact", "corrupt"]
+
+    @property
+    def archived(self) -> bool:
+        """Whether the file is a part of an artifact archive, which readers open by path."""
+        return _is_archived(self.path)
+
+    @property
+    def evictable(self) -> bool:
+        """Whether the tree copy is the lake's whole object and nothing reads it by path."""
+        return self.local == "identical" and self.lake == "intact" and not self.archived
+
+
+class Finalized(FrozenModel):
+    """Files their producer closed, as they stood when it said so, the only ones to evict.
+
+    files: each file with its identity at that moment. The producer promises that no writer
+        remains. A file that no longer matches has broken the promise, so its bytes stay.
+    """
+
+    files: dict[Path, Identity]
 
 
 class Replica(ABC):
@@ -183,26 +243,29 @@ class Evidence:
         return self.lake.session()
 
     def cached(self, row: Located) -> Path:
-        """`row`'s file in the read-through cache, materialized first when it is not there."""
+        """`row`'s file in the read-through cache, materialized first when it is not there.
+
+        The cache is the lake's own, so a file gone stale at the path is replaced.
+        """
         target = self.cache / row.path
-        if not (target.is_file() and _digest(target) == row.sha256):
-            self._write(row, target)
+        try:
+            current = OwnedFile(target, root=self.cache).digest() == row.sha256
+        except FileNotFoundError:
+            current = False
+        if not current:
+            self._write(row, root=self.cache, replace=True)
         return target
 
     def indexed(self, prefix: str = "") -> list[Located]:
         """Every indexed file at or under the workspace-relative `prefix`, all when empty."""
         if not self.lake.exists():
             return []
-        kept = schema.evidence
-        query = select(kept.c.path, kept.c.sha256, kept.c.size).order_by(kept.c.path)
-        under = or_(kept.c.path == prefix, func.starts_with(kept.c.path, f"{prefix}/"))
-        rows = self.session.rows(query.where(under) if prefix else query)
-        return [Located(path=path, sha256=digest, size=size) for path, digest, size in rows]
+        return _located(self.session.rows(_listing(prefix)))
 
     def ingest(self, paths: Iterable[Path], *, staged: Path | None = None) -> Kept:
         """Keep every file at or under `paths` in the lake, byte for byte, and index its path.
 
-        Idempotent: an object already held costs nothing, and a path whose latest row already
+        Idempotent: an intact object is not rewritten, and a path whose latest row already
         names its digest gets no new row. Files are taken in windows of at most `STAGED_BYTES`,
         each file read once by a pool of readers (opening a file, not the lake, is what costs on
         a scanned disk), and each window commits as one insert, one data file. An
@@ -216,7 +279,7 @@ class Evidence:
         """
         given = [Path(os.path.abspath(path)) for path in paths]
         base = staged or self.root
-        sources = self._files(given)
+        sources = self._files(given, root=base)
         self.lake.ready()
         index = schema.evidence
         current = dict(self.session.rows(select(index.c.path, index.c.sha256)))
@@ -261,19 +324,23 @@ class Evidence:
         lake keeps, so its path is all that crosses. Size and media type are those the object
         was kept with, the type named by the new path's suffix first, as `ingest` names it.
 
-        Raises MissionError when the lake keeps no object for one of them.
+        Raises MissionError when the lake keeps no intact object for one of them.
         """
         if not named:
             return 0
         index = schema.evidence
-        held = self.session.run(partial(self.blobs.held, digests=set(named.values())))
+        listed = self.session.rows(
+            f"SELECT DISTINCT ON (sha256) sha256, size, media_type FROM {schema.ALIAS}"
+            ".evidence WHERE sha256 IN (SELECT unnest(?::VARCHAR[]))",
+            [sorted(set(named.values()))],
+        )
+        audits = self.session.run(
+            partial(self._audited, sizes={digest: size for digest, size, _ in listed})
+        )
         known = {
             digest: (size, media)
-            for digest, size, media in self.session.rows(
-                f"SELECT DISTINCT ON (sha256) sha256, size, media_type FROM {schema.ALIAS}"
-                ".evidence WHERE sha256 IN (SELECT unnest(?::VARCHAR[]))",
-                [sorted(held)],
-            )
+            for digest, size, media in listed
+            if digest in audits and audits[digest].intact
         }
         if lost := sorted(path for path, digest in named.items() if digest not in known):
             raise MissionError(f"the lake keeps no object {named[lost[0]][:12]} for {lost[0]}")
@@ -296,56 +363,160 @@ class Evidence:
         return self.lake.append(schema.evidence_log, rows) if rows else 0
 
     def materialize(self, paths: Sequence[Path], into: Path | None = None) -> list[Path]:
-        """Write every indexed file at or under `paths` back under `into` (the workspace root),
-        returning those written; a file already there with the right bytes is left alone.
+        """Write the missing indexed files at or under `paths` back, returning those written.
 
-        Raises MissionError when a path indexes nothing or the lake lost an object.
+        They go under `into`, the workspace by default. A file already there with the lake's bytes
+        is left alone. One with other bytes is never touched, and nothing is written while any
+        such conflict stands.
+
+        Raises MissionError when a path indexes nothing, the lake lost an object, a link stands in
+        the way, or a changed file does, naming each such path with both digests.
         """
-        written: list[Path] = []
+        root = into or self.root
+        wanted: dict[str, Located] = {}
         for given in paths:
             prefix = within(self.root, given)
-            rows = self.indexed(prefix)
-            if not rows:
+            if not (rows := self.indexed(prefix)):
                 raise MissionError(f"the lake indexes no evidence at or under {prefix}")
-            for row in rows:
-                target = (into or self.root) / row.path
-                if not (target.is_file() and _digest(target) == row.sha256):
-                    self._write(row, target)
-                    written.append(target)
-        return written
+            wanted.update((row.path, row) for row in rows)
+        standing = [(row, _standing(root, row)) for row in wanted.values()]
+        if conflicts := [
+            f"{root / row.path}: destination {found}; lake {row.sha256}"
+            for row, found in standing
+            if found not in {None, row.sha256}
+        ]:
+            raise MissionError("refusing to overwrite changed files\n" + "\n".join(conflicts))
+        missing = [row for row, found in standing if found is None]
+        for row in missing:
+            self._write(row, root=root)
+        return [root / row.path for row in missing]
 
-    def evict(self, paths: Sequence[Path]) -> list[Path]:
-        """Delete the tree copy of every file at or under `paths` that the lake indexes at that
-        path with the same bytes and holds intact, returning those deleted; any other file stays.
+    def finalize(self, paths: Sequence[Path]) -> Finalized:
+        """Record every file at or under `paths` as its producer closed it.
 
-        The tree is a cache of the lake: readers of artifacts and receipts recall an evicted
-        file by digest, and `materialize` writes it back.
+        The producer promises that nothing writes these files any more, which is what lets
+        `evict` remove them: nothing here can tell a writer that still has one open.
+
+        Raises MissionError for a path missing, outside the workspace or behind a link.
         """
-        sources = self._files(paths)
-        index = schema.evidence
-        current = dict(self.session.rows(select(index.c.path, index.c.sha256)))
-        claimed = {within(self.root, source): source for source in sources}
-        wanted = {current[path] for path in claimed if path in current}
-        held = self.session.run(partial(self.blobs.held, digests=wanted))
-        candidates = [source for path, source in claimed.items() if current.get(path) in held]
+        files: dict[Path, Identity] = {}
+        for source in self._files(paths):
+            with OwnedFile(source, root=self.root).read() as stream:
+                files[source] = _identity(os.fstat(stream.fileno()))
+        return Finalized(files=files)
+
+    def inventory(self, paths: Sequence[Path]) -> list[Inventory]:
+        """Where every indexed file at or under `paths` stands, its tree copy against the lake.
+
+        A read and nothing more: no byte of the tree and no row or checksum of the lake changes,
+        and a workspace without a lake answers empty. The lake's side is the blob verifier's own,
+        so what reads intact here is what `evict` and every reader accept.
+        """
+        wanted = {within(self.root, path) for path in paths}
+        if not self.lake.exists():
+            return []
+        with self.lake.open() as connection:
+            listed = _located(self.lake.execute(connection, _listing()).fetchall())
+            rows = [row for row in listed if self._is_under(row.path, wanted)]
+            audits = self._audited(connection, {row.sha256: row.size for row in rows})
         with ThreadPoolExecutor(max_workers=_READERS) as pool:
-            digests = pool.map(_digest, candidates)
-        evicted = [
-            source
-            for source, digest in zip(candidates, digests, strict=True)
-            if digest == current[within(self.root, source)]
+            observed = pool.map(self._observed, rows)
+        return [
+            Inventory(
+                path=row.path,
+                sha256=row.sha256,
+                size=row.size,
+                local_sha256=digest,
+                local=local,
+                lake=self._condition(audits.get(row.sha256), row.size),
+            )
+            for row, (digest, local) in zip(rows, observed, strict=True)
         ]
+
+    def evict(self, finalized: Finalized) -> list[Path]:
+        """Remove the tree copy of each finalized file the lake holds whole, returning them.
+
+        Any other file stays. Each candidate is moved by name into a private folder beside it,
+        hashed again, matched with its identity when the producer closed it and with the lake once
+        more, and only then removed, so a file that was replaced or written meanwhile is put back
+        and never lost. Readers recall an evicted file by digest. `materialize` writes it back.
+        Artifact archive parts always stay, since their members are read by path.
+
+        Raises MissionError when a retained file cannot go back because a new one took its name.
+        """
+        closed = {
+            source: identity
+            for source, identity in finalized.files.items()
+            if not _is_archived(within(self.root, source))
+        }
+        if parts := len(finalized.files) - len(closed):
+            logger.warning("%d archive files stay: readers open them by path", parts)
+        evicted: list[Path] = []
+        for item in self.inventory(list(closed)):
+            source = self.root / item.path
+            if item.evictable and self._evict(item, closed[source]):
+                evicted.append(source)
         for source in evicted:
-            source.unlink()
             # Folders the file leaves empty go too; the workspace root never is, holding its
             # manifest.
-            with suppress(OSError):
-                os.removedirs(source.parent)
-        for given in paths:
-            for folder in sorted(Path(given).rglob("*"), reverse=True):
+            for folder in source.relative_to(self.root).parents[:-1]:
                 with suppress(OSError):
-                    folder.rmdir()
+                    (self.root / folder).rmdir()
         return evicted
+
+    def _evict(self, item: Inventory, closed: Identity) -> bool:
+        """Remove `item`'s tree copy if it is still the closed file, False if it is not."""
+        try:
+            return self._vacated(item, closed)
+        except FileNotFoundError:
+            return False
+
+    def _vacated(self, item: Inventory, closed: Identity) -> bool:
+        owned = OwnedFile(self.root / item.path, root=self.root)
+        with owned.quarantine() as isolated:
+            if (
+                _identity(owned.stat_at(isolated)) != closed
+                or owned.digest_at(isolated) != item.sha256
+            ):
+                logger.warning("%s changed since its producer closed it; kept", item.path)
+                return False
+            audit = self.session.run(
+                lambda connection: self.blobs.inspect(connection, item.sha256)
+            )
+            if fault := audit.fault(item.size):
+                logger.warning("%s kept: the lake's copy has %s", item.path, fault)
+                return False
+            if _identity(owned.stat_at(isolated)) != closed:
+                logger.warning("%s changed while the lake was checked; kept", item.path)
+                return False
+            owned.unlink_at(isolated)
+        return True
+
+    def _observed(self, row: Located) -> tuple[str, Literal["missing", "identical", "changed"]]:
+        """Digest the tree copy of `row` and compare it; a link or a device there has no digest."""
+        try:
+            digest = _standing(self.root, row)
+        except MissionError:
+            return "", "changed"
+        if digest is None:
+            return "", "missing"
+        return digest, "identical" if digest == row.sha256 else "changed"
+
+    @staticmethod
+    def _condition(audit: Audit | None, size: int) -> Literal["missing", "intact", "corrupt"]:
+        """How the lake holds an object of `size` bytes, from its audit."""
+        if audit is None:
+            return "missing"
+        return "corrupt" if audit.fault(size) else "intact"
+
+    @staticmethod
+    def _is_under(path: str, prefixes: Collection[str]) -> bool:
+        """Whether the index `path` is one of `prefixes` or lies under one; "" is the root."""
+        return (
+            "" in prefixes
+            or path in prefixes
+            or any(parent.as_posix() in prefixes for parent in PurePosixPath(path).parents)
+        )
 
     def recall(self, sha256: str) -> bytes | None:
         """The object with `sha256`, verified, None when this lake holds no intact copy."""
@@ -382,18 +553,20 @@ class Evidence:
         """Find every indexed path whose object is missing, short or damaged.
 
         One finding per path whose object is absent, lacks a chunk, holds the wrong number of
-        bytes or has a chunk failing its checksum. Every chunk's checksum is recomputed inside
-        DuckDB, reading every byte the lake keeps once and none into Python; a chunk kept before
-        checksums existed has its checksum recorded by this read instead. Chunks DuckDB cannot
-        read back at all (a data file damaged past decoding) are one finding.
+        bytes or fails a recorded checksum or its SHA-256. Every indexed object is read through
+        the blob verifier a window at a time, and nothing is written: a chunk kept before
+        checksums existed is checked by its SHA-256 and gets no checksum recorded. Chunks DuckDB
+        cannot read back at all (a data file damaged past decoding) are one finding.
         """
+        if not self.lake.exists():
+            return []
         try:
-            audits = self.session.run(self.blobs.audit)
+            rows, audits = self._indexed_audits()
         except duckdb.Error as fault:
             return [Finding(table="blobs", kind="unreadable", detail=str(fault).splitlines()[0])]
         faults = {
             row: audits[row.sha256].fault(row.size) if row.sha256 in audits else "no copy held"
-            for row in self.indexed()
+            for row in rows
         }
         return [
             Finding(
@@ -405,18 +578,40 @@ class Evidence:
             if fault
         ]
 
-    def _read(self, source: Path, base: Path) -> _Entry:
-        """`source` read once: its digest, what it holds and, unless it is larger than
-        `_HELD_BYTES`, its bytes; a larger file is hashed as a stream and streamed again when
-        staged. Indexed at its place under `base`."""
-        size = source.stat().st_size
-        payload = source.read_bytes() if size <= _HELD_BYTES else None
-        if payload is None:
-            digest = _digest(source)
-            with source.open("rb") as stream:
+    def _indexed_audits(self) -> tuple[list[Located], dict[str, Audit]]:
+        """Every indexed file with the audits of the objects, on a fresh read-only attach."""
+        with self.lake.open() as connection:
+            rows = _located(self.lake.execute(connection, _listing()).fetchall())
+            return rows, self._audited(connection, {row.sha256: row.size for row in rows})
+
+    def _audited(
+        self, connection: duckdb.DuckDBPyConnection, sizes: Mapping[str, int]
+    ) -> dict[str, Audit]:
+        """The audit of each object named in `sizes`, its expected bytes, a window at a time."""
+        audits: dict[str, Audit] = {}
+        for window in _windows(sorted(sizes), sizes.__getitem__, _WINDOW_BYTES):
+            audits |= self.blobs.audit(connection, window)
+        return audits
+
+    def _read(self, source: Path, *, base: Path) -> _Entry:
+        """Read `source` once, through its folders under `base` and without following a link.
+
+        Its digest, what it holds and, unless it is larger than `_HELD_BYTES`, its bytes; a larger
+        file is hashed as a stream and streamed again when staged. Indexed at its place under
+        `base`. Raises MissionError when the file changed while it was read.
+        """
+        with OwnedFile(source, root=base).read() as stream:
+            before = _identity(os.fstat(stream.fileno()))
+            size = before[2]
+            payload = stream.read() if size <= _HELD_BYTES else None
+            if payload is None:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                stream.seek(0)
                 head = stream.read(len(_MAGIC))
-        else:
-            digest, head = hashlib.sha256(payload).hexdigest(), payload[: len(_MAGIC)]
+            else:
+                digest, head = hashlib.sha256(payload).hexdigest(), payload[: len(_MAGIC)]
+            if _identity(os.fstat(stream.fileno())) != before:
+                raise MissionError(f"{source} changed while reading; not ingested")
         return _Entry(
             source=source,
             path=source.relative_to(base).as_posix(),
@@ -457,26 +652,26 @@ class Evidence:
             ],
         )
 
-    def _files(self, paths: Sequence[Path]) -> list[Path]:
-        """Every file at or under `paths`, absolute, once each, refusing what lies outside."""
+    def _files(self, paths: Sequence[Path], *, root: Path | None = None) -> list[Path]:
+        """Every file at or under `paths`, absolute and once each.
+
+        Raises MissionError for what lies outside the workspace (or `root`) or behind a link.
+        """
         if not paths:
             raise MissionError("name the evidence files or directories to keep")
         found: set[Path] = set()
         for given in paths:
             path = Path(os.path.abspath(given))
-            within(self.root, path)
-            if path.is_file():
-                found.add(path)
-            elif path.is_dir():
-                found |= {item for item in path.rglob("*") if item.is_file()}
-            else:
-                raise MissionError(f"no evidence at {path}")
+            within(root or self.root, path)
+            found.update(tree_of(path, root=root or self.root))
         return sorted(found)
 
-    def _write(self, row: Located, target: Path) -> None:
-        """Write `row`'s object to `target`, refusing when the lake lost it."""
+    def _write(self, row: Located, *, root: Path, replace: bool = False) -> None:
+        """Write `row`'s object to its path under `root`, refusing when the lake lost it."""
         if not self.session.run(
-            lambda connection: self.blobs.write(connection, row.sha256, target)
+            lambda connection: self.blobs.write(
+                connection, row.sha256, root / row.path, root=root, size=row.size, replace=replace
+            )
         ):
             raise MissionError(f"the lake holds no intact copy of {row.path} ({row.sha256[:12]})")
 
@@ -504,14 +699,26 @@ class EvidenceTree:
         """Move `paths` into the center's lake, the nearest one holding `base`.
 
         They are kept byte for byte, then their tree copies dropped, since the lake is the
-        evidence's home and the tree only its cache. None when the nearest lake is no center's:
-        a dispatch mirror's staging lake is not a home, and the center collects the mirror's tree.
+        evidence's home and the tree only its cache. The caller is their producer and has closed
+        them (a finished run's receipts), which is what lets the copies go; one that was written
+        since is kept in the tree. A path behind a link is left where it is, in the tree. None when
+        the nearest lake is no center's: a dispatch mirror's staging lake is not a home, and the
+        center collects the mirror's tree.
         """
         keepers = self.keepers[:1]
         if not (paths and keepers and keepers[0].lake.central):
             return None
-        kept = keepers[0].ingest(paths)
-        keepers[0].evict(paths)
+        keeper = keepers[0]
+        owned = [path for path in paths if link_in(path, root=keeper.root) is None]
+        if len(owned) < len(paths):
+            logger.warning(
+                "%d of %d paths lie behind a link and stay", len(paths) - len(owned), len(paths)
+            )
+        if not owned:
+            return None
+        closed = keeper.finalize(owned)
+        kept = keeper.ingest(owned)
+        keeper.evict(closed)
         return kept
 
     def holds(self, digests: Collection[str]) -> set[str]:
@@ -620,9 +827,36 @@ def within(root: Path, path: Path) -> str:
         raise MissionError(f"{absolute} lies outside the workspace at {root}") from None
 
 
-def _digest(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+def _identity(metadata: os.stat_result) -> Identity:
+    return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+
+
+def _listing(prefix: str = "") -> Select:
+    """Select every indexed file at or under the workspace-relative `prefix`, all when empty."""
+    kept = schema.evidence
+    query = select(kept.c.path, kept.c.sha256, kept.c.size).order_by(kept.c.path)
+    under = or_(kept.c.path == prefix, func.starts_with(kept.c.path, f"{prefix}/"))
+    return query.where(under) if prefix else query
+
+
+def _is_archived(path: str) -> bool:
+    """Whether the workspace-relative `path` is a file inside an artifact archive's folder."""
+    return _ARCHIVE in PurePosixPath(path).parts[:-1]
+
+
+def _located(rows: Iterable[tuple[str, str, int]]) -> list[Located]:
+    return [Located(path=path, sha256=digest, size=size) for path, digest, size in rows]
+
+
+def _standing(root: Path, row: Located) -> str | None:
+    """The digest of the file at `row`'s path under `root`, None when no file is there.
+
+    Raises MissionError for a link on the way, or a file that is not a regular one.
+    """
+    try:
+        return OwnedFile(root / row.path, root=root).digest()
+    except FileNotFoundError:
+        return None
 
 
 def _windows[T](items: Sequence[T], weight: Callable[[T], int], limit: int) -> Iterator[list[T]]:
