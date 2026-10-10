@@ -317,6 +317,19 @@ campaign first; move an entry to the bottom section once fixed and verified.
       Since a failed upgrade now leaves nothing to fix by hand, `upgrade --frozen` (as `add` and
       `remove` have) writes the raised manifest alone, so the hand edits a raise needs join one
       later `mb lock`.
+13m. **A held settlement lock makes `job list` answer from the cache without saying so**
+    (2026-10-10). A `job list` started through `ssh localhost` outlived its killed ssh and held
+    `run/settlement.lock` for 29 minutes, busy in a DuckDB scan of the lake. Every listing
+    meanwhile printed "done: settling" with stale states (`sweep.running` null), so six ended
+    GH200 jobs read as `finished` with verdict `running`, and `job show --wait` heartbeated a
+    finished job until its timeout. The listing should name the holder (pid, start time) and
+    say its states are cached. A pass should also stop when its parent session dies.
+13n. **A settling pass costs minutes on a lake of small files** (2026-10-10). With 34,192
+    Parquet files (49 GB) one pass took 164 s, 447 s of it system time spent opening files
+    (`CachingFileSystem::OpenFile`, `ScanReadAheadJob`). Each settled run replays its receipt
+    stream (`bus.replay()`), so the cost grows with runs times files. The pass should read each
+    stream once and never scan blob files. `mb lake compact` (6.6 s) only took the count to
+    32,054, so the files are blob data, which compaction does not merge.
 13. The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...
     mainboard-agent`). It works, but contradicts the rule that nothing runs on the OS interpreter;
     document it as the one exception or ship the agent's own interpreter.
