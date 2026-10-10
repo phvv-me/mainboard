@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 from patos import Model
 from plumbum.commands.processes import ProcessExecutionError
 
+from ...core.errors import MissionError
+from .. import vocabulary
 from ..transport import DaemonDown, is_daemon_failure
 from ..vocabulary import JobState, Resources
 from .base import workspace_session
@@ -36,10 +38,16 @@ class PueueState(StrEnum):
     DONE = "Done"
 
 
-# States with a live child process, killed rather than removed; waiting ones are removed directly.
-_KILLABLE = {PueueState.RUNNING, PueueState.PAUSED}
-_REMOVABLE = {PueueState.LOCKED, PueueState.STASHED, PueueState.QUEUED}
-_LIVE = {PueueState.RUNNING, PueueState.QUEUED, PueueState.PAUSED}
+# Every state but Done is in flight. A started task has a child process, which a cancel kills; a
+# waiting one has none, which a cancel removes. Locked is a task being edited, Stashed one held
+# back by hand: neither has started, and neither is over.
+_STARTED = {PueueState.RUNNING, PueueState.PAUSED}
+_WAITING = {PueueState.LOCKED, PueueState.STASHED, PueueState.QUEUED}
+# The stage a listing shows; a paused or finished task keeps pueue's own word.
+_STAGES: dict[str, str] = {
+    **dict.fromkeys(_WAITING, vocabulary.QUEUED),
+    PueueState.RUNNING: vocabulary.RUNNING,
+}
 
 
 class PueueTask(Model):
@@ -70,16 +78,17 @@ def binary(machine: Machine) -> BaseCommand:
 def add(command: str, *, machine: Machine, root: str, label: str) -> str:
     """Enqueue `command` as one string, which pueue runs in a subshell; return its task id."""
     args = ["add", "--print-task-id", "--label", label, "--working-directory", root]
-    return str(binary(machine)[[*args, "--", command]]().strip())
+    return binary(machine)[[*args, "--", command]]().strip()
 
 
 def status(machine: Machine) -> list[PueueTask]:
     """The queue's tasks, parsed from `pueue status --json`.
 
     A task's `status` is externally tagged, `{"Running": {...}}` or `{"Done": {"result", ...}}`,
-    and `result` is a string (`"Success"`/`"Killed"`/...) or `{"Failed": <exit-code>}`. A dead
-    `pueued` refuses its control socket, raised as `DaemonDown` so the host reads as unreachable
-    and a sweep reports it once instead of failing the whole pass.
+    and `result` is a string (`"Success"`/`"Killed"`/...) or `{"Failed": <exit-code>}`; a variant
+    without fields is the bare string. A state this table does not name is kept as its word. A
+    dead `pueued` refuses its control socket, raised as `DaemonDown` so the host reads as
+    unreachable and a sweep reports it once instead of failing the whole pass.
     """
     try:
         output = binary(machine)[["status", "--json"]]()
@@ -89,13 +98,14 @@ def status(machine: Machine) -> list[PueueTask]:
         raise
     tasks: list[PueueTask] = []
     for task in json.loads(output).get("tasks", {}).values():
-        state, fields = next(iter(task["status"].items()))
+        tagged = task["status"]
+        state, fields = (tagged, {}) if isinstance(tagged, str) else next(iter(tagged.items()))
         result = fields.get("result")
         tasks.append(
             PueueTask(
                 id=task["id"],
                 label=task.get("label"),
-                state=PueueState(state),
+                state=_known(state),
                 result=next(iter(result)) if isinstance(result, dict) else result,
                 exit_code=result.get("Failed")
                 if isinstance(result, dict)
@@ -105,26 +115,37 @@ def status(machine: Machine) -> list[PueueTask]:
     return tasks
 
 
+def _known(word: str) -> PueueState | str:
+    """The state `word` names, else `word` itself for a variant a newer pueue added."""
+    try:
+        return PueueState(word)
+    except ValueError:
+        return word
+
+
 def log(task_id: int | str, *, machine: Machine) -> str:
     """The full captured log of `task_id`."""
-    return str(binary(machine)[["log", "--full", str(task_id)]]())
+    return binary(machine)[["log", "--full", str(task_id)]]()
 
 
 def kill(task_ids: Sequence[int | str], *, machine: Machine) -> str:
     """Kill one or many tasks."""
-    return str(binary(machine)[["kill", *map(str, task_ids)]]())
+    return binary(machine)[["kill", *map(str, task_ids)]]()
 
 
 def remove(task_ids: Sequence[int | str], *, machine: Machine) -> str:
     """Drop one or many tasks from the list entirely, so each reads as `vanished` afterwards."""
-    return str(binary(machine)[["remove", *map(str, task_ids)]]())
+    return binary(machine)[["remove", *map(str, task_ids)]]()
 
 
 def pueue_verdict(task: PueueTask | None) -> str:
-    """A one-word verdict for a pueue task (None means it's gone from the queue)."""
+    """A one-word verdict for a pueue task (None means it's gone from the queue).
+
+    Only a Done task has an outcome; waiting, started and unrecognized states are `running`.
+    """
     if task is None:
         return "vanished"
-    if task.state in _LIVE:
+    if task.state != PueueState.DONE:
         return "running"
     return "ok" if task.succeeded else "failed"
 
@@ -135,11 +156,18 @@ class Pueue:
     name = "ssh"
 
     def cancel(self, remote: Machine, root: str, *, handle: str) -> None:
+        """Kill a started task, remove a waiting one, and leave one that is gone or done.
+
+        A state this tool cannot place raises: stopping it by a guess could report a cancel that
+        did not happen.
+        """
         state = next((task.state for task in status(remote) if str(task.id) == handle), None)
-        if state in _KILLABLE:
+        if state in _STARTED:
             kill([handle], machine=remote)
-        elif state in _REMOVABLE:
+        elif state in _WAITING:
             remove([handle], machine=remote)
+        elif state not in {None, PueueState.DONE}:
+            raise MissionError(f"pueue task {handle} is {state!r}, a state not known to stop")
 
     def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
         return workspace_session(env=env, command=command, resources=resources)
@@ -184,7 +212,5 @@ class Pueue:
             state=str(task.state),
             exit_code=task.exit_code,
             verdict=pueue_verdict(task),
-            stage=str(task.state).lower()
-            if task.state in {PueueState.RUNNING, PueueState.QUEUED}
-            else "",
+            stage=_STAGES.get(task.state, ""),
         )

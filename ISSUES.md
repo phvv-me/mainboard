@@ -15,7 +15,14 @@ campaign first; move an entry to the bottom section once fixed and verified.
    `Dispatcher.mirror(plan, root)` directly, which is all a code-only update needs.
 2. **`Pbs.cancel` ignores `qdel`'s exit status** (`dispatch/schedulers/pbs.py`), so a refused
    cancel reads as done. `Line` checks its own `qdel`; `Pbs.cancel` should raise unless the job
-   had already finished.
+   had already finished. FIXED on `refactor/mb-M02`, not yet switched live (M02, B16): `Pbs.cancel`
+   and `Line._stop` share one checked `qdel`, which raises on a refusal and on a lost
+   connection. The same package fixes B04 (`host release` tombstoned the running job and killed it:
+   a release now fences only the entries no allocation claimed), B13 (`Held.cancel` ignored a
+   failed fence write) and B18 (pueue Locked and Stashed tasks read as failed). A cancel its
+   scheduler refused now raises before `Verdicts` records `cancelled`. `Slurm.cancel` and
+   `Local.cancel` still acknowledge unchecked, and a host that does not answer still settles as
+   `cancelled` with a note that nothing was stopped there.
 3. **`snapshots.queued_here()` only asks the local pueue daemon.** A pinned tree that a queued PBS
    job, or a held job waiting in the spool inbox, will run from is invisible to pruning once the
    age thresholds pass. Include `claims/` and `inbox/` entries of the spool (their `cwd`) and the

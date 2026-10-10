@@ -77,7 +77,12 @@ class Scheduler(Protocol):
     name: str
 
     def cancel(self, remote: Machine, root: str, *, handle: str) -> None:
-        """Cancel `handle` on the host."""
+        """Cancel `handle` on the host.
+
+        Returns only once the scheduler accepted the stop or the job is already over. A refusal,
+        or an answer that proves neither, raises (`MissionError`, `HostUnreachable` for a silent
+        host), so no caller reports a cancel that did not happen.
+        """
 
     def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
         """The one command an interactive session runs inside the caller's ssh and staging.
@@ -145,7 +150,7 @@ def read_log(remote: Machine, root: str, *, handle: str, offset: int = 0) -> str
     """`handle`'s captured log from byte `offset` on, as a string."""
     path = shlex.quote(log_path(root, handle=handle))
     body = f"tail -c +{offset + 1} {path} 2>/dev/null"
-    return str(remote["bash"][["-lc", body]](retcode=None))
+    return remote["bash"][["-lc", body]](retcode=None)
 
 
 # Failure markers in priority order: the walltime-kill verdict, then a raised Python exception,
