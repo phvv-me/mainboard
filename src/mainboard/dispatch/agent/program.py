@@ -52,6 +52,9 @@ CLOSURE = f".{LEGACY}-closure"
 WRAPPERS = f".{LEGACY}-jobs"
 RESERVED = (*marked("source"), *marked("closure"), *marked("jobs"))
 
+# Where a pin's record lands under the sources directory; `core.retention` reads it back.
+_PINS = ".retention"
+
 # What one walked path is: a regular file, a directory, or a link carried as a link.
 FILE, DIRECTORY, LINK = "f", "d", "l"
 
@@ -916,11 +919,52 @@ class Snapshot:
         """Build or verify the tree under the pin lock, and answer where it stands."""
         os.makedirs(self.base, exist_ok=True)
         with locked(os.path.join(self.base, ".pin.lock")):
+            self.__retain()
             if os.path.isfile(present(self.final, marked("source"), STAMP)):
                 self.__reuse()
             else:
                 self.__build()
         return self.final
+
+    def __retain(self) -> None:
+        """Publish this tree and its prefix as roots to keep, before anything launches.
+
+        The record is durable, immutable and named by its content, so a repeated pin adds
+        nothing, a failed preparation leaves its pin behind and a lost submit reply loses
+        nothing. The center's retention authority alone retires one; no scheduler verdict does.
+        The reader is `core.retention.RetentionPins`.
+        """
+        prefix = self.spec["prefix"]
+        pin = json.dumps(
+            {
+                "version": 1,
+                "sources": [self.final],
+                "prefixes": [prefix] if prefix else [],
+                "proofs": [self.final],
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        directory = os.path.join(self.base, _PINS)
+        os.makedirs(directory, exist_ok=True)
+        handle, pending = tempfile.mkstemp(prefix=".pending.", dir=directory)
+        with os.fdopen(handle, "wb") as sink:
+            sink.write(pin)
+            sink.flush()
+            os.fsync(sink.fileno())
+        os.replace(pending, os.path.join(directory, hashlib.sha256(pin).hexdigest() + ".json"))
+        # Each level that gained an entry: the pin, its directory, the sources, the generation.
+        for _ in range(4):
+            self.__sync(directory)
+            directory = os.path.dirname(directory)
+
+    @staticmethod
+    def __sync(directory: str) -> None:
+        """Make the entries of `directory` survive a crash."""
+        handle = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(handle)
+        finally:
+            os.close(handle)
 
     def __build(self) -> None:
         if os.path.lexists(self.final):

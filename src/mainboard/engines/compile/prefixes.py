@@ -14,10 +14,12 @@
 import hashlib
 import json
 import shutil
+from functools import partial
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
+from ...core.retention import RetentionPins, retained
 from .backend import Pixi
 from .compiler import Compiler
 from .ecosystems import SecondStage
@@ -31,6 +33,7 @@ from .state import SyncState
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
+    from ...core.retention import Retention
     from ...manifest import Manifest
     from .generated import Writer
 
@@ -59,7 +62,7 @@ def prefix_path(root: str, environment: str, digest: str, *, out: str) -> str:
 
     out: the workspace's state directory name, the center's own for a host's mirror of it.
     """
-    return f"{root}/{out}/{PREFIXES}/{environment}/{digest}"
+    return str(retained(PurePosixPath(root), out) / PREFIXES / environment / digest)
 
 
 def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
@@ -126,10 +129,12 @@ class Prefixes:
         self.root = root
         self.manifest = manifest
         self.environment = environment
+        self.retention = RetentionPins(root, Project().out_dir(root))
 
     @property
     def base(self) -> Path:
-        return self.path("").parent
+        """The directory holding this environment's addressed prefixes, one per digest."""
+        return self.path("")
 
     def path(self, digest: str) -> Path:
         """Where the environment `digest` names is built, whether or not it has been yet."""
@@ -138,13 +143,46 @@ class Prefixes:
 
     def built(self, digest: str) -> bool:
         """Whether the environment `digest` names is finished and safe to activate."""
-        target = self.path(digest)
+        return self._built(self.path(digest), digest)
+
+    @staticmethod
+    def _built(target: Path, digest: str) -> bool:
         try:
             stamped = Project().marked(target, STAMPED).read_text(encoding="utf-8").strip()
         except FileNotFoundError:
             return False
         return stamped == digest and all(
             (target / name).is_file() for name in (MANIFEST, LOCK, ACTIVATION)
+        )
+
+    def _address(self, source: Path, digest: str) -> Path:
+        """Say where `source`'s environment is built.
+
+        This generation's address, unless its pinned tree froze that of a release before
+        retention, which a delayed job must still find. Building there never makes it
+        collectable: only this generation is swept.
+        """
+        out = Project().out(self.root)
+        if not source.is_relative_to(out / "dispatch/sources"):
+            return self.path(digest)
+        legacy = out / PREFIXES / self.environment / digest
+        try:
+            linked = (source / ".pixi").readlink()
+        except OSError as missing:
+            raise MissionError(f"cannot read the environment frozen in {source}") from missing
+        if linked != legacy / ".pixi":
+            raise MissionError(f"the environment frozen in {source} is not {legacy}: {linked}")
+        return legacy
+
+    def _construction(self, target: Path) -> GeneratedFiles:
+        """The files whose lock orders builds at `target`.
+
+        This generation locks each environment's directory. A legacy address keeps the lock
+        every older provider shares, one level up, so a delayed legacy job and an old release
+        still exclude each other.
+        """
+        return GeneratedFiles(
+            directory=target.parent if target.parent == self.base else target.parent.parent
         )
 
     def materialize(self, source: Path, *, modules: Mapping[str, str] = {}) -> Path:
@@ -158,7 +196,7 @@ class Prefixes:
         modules: the host's declared module stack, carried into the activation script.
         """
         digest = digest_of(source, modules=modules)
-        target = self.path(digest)
+        target = self._address(source, digest)
         projected = selected_manifest(self.manifest, self.environment)
         pixi = Pixi(target)
         stage = SecondStage(self.root, projected, target, pixi)
@@ -167,12 +205,11 @@ class Prefixes:
                 f"{source} does not record this selected second-stage runtime; recompile and "
                 "ship the matching artifact before building its addressed environment"
             )
-        if self.built(digest):
+        if self._built(target, digest):
             return target
         SecondStage(self.root, projected, source, Pixi(source)).frozen_inputs(self.environment)
-        self.base.mkdir(parents=True, exist_ok=True)
-        with GeneratedFiles(directory=self.base).locked() as files:
-            if self.built(digest):
+        with self._construction(target).locked() as files:
+            if self._built(target, digest):
                 return target
             target.mkdir(parents=True, exist_ok=True)
             self.__take(source, target, files)
@@ -204,35 +241,52 @@ class Prefixes:
             text = entry.read_text(encoding="utf-8")
             files.write(target / entry.name, anchored(text, root=self.root, generated_dir=shard))
 
-    def referenced(self, sources: Path) -> set[str]:
+    def referenced(self, sources: Path) -> set[str] | None:
         """Every environment digest a pinned tree under `sources` still activates.
 
-        Read off the trees, which queued jobs actually name, not the run registry.
+        None when a tree's environment link cannot be read, which keeps every prefix.
         """
-        found: set[str] = set()
-        for out in Project().out_dirs:
-            for link in sources.glob(f"*/{out}/envs/*/.pixi"):
-                try:
-                    resolved = link.readlink()
-                except OSError:
-                    continue
-                found.add(resolved.parent.name)
-        return found
+        try:
+            return {
+                link.readlink().parent.name
+                for out in Project().out_dirs
+                for link in sources.glob(f"*/{out}/envs/*/.pixi")
+            }
+        except OSError:
+            return None
 
-    def prune(self, *, live: Collection[str]) -> list[str]:
+    def prune(self, *, live: Collection[str], inventory: Retention) -> list[str]:
         """Remove and name every built environment nothing still names, the newest `KEEP` kept.
 
         live: digests a snapshot or unsettled run activates, never removed whatever their age.
+        inventory: what `Snapshots.inventory` found, the same one source pruning used; an unknown
+            in it, or in the pins, removes nothing.
         """
-        try:
-            found = sorted(
-                (entry for entry in self.base.iterdir() if entry.is_dir()),
-                key=lambda entry: entry.stat().st_mtime,
-                reverse=True,
-            )
-        except OSError:
+        return self.retention.swept(inventory, partial(self._sweep, live))
+
+    def _sweep(self, live: Collection[str], inventory: Retention) -> list[str]:
+        referenced = self.referenced(self.retention.base)
+        if referenced is None:
             return []
-        doomed = [entry for entry in found[KEEP:] if entry.name not in live]
-        for entry in doomed:
-            shutil.rmtree(entry, ignore_errors=True)
-        return [entry.name for entry in doomed]
+        # A direct build holds this lock too, before it has a source snapshot at all.
+        with GeneratedFiles(directory=self.base).locked():
+            try:
+                found = sorted(
+                    (
+                        entry
+                        for entry in self.base.iterdir()
+                        if not entry.is_symlink() and entry.is_dir() and entry.name[0] != "."
+                    ),
+                    key=lambda entry: entry.stat().st_mtime,
+                    reverse=True,
+                )
+            except OSError:
+                return []
+            doomed = [
+                entry
+                for entry in found[KEEP:]
+                if entry.name not in {*live, *referenced} and not inventory.protects(entry)
+            ]
+            for entry in doomed:
+                shutil.rmtree(entry, ignore_errors=True)
+            return [entry.name for entry in doomed]

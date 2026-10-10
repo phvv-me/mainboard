@@ -19,7 +19,16 @@ campaign first; move an entry to the bottom section once fixed and verified.
 3. **`snapshots.queued_here()` only asks the local pueue daemon.** A pinned tree that a queued PBS
    job, or a held job waiting in the spool inbox, will run from is invisible to pruning once the
    age thresholds pass. Include `claims/` and `inbox/` entries of the spool (their `cwd`) and the
-   scripts of queued PBS jobs.
+   scripts of queued PBS jobs. FIXED on `refactor/mb-M03`, not yet switched live (M03, B05): each
+   pin writes a retention record before launch, and pruning keeps whatever a record, pueue task,
+   spool entry, staged script or registry run names, and everything when one cannot be read. Pins
+   and addressed prefixes now live under `<state>/retained-v1/`, so a host still on the old
+   release neither lists nor collects them: sync a host before its first dispatch after the
+   switch, or its old `provide` builds at the legacy address and the job ends at start. Nothing
+   retires a pin yet and nothing collects the legacy `dispatch/sources` and `prefixes` roots, so
+   both grow until the submission authority lands and the pre-switch queue has drained. Also
+   fixed: `Prefixes.prune` listed the environment names under `prefixes/` instead of the digests
+   under one environment, so a third environment on a host lost its whole directory.
 4. **`mb shell --on miyabi-g` knows nothing of a held line.** PBS refuses the second interactive
    job with its raw quota text. `Board.interact` could read the spool's `line.json` and say who
    holds the slot and until when.

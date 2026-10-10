@@ -933,17 +933,25 @@ class Board:
             self.__pinned(where, expect, provisioner, modules=plan.profile.modules)
         prefixes = Prefixes(self.root, self.manifest, plan.env)
         built = prefixes.materialize(where, modules=plan.profile.modules)
-        # This machine holds both the prefixes and the trees that point at them, so building is
-        # the moment to let go of what nothing names any more.
-        snapshots = Snapshots(str(self.root))
-        if (busy := queued_here()) is not None and (gone := snapshots.prune(busy=busy)):
+        self.__release(prefixes, keep=built.name)
+        return built
+
+    def __release(self, prefixes: Prefixes, *, keep: str) -> None:
+        """Let go of the source snapshots and environments nothing names any more.
+
+        This machine holds both the prefixes and the trees that point at them, so building is
+        the moment, and one inventory of what is still named serves both.
+
+        keep: the digest just built, never dropped.
+        """
+        snapshots = Snapshots(str(self.root), out=self.project.out_dir(self.root))
+        inventory = snapshots.inventory(busy=queued_here())
+        if gone := snapshots.prune(inventory):
             logger.info("dropped {} unused source snapshot(s)", len(gone))
-        dropped = prefixes.prune(live=prefixes.referenced(Path(snapshots.base)))
-        if dropped:
+        if dropped := prefixes.prune(live={keep}, inventory=inventory):
             logger.info(
                 "dropped {} unreferenced environment(s): {}", len(dropped), ", ".join(dropped)
             )
-        return built
 
     def __pinned(
         self,
