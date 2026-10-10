@@ -556,6 +556,12 @@ class Verdicts:
             # Said once: a wait on a run whose host went silent otherwise reads as a job that
             # is merely slow, until the timeout.
             report = monitor.once(scope=scope)
+            if report.busy is not None:
+                # The holder moves the states being waited on, so they are cached here: it is
+                # said every pass in place of a heartbeat for a job that may already have ended.
+                say(report.busy.note)
+                poll(interval)
+                continue
             if not stream and report.resumed:
                 handle, host = report.resumed[0].handle, report.resumed[0].target
                 scope = self.__scope(handle, host=host, stream=False)
