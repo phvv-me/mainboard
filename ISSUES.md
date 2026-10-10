@@ -330,6 +330,18 @@ campaign first; move an entry to the bottom section once fixed and verified.
     stream (`bus.replay()`), so the cost grows with runs times files. The pass should read each
     stream once and never scan blob files. `mb lake compact` (6.6 s) only took the count to
     32,054, so the files are blob data, which compaction does not merge.
+13o. **Archive members are unreadable once eviction removes their archive parts** (2026-10-10).
+    53,444 early-September cutok artifacts (396 MB, 1,415 runs, 15 nodes) have no standalone blob:
+    they live inside the 1,631 parts of `datasets/experiments/artifacts.parquet/<xx>/part-N.parquet`
+    (archived 2026-09-15, b3b8e554a; ingested as ordinary file blobs on 09-30). `ParquetArtifacts.read`
+    opens `artifacts.parquet/<digest[:2]>/` only on disk, and `Artifact.read`'s fallback
+    `EvidenceTree.recall(sha)` finds only standalone blobs, so after `mb lake evict` (10-09)
+    dropped the tree copies every such read raised "no lake around ... holds <sha>". Nothing was
+    lost: the lake, the replica and git (3fe1c3eb6^) hold the parts byte-identical, and
+    `mb lake materialize` of the archive folder restored the reads. Fix: let the archive reader
+    reach its parts through the lake (`EvidenceTree(parent).files(...)`), test it with the parts
+    only in the lake, and make eviction refuse an archive container whose members readers address
+    by path. Read-only audit and the 53,444-row list: scratchpad lakeaudit/ of 2026-10-10.
 13. The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...
     mainboard-agent`). It works, but contradicts the rule that nothing runs on the OS interpreter;
     document it as the one exception or ship the agent's own interpreter.
