@@ -1,0 +1,1210 @@
+{
+  "overview": {
+    "title": "AIZK becomes mb memory, version 2: one build, one night, one PostgreSQL, one DuckLake",
+    "date": "2026-10-11",
+    "revision_of": "unify.md and unify.json of 2026-10-10, after critic-simplicity.md (CS1 to CS17) and critic-migration.md (CM1 to CM19)",
+    "owner_request": "Let's try to start organizing things to unify aizk into mb memory, so all runs from the same ducklake + pg system. (owner, 2026-10-10)",
+    "extends": {
+      "design": "mainboard refactor design v3 (revision c97cb81), /Users/pedro/Developer/mb-refactor/refactor/design.json, packages M00 to M38",
+      "inputs": [
+        "aizk/state.md",
+        "aizk/options.md",
+        "aizk/unify.md",
+        "aizk/critic-simplicity.md",
+        "aizk/critic-migration.md",
+        "design.md and owner-decisions.md of the refactor"
+      ],
+      "inherits": [
+        "one center PostgreSQL cluster on the internal disk, run by mainboard from the workspace environment, never a system install (Q01)",
+        "database mainboard with schema control and one ducklake_<LakeId> schema per lake; Parquet and blobs under the lake DATA_PATH on /Volumes/PORTABLE",
+        "drain-and-switch for every live change to the center, a measured 60 s final write pause where a switch is mechanical (Q10), one host-wide card lease for every user of an owned card (Q05)",
+        "implementation agents edit only designated worktrees and never deploy; the lead applies live switches; no commit or push without the owner"
+      ]
+    },
+    "goal": "AIZK keeps its public identity (its own repository, the five MCP tools, Logto login) but runs on the same system as mainboard: the center's single PostgreSQL cluster holds the DuckLake catalog, mainboard's control schema and AIZK's transactional data in three databases; AIZK's usage history reaches the same DuckLake the evidence lives in; one `mb memory` front, one doctor and one backup chain cover it. It gets there with one build for the center and one night. Nothing is deployed to crimson beforehand, crimson's stack stays stopped and untouched as the revert target, the vector, lexical and model changes are judged offline on scratch restores before the night, and a verified off-host backup comes first because it is worth having even if nothing else happens. crimson's GPU 0 returns for non-exclusive work about a week after the night, 2026-11-25 at the earliest, not before the deadlines.",
+    "recommended_layout": "One cluster, three databases (mainboard, aizk, logto), roles that cannot cross databases, extensions limited to contrib plus pgvector 0.8.6 (a plain dependency in mainboard.toml), PGDATA on the internal disk, preferably on a reserved APFS volume, daily restore-tested dumps offsite.",
+    "recommended_placement": "The center Mac mini hosts the cluster and AIZK's whole application tier as native launchd units from a separately locked memory environment; cloudflared is a pinned release binary and Logto runs from its tarball under the environment's Node, with a container only if the Logto spike fails. Embeddings and reranking move to OpenRouter behind the ladder. crimson keeps the old stack stopped and untouched for rollback.",
+    "key_evidence": [
+      "round trip center to crimson over ssh through the cvlab jump: p50 11.5 to 12.0 ms, p99 about 100 ms; bulk 10.8 to 14 MB/s (measured 2026-10-10); find is 8 to 10 SQL statements, p50 4,954 ms; keep p50 280 ms",
+      "the data volume of the center has 19 GiB free at 96% (checked 2026-10-11 00:15 JST), down from 28 GiB and from 140 to 156 GiB on 2026-10-06",
+      "the live stack is the August 8 lineage (alembic 0012, OIDC proxy auth, fastmcp 3.4.4, critic-measured); HEAD is 23 commits later with migrations 0013 to 0016 (verified) and a RemoteAuthProvider naming Logto (verified)",
+      "11 nightly dumps of 1.07 to 1.10 GB exist on crimson and have never been restored; logto, roles, .env and MCP state have no copy (critic-measured)",
+      "the center has FileVault on, no auto-login, autorestart 1, a user LaunchAgent as settler and no LaunchDaemons of its own (verified)",
+      "the worker holds 5.6 GiB with an 8.5 GiB peak (critic-measured); the code builds a networkx Louvain graph and reads whole embedding tables (verified)",
+      "VectorChord, vchord_bm25 and pg_tokenizer have no macOS binary; PostgreSQL text search does not segment Japanese (measured in v1)",
+      "OpenRouter lists qwen3-embedding-8b at $0.01 and qwen3-reranker-8b at $0.20 per million tokens; a full re-embed is about $0.25",
+      "AIZK's constants find_max_distance 0.65, auto-merge 0.9, borderline floor 0.75, RAPTOR redundancy 0.95 and ontology match 0.85 are calibrated to the old embedder (verified in settings.py)"
+    ],
+    "changes_from_v1": {
+      "packages": "22 to 13",
+      "live_events_on_crimson": "L-1, L0, L0.5, L2, L3 became one read-only backup proof, one night and a decommission",
+      "builds": "two to one",
+      "removed_machinery": [
+        "L0 and L0.5",
+        "maintenance mode, keep journal, replay and typed retryable error (U10)",
+        "shadow columns, swap transaction and embedding generation row (U08)",
+        "usage spool, memory_events and the two lake streams (U07, U15)",
+        "WAL archiving, incremental base backups and PITR (U12)",
+        "migration orchestrator, route.py and chaos tests (U17)",
+        "units.py, services.py and ordering machinery (U13)",
+        "the aizk[client] extra and memory/client.py (U14)",
+        "restore-plan with pg_restore -L (U03)",
+        "MCP plugin hook, structured DEV LOG writes and the close-out audit (U19 to U21)"
+      ],
+      "added": [
+        "U00 read-only spikes with written go and no-go numbers and the first verified off-host copy",
+        "U02 auth path and stateless MCP",
+        "role posture with BYPASSRLS and positive probes",
+        "the A/B ladder on scratch clones, with a pre-registered non-inferiority test",
+        "threshold recalibration for the new embedder",
+        "a night window with the stack stopped and a Caddy message",
+        "the unattended-center decision",
+        "a reserved APFS volume and a numeric disk floor"
+      ]
+    },
+    "size": {
+      "packages": 13,
+      "aizk_only": ["U01", "U02", "U03", "U04", "U05", "U06", "U07", "U08"],
+      "mainboard_only": ["U09", "U10"],
+      "both_or_live": ["U00", "U11", "U12"],
+      "live_packages": ["U00", "U11", "U12"],
+      "lines_deleted_by_U01_estimate": "about 2,300 executable lines plus about 4,400 lines of Markdown under hackathon/ (critic-measured), 8,400 in all"
+    },
+    "conventions": [
+      "ids U00 onward extend M00 to M38; a package fits one Codex run in a designated worktree (packages/aizk worktree for repo=aizk, the refactor worktree for repo=mainboard); repo=both means two worktrees or the lead",
+      "acceptance runs against a throwaway PostgreSQL started from the workspace environment (M00 postgres_cluster fixture, M36 binaries) and fake services; no acceptance item needs crimson, OpenRouter, Cloudflare or the lake volume, except where a package is marked touches_live_state",
+      "mainboard.toml edits are rollout inputs the lead applies, never edited by an implementation agent; pgvector is the lead's first one",
+      "AIZK never imports mainboard or DuckDB; mainboard never imports AIZK except the lazily mounted client app behind mb memory",
+      "no backwards compatibility in the end state: HEAD has one vector backend (pgvector HNSW), one lexical lane, hosted model lanes, one queue and one auth path; the vendor-extension schema exists only in the donor conversion of the night",
+      "one build: nothing from this plan is deployed to crimson; the only change to crimson before the night is read-only access (E0, U00) and, if S1 uses it, a scratch database next to the live one",
+      "Alembic revision numbers are written as <next> in packages and assigned by the lead at integration in the order of order.u_waves[1].internal_order",
+      "tests last: each package builds the feature, proves it on the real expected cases, then writes the tests that pin it"
+    ]
+  },
+  "layout": {
+    "server": {
+      "owner_decision_inherited": "Q01 and Q02 of owner-decisions.md",
+      "cluster": "one PostgreSQL 18.x cluster per center_id, PGDATA <center-state>/services/postgresql/18/data on the internal disk (on a reserved APFS volume if decision D5 is taken), binaries from the frozen workspace environment (M36), launchd agent independent of the settler",
+      "listen": "unix socket in a short owned directory (macOS sockaddr_un limit is 103 bytes) plus 127.0.0.1 TCP only if a process needs it",
+      "settings_rendered_by_M36_from_its_first_start": {
+        "shared_buffers": "2GB",
+        "effective_cache_size": "8GB",
+        "maintenance_work_mem": "1GB",
+        "work_mem": "16MB",
+        "max_wal_size": "2GB",
+        "max_connections": 120,
+        "shared_preload_libraries": "pg_stat_statements",
+        "wal_level": "replica",
+        "archive_mode": "off",
+        "wal_compression": "zstd",
+        "default_toast_compression": "lz4",
+        "data_checksums": "on",
+        "note": "values render from one RAM budget number in mainboard.toml; a restore runs with PGOPTIONS raising maintenance_work_mem (192.8 s default against 117.7 s tuned, measured in v1); no AIZK event restarts the cluster"
+      }
+    },
+    "databases": [
+      {
+        "name": "mainboard",
+        "schemas": ["control", "ducklake_<LakeId>"],
+        "owner": "mainboard",
+        "runtime_roles": ["mainboard_rw", "ducklake_writer", "ducklake_reader"],
+        "extensions": ["contrib only"],
+        "owned_by_package": "M19, M36, M37, M38; dumps by M38's mechanism"
+      },
+      {
+        "name": "aizk",
+        "schemas": ["public (unchanged)"],
+        "owner": "aizk_admin (NOSUPERUSER, BYPASSRLS, pg_read_all_stats)",
+        "runtime_roles": [
+          "aizk_app (NOSUPERUSER, NOBYPASSRLS, forced RLS on 16 tables, 42 policies)",
+          "aizk_usage_reader (NOBYPASSRLS, one SELECT policy on usage_event, used only by the settler's pull)",
+          "backup (NOSUPERUSER, BYPASSRLS, pg_read_all_data, CONNECT on the three databases, used only by the dump job)"
+        ],
+        "extensions": ["vector 0.8.6 (conda-forge, created once by the bootstrap role)", "pg_trgm", "pgcrypto", "pg_stat_statements"],
+        "owned_by_package": "U09 (creation and roles), U03 (schema and policy), AIZK Alembic (history)"
+      },
+      {
+        "name": "logto",
+        "schemas": ["public"],
+        "owner": "logto",
+        "runtime_roles": ["logto_tenant_logto", "logto_tenant_logto_admin", "logto_tenant_logto_default"],
+        "extensions": [],
+        "owned_by_package": "U09 and the night (moved with pg_dump plus pg_dumpall --roles-only so the tenant roles and their passwords come along)"
+      }
+    ],
+    "roles_rules": [
+      "no service role is a superuser; only the cluster bootstrap role is, and no service uses it",
+      "aizk_admin is NOSUPERUSER BYPASSRLS: the worker, migrations and the SECURITY DEFINER function artifact_content_blob_attachable rely on that bypass, and without it the function fails open (CM3); only a superuser can grant BYPASSRLS, so the bootstrap role does it",
+      "aizk_app and aizk_usage_reader are NOBYPASSRLS and belong to no role that bypasses",
+      "aizk_app cannot connect to mainboard or logto; mainboard_rw cannot read aizk tables; checked by a probe generated from pg_roles and has_database_privilege",
+      "doctor rows: aizk_admin.rolbypassrls true, aizk_app.rolbypassrls false, no superuser among service roles",
+      "positive probes in U03 and U09: as aizk_admin all 16 tables return the bootstrap count; artifact_content_blob_attachable returns false for a blob referenced from another scope; pg_dump as backup succeeds on the forced tables; a queued graph job runs to completion",
+      "per-role statement_timeout, lock_timeout, idle_in_transaction_session_timeout and CONNECTION LIMIT: aizk_app 40, aizk_admin 10, mainboard_rw 20, ducklake_writer 20, logto* 10",
+      "secrets live in protected libpq passfiles and the workspace .env (0600, internal disk), never in DSNs, argv or logs; the tunnel token passes through an env file"
+    ],
+    "extensions": {
+      "policy": "AIZK runs on contrib plus pgvector. VectorChord, vchord_bm25 and pg_tokenizer are not required on the center",
+      "vector_index": "pgvector HNSW on halfvec(1024), m 16, ef_construction 64, hnsw.iterative_scan relaxed_order for RLS-filtered scans",
+      "lexical_lane": "chosen by spike S4 among: application-tokenized tsvector with a bounded OR query, BM25-weighted sparsevec with application IDF refreshed on a schedule, and Japanese morphological words; pg_trgm for titles and short queries",
+      "gate": "the ladder in U05; if no lexical variant passes S4 or rung B5, the named fallback is the arm64 vendor container for the aizk database (a second server in a Docker VM, accepted only by the owner), not a source build of three pgrx extensions",
+      "outside_prefix_mechanism": "none needed; pgvector installs into the environment's PostgreSQL prefix"
+    },
+    "services": [
+      {"name": "postgresql", "runs": "native launchd (M36)", "ram_gib": 3.0},
+      {"name": "aizk-mcp", "runs": "native launchd unit from the memory env, `aizk admin server mcp`, stateless HTTP", "ram_gib": 0.43},
+      {"name": "aizk-api", "runs": "native launchd unit, `aizk admin server api`", "ram_gib": 0.29},
+      {"name": "aizk-worker", "runs": "native launchd unit, dispatcher only; heavy jobs run as `aizk admin graph <job>` subprocesses, one at a time", "ram_gib": 0.4, "note": "plus one heavy job at a time, 1.5 GiB or less (S6 go and no-go), transient"},
+      {"name": "caddy", "runs": "native, conda-forge caddy, ports 8081 and 8082", "ram_gib": 0.06},
+      {"name": "frontend", "runs": "native Node from the workspace nodejs pin, SvelteKit adapter-node", "ram_gib": 0.09},
+      {"name": "logto", "runs": "release tarball 1.41.0 under the environment's Node; a pinned container only if spike S7 fails", "ram_gib": 0.3},
+      {"name": "cloudflared", "runs": "checksum-pinned release binary, token in an env file, never argv", "ram_gib": 0.05}
+    ],
+    "ram_total_gib": {
+      "steady": 4.6,
+      "with_one_heavy_job": 6.1,
+      "if_logto_stays_a_container": "add the Docker VM, about 1.3, and a GUI app that waits for a login",
+      "today_on_crimson": 25.4,
+      "note": "the center already holds about 9.2 GiB it cannot reclaim and swaps 3.4 GiB with the owner's apps open, so 6.1 GiB is a ceiling to verify in U00 (S6) and not a margin"
+    },
+    "removed_services": [
+      "docling",
+      "gliner",
+      "vllm-emb",
+      "vllm-rerank",
+      "objects (SeaweedFS)",
+      "tempo",
+      "loki",
+      "victoriametrics",
+      "alloy",
+      "grafana",
+      "docs container (static files served by Caddy)",
+      "clamav",
+      "oauth2-proxy and, unless U00 finds a page that needs it, the console hostname gate"
+    ],
+    "accepted_risks": [
+      "the compose isolation is lost: every service runs as the owner, as do the agents; the owner database password is readable only through the worker's environment file",
+      "the center is a single point for mainboard and AIZK together (section 9 of unify-v2.md)"
+    ],
+    "paths": {
+      "pgdata": "<center-state>/services/postgresql/18/data",
+      "aizk_objects": "<center-state>/services/aizk/objects (content-addressed, obstore LocalStore)",
+      "aizk_logs": "<center-state>/services/aizk/logs (JSON files with rotation)",
+      "dumps": "<center-state>/backups/dumps (latest two), replicated to /Volumes/PORTABLE and crimson:/mnt/ssd2",
+      "lake": "/Volumes/PORTABLE/mainboard-lake (unchanged)"
+    },
+    "history_in_ducklake": [
+      {
+        "table": "memory_usage",
+        "source": "usage_event rows pulled by the settler through DuckDB's postgres extension, attached READ_ONLY as aizk_usage_reader",
+        "key": "capture_key",
+        "serves": "cost per find, joins with OpenRouter spend and GPU lease hours"
+      },
+      {
+        "table": "receipts (existing)",
+        "source": "golden-set, ladder and calibration runs as mb jobs",
+        "key": "receipt identity",
+        "serves": "retrieval regression history"
+      }
+    ],
+    "stays_in_postgresql": [
+      "documents, chunks, entities, facts, claims, profiles, communities, ontology",
+      "queue, schedules, watermarks",
+      "usage_event serving rows and quotas",
+      "blob rows (bytes in the content-addressed directory)",
+      "RLS, vectors, live_fact"
+    ],
+    "surfaces": {
+      "mcp": "unchanged public contract at https://aizk.phvv.me/mcp: status, find, keep, report, share and the artifact resource; served stateless (stateless_http, json_response) after an audit finds no sampling or elicitation in the tools",
+      "http": "unchanged browser API and operator pages; the console hostname gate is dropped unless U00 finds a page that needs it",
+      "cli": "mb memory find|keep|status|share|report|login|logout is AIZK's existing client app mounted lazily in its own App module; mb memory up|down|status|logs|doctor supervises; mb serve is not used because mainboard host serve and mainboard lake serve exist"
+    },
+    "auth": "Default: Logto-direct as HEAD does, with a public Logto application whose client id and callback port are pinned in .mcp.json, .agents/mcp.json and the Claude, Codex and opencode configs of every host; agents log in once again after the night (5 client registrations exist). Fallback if spike S8 shows Codex or opencode cannot use a pinned client: keep an OIDC proxy mode with an explicit jwt_signing_key and storage key held apart from the client secret, and copy mcp-state at the night. No secret rotates at the cutover; rotation follows the soak. The doctor probe needs a Logto machine-to-machine client with the control scope and the stale issuer in scripts/aizk-gate.py fixed before E1.",
+    "observability": "no tracing stack; operator_snapshot, the usage ledger and JSON logs with rotation remain; logs are read with read_json when an incident needs them",
+    "backups": "daily pg_dump -Fc of aizk and logto as the backup role, mainboard by M38's mechanism, pg_dumpall --globals-only, an rsync of the objects directory and an encrypted bundle of .env, passfiles, tunnel token and (if kept) mcp-state, copied to /Volumes/PORTABLE and crimson's SSD by checksum from the settler's ssh-localhost context; local retention of two; a weekly restore into a throwaway cluster with alembic head, counts and a keep and find probe; AIZK's nightly job on crimson stays until the soak ends. No WAL archive, no base backups, no PITR (excluded X13).",
+    "network": {
+      "route": "decided by spike S7: edit the existing tunnel's ingress to the center's localhost services and swap the connector (no DNS change), or a new tunnel and a scripted flip of three or four CNAMEs; hostnames aizk, auth, admin and possibly console",
+      "wired_ethernet": "required before the night (en0 exists, unused; the Wi-Fi hop showed 74 ms spikes)"
+    },
+    "availability": {
+      "facts": [
+        "FileVault is on, no auto-login user, pmset autorestart 1, sleep 0",
+        "/Library/LaunchDaemons holds only third-party updaters; the settler is the user LaunchAgent mainboard.monitor.3784a243 (StartInterval 1200, via ssh localhost)",
+        "design v3 M36 chooses a same-user LaunchAgent for PostgreSQL and M24 an ssh-localhost settler; the doctor runs on the center and cannot see a locked or down center",
+        "external volumes mount only at the GUI login (2026-10-06 note, per the critic)"
+      ],
+      "consequence_for_mainboard": "after a power cut or OS restart PostgreSQL (control and catalog), the settler and the card leases stay down until the console is unlocked; hosts keep running jobs and write offline receipts, list and show answer unavailable, settlement stops, new submissions wait",
+      "consequence_for_aizk": "no agent on any host has memory until the unlock",
+      "options": [
+        "(a) accept: external watcher on crimson (curl healthz each minute plus the age of the settler's last pass, alerting the owner's phone), fdesetup authrestart for planned restarts, automatic macOS update installs off, an unlock runbook",
+        "(b) system LaunchDaemons with UserName=pedro for PostgreSQL, AIZK, Logto and cloudflared, installed once by the owner with sudo; the settler stays an ssh-localhost agent for the external volume",
+        "(c) FileVault off with auto-login: unattended recovery, at the price of at-rest protection; not recommended"
+      ],
+      "recommendation": "(a) now, decided once in M36 for both designs; run the reboot drill with the owner in E2 and adopt (b) for PostgreSQL and the AIZK units only if the drill shows agents wait for a login that daemons would not; Docker stays off the critical path; crimson's stopped stack stays the revert target until one real restart recovered cleanly"
+    },
+    "disk": {
+      "now": "19 GiB free, 96% (2026-10-11 00:15 JST)",
+      "floor": "30 GiB free before staging, enforced by a doctor row",
+      "steady_state_gb": 8,
+      "rehearsal_peak_gb": "12 to 15 (aizk_stage 3.7, dumps, restore, max_wal_size 2)",
+      "volume": "PGDATA on a dedicated APFS volume with a reserve and a quota (diskutil apfs addVolume with -reserve and -quota; the owner runs it, flags to be confirmed) so no other writer can starve PostgreSQL",
+      "first": "find the consumer of the roughly 120 GiB that disappeared since 2026-10-06 (candidates ~/Library/Caches 18.9 GB and ~/.cache 11.5 GB, critic-measured)"
+    }
+  },
+  "packages": [
+    {
+      "id": "U00",
+      "v1_ids": ["U16 (discovery part)", "L-1", "L-2"],
+      "title": "W-1 spikes S1 to S9 and the first verified off-host copy",
+      "repo": "both",
+      "u_wave": 0,
+      "files": [],
+      "new_files": [
+        "evidence reports U00-S1 to U00-S9 under the lead's evidence directory (no source)"
+      ],
+      "changes": [
+        "S1 (E0, the backup proof): copy the newest nightly aizk dump (read-only through docker exec), take a fresh pg_dump -Fc of logto and pg_dumpall --roles-only, bundle .env, passfiles and mcp-state encrypted with a key held off the machine; copy everything to /Volumes/PORTABLE and a second location; restore aizk and logto into an arm64 vendor container on the center (needs the disk floor) or into a scratch database next to the live one on crimson; record alembic current, table counts, one keep, one find and the wall time. Go: the restore completes and a find returns",
+        "S2 (conversion path) on that archive: (a) donor conversion on crimson, CREATE DATABASE aizk_flat TEMPLATE aizk then drop chunk.bm25 and DROP EXTENSION vchord, vchord_bm25, pg_tokenizer CASCADE, then pg_dump -Fd -j 4; (b) the same inside a scratch vendor container; (c) an extension-free schema at 0012 plus per-table COPY of the non-vendor columns under one exported snapshot, then upgrade. Time each end to end with the real 1.1 GB archive, pgqueuer_log data excluded, over the final network. Go: the chosen path fits the night's table in unify-v2.md section 8",
+        "S3 (the HEAD jump): run migrations 0013 to 0016 on the restored copy, time them, run the role probes of layout.roles_rules, and confirm the old RLS carrier is replaced everywhere. No in-place rollback is needed because crimson is never upgraded",
+        "S4 (lexical A/B at scale): tokenize the 33,268 real chunks (only 5,859 have a lexical value today), measure candidate-set sizes and lane p95 for the query strings of 200 real finds, and score overlap@20 against the bm25 lane's own top 20, for: simple tsvector with ts_rank_cd and a bounded OR query, BM25-weighted sparsevec (application IDF, inner product), and Japanese morphological words (Sudachi or fugashi from the environment). Go: some variant has lane p95 of 1 s or less and an overlap@20 above the threshold the lead registers before the run; otherwise the named fallback is the arm64 vendor container",
+        "S5 (hosted lanes): whether OpenRouter honors dimensions=1024, throughput and wall time of a full 23 M token re-embed (go: 15 minutes or less inside the night, else the reuse path), rerank latency for 50 documents, that data collection is denied for the routed providers, the cost, and the old and new cosine-distance distributions on a labeled pair sample (input to U06)",
+        "S6 (worker memory): peak RSS of each of the 17 schedules, one at a time, against the restored copy under /usr/bin/time -l. Go: every job at 1.5 GiB or less; otherwise U08 bounds its batches",
+        "S7 (Logto and the route): Logto 1.41.0 from its release tarball under the environment's Node against the restored logto database on a temporary hostname; cloudflared as a pinned binary with the token in an env file; edit the existing tunnel's ingress against a new tunnel; measure propagation and connector-up on a temporary hostname pair in the real zone. Go: Logto starts, its JWKS key ids equal the live set, a token issued by the live Logto verifies. Needs decision D7",
+        "S8 (agents): a staging server (HEAD code on the restored copy, restored Logto) and an agent matrix of Claude Code, Codex and opencode on the Mac and one remote host with a pinned public client and from stored credentials; kill and restart the server under an open session of each harness; audit the five tools for sampling or elicitation. Go: all three log in and call status, find and keep, and restarts are invisible",
+        "S9 (the machine): find the roughly 120 GiB consumer, confirm 30 GiB free, measure PostgreSQL's footprint and the center's memory headroom with the owner's apps open"
+      ],
+      "acceptance": [
+        "each spike writes a receipt (command, numbers, go or no-go against the figure above) before any package that depends on it merges",
+        "S1 leaves restore-tested copies of aizk, logto, roles and the secrets bundle on two locations with matching checksums",
+        "S2, S3, S4 and S6 numbers are in the receipts, and the night's time table in unify-v2.md is recomputed from them",
+        "no write reaches the live AIZK database; the only addition on crimson is a scratch database or none"
+      ],
+      "depends_on": [],
+      "risk": "low: read-only against crimson; the center needs the disk floor and a few hours of CPU while v26 work is running",
+      "touches_live_state": true,
+      "run_scope": "reads the live AIZK database through pg_dump and docker exec on crimson, creates one scratch database or container, writes to the center and /Volumes/PORTABLE; E0 (S1) may run this week and is worth doing alone",
+      "proposed_commit": "none: evidence only",
+      "conflicts_with": [],
+      "integration_after": []
+    },
+    {
+      "id": "U01",
+      "v1_ids": ["U05", "dead-code parts of U07 and U08"],
+      "title": "Delete what the center will not run: CockroachDB and AWS, Docling, ClamAV, GLiNER, the web lane, OpenTelemetry",
+      "repo": "aizk",
+      "u_wave": 1,
+      "files": [
+        "packages/aizk/src/aizk/store/backend.py",
+        "packages/aizk/src/aizk/background/portable.py",
+        "packages/aizk/src/aizk/background/queue.py",
+        "packages/aizk/src/aizk/background/schedule.py",
+        "packages/aizk/src/aizk/store/models/tables/queue.py",
+        "packages/aizk/src/aizk/store/migrations/cockroachdb/",
+        "packages/aizk/src/aizk/commands/aws_mcp.py",
+        "packages/aizk/src/aizk/commands/aws_worker.py",
+        "packages/aizk/src/aizk/commands/aws_observability.py",
+        "packages/aizk/src/aizk/commands/admin.py",
+        "packages/aizk/src/aizk/integrations/docling/",
+        "packages/aizk/src/aizk/integrations/clamav/",
+        "packages/aizk/src/aizk/integrations/converter.py",
+        "packages/aizk/src/aizk/serving/gate/",
+        "packages/aizk/src/services/gliner/",
+        "packages/aizk/src/aizk/web/",
+        "packages/aizk/src/aizk/integrations/web/",
+        "packages/aizk/src/aizk/ops/hardware.py",
+        "packages/aizk/src/aizk/config/settings.py",
+        "packages/aizk/src/deploy/docker-compose.yml",
+        "packages/aizk/src/deploy/Caddyfile",
+        "packages/aizk/infra/",
+        "packages/aizk/hackathon/",
+        "packages/aizk/pyproject.toml",
+        "packages/aizk/tests/web/",
+        "packages/aizk/tests/integrations/"
+      ],
+      "new_files": [
+        "packages/aizk/src/aizk/store/migrations/versions/<next>_drop_portable_queue.py"
+      ],
+      "changes": [
+        "The lead tags the repository (pre-slimming) first; the Cockroach profile, the web lane and the hackathon profile stay reachable from the tag",
+        "Delete the DatabaseBackend switch and every cockroachdb branch (executable code is about 1,325 lines plus branches in 27 files), the portable worker, the queue_task, queue_event and queue_schedule tables, scoped_cspann, the four CockroachDB revisions, the AWS commands, infra/aws, hackathon/ and the deploy files; PgQueuer becomes the only queue",
+        "Delete the Docling client, models, OneShotDoclingConverter and DoclingConversionJob (the converter routes through LiteParse, Pandoc, text and image lanes), the ClamAV client, the GLiNER gate client and service, the web-search lane (zero web_search or web_fetch events ever) and its sanitizer, ops/hardware.py, the heavy-converter extra and the 34 gliner, docling, clamav and vllm settings",
+        "Delete the five OpenTelemetry packages, the observability compose profile, the OTLP ingress and AIZK_OTLP_TOKEN as a required Caddy variable; the loguru JSON sink with rotation stays",
+        "Delete oauth2-proxy and the console gate from compose and the Caddyfile unless U00 found a page that needs it",
+        "Preserve the stateless http_app wiring of aws_mcp.py (stateless_http and json_response) by moving those two arguments into the standard server mcp command before the file is deleted; U02 owns the behavior",
+        "Remove sqlalchemy-cockroachdb, boto3, mangum, aws-cdk, docling and the observability packages from dependencies; the ccloud, infra, aws and queue-steward tasks leave mainboard.toml as a rollout input"
+      ],
+      "acceptance": [
+        "rg -i cockroach finds nothing outside CHANGELOG.md and the archive note; rg -i 'docling|clamav|gliner|opentelemetry|web_search' finds nothing in source, migrations and settings",
+        "git diff --shortstat shows at least 2,300 deleted executable lines, plus the hackathon Markdown",
+        "import-linter contracts, ruff, the type checkers and the branch-coverage gate pass on the U03 fixture once U03 lands, and on the existing suite before it",
+        "alembic head is identical on a fresh database and on a restored live-shaped database; the new migration is a no-op on data",
+        "at least six packages leave the dependency lock; the docs site builds with no dangling link; docker compose config of the default profile lists none of the removed services",
+        "the stateless http_app arguments are still present in the server mcp command"
+      ],
+      "depends_on": [],
+      "risk": "low to medium: large deletion with no behavior change on PostgreSQL; the web lane is the one product feature removed, covered by decision D1",
+      "touches_live_state": false,
+      "run_scope": "AIZK worktree only",
+      "proposed_commit": "refactor(aizk): remove the CockroachDB and AWS profile and the services the center does not run",
+      "conflicts_with": ["U02", "U03", "U04", "U06", "U07", "U08"],
+      "integration_after": []
+    },
+    {
+      "id": "U02",
+      "v1_ids": ["new, from CM1 and CM11"],
+      "title": "Auth path, agent configs and a stateless MCP",
+      "repo": "aizk",
+      "u_wave": 1,
+      "files": [
+        "packages/aizk/src/aizk/auth.py",
+        "packages/aizk/src/aizk/config/settings.py",
+        "packages/aizk/src/aizk/mcp/server.py",
+        "packages/aizk/src/aizk/commands/admin.py",
+        "packages/aizk/plugins/aizk/claude.mcp.json",
+        "packages/aizk/docs/src/content/docs/",
+        "packages/aizk/tests/test_auth.py"
+      ],
+      "new_files": [
+        "packages/aizk/tests/mcp/test_stateless_restart.py",
+        "lead inputs (not written by the agent): .mcp.json, .agents/mcp.json and the Codex and opencode configs for every host, carrying the pinned client id and callback port"
+      ],
+      "changes": [
+        "Make the S8 decision real: the default is the existing RemoteAuthProvider naming Logto, with documentation and plugin configs that pin a public Logto application's client id and callback port; the settings name the resource, scopes and client id once",
+        "Contingent on an S8 no-go for a harness: an OIDC proxy mode for that deployment with an explicit jwt_signing_key and a storage key held apart from the OAuth client secret, so the secret can rotate without voiding every token",
+        "Serve MCP stateless (stateless_http and json_response) as the only mode after a test proves no tool uses sampling, elicitation or other server-initiated messages; otherwise record each harness's behavior on re-initialize and keep sessions",
+        "Correct the setup pages, the aizk skill text and the plugin documentation to the single auth path"
+      ],
+      "acceptance": [
+        "against a fake Logto with a JWKS, a token minted for the pinned public client is accepted and a token with another audience or missing scope is rejected, by the MCP surface and by the browser API",
+        "a fake MCP client keeps working across a server kill and restart without re-initialize; a grep test shows no tool depends on server-initiated messages",
+        "the rendered plugin and agent configs contain the pinned client id and no secret",
+        "reported at U11, not asserted here: the S8 agent matrix from stored credentials and from a fresh login"
+      ],
+      "depends_on": ["U00"],
+      "risk": "medium: a wrong auth path silently breaks every agent's login; the matrix is the gate",
+      "touches_live_state": false,
+      "run_scope": "AIZK worktree and a fake Logto; the real Logto application is created by the owner (decision D7)",
+      "proposed_commit": "feat(aizk): one Logto-direct auth path and a stateless MCP server",
+      "conflicts_with": ["U01"],
+      "integration_after": ["U01"]
+    },
+    {
+      "id": "U03",
+      "v1_ids": ["U00", "U03"],
+      "title": "AIZK on the workspace PostgreSQL: fixture, extension-free schema, HNSW and role probes",
+      "repo": "aizk",
+      "u_wave": 1,
+      "files": [
+        "packages/aizk/tests/conftest.py",
+        "packages/aizk/tests/dbutil.py",
+        "packages/aizk/pyproject.toml",
+        "packages/aizk/src/aizk/store/migrations/versions/0001_init.py",
+        "packages/aizk/src/aizk/store/mixins/embedded.py",
+        "packages/aizk/src/aizk/store/vector.py",
+        "packages/aizk/src/aizk/config/settings.py",
+        "packages/aizk/src/aizk/retrieval/lanes/vector.py",
+        "packages/aizk/src/aizk/retrieval/lanes/facts.py",
+        "packages/aizk/src/aizk/commands/admin.py",
+        "packages/aizk/src/aizk/ops/provisioning.py"
+      ],
+      "new_files": [
+        "packages/aizk/tests/pgfixture.py",
+        "packages/aizk/src/aizk/store/migrations/versions/<next>_usage_reader_policy.py",
+        "packages/aizk/tests/store/test_role_probes.py",
+        "packages/aizk/tests/store/test_hnsw_recall.py"
+      ],
+      "changes": [
+        "Replace the developer PostgreSQL on localhost:5433 with M00's lazy postgres_cluster fixture (initdb from the workspace environment, short socket directory, collision-safe port, real fsync, reaped in finalizers); pgvector comes from the environment because it is a plain dependency in mainboard.toml, so there is no extension_control_path and no vendor_pg marker",
+        "Rewrite 0001_init as extension-free: vector, pg_trgm, pgcrypto and pg_stat_statements only; halfvec HNSW with m 16, ef_construction 64 and hnsw.iterative_scan relaxed_order so an RLS-filtered scan returns the requested depth; remove index_backend and the vendor branches. An existing database never re-runs 0001, and the donor conversion of the night (U11) brings it to the same shape",
+        "`aizk admin database setup` creates aizk_admin as NOSUPERUSER BYPASSRLS with pg_read_all_stats, aizk_app, and aizk_usage_reader with one SELECT policy on usage_event (the new migration); add an idempotent `aizk admin database indexes` that runs CREATE INDEX IF NOT EXISTS for the HNSW and lexical indexes, used after a restore",
+        "No restore-plan, no pg_restore -L list and no in-product vendor conversion"
+      ],
+      "acceptance": [
+        "`mb run test-aizk` completes on the throwaway cluster with no Docker and no network, with no vendor-marked test; suite wall time is recorded and not more than 1.5 times the current run",
+        "the fixture refuses a DSN on port 5433 and a data directory outside its temporary root; four xdist workers get four isolated databases; SIGKILL of a worker leaves no postmaster, socket directory or listener",
+        "fresh `alembic upgrade head` succeeds on a cluster with only contrib and pgvector",
+        "HNSW recall@50 against an exact scan is at least 0.98 on each of the five tables over 200 queries at RLS selectivities of 1, 10 and 100 percent, and a filtered scan returns at least 50 rows whenever 50 are visible; repeated at full size (251,821 vectors) in U11",
+        "positive role probes of layout.roles_rules pass: aizk_admin sees every row, artifact_content_blob_attachable is false for a foreign blob, pg_dump as backup succeeds on the forced tables, a queued graph job completes, aizk_usage_reader sees usage_event and nothing else, aizk_app without the scope setting sees zero rows in all 16 RLS tables (probe generated from pg_policies)",
+        "dense-lane statement p50 on a 100,000-row fixture is at most 50 ms (measured 3 ms top-50 on random data)"
+      ],
+      "depends_on": ["M00"],
+      "risk": "high: replaces the dense retrieval index and changes who may read what; gated by recall against exact search, the role probes and the ladder",
+      "touches_live_state": false,
+      "run_scope": "temporary roots only; no crimson, no live DSN",
+      "proposed_commit": "feat(aizk): extension-free schema on pgvector HNSW and an environment-owned test PostgreSQL",
+      "conflicts_with": ["U01", "U04", "U06", "U07", "U08"],
+      "integration_after": ["U01"]
+    },
+    {
+      "id": "U04",
+      "v1_ids": ["U04"],
+      "title": "Lexical lane chosen by the A/B",
+      "repo": "aizk",
+      "u_wave": 1,
+      "files": [
+        "packages/aizk/src/aizk/store/models/tables/chunk.py",
+        "packages/aizk/src/aizk/extract/ingest.py",
+        "packages/aizk/src/aizk/retrieval/lanes/sources.py",
+        "packages/aizk/src/aizk/config/settings.py",
+        "packages/aizk/pyproject.toml"
+      ],
+      "new_files": [
+        "packages/aizk/src/aizk/store/migrations/versions/<next>_lexical_lane.py",
+        "packages/aizk/src/aizk/serving/chunk/tokens.py",
+        "packages/aizk/tests/retrieval/test_lexical_ja_en.py"
+      ],
+      "changes": [
+        "Implement the variant that won S4 (candidates in order of expected simplicity: application-tokenized simple tsvector with a GIN index and a bounded OR query; BM25-weighted sparsevec with application-side IDF refreshed on a schedule; Japanese morphological words); the query side uses the same tokenizer, deterministic across macOS and Linux, files pinned by hash",
+        "Bound the candidate set so ts_rank_cd or the inner product never reads an unbounded match list; pg_trgm word_similarity serves titles and short queries",
+        "A resumable backfill for the 33,268 existing chunks (a real tokenization, not a column copy); one lexical path, no lexical_backend setting"
+      ],
+      "acceptance": [
+        "on the 200 real find queries of S4: lane p95 at most 1 s and overlap@20 against the bm25 lane's top 20 at or above the threshold the lead registered before the run",
+        "the 60-case Japanese, English and mixed fixture is reported with its sampling error (one case is 0.0167) and is not asserted against a 0.02 margin; the ladder rung B5 in U05 is the gate",
+        "index size at most 150 MB per 33,000 chunks (bm25 today: 460 MB), measured; ingest throughput drop at most 10 percent",
+        "tokenizer output for 20 strings is identical on macOS arm64 and Linux x86-64"
+      ],
+      "depends_on": ["U00", "U03"],
+      "risk": "high: lexical quality in Japanese is the main reason the vendor extensions were chosen; the named fallback is the arm64 vendor container",
+      "touches_live_state": false,
+      "run_scope": "temporary PostgreSQL and the S4 query set supplied by the lead as data",
+      "proposed_commit": "feat(aizk): lexical lane on built-in PostgreSQL features",
+      "conflicts_with": ["U01", "U03", "U06"],
+      "integration_after": ["U03"]
+    },
+    {
+      "id": "U05",
+      "v1_ids": ["U01"],
+      "title": "Golden set, non-inferiority test and the ladder runner",
+      "repo": "aizk",
+      "u_wave": 1,
+      "files": [
+        "packages/aizk/src/eval/cli.py",
+        "packages/aizk/src/eval/metrics.py",
+        "packages/aizk/src/eval/runner.py",
+        "packages/aizk/tests/eval/"
+      ],
+      "new_files": [
+        "packages/aizk/src/eval/golden/models.py",
+        "packages/aizk/src/eval/golden/build.py",
+        "packages/aizk/src/eval/golden/synthetic.py",
+        "packages/aizk/src/eval/golden/score.py",
+        "packages/aizk/src/eval/golden/noninferiority.py",
+        "packages/aizk/src/eval/golden/ladder.py",
+        "packages/aizk/src/eval/golden/job.py",
+        "packages/aizk/tests/eval/test_golden.py",
+        "packages/aizk/golden/v1.jsonl",
+        "packages/aizk/golden/unresolved.jsonl"
+      ],
+      "changes": [
+        "GoldenCase (id, query, intent current|historical|external, expected document ids, forbidden document ids, source, failure class) with the six audit classes; the builder reads a read-only export of the aizk:reports documents supplied by the lead; anything it cannot resolve goes to unresolved.jsonl and is never guessed",
+        "Synthetic cases generated from sampled documents with the extraction model already in use (gold is the source chunk), stratified by document kind, so the set exceeds 150 cases and the sparse classes reach 50",
+        "A registered design file (n, margin, stop rule, one pooled metric pair) written before the first ladder run; n and margin come from the pilot's paired standard deviation so the test has 80 percent power at zero true loss, and the margin is 0.05 if no n of 600 or fewer reaches that at 0.03; per-class numbers are descriptive unless n is 50 or more",
+        "One pooled, one-sided paired-bootstrap non-inferiority test (upper bound of the loss in MRR and recall@10 at most the margin), a latency profile for find p50 and p90 under a concurrent-load profile with n of 200 or more paired queries, and scoring through ir-measures",
+        "`aizk-eval golden run --target DSN --rung B0..B5` submits as an mb job and writes per-case rows and aggregates as receipts; every rung runs on its own clone (CREATE DATABASE TEMPLATE) of one restored snapshot and refuses a DSN that is not a scratch clone, so the live database is never queried (finds bump access counts and enqueue work). Rungs: B0 live code on crimson's scratch restore, B1 plus SERVE phase 0 only if merged, B2 hosted embedder, B3 hosted reranker, B4 HNSW, B5 lexical lane",
+        "New code uses cyclopts, not fire"
+      ],
+      "acceptance": [
+        "from a fixture of 40 synthetic report documents the builder yields exactly the expected cases and lists the others as unresolved (golden-file test)",
+        "scorer output equals ir-measures on a scripted run to 1e-9",
+        "in simulation the non-inferiority test has at least 0.8 power at the registered n and margin at zero true loss, and passes at most 5 percent of runs when the true loss equals the margin",
+        "a fake MCP server returning scripted rankings produces a receipt with per-case rows; running it twice yields the same receipt hash; the runner refuses a DSN that matches the live database",
+        "reported, not asserted: at least 150 operator cases plus 150 synthetic ones, at least 10 per failure class"
+      ],
+      "depends_on": ["M00", "U00"],
+      "risk": "medium: the quality of the cases and the power of the test decide every later gate",
+      "touches_live_state": false,
+      "run_scope": "fake MCP, temporary PostgreSQL and exports supplied by the lead; the real ladder runs in U11",
+      "proposed_commit": "feat(aizk): golden retrieval set, pre-registered non-inferiority test and ladder runner",
+      "conflicts_with": [],
+      "integration_after": []
+    },
+    {
+      "id": "U06",
+      "v1_ids": ["U08 (reduced)"],
+      "title": "Hosted embedding and reranking lanes, one re-embed path and threshold calibration",
+      "repo": "aizk",
+      "u_wave": 1,
+      "files": [
+        "packages/aizk/src/aizk/serving/embed/client.py",
+        "packages/aizk/src/aizk/serving/rerank/client.py",
+        "packages/aizk/src/aizk/serving/base.py",
+        "packages/aizk/src/aizk/graph/reembed.py",
+        "packages/aizk/src/aizk/graph/consolidation.py",
+        "packages/aizk/src/aizk/retrieval/rerank/rescore.py",
+        "packages/aizk/src/aizk/retrieval/find/orchestrator.py",
+        "packages/aizk/src/aizk/config/settings.py",
+        "packages/aizk/src/aizk/commands/admin.py"
+      ],
+      "new_files": [
+        "packages/aizk/tests/serving/test_hosted_lanes.py",
+        "packages/aizk/tests/graph/test_reembed_reuse.py",
+        "packages/aizk/src/aizk/graph/calibration.py",
+        "packages/aizk/tests/graph/test_calibration.py"
+      ],
+      "changes": [
+        "The embedding client speaks an OpenAI-compatible hosted endpoint with the dimensions parameter; at startup it embeds a probe string and refuses to serve if the dimension is not embed_dim (1024); bounded retries with jitter, a per-call timeout and a daily spend cap that fails with a named error",
+        "The rerank client uses the existing openrouter request format; on timeout or error the fused order is returned and the trace records rerank=skipped; find falls back to the lexical and title lanes when the query embedding fails and says so in the trace",
+        "`aizk admin reembed` prints a token and cost estimate first, streams each table with keyset pagination (rewrite_embeddings no longer calls .all()), is resumable and idempotent per batch, and gains --reuse-from DSN: a row whose id and text columns equal a row of the pre-embedded stage takes that vector, every other row embeds fresh",
+        "Threshold calibration job: sample about 2,000 labeled pairs (duplicate, related, unrelated) labeled by the extraction model with a spot check, compare old and new cosine distributions, and set consolidation_auto_merge_threshold, consolidation_borderline_floor, raptor_redundancy_threshold, raptor_sim_threshold and ontology_match_threshold at the old operating point (same precision and recall); calibrate find_max_distance with the off-corpus questions; shadow-run consolidation on the last 200 keeps with both embedders and diff the merge decisions; auto-merge stays above 1.0 (off) until both checks pass; each result is a receipt",
+        "No shadow columns, no swap transaction, no embedding generation row: the embedder changes once, inside the night",
+        "No GPU is required by any default code path"
+      ],
+      "acceptance": [
+        "a fake embedding server returning 2048-dimensional vectors makes startup fail with a named error; one returning 1024 passes; a fake that times out three times fails the call with the retry count named; the spend cap refuses the next call",
+        "a fake reranker that times out leaves find answering with the fused order and a trace marker; with the embedder down find answers from the lexical and title lanes and says so",
+        "reembed of a 2,000-row fixture over the five tables killed three times finishes with exactly one vector per row; --reuse-from copies the vectors of rows with equal id and text and embeds the rest; the printed token estimate is within 5 percent of the fake server's count",
+        "calibration on a synthetic two-geometry fixture moves each threshold to the old operating point within the sampling error and keeps auto-merge off until the shadow diff is empty",
+        "reported at U11: ladder rungs B2 and B3, find p50 and p90, monthly cost at the 30-day load (under $15), and S5's throughput"
+      ],
+      "depends_on": ["U00", "U03", "U05"],
+      "risk": "high: changes the vector space (all 251,821 vectors), sends note text to a provider and moves graph merge behavior; gated by decision D2 and the ladder",
+      "touches_live_state": false,
+      "run_scope": "temporary PostgreSQL and fake model servers; real OpenRouter calls only in U00 (S5) and U11",
+      "proposed_commit": "feat(aizk): hosted model lanes, one re-embed path and embedder-aware thresholds",
+      "conflicts_with": ["U01", "U03", "U04", "U08"],
+      "integration_after": ["U04"]
+    },
+    {
+      "id": "U07",
+      "v1_ids": ["U06"],
+      "title": "Object bytes on a local content-addressed store instead of SeaweedFS",
+      "repo": "aizk",
+      "u_wave": 1,
+      "files": [
+        "packages/aizk/src/aizk/storage.py",
+        "packages/aizk/src/aizk/config/settings.py",
+        "packages/aizk/src/aizk/runtime.py",
+        "packages/aizk/src/aizk/commands/admin.py",
+        "packages/aizk/src/deploy/docker-compose.yml",
+        "packages/aizk/tests/test_storage.py"
+      ],
+      "new_files": [
+        "packages/aizk/tests/test_storage_import.py"
+      ],
+      "changes": [
+        "ByteStore over obstore LocalStore rooted at AIZK_OBJECT_ROOT; write to a temporary file, fsync, atomic rename; key layout <2 hex>/<content hash>; zstd encoding and the retirement table unchanged",
+        "Remove ByteStore.download_url (no caller) and the S3 access-key, secret and endpoint settings; no S3 variant remains",
+        "`aizk admin storage import-s3 --endpoint ... --verify`: copy every blob row's object from the SeaweedFS endpoint, verify size and content hash against blob.content_hash, resumable and idempotent, reporting unverifiable objects without deleting anything; used for the pre-copy before the night",
+        "Delete the objects service from the compose file"
+      ],
+      "acceptance": [
+        "put, get, delete, compaction and retirement tests pass on LocalStore; a SIGKILL between write and rename leaves no partial object visible",
+        "import of a fake S3 holding 480 objects (including corrupted and missing ones) copies exactly the verifiable ones, lists the others, and a second run changes nothing",
+        "two concurrent writers of the same content produce one object; disk usage equals the sum of stored_size within 1 percent on the fixture"
+      ],
+      "depends_on": ["U03"],
+      "risk": "low: 480 immutable objects, 659 MB, hash-verified copy",
+      "touches_live_state": false,
+      "run_scope": "temporary roots and a fake S3 server",
+      "proposed_commit": "feat(aizk): local content-addressed byte store replaces SeaweedFS",
+      "conflicts_with": ["U01"],
+      "integration_after": ["U01"]
+    },
+    {
+      "id": "U08",
+      "v1_ids": ["U09"],
+      "title": "Worker memory by subprocess, queue churn and failed-job evidence",
+      "repo": "aizk",
+      "u_wave": 1,
+      "files": [
+        "packages/aizk/src/aizk/background/schedule.py",
+        "packages/aizk/src/aizk/background/queue.py",
+        "packages/aizk/src/aizk/background/jobs/maintenance.py",
+        "packages/aizk/src/aizk/background/jobs/projection.py",
+        "packages/aizk/src/aizk/graph/build.py",
+        "packages/aizk/src/aizk/graph/communities.py",
+        "packages/aizk/src/aizk/graph/raptor.py",
+        "packages/aizk/src/aizk/commands/admin.py",
+        "packages/aizk/src/aizk/ops/probes.py",
+        "packages/aizk/src/aizk/ontology/catalog.py"
+      ],
+      "new_files": [
+        "packages/aizk/src/aizk/background/subprocess_job.py",
+        "packages/aizk/tests/background/test_dispatch_tick.py",
+        "packages/aizk/tests/background/test_job_subprocess.py"
+      ],
+      "changes": [
+        "Run communities, raptor, insight, dedup, decay and profile_refresh as short-lived subprocesses (`aizk admin graph <job>`, the commands already exist) launched by the queue one at a time, the pattern the Docling converter already uses ('convert in one subprocess, then release all model memory'); the resident worker becomes the dispatcher",
+        "Record each job's peak RSS in operator_snapshot and add a doctor row for it",
+        "Replace the per-minute per-scope fan-out (about 47,500 chunk and 47,500 artifact dispatch tasks a day) with one dispatch task per tick; give pgqueuer_log a 7-day retention and start the statistics aggregation that is not running",
+        "Failed-job retention is requeue once, then expire, with the count in operator_snapshot; before any retention is enabled the lead requeues the 56 failed graph builds on the restored copy and records why they failed; add a query for documents with no claims after processing, used by the night's verification",
+        "Fix the weekly raptor schedule (last run 2026-08-02)"
+      ],
+      "acceptance": [
+        "the resident dispatcher after replaying 5,000 chunks plus a graph build and communities is at most 0.6 GiB; each heavy subprocess peak is at most 1.5 GiB on the S6 corpus; a killed subprocess leaves its job failed and visible and retried once",
+        "33 idle scope sets for one simulated hour produce at most 200 queue and log rows (about 11,900 today); dequeue statements at most 0.2 per second; pgqueuer_log never exceeds its retention in a time-travel test",
+        "the raptor job fires on its cron in a clock-controlled test; the failed-job retention never deletes a row that has not been requeued once",
+        "no change to job semantics: the existing background tests and the coverage gate pass"
+      ],
+      "depends_on": ["U00", "U03"],
+      "risk": "medium: touches the scheduler every job depends on; mitigated by the existing background suite and a bounded blast radius per subprocess",
+      "touches_live_state": false,
+      "run_scope": "temporary PostgreSQL; the 56 failed builds are requeued by the lead on the restored copy",
+      "proposed_commit": "fix(aizk): a dispatcher worker, subprocess graph jobs and a bounded queue log",
+      "conflicts_with": ["U01", "U03", "U06"],
+      "integration_after": ["U06"]
+    },
+    {
+      "id": "U09",
+      "v1_ids": ["U11", "U12"],
+      "title": "Shared server layout, role posture, daily dumps and the restore test",
+      "repo": "mainboard",
+      "u_wave": 2,
+      "files": [
+        "src/mainboard/center/postgres.py",
+        "src/mainboard/doctor.py",
+        "src/mainboard/manifest/schema/workspace.py",
+        "integration/conftest.py"
+      ],
+      "new_files": [
+        "src/mainboard/center/databases.py",
+        "src/mainboard/center/dumps.py",
+        "integration/test_postgres_layout.py",
+        "integration/test_dumps.py"
+      ],
+      "changes": [
+        "Declare the layout in mainboard.toml (services.postgresql: databases, owner and runtime roles with their posture, per-role limits and timeouts, the RAM budget number, the disk floor, dump retention) and render the tuning profile from the RAM number; settings include max_connections, shared_preload_libraries and max_wal_size from the first start, archive_mode off",
+        "ensure(): idempotent creation of the databases mainboard, aizk and logto and their roles from protected passfiles (aizk_admin NOSUPERUSER BYPASSRLS with pg_read_all_stats, the backup role), the vector extension in aizk by the bootstrap role, pg_hba entries; run `aizk admin database setup` as a subprocess under the aizk owner role; mainboard imports nothing from AIZK",
+        "Doctor rows: role posture (bypassrls flags, no service superuser), free space on the data volume against the 30 GiB floor, the APFS volume check when declared, dump age, restore-test age, connection headroom per role, shared_buffers against the RAM budget",
+        "The daily dump job, run from the settler's ssh-localhost context: pg_dump -Fc of aizk and logto as the backup role, mainboard by M38's mechanism, pg_dumpall --globals-only, an rsync of the objects directory, an encrypted bundle of .env, passfiles, the tunnel token and (if kept) mcp-state, then copies to /Volumes/PORTABLE and crimson's SSD by checksum; local retention of two",
+        "The weekly restore test: restore the newest dumps into a throwaway cluster and check alembic head, counts and a keep and find probe",
+        "Extend M38's database inventory so every declared database is in the backup set"
+      ],
+      "acceptance": [
+        "ensure() twice on the M00 fixture changes nothing the second time; the three databases and every role exist with the declared limits",
+        "making aizk_admin a superuser, or removing its BYPASSRLS, turns the doctor row red; the role probes of layout.roles_rules pass on the fixture",
+        "the dump job produces archives that restore into a second cluster and pass the posture probes; a failed offsite copy marks the dump incomplete and turns the doctor red; the secrets bundle contains no plaintext (grep test)",
+        "doctor reports a free-space floor breach when the data volume fixture is nearly full",
+        "after a postmaster crash and restart with fsync on, all roles, databases and the AIZK head revision survive; no import of aizk appears in mainboard (import-linter contract)"
+      ],
+      "depends_on": ["M36", "U03"],
+      "risk": "high: roles and isolation on the persistence boundary, and the only backup chain; staged on the throwaway cluster, then E1",
+      "touches_live_state": false,
+      "run_scope": "temporary roots; E1 installs it on the center after M36 is live",
+      "proposed_commit": "feat(mainboard): databases, roles, doctor rows and daily dumps for the shared PostgreSQL",
+      "conflicts_with": ["M36", "M37", "M38"],
+      "integration_after": ["M36"]
+    },
+    {
+      "id": "U10",
+      "v1_ids": ["U13", "U14", "U15 (as a pull)"],
+      "title": "AIZK's services under mainboard: units, doctor probe, the client mount and the usage pull",
+      "repo": "mainboard",
+      "u_wave": 2,
+      "files": [
+        "src/mainboard/durable.py",
+        "src/mainboard/doctor.py",
+        "src/mainboard/cli.py",
+        "src/mainboard/manifest/schema/workspace.py",
+        "mainboard.toml (rollout input: [envs.memory] and [services.memory])"
+      ],
+      "new_files": [
+        "src/mainboard/memory/__init__.py",
+        "src/mainboard/memory/app.py",
+        "src/mainboard/memory/doctor.py",
+        "src/mainboard/memory/usage.py",
+        "integration/test_memory_services.py",
+        "integration/test_memory_usage_pull.py",
+        "scripts/aizk-watch.sh (the external watcher for crimson, delivered to the owner under decision D4)"
+      ],
+      "changes": [
+        "Tier A, needed for the night: a separately locked `memory` environment in mainboard.toml (aizk, caddy, nodejs, pgvector) so `mainboard upgrade` on the default environment never changes a live process; units for aizk-mcp, aizk-api, aizk-worker, caddy, frontend, logto and cloudflared rendered by the one renderer in durable.py extended with KeepAlive and ThrottleInterval (absolute paths, env files 0600, a pinned cloudflared release binary with its sha256 in the toml, the tunnel token through an env file), with readiness probes and no ordering machinery because AIZK's connect loop already waits for PostgreSQL",
+        "`mb memory up|down|status|logs|doctor` in its own App module mounted like host, job and lake, so cli.py gains one line; `up` moves the units to the memory environment's current lock only after the drain and probe pass; status is JSON",
+        "Replace [gates.aizk] and scripts/aizk-gate.py by a native doctor probe: a keep and a find as a synthetic user over the public route with the machine-to-machine token, then the local route, expiring probe notes; the same function is the night's verify script",
+        "Tier B, may follow the night: mount AIZK's existing client app lazily (cyclopts import-path command, no extra, no second client) and add `report` to the AIZK CLI; the usage pull in the settler, about 20 lines: DuckDB's postgres extension attached READ_ONLY as aizk_usage_reader, INSERT INTO memory_usage SELECT ... WHERE created_at > the M23 cursor, idempotent on capture_key",
+        "Retire AIZK's nightly backup job from the managed set once the soak ends (not before)"
+      ],
+      "acceptance": [
+        "stub HTTP servers stand in for the AIZK processes: units render with absolute paths, restart after a kill with the throttle honored, and stop within a bounded time; no secret value appears in any rendered plist, unit or environment file (grep test)",
+        "the doctor probe goes red when the stub keep returns an error and green when it succeeds; mb memory status --json is stable (golden file); a down service is not started by any passive reader",
+        "`mb --help` and `mb job list` do not import fastmcp (import-time test); cli.py gains at most two lines",
+        "`mainboard upgrade` on the default environment leaves the memory environment's lock unchanged",
+        "the usage pull inserts 1,000 duplicated rows once, resumes from its cursor after a kill, and the reader role sees only usage_event"
+      ],
+      "depends_on": ["M36", "U09", "U02", "M23 (tier B)"],
+      "risk": "medium: new long-running services beside the settler; fake services only in tests, real ones in E1 and E2",
+      "touches_live_state": false,
+      "run_scope": "stub servers and the temporary PostgreSQL; the real start is E1",
+      "proposed_commit": "feat(mainboard): supervise AIZK's services as center services and mount mb memory",
+      "conflicts_with": ["M24", "M36"],
+      "integration_after": ["U09"]
+    },
+    {
+      "id": "U11",
+      "v1_ids": ["U16", "U17 (as a runbook)"],
+      "title": "Staging rehearsal, the night's runbook scripts and the verify script",
+      "repo": "both",
+      "u_wave": 3,
+      "files": [],
+      "new_files": [
+        "packages/mainboard/runbooks/aizk-night.md",
+        "packages/mainboard/scripts/aizk_night/ (about nine idempotent steps: stop, convert, dump, restore, index, verify, logto, flip, abort)",
+        "rehearsal reports U11-report.json and U11-report.md under the lead's evidence directory"
+      ],
+      "changes": [
+        "The lead restores a fresh dump on the center into aizk_stage using the S2 path, applies HEAD's migrations, builds HNSW and the lexical lane, imports objects, pre-embeds the stage through the hosted lanes (for the --reuse-from path), and starts the full memory stack against it; no public hostname points at it",
+        "Run the ladder B0 to B5 on clones of one restored snapshot with the registered design, the threshold calibration receipts, the latency profile under load and the cost estimate",
+        "Run the night end to end twice, the second including: the agent matrix and the stateless restart test of S8, the flip on temporary hostnames with propagation and connector-up times, the copy-back rollback (rows created after the stop copied back with psql copy, the old worker rebuilding chunks and graph), the weekly restore test, and the reboot drill with the owner",
+        "Measure the night's steps and rewrite the time table; the script that verifies the night is the doctor probe of U10 plus counts, id digests, 42 policies and documents-with-no-claims"
+      ],
+      "acceptance": [
+        "a median total of 45 minutes or less and a worst case of 60 on the wired network over two rehearsals, or the window is widened to 90 minutes before any redesign",
+        "per-table counts and id digests equal the dump; the converted stage keeps embeddings bit for bit when the reuse path is used",
+        "every ladder rung passes its registered margin; find p50 is at most 5,450 ms and p90 at most 6,640 ms (the live 4,954 and 6,036 ms plus 10 percent) under the concurrent-load profile with 200 or more paired queries; keep p50 at most 400 ms",
+        "HNSW recall@50 at least 0.98 on the five tables at 251,821 vectors; the resident set of the stack with one heavy job is at most 6.1 GiB; every heavy job at most 1.5 GiB; monthly hosted cost under $15",
+        "the agent matrix passes from the credentials the auth path calls for; the flip is measured and scripted; the copy-back rollback is rehearsed and its time recorded; the reboot drill's result is written into decision D4",
+        "settler pass latency during the restore is at most 1.5 times its idle value, with the idle baseline defined after the PostgreSQL settler is live"
+      ],
+      "depends_on": ["U01", "U02", "U03", "U04", "U05", "U06", "U07", "U08", "U09", "U10", "M36 live and soaked for 7 days under staged AIZK load"],
+      "risk": "medium: reads the live database through dumps, spends a little provider money and puts the center under load; writes only to staging on the center",
+      "touches_live_state": true,
+      "run_scope": "reads crimson through pg_dump and the Caddy snippet staging; writes only aizk_stage on the center; the flip is tested on temporary hostnames only",
+      "proposed_commit": "none for evidence; feat(mainboard): aizk night runbook and scripts",
+      "conflicts_with": [],
+      "integration_after": ["U10"]
+    },
+    {
+      "id": "U12",
+      "v1_ids": ["U18"],
+      "title": "Decommission AIZK on crimson, expose GPU 0, retire the old route",
+      "repo": "both",
+      "u_wave": 4,
+      "files": [
+        "mainboard.toml",
+        ".agents/skills/aizk/SKILL.md",
+        "AGENTS.md",
+        "packages/mainboard/SERVE.md",
+        "packages/aizk/docs"
+      ],
+      "new_files": [],
+      "changes": [
+        "After the 7-day soak and one real restart recovered cleanly, archive crimson's volumes and the 2.7 GB database to /mnt/ssd2 and remove the volumes only after a restore from the archive was rehearsed on the center; prune the Docker build cache at the owner's go-ahead",
+        "Edit hosts.crimson to expose both card UUIDs for non-exclusive work from 2026-11-25 at the earliest; M30 enrolls the card in the lease later; delete the ssh fallback of the old gate",
+        "Retire the old tunnel (or its crimson ingress) and AIZK's nightly backup job on crimson after the soak; rotate the OpenRouter key and the Logto application secrets now, not at the night",
+        "Mark SERVE.md superseded by unify-v2.md; update the aizk skill and AGENTS.md to the new route and the mb memory verbs; fold the close-out checks into M33's ledger"
+      ],
+      "acceptance": [
+        "an archive restore on the center passes the U09 posture probes",
+        "nvidia-smi on crimson shows no AIZK process; GPU 0 is usable for non-exclusive work and visible to the lease once M30 exists",
+        "`mb memory doctor` and `mb doctor` are green for a week with the old tunnel removed; the reboot drill's outcome is on record (decision D4)",
+        "no document in the monorepo still names crimson as AIZK's host, except dated historical notes (rg check)"
+      ],
+      "depends_on": ["U11", "M30"],
+      "risk": "low once rollback is no longer needed; irreversible deletions wait for the archive rehearsal and a recovered restart",
+      "touches_live_state": true,
+      "run_scope": "lead-run on crimson after the soak ends",
+      "proposed_commit": "chore: retire the crimson AIZK stack",
+      "conflicts_with": [],
+      "integration_after": ["U11"]
+    }
+  ],
+  "order": {
+    "rule": "U packages that touch no live state run in worktrees beside the M waves from now; the read-only U00 and E0 may run as soon as the owner approves and the disk floor is met; nothing in AIZK is deployed to crimson at any time; AIZK's move needs only M36 live and soaked 7 days under staged AIZK load, plus M38's dump for the mainboard database; M37 and M32 are not prerequisites",
+    "u_waves": [
+      {
+        "u_wave": 0,
+        "name": "Read-only spikes and the backup proof",
+        "packages": ["U00"],
+        "needs_from_m": "none; M36's binaries if present, otherwise the workspace environment's initdb",
+        "internal_order": ["U00 (S1 first)"]
+      },
+      {
+        "u_wave": 1,
+        "name": "AIZK worktree work, in parallel with M waves 0 to 2",
+        "packages": ["U01", "U02", "U03", "U04", "U05", "U06", "U07", "U08"],
+        "needs_from_m": "M00 for the fixture and receipts; pgvector in mainboard.toml as the lead's first edit",
+        "internal_order": ["U01", "U03", "U07", "U04", "U06", "U08", "U02", "U05"],
+        "parallelism": "U01 first; U05 and U02 touch other files and can run beside the rest; U03, U04, U06, U07 and U08 share settings.py, 0001_init.py, vector.py and compose and integrate in the listed order, each in its own worktree, with conflicts_with as the guard; SERVE phase 0 is its own track and is rung B1 only if merged before the ladder starts"
+      },
+      {
+        "u_wave": 2,
+        "name": "Shared-server layout, dumps and services",
+        "packages": ["U09", "U10"],
+        "needs_from_m": "M36 live (W3); M23 for U10's usage pull (W4); the units are statically rendered and need no M24 seam",
+        "internal_order": ["U09", "U10"]
+      },
+      {
+        "u_wave": 3,
+        "name": "Rehearsal",
+        "packages": ["U11"],
+        "needs_from_m": "M36 live and soaked 7 days under staged AIZK load; M38's dump for mainboard"
+      },
+      {
+        "u_wave": 4,
+        "name": "The night and the decommission",
+        "packages": ["U12"],
+        "needs_from_m": "M30 for lease enrollment; the night itself needs nothing beyond U11's gates"
+      }
+    ],
+    "alignment_with_m_waves": [
+      {"m_wave": "now", "u": ["U00", "U01"], "note": "read-only on crimson and worktree work"},
+      {"m_wave": 0, "u": ["U03", "U05"], "note": "the fixture and receipts are the inputs"},
+      {"m_wave": 1, "u": ["U02", "U07"], "note": "independent of PostgreSQL service work"},
+      {"m_wave": 2, "u": ["U03 (merge)", "U04", "U06", "U08"], "note": "AIZK worktree work continues; no live"},
+      {"m_wave": 3, "u": ["U09", "U10 (tier A)"], "live": "E1 after the M36 live switch: empty aizk and logto databases, roles, units installed stopped, weekly restore tests running, the 7-day soak starts"},
+      {"m_wave": 4, "u": ["U10 (usage pull)"], "note": "M37, M38, M32 land and soak; AIZK is untouched"},
+      {"m_wave": 5, "u": ["U11"], "live": "E2 rehearsals in quiet gaps, then E3 the night once the gates pass and no wave switch is in flight"},
+      {"m_wave": 6, "u": ["U12"], "live": "E4 decommission after the soak, once M30 exists"},
+      {"m_wave": 7, "u": [], "note": "close-out folded into M33's ledger"}
+    ],
+    "live_events": [
+      {
+        "id": "E0",
+        "was": "L-2 (new) and L-1 (replaced)",
+        "name": "The backup proof",
+        "needs": ["owner approval (D1)"],
+        "action": "S1 of U00: restore-tested dumps of aizk and logto, roles, an encrypted secrets bundle, copied to /Volumes/PORTABLE and a second location",
+        "outage": "none",
+        "can_run": "this week; worth doing alone"
+      },
+      {
+        "id": "E1",
+        "was": "L1",
+        "name": "Stage the center",
+        "needs": ["M36 live", "U09", "U10 tier A", "decision D5 actions", "the Logto machine-to-machine grant"],
+        "action": "create the empty aizk and logto databases and roles, install the units stopped, start the weekly restore test",
+        "outage": "none for agents; no cluster restart because M36 rendered its settings from the first start"
+      },
+      {
+        "id": "E2",
+        "was": "U16",
+        "name": "Rehearsals",
+        "needs": ["U01 to U10", "U11"],
+        "action": "two full rehearsals from fresh dumps on the center; the second with the agent matrix, the flip on temporary hostnames, the copy-back rollback and the reboot drill, the owner present",
+        "outage": "none for agents"
+      },
+      {
+        "id": "E3",
+        "was": "L2",
+        "name": "The night",
+        "needs": ["E2 green", "D3, D4, D5, D7 answered", "wired Ethernet", "M36 live and soaked 7 days", "calendar gates"],
+        "outage_budget": {
+          "total_minutes_max": 60,
+          "total_minutes_expected": 45,
+          "rollback_before_flip_minutes_max": 2,
+          "copy_back_rollback_minutes_estimate": 20
+        },
+        "see": "migration"
+      },
+      {
+        "id": "E4",
+        "was": "L3",
+        "name": "Soak, then decommission",
+        "needs": ["E3 done", "U12"],
+        "action": "7 days with crimson's stack stopped and intact, 14 more days stopped, then archive after a rehearsed restore; GPU 0 exposed from 2026-11-25"
+      }
+    ],
+    "calendar_gates": [
+      "E0 and U00 are read-only on crimson and may run before the MLSys deadline (2026-10-30) if the owner approves; they do not touch the MLSys artifacts or the GH200 queue; before 10-30 everything else is worktree work only",
+      "E3 not before the night of 2026-11-17 to 11-18 (after the CVPR submission passes, 2026-11-17 18:00 JST); the 01:00 to 06:00 JST window",
+      "E3 not while a mainboard wave switch is in flight and not while GH200 batches depend on a pending center change",
+      "E3 only after the center's PostgreSQL has been staged and soaked 7 days under staged AIZK load without an incident",
+      "GPU 0 returns for non-exclusive work on 2026-11-25 at the earliest (7 days of soak after E3), for exclusive registered work after M30"
+    ],
+    "cut_line": {
+      "required_before_the_night": ["U00", "U01", "U02", "U03", "U04 (or the owner's acceptance of the vendor-container fallback)", "U05", "U06", "U07", "U08", "U09", "U10 tier A (units and doctor)", "U11"],
+      "deferred_after_the_night": ["U10 tier B (client mount and usage pull)", "U12"],
+      "order_of_sacrifice_if_capacity_is_short": "U10 tier B, then U05's synthetic cases (the gate then reports lower power and a wider margin), never U00",
+      "capacity_note": "the cutok v26 program draws on the same Codex agents; no U-wave 2 to 4 work outside worktrees before the MLSys submission"
+    }
+  },
+  "migration": {
+    "principle": "move an exact snapshot taken after the old side has stopped, never acknowledge a keep the surviving side does not hold, and keep the old side stopped and untouched until the new side has soaked",
+    "scope": [
+      "aizk database (2.7 GB, 33 tables; archive 1.1 GB, pgqueuer_log data excluded)",
+      "logto database (25 MB) plus the cluster roles",
+      "object bytes (480 objects, 659 MB stored), pre-copied with hash verification",
+      "environment secrets (AIZK_*, tunnel token, OpenRouter, Logto) as an encrypted bundle and mcp-state only if a proxy mode is kept",
+      "the public hostnames aizk, auth, admin and possibly console"
+    ],
+    "prerequisites": [
+      "E0 green: restore-tested copies on two locations",
+      "U11's second rehearsal green: median total 45 minutes or less on the wired network, worst case 60",
+      "the disk floor met (30 GiB free) and PGDATA's reserved volume in place, wired Ethernet connected (D5)",
+      "the agent matrix passed and the reboot drill done (D3, D4)",
+      "objects pre-copied with `aizk admin storage import-s3 --verify` (immutable, so safe before the stop)",
+      "the Cloudflare route tested on temporary hostnames (D7)",
+      "the owner present"
+    ],
+    "steps": [
+      {
+        "t": "T-1h",
+        "action": "pre-copy the object delta; verify the last nightly dump; stage the Caddy maintenance snippet on crimson without loading it; the center stack is staged and stopped",
+        "budget_minutes": 0
+      },
+      {
+        "t": "01:00 JST",
+        "action": "load the snippet (503 with: AIZK is moving until HH:MM; hold the note and retry), docker stop server, api and worker on crimson, confirm no connection to aizk",
+        "budget_minutes": 2
+      },
+      {
+        "t": "T+2",
+        "action": "donor conversion by the path S2 chose; default: CREATE DATABASE aizk_flat TEMPLATE aizk, drop chunk.bm25, DROP EXTENSION vchord, vchord_bm25, pg_tokenizer CASCADE, then pg_dump -Fd -j 4 --exclude-table-data=pgqueuer_log and rsync the directory to the center",
+        "budget_minutes": 8
+      },
+      {
+        "t": "T+10",
+        "action": "pg_restore -j 4 with maintenance_work_mem 1 GB, alembic upgrade head (0013 to 0016), `aizk admin database indexes` (HNSW, GIN or sparsevec), lexical backfill, object delta",
+        "budget_minutes": 14
+      },
+      {
+        "t": "T+24",
+        "action": "re-embed: `aizk admin reembed` if S5 measured 15 minutes or less, otherwise --reuse-from the pre-embedded stage",
+        "budget_minutes": "3 to 15"
+      },
+      {
+        "t": "T+30",
+        "action": "verify script (the doctor probe plus counts, id digests, 42 policies, positive role probes, documents with no claims counted, five golden queries, an authenticated keep and find on the local route)",
+        "budget_minutes": 5
+      },
+      {
+        "t": "T+35",
+        "action": "Logto: stop on crimson, pg_dump logto and pg_dumpall --roles-only, restore on the center, start, compare JWKS key ids with the live set, authenticated keep and find on localhost while DNS still points at crimson",
+        "budget_minutes": 8
+      },
+      {
+        "t": "T+43",
+        "action": "flip the routes by S7's method, probe from outside as a fresh agent, start the center worker",
+        "budget_minutes": 5
+      },
+      {
+        "t": "T+48",
+        "action": "abort line: anything not through the flip unloads the snippet and starts the three crimson containers",
+        "budget_minutes": 2
+      },
+      {
+        "t": "T+60",
+        "action": "hard end of the budget",
+        "budget_minutes": 0
+      }
+    ],
+    "outage_budget": {
+      "total_minutes_max": 60,
+      "total_minutes_expected": 45,
+      "kind": "reads and writes both down, at night",
+      "widening_rule": "if U11's median exceeds 45 minutes the window widens to 90 before any redesign; the night rate is about 0.1 writes per 25 minutes",
+      "ledger_basis": "30-day ledger, JST, critic-measured: 8, 7, 9, 12, 9 and 6 writes in the hours 01 to 06 against 32 to 50 in daytime hours; 17.5 percent of 25-minute windows contained a write overall",
+      "auth_note": "the Logto sign-in gap is inside the window; tokens already issued stay valid for their lifetime",
+      "rollback_before_flip_minutes_max": 2,
+      "copy_back_rollback_minutes_estimate": 20,
+      "expected_refused_keeps": "about 0.3 at night, each seeing the Caddy message or a connection error"
+    },
+    "no_lost_keep": [
+      "before 01:00 every acknowledged keep is committed on crimson and therefore in the dump, which is taken after the containers have stopped",
+      "from the stop to the flip nothing can be acknowledged because no process answers; the agent sees the message or a connection error and holds the note, and the aizk skill carries one sentence for the day telling it to retry",
+      "after the flip every acknowledged keep is a committed transaction on the center, covered by the daily dump and by the copy-back rollback",
+      "queue rows left in picked state are recovered by the existing recovery pass; no graph work is lost because the keep itself carries the document",
+      "there is no journal, no replay and no typed retryable error to get wrong"
+    ],
+    "rollback": {
+      "before_the_flip": "unload the snippet and docker start the three containers; only an aizk_flat database was added on crimson (dropped afterward); nothing is lost",
+      "after_the_flip_within_the_soak": "stop the center's AIZK units, flip the routes back, docker start the three containers, then copy back with psql copy the document, artifact, artifact_content and blob rows (and the objects) created after 01:00; the old worker rebuilds chunks and graph; Logto changes are not carried back, so every agent logs in again (budgeted); about 24 rows at most in the first day; rehearsed once in U11",
+      "after_the_soak": "forward only (fix the center), or the latest daily dump on /Volumes/PORTABLE and crimson's SSD, a 24-hour recovery point (D6)",
+      "center_dead_before_the_soak_ends": "restart crimson's stack from the stopped state and copy back from the center's last dump for any rows the dead center never dumped",
+      "what_is_retained": "crimson's stopped containers, images, volumes and database for 7 days running-ready and 14 more days stopped, and the old tunnel until the soak ends"
+    },
+    "verification": [
+      "alembic head equals the AIZK release",
+      "per-table counts and id digests equal the dump",
+      "documents with no claims after processing counted equal on both sides",
+      "forced RLS and the 42 policies present (probe from pg_policies); the positive role probes of layout.roles_rules",
+      "doctor probe: an authenticated keep and find as the probe user on the local route, then over the public route after the flip",
+      "JWKS key ids of the restored Logto equal the live set",
+      "an agent in each of Claude Code, Codex and opencode, on the Mac and one remote host, calls status, find and keep from its stored credentials or a fresh login per U02, and survives a server restart under an open session",
+      "settler pass latency, free disk and resident set within budget for 24 hours"
+    ],
+    "secrets_and_identity": [
+      "the AIZK environment file and the tunnel token move into the center's .env (0600, internal disk) and the encrypted backup bundle; the token reaches cloudflared through an env file, never argv",
+      "no secret rotates at the night; the OpenRouter key and the Logto application secrets rotate in U12 after the soak",
+      "issuer https://auth.phvv.me, database, cookie and signing keys are preserved by restoring the logto database with its roles; AIZK_WEB_CLIENT_SECRET and AIZK_WEB_SESSION_SECRET stay identical so the browser console keeps working"
+    ],
+    "what_moves_only_as_a_copy": [
+      "usage_event (also pulled into memory_usage after the move)",
+      "the observability volumes are not migrated (no data worth keeping beyond the usage ledger)",
+      "pgqueuer_log is not migrated"
+    ],
+    "variant_if_the_window_is_too_long": "widen the window to 90 minutes; if a rehearsal still exceeds 90, shorten the re-embed with the pre-embedded stage and --reuse-from; logical replication is excluded (X6) because it needs wal_level logical, hence a database restart on crimson, whose stack cannot restart cleanly",
+    "spike_gates": {
+      "S1": "restore completes and a find returns",
+      "S2": "the chosen path fits the night's table",
+      "S3": "0013 to 0016 apply on the restored copy",
+      "S4": "lane p95 at most 1 s and overlap@20 above the registered threshold, else the vendor-container fallback",
+      "S5": "dimensions=1024 honored, re-embed 15 minutes or less, data collection denied",
+      "S6": "every heavy job at most 1.5 GiB",
+      "S7": "Logto native starts with JWKS key ids equal to the live set, else a container",
+      "S8": "all three harnesses log in and restarts are invisible, else a proxy mode",
+      "S9": "30 GiB free"
+    }
+  },
+  "open_questions": [
+    {
+      "id": "D1",
+      "question": "Go for the slim, native, one-night plan: AIZK on the center as one unit, with CockroachDB and AWS, Docling, ClamAV, GLiNER, the web lane, the observability stack and oauth2-proxy deleted, and E0 plus the read-only spikes starting now?",
+      "recommendation": "Yes. Tag the repository first; the web lane and the Cockroach profile stay reachable from the tag. The web lane recorded zero events in 84 days.",
+      "evidence": "placement measurements of v1 (a split costs 0.24 s, +85%, on every keep); the center holds 4.6 GiB steady for the whole stack; both critics found these defaults uncontested",
+      "affects": ["U00", "U01", "U10"],
+      "merged_from": ["v1 D2", "v1 D4", "v1 D7", "v1 D8", "v1 D18"]
+    },
+    {
+      "id": "D2",
+      "question": "Hosted embedding and reranking, and the privacy line: is sending note text to OpenRouter's routed providers acceptable?",
+      "recommendation": "Yes, behind the ladder and the threshold recalibration, with data collection denied and a daily spend cap; about $4 a month plus $0.25 once. Extraction already sends note text to DeepSeek. If the ladder rejects hosted models the lanes stay on crimson's GPU 0 behind an authenticated route and GPU 0 stays AIZK's (excluded X2).",
+      "evidence": "OpenRouter prices; CM6 to CM8 for the gate; S5 for the unverified dimension handling",
+      "affects": ["U06", "U05", "U11"],
+      "merged_from": ["v1 D6"]
+    },
+    {
+      "id": "D3",
+      "question": "The night and its accepted risks: a 60-minute outage of reads and writes in the 01:00 to 06:00 JST window, the first night after 2026-11-17 18:00 JST, about 0.3 refused keeps, one re-login per agent install, copy-back rollback, and GPU 0 back on 2026-11-25 at the earliest?",
+      "recommendation": "Yes. The window widens to 90 minutes if rehearsals need it. The alternative, a daytime freeze, has about a one in three chance of refusing a write.",
+      "evidence": "the 30-day ledger by hour (critic-measured); CM1 for the re-login; CM18 for the GPU date",
+      "affects": ["U11", "U12", "E3"],
+      "merged_from": ["v1 D10", "v1 D17"]
+    },
+    {
+      "id": "D4",
+      "question": "The unattended center, for AIZK and for the mainboard design: FileVault is on, there is no auto-login and the services are user LaunchAgents, so a power cut or OS restart leaves PostgreSQL, the settler and AIZK down until someone unlocks the console. Accept, move to system daemons, or turn FileVault off?",
+      "recommendation": "(a) accept, with an external watcher on crimson alerting the owner's phone, authenticated restarts for planned reboots, automatic OS update installs off and an unlock runbook; run the reboot drill in E2 and adopt (b) system LaunchDaemons for PostgreSQL and the AIZK units only if the drill shows agents wait for a login that daemons would not; not (c). M36 and M24 should record the posture.",
+      "evidence": "fdesetup status, pmset and the settler plist checked on 2026-10-11; design.md lines on the LaunchAgent and on user-login limitations in doctor; CM14",
+      "affects": ["M36", "M24", "U10", "U12", "E3"],
+      "merged_from": ["new, from CM14"]
+    },
+    {
+      "id": "D5",
+      "question": "Owner actions on the machine before E1: free the data volume to 30 GiB or more (find the roughly 120 GiB consumer first), create a reserved APFS volume for PGDATA, and connect wired Ethernet?",
+      "recommendation": "Yes. The reserved volume is the only mechanism that keeps other writers from starving PostgreSQL, which a doctor row cannot do; the disk is at 96% with 19 GiB free today and the floor binds before RAM does.",
+      "evidence": "df on 2026-10-11 00:15 JST; the 2026-10-06 notes; CS14 and CM15",
+      "affects": ["U00", "U09", "E1", "E3"],
+      "merged_from": ["v1 D11", "CS14", "CM15"]
+    },
+    {
+      "id": "D6",
+      "question": "The recovery point objective: 24 hours (daily dumps) or minutes (pg_receivewal to /Volumes/PORTABLE)?",
+      "recommendation": "24 hours: daily dumps, now restore-tested and offsite, equal today's exposure with a proven restore and no archive that can fill the disk. Add a minutes-level point only after a note-loss incident or a higher keep rate; PITR would then cover aizk and logto only.",
+      "evidence": "CS5, CM15, CM16; about one keep an hour",
+      "affects": ["U09", "U12"],
+      "merged_from": ["v1 D16", "new, from CS5"]
+    },
+    {
+      "id": "D7",
+      "question": "Cloudflare and Logto access for the rehearsal and the flip: who changes the route, and who creates the public Logto application and the machine-to-machine control grant?",
+      "recommendation": "A scoped Cloudflare API token (zone DNS and tunnel edit) held in the center's .env at 0600 and revoked after the soak, so the lead scripts and measures the flip; otherwise the owner clicks from a printed checklist. The owner creates the public Logto application and the control grant before E1.",
+      "evidence": "S7, S8; the gate script still names a stale issuer and the grant is pending",
+      "affects": ["U00", "U02", "U10", "E3"],
+      "merged_from": ["v1 D9", "v1 D12", "CM13"]
+    },
+    {
+      "id": "defaults",
+      "question": "Defaults taken unless the owner vetoes them",
+      "recommendation": "AIZK stays a separate repository fronted by mainboard (revisit if more than half of AIZK's commits also change mainboard for a quarter); one lake with new table names; usage served from PostgreSQL and mirrored; the command is mb memory; the retrieval backend order is extension-free first (gated), the arm64 vendor container second, a Linux-hosted database last; Logto native if its spike passes, else a pinned container; offsite copies on crimson's SSD and /Volumes/PORTABLE; crimson's Docker build cache may be pruned any time (cache only, images wait for the soak).",
+      "evidence": "CS16: the remaining v1 decisions are defaults nobody will contest",
+      "affects": ["U03", "U09", "U10", "U12"],
+      "merged_from": ["v1 D1", "v1 D3", "v1 D5", "v1 D9", "v1 D13", "v1 D14", "v1 D15", "v1 D16"]
+    }
+  ],
+  "excluded": [
+    {"id": "X1", "scope": "SwiftUI app and any new frontend (SERVE phase 4)", "reason": "build the jobs, hosts and costs views in the existing web frontend first", "trigger": "the owner uses those views weekly for a month"},
+    {"id": "X2", "scope": "local MLX or vLLM model lanes on the center, or lanes kept on crimson's GPU 0", "reason": "RAM (24 GB) and rerank throughput; the lanes are URL-configured so this is a configuration change", "trigger": "the ladder rejects hosted models (D2) or the Mac Studio's ownership settles"},
+    {"id": "X3", "scope": "moving source blobs into DuckLake rows or into mainboard's content-addressed store", "reason": "AIZK's local content-addressed directory has the same layout, so a later merge is a directory move", "trigger": "mainboard's object store ships"},
+    {"id": "X4", "scope": "merging the aizk and mainboard repositories", "reason": "default decision: separate repository", "trigger": "paired commits dominate for a quarter"},
+    {"id": "X5", "scope": "pgBackRest, WAL-G, pgBouncer, pg_cron and other extras not on conda-forge", "reason": "native tools and client pools suffice at this size", "trigger": "more than 100 concurrent connections or a recovery time objective the native tools cannot meet"},
+    {"id": "X6", "scope": "dual-write, logical replication or any live replication between crimson and the center", "reason": "logical replication needs wal_level logical, hence a database restart on crimson, whose stack cannot restart cleanly; the stopped-stack night gives the same guarantee with far fewer moving parts", "trigger": "a window that exceeds 90 minutes even with the reuse path"},
+    {"id": "X7", "scope": "AWS Lambda and CockroachDB profiles", "reason": "deleted in U01 and preserved by a git tag", "trigger": "none"},
+    {"id": "X8", "scope": "a hosted multi-tenant AIZK and the identity namespace question in ROADMAP.md", "reason": "unrelated to the unification", "trigger": "a second deployment shares data with this one"},
+    {"id": "X9", "scope": "changing AIZK's data model, ontology or the five MCP tools", "reason": "the unification moves the system, not the product contract", "trigger": "none"},
+    {"id": "X10", "scope": "Quack lake serving and any remote client attaching the live catalog", "reason": "design v3: hosts never attach the live catalog; they write files", "trigger": "none"},
+    {"id": "X11", "scope": "an MCP plugin hook that exposes mainboard job, host and cost tools through the public AIZK server (was U19)", "reason": "agents on the center already have a shell with mb", "trigger": "an agent without a shell needs job or host state"},
+    {"id": "X12", "scope": "structured DEV LOG writes and current-state answers (was U20)", "reason": "a DEV LOG note is a keep", "trigger": "DEV LOG notes need queryable fields"},
+    {"id": "X13", "scope": "WAL archiving, base backups and point-in-time recovery (was U12)", "reason": "an archive on a 96% full disk can stall every database; the recovery point today is 24 hours", "trigger": "decision D6 chooses a minutes-level point, then pg_receivewal for aizk and logto only"},
+    {"id": "X14", "scope": "maintenance mode, keep journal, replay and a typed retryable error (was U10)", "reason": "stopping the three containers at night gives the same guarantee with no code", "trigger": "a second live migration is planned or the night rate of writes rises"},
+    {"id": "X15", "scope": "intermediate builds on crimson (L0, L0.5) and two release trains", "reason": "crimson cannot restart cleanly and the August lineage differs from HEAD by 23 commits with a non-additive migration", "trigger": "none"},
+    {"id": "X16", "scope": "SERVE phase 0 retrieval fixes inside this plan (was U02)", "reason": "ranking changes are judged on their own track so they never confound the ladder", "trigger": "they merge before the ladder starts (rung B1) or after the soak ends"},
+    {"id": "X17", "scope": "a usage spool and a memory_events lake stream (was U07, U15)", "reason": "usage is an immutable table with a capture key and a cursor pull has no crash window; logs have no named consumer", "trigger": "a named consumer for AIZK logs in DuckLake"},
+    {"id": "X18", "scope": "a keep that stores a pending embedding and an embedding generation row", "reason": "bounded retries with a spend cap and a lexical find fallback suffice at one keep an hour, and no live swap remains", "trigger": "the first refused keep caused by the provider"},
+    {"id": "X19", "scope": "building VectorChord, vchord_bm25 and pg_tokenizer from source on macOS (old tier 2)", "reason": "the arm64 vendor container is the named fallback and needs no toolchain", "trigger": "S4 fails and the owner refuses the container"}
+  ],
+  "critique": {
+    "status": "second version, written 2026-10-11 after both critic stages; the original plan.sh revision stage did not run, this document is that revision",
+    "inputs": [
+      "critic-simplicity.md (17 findings, ids CS1 to CS17)",
+      "critic-migration.md (19 findings, ids CM1 to CM19)"
+    ],
+    "counts": {"findings": 36, "accept": 31, "adapt": 5, "reject": 0, "rejected_sub_proposals": 8},
+    "verified_locally": [
+      "the HEAD auth.py returns a RemoteAuthProvider naming Logto (commit c4d7ec1, 2026-08-13)",
+      "HEAD is 23 commits after b0098be and carries migrations 0013 to 0016; 0015 calls PolicyContextTransition.replace",
+      "only aws_mcp.py runs stateless_http and json_response",
+      "keep embeds in the request path at ingest.py lines 353, 419 and 542",
+      "the retrieval constants of CM7 are in settings.py",
+      "communities.py imports networkx Louvain; rewrite_embeddings calls .all()",
+      "the center: 19 GiB free at 96%, FileVault on, autorestart 1, settler plist is a user LaunchAgent, no LaunchDaemons of ours"
+    ],
+    "dispositions": [
+      {"id": "CS1", "source": "critic-simplicity", "finding": "the three facts that decide the plan are measured after 14 packages", "disposition": "accept", "reason": "the RAM, the lexical lane and the find latency decide the plan, so U00 measures them first with written go and no-go numbers", "applied_in": ["U00"]},
+      {"id": "CS2", "source": "critic-simplicity", "finding": "do not ship intermediate builds to crimson", "disposition": "accept", "reason": "one build for the center; the conversion is a one-off tool; SERVE phase 0 runs on its own track; the L-1 baseline moves to a scratch restore because finds are not read-only (CM8)", "applied_in": ["U01", "U03", "U05", "order.live_events", "X15", "X16"]},
+      {"id": "CS3", "source": "critic-simplicity", "finding": "U10 rebuilds stop the front door", "disposition": "accept", "reason": "stopping the three containers gives the same guarantee with no code, and a night window (CM12) cuts the exposure to about 0.3 keeps", "applied_in": ["migration", "X14"]},
+      {"id": "CS4", "source": "critic-simplicity", "finding": "spool plus lake streams rebuild a pull DuckDB already does", "disposition": "accept", "reason": "usage_event is immutable with a capture key, so a cursor pull has no crash window; memory_events has no consumer", "applied_in": ["U03 (reader policy)", "U10 tier B", "X17"]},
+      {"id": "CS5", "source": "critic-simplicity", "finding": "PITR is the highest risk and least needed", "disposition": "accept", "reason": "an archive on a 96% full disk can stall all three databases, and today's recovery point is already 24 hours; a shorter one becomes decision D6", "applied_in": ["U09", "D6", "X13"]},
+      {"id": "CS6", "source": "critic-simplicity", "finding": "U17, route.py and chaos tests are a library for a one-time event", "disposition": "accept", "reason": "one cutover with the owner present does not justify dead code afterward; the runbook and verify script live in U11", "applied_in": ["U11", "migration"]},
+      {"id": "CS7", "source": "critic-simplicity", "finding": "Docker Desktop is avoidable", "disposition": "adapt", "reason": "cloudflared native and no oauth2-proxy are taken; Logto native only if the S7 spike passes, because the container fallback puts a GUI app on the critical path", "applied_in": ["U00 (S7)", "U10", "U01"]},
+      {"id": "CS8", "source": "critic-simplicity", "finding": "the worker's 2 GiB target has no mechanism", "disposition": "accept", "reason": "heavy jobs run as short-lived subprocesses (the Docling pattern); the 8.5 GiB peak, the Louvain graph and the whole-table read are in the code", "applied_in": ["U08", "U00 (S6)"]},
+      {"id": "CS9", "source": "critic-simplicity", "finding": "pg_restore -L cannot skip a column", "disposition": "accept", "reason": "restore-plan is deleted; S2 proves the replacement on the real archive", "applied_in": ["U00 (S2)", "U03", "migration"]},
+      {"id": "CS10", "source": "critic-simplicity", "finding": "U08's shadow columns and swap are built twice", "disposition": "adapt", "reason": "no shadow columns or swap; one reembed inside the night, or reuse of vectors by id and text equality from a pre-embedded stage, because a copy of rows by updated_at would skip derived facts of updated documents", "applied_in": ["U06", "migration.steps"]},
+      {"id": "CS11", "source": "critic-simplicity", "finding": "U13 builds a second service supervisor", "disposition": "accept", "reason": "extend durable.py's renderer with KeepAlive; no units.py or ordering; a separately locked memory env keeps mainboard upgrade from changing live processes; verbs in their own App module", "applied_in": ["U10"]},
+      {"id": "CS12", "source": "critic-simplicity", "finding": "delete the code of everything the plan removes, U05 first", "disposition": "accept", "reason": "U01 goes first and absorbs the Docling, ClamAV, GLiNER, web-lane and OpenTelemetry deletions; the benefit is about 2.3k executable lines, not 8,400", "applied_in": ["U01"]},
+      {"id": "CS13", "source": "critic-simplicity", "finding": "put pgvector in mainboard.toml now", "disposition": "accept", "reason": "conda-forge carries 0.8.6 on all three platforms, so no extension directory; tier 2 becomes the arm64 vendor container (CM9)", "applied_in": ["layout.extensions", "U03", "conventions"]},
+      {"id": "CS14", "source": "critic-simplicity", "finding": "the disk floor is not met and copies stack on it", "disposition": "accept", "reason": "30 GiB free before staging (19 GiB today), max_wal_size 2 GB, the staging copy dropped after rehearsal, nothing archived on the internal disk", "applied_in": ["layout.disk", "U09", "D5"]},
+      {"id": "CS15", "source": "critic-simplicity", "finding": "U14 depends on an extra no package creates", "disposition": "accept", "reason": "mount AIZK's existing client app lazily and add report to it; no extra and no memory/client.py", "applied_in": ["U10 tier B"]},
+      {"id": "CS16", "source": "critic-simplicity", "finding": "cut U19, U20, U21 and most decisions", "disposition": "accept", "reason": "U19 and U20 go to the excluded list with triggers, U21 folds into M33's ledger; seven decisions remain", "applied_in": ["X11", "X12", "open_questions", "U12"]},
+      {"id": "CS17", "source": "critic-simplicity", "finding": "do not tie AIZK's move to the catalog migration", "disposition": "accept", "reason": "AIZK's databases do not depend on M37; the gate is M36 live plus a 7-day soak and M38's dump", "applied_in": ["order.rule", "U11"]},
+      {"id": "CM1", "source": "critic-migration", "finding": "agents authenticate through the live OIDCProxy; HEAD code breaks every login", "disposition": "accept", "reason": "HEAD advertises Logto and Logto has no dynamic registration, so U02 comes first: Logto-direct with a pinned public client by default, decided by an agent matrix, no secret rotation at the cutover", "applied_in": ["U02", "U00 (S8)", "migration.secrets_and_identity"]},
+      {"id": "CM2", "source": "critic-migration", "finding": "live code is the August lineage; migration 0015 is not additive", "disposition": "accept", "reason": "the 23-commit jump never runs in place: crimson is untouched and 0013 to 0016 run on the center copy, rehearsed on a restored dump", "applied_in": ["U00 (S3)", "migration.steps", "X15"]},
+      {"id": "CM3", "source": "critic-migration", "finding": "a non-superuser aizk_admin breaks the worker, a function and pg_dump", "disposition": "accept", "reason": "v1 would make the SECURITY DEFINER function fail open; aizk_admin is NOSUPERUSER BYPASSRLS, a backup role dumps, and positive probes prove all three", "applied_in": ["layout.roles_rules", "U03", "U09"]},
+      {"id": "CM4", "source": "critic-migration", "finding": "backups exist but were never restored; make an off-host copy first", "disposition": "accept", "reason": "E0 comes first: restore-tested dumps of aizk and logto, roles, an encrypted secrets bundle, offsite; the nightly job stays on crimson until the soak ends", "applied_in": ["U00 (S1)", "E0", "U09"]},
+      {"id": "CM5", "source": "critic-migration", "finding": "the conversion path inside the freeze cannot work as written", "disposition": "accept", "reason": "-j needs -Fd, the archive is 1.1 GB, pgqueuer_log data is excluded at dump time, and the freeze table is recomputed from measurements", "applied_in": ["U00 (S2)", "migration.steps"]},
+      {"id": "CM6", "source": "critic-migration", "finding": "five retrieval changes behind one aggregate gate", "disposition": "accept", "reason": "a ladder B0 to B5 on clones of one restored snapshot, each rung with its own margin; no L0.5", "applied_in": ["U05", "U11"]},
+      {"id": "CM7", "source": "critic-migration", "finding": "the embedder also calibrates graph merges", "disposition": "accept", "reason": "thresholds are reset at the old operating point from labeled pairs, and auto-merge stays off until a shadow run of the last 200 keeps passes", "applied_in": ["U06"]},
+      {"id": "CM8", "source": "critic-migration", "finding": "gate statistics cannot detect the declared margins", "disposition": "accept", "reason": "scratch restores only; one pooled paired non-inferiority test sized from the pilot; synthetic queries; latency plus 10% under load with n of 200 or more", "applied_in": ["U05", "U11"]},
+      {"id": "CM9", "source": "critic-migration", "finding": "the replacement lexical lane is unproven", "disposition": "accept", "reason": "the A/B runs first on the real 33,268 chunks with OR queries, sparsevec and Japanese morphology; the arm64 vendor container is the named fallback", "applied_in": ["U00 (S4)", "U04", "X19"]},
+      {"id": "CM10", "source": "critic-migration", "finding": "hosted lanes make keep depend on OpenRouter; the swap is not atomic", "disposition": "adapt", "reason": "bounded retries, timeouts, a spend cap, the dimension probe and a lexical fallback for find; the pending-embedding keep and the generation row are rejected because no live swap remains", "applied_in": ["U06", "X18"]},
+      {"id": "CM11", "source": "critic-migration", "finding": "MCP sessions are in-process", "disposition": "accept", "reason": "HEAD already runs stateless_http and json_response in the AWS profile; make that the only mode after auditing for server-initiated messages", "applied_in": ["U01", "U02", "U00 (S8)"]},
+      {"id": "CM12", "source": "critic-migration", "finding": "the write-freeze expectation is wrong in daytime", "disposition": "adapt", "reason": "the night window (01:00 to 06:00 JST) and a Caddy 503 message, which is config; the durable freeze file is rejected because it is the keep journal again", "applied_in": ["migration", "D3", "X14"]},
+      {"id": "CM13", "source": "critic-migration", "finding": "Logto roles, rollback, verification and the tunnel token", "disposition": "accept", "reason": "roles-only dump, JWKS key-id check, an authenticated keep and find on localhost before the flip, the token in an env file, the flip measured on temporary hostnames", "applied_in": ["migration.steps", "U00 (S7)", "U10", "D7"]},
+      {"id": "CM14", "source": "critic-migration", "finding": "the center is not an unattended server", "disposition": "accept", "reason": "stated as decision D4 for the mainboard design too; Docker stays off the critical path", "applied_in": ["layout.availability", "D4", "U12"]},
+      {"id": "CM15", "source": "critic-migration", "finding": "disk and WAL: the floor is already broken", "disposition": "accept", "reason": "a reserved APFS volume for PGDATA, a numeric floor, nothing archived on the internal disk, and the 120 GiB consumer found first", "applied_in": ["layout.disk", "U09", "D5", "U00 (S9)"]},
+      {"id": "CM16", "source": "critic-migration", "finding": "cluster PITR contradicts M38", "disposition": "adapt", "reason": "moot because no PITR remains; if the owner picks a minutes-level point (D6), PITR covers aizk and logto only and mainboard stays on M38's manifests", "applied_in": ["X13", "D6"]},
+      {"id": "CM17", "source": "critic-migration", "finding": "order against the waves", "disposition": "accept", "reason": "M36 renders connections, preload and WAL settings from its first start; the gate is M36 plus M38; units are statically rendered; a required and a deferred list is stated", "applied_in": ["order", "U09", "U10"]},
+      {"id": "CM18", "source": "critic-migration", "finding": "GPU 0 returns in December at the earliest", "disposition": "accept", "reason": "the date is 2026-11-25 at the earliest and is no longer presented as a pre-deadline benefit", "applied_in": ["overview.goal", "D3", "U12"]},
+      {"id": "CM19", "source": "critic-migration", "finding": "retention would erase the 56 failed graph builds", "disposition": "accept", "reason": "the 56 are requeued on the restored copy and their failures recorded; retention is requeue once, then expire; documents with no claims are counted on both sides", "applied_in": ["U08", "migration.verification"]}
+    ],
+    "rejected_sub_proposals": [
+      "the keep journal, maintenance mode and the typed retryable error (v1 U10), and CM12's durable file for keeps during the freeze",
+      "shadow columns, the swap transaction and an embedding_generation row (v1 U08, CM10)",
+      "a keep that stores a pending embedding (CM10), until a provider-caused refusal occurs",
+      "copying rows by updated_at as the re-embed shortcut (CS10 variant b)",
+      "the v1 logical-replication variant for a long freeze",
+      "cluster-wide WAL archiving, incremental base backups and PITR (v1 U12)",
+      "the previous-images rollback of L0 (CM2), which disappears with L0",
+      "L-1 as a read-only baseline on the live database (CS2 kept it; CM8 shows a find is not read-only)"
+    ],
+    "corrections_to_earlier_documents": [
+      "state.md section 4: bearer tokens are not verified by RemoteAuthProvider on the live server; the live server hosts an OIDC proxy; HEAD differs",
+      "state.md F2: the backup directory is readable through docker exec and holds 11 daily dumps that were never restored; logto, roles, .env and mcp-state are not backed up",
+      "state.md section 8 and unify.md: the data volume has 19 GiB free at 96%, not 28 GiB at 94%",
+      "unify.md section 7: the dump is 1.1 GB, pg_dump -j needs -Fd, pg_restore -j cannot read stdin, and pg_restore -L cannot drop a column",
+      "unify.json L0: the migrations are not additive; 0015 rewrites every RLS policy and the previous images read an empty memory afterward",
+      "unify.json layout: aizk_admin cannot be a plain non-superuser; it needs BYPASSRLS",
+      "unify.md section 6: GPU 0 is not freed before the deadlines under any ordering of the v1 plan"
+    ],
+    "known_weak_points": [
+      "the conversion path, the lexical lane and the worker's per-job peaks are decided by U00 and not yet measured; each has a written go and no-go",
+      "native Logto and native cloudflared, and editing the existing tunnel's ingress in place, are unverified (S7)",
+      "whether Codex and opencode can use a pinned public client is unverified (S8); if not, an OIDC proxy mode survives in AIZK",
+      "the night's total is an estimate summed from a 346 MiB benchmark and the critic's archive size",
+      "OpenRouter's handling of dimensions=1024, its throughput for 23 M tokens and its data-collection routing are unmeasured (S5)",
+      "the power of the non-inferiority test depends on the pilot's paired standard deviation, measured only in U05 and U11",
+      "figures marked critic-measured come from crimson reads that were not repeated here: the running image, the dumps, the ledger by hour, VmHWM, the Docker VM size",
+      "the unattended-center posture is a decision, not a fix, and the reboot drill is the evidence for it"
+    ]
+  }
+}
