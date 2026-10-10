@@ -22,6 +22,7 @@ from ..lease import Lease
 from ..onboard import HostSetup
 from ..shared import now, workspace
 from ..vocabulary import Request
+from .monitor import SettlementLock
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -138,9 +139,14 @@ class Cache:
         return self.lake.catalog
 
     @property
-    def settlement(self) -> FileLock:
-        """The shared launch/cancel/settle lock; remote lifecycle requires durable state."""
-        return self._lock("settlement.lock")
+    def settlement(self) -> SettlementLock:
+        """The shared launch/cancel/settle lock; remote lifecycle requires durable state.
+
+        Whoever holds it records itself beside it, so a pass that finds it held names the holder.
+        """
+        path = self.lake.out / "run" / "settlement.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return SettlementLock(path, is_singleton=True)
 
     @property
     def _registry(self) -> FileLock:

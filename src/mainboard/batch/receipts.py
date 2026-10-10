@@ -156,6 +156,44 @@ class Journal:
         return events
 
 
+class SettlementReceipts:
+    """One stream replayed once, then kept current as a settling pass publishes into it.
+
+    M34's bridge, which M23's durable cursors replace. Only the newest state and evidence line of
+    each job is kept, and apart from it the newest of each submission, so a reused handle or label
+    never borrows another run's line. A line joins the index only once the bus took it.
+    """
+
+    def __init__(self, bus: Bus, stream: str) -> None:
+        self.bus = bus
+        self.stream = stream
+        self.newest: dict[tuple[Topic, str, str], Event] = {}
+        for event in bus.replay():
+            self._keep(event)
+
+    def get(
+        self, topic: Topic, job: str, *, submission: Mapping[str, JsonValue] | None = None
+    ) -> Event | None:
+        """The newest `topic` line of `job`, of the one submission `submission` names if given."""
+        return self.newest.get((topic, job, "" if submission is None else self._run(submission)))
+
+    def publish(self, topic: Topic, *, job: str, data: Mapping[str, JsonValue]) -> None:
+        self._keep(publish(self.bus, self.stream, topic, job=job, data=data))
+
+    @staticmethod
+    def _run(data: Mapping[str, JsonValue]) -> str:
+        return json.dumps([data.get(key) for key in ("handle", "target", "submitted_at")])
+
+    def _keep(self, event: Event) -> None:
+        if event.topic not in {Topic.STATE, Topic.EVIDENCE}:
+            return
+        for run in ("", self._run(event.data)):
+            key = (event.topic, event.job, run)
+            held = self.newest.get(key)
+            if held is None or event.at >= held.at:
+                self.newest[key] = event
+
+
 def publish(
     bus: Bus, batch: str, topic: Topic, *, job: str = "", data: Mapping[str, JsonValue]
 ) -> Event:

@@ -333,12 +333,25 @@ campaign first; move an entry to the bottom section once fixed and verified.
     GH200 jobs read as `finished` with verdict `running`, and `job show --wait` heartbeated a
     finished job until its timeout. The listing should name the holder (pid, start time) and
     say its states are cached. A pass should also stop when its parent session dies.
+    PARTLY FIXED locally (unreleased, M34 bridge, 2026-10-10): the holder of the lock records
+    pid, host, start, phase, heartbeat and deadline beside it; `job list` (and `--json`, and
+    `--batch`) and `wait` name it and list cached states without asking a host; `sweep.running`
+    is never null; a pass ends its process when its parent dies or after 15 minutes; the last
+    pass that ran to its end is stamped apart from the service's own last run. Still open until
+    M24 replaces the file lock with an advisory lock: a pass stuck inside a native call that
+    holds the GIL, the processes a pass starts, and `job show`, which still reads cached states
+    without saying so.
 13n. **A settling pass costs minutes on a lake of small files** (2026-10-10). With 34,192
     Parquet files (49 GB) one pass took 164 s, 447 s of it system time spent opening files
     (`CachingFileSystem::OpenFile`, `ScanReadAheadJob`). Each settled run replays its receipt
     stream (`bus.replay()`), so the cost grows with runs times files. The pass should read each
     stream once and never scan blob files. `mb lake compact` (6.6 s) only took the count to
     32,054, so the files are blob data, which compaction does not merge.
+    PARTLY FIXED locally (unreleased, M34 bridge, 2026-10-10): a pass replays each stream once
+    and keeps its latest state and evidence lines in memory as it publishes, so 100 runs sharing
+    a stream cost one replay instead of 300. Still open until M23 replaces the replay with
+    durable cursors: that replay (`Journal.replay`, a scan of the events table) is unchanged, and
+    what opens the blob files is not diagnosed.
 13. The miyabi agent bootstraps with the login node's OS `python3` (3.9) (`python3 -c ...
     mainboard-agent`). It works, but contradicts the rule that nothing runs on the OS interpreter;
     document it as the one exception or ship the agent's own interpreter.

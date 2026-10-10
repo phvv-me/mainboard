@@ -4,7 +4,12 @@
 # agent that dispatched it staying alive to see it end.
 
 import json
+import os
 import shlex
+import signal
+import threading
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from sqlite3 import Error as SQLiteError
 from time import monotonic, sleep
@@ -13,7 +18,7 @@ from typing import TYPE_CHECKING, Final
 from filelock import Timeout
 from plumbum.commands.processes import ProcessExecutionError
 
-from .batch.receipts import Topic, latest, publish
+from .batch.receipts import SettlementReceipts, Topic
 from .core.errors import MissionError
 from .core.project import Project
 from .dispatch import vocabulary
@@ -22,16 +27,16 @@ from .dispatch.evidence import covered_in, receipts_in
 from .dispatch.schedulers import HostUnreachable, is_quota_refusal, short_reason
 from .dispatch.state import DownHost, Failed, Finished, Held, MonitorReport, Resumed
 from .dispatch.state.captured import Captured
+from .dispatch.state.monitor import SettlementBusy
 from .dispatch.vocabulary import JobState
 from .log import logger
 from .tracking import is_batched, streamed
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 
     from pydantic import JsonValue
 
-    from .batch.receipts import Bus
     from .board import Board, Run
     from .dispatch.state import RunRecord
 
@@ -44,6 +49,12 @@ _SILENT_SECONDS: Final = 30.0
 
 # How many of an undeclared target's runs are named by handle before the rest are counted.
 _NAMED: Final = 4
+
+# M34's bridge, not worker supervision: a pass ends before the settler's next one (`job list
+# --every` suggests 20m), and a Python watchdog runs only while DuckDB or ssh release the GIL.
+# M24 must contain native stalls and supervise the processes a pass starts.
+_PASS_SECONDS: Final = 900.0
+_PARENT_POLL: Final = 0.25
 
 # What a resubmission may fail with before it becomes this run's row rather than the end of the
 # sweep, the set a batch dispatch absorbs: one target refusing says nothing about the next run.
@@ -165,13 +176,19 @@ class Monitor:
         self.board = board
         self.cache = board.dispatcher.cache
         self.captured = Captured(self.cache.session)
-        self.streams: dict[str, Bus] = {}
+        self.streams: dict[str, SettlementReceipts] = {}
         self.quiet: dict[str, str] = {}
         # What this pass collected, by host, root and path: the runs of one experiment share its
         # folder, and a pass collected it once per run (a dozen scans of 190,000 files on
         # miyabi's Lustre, 2026-10-09).
         self.fetched: dict[tuple[str, str, str], str | None] = {}
         self.silent: dict[str, tuple[float, str]] = {}
+
+    def stream(self, name: str) -> SettlementReceipts:
+        """The receipts stream `name`, replayed on first use and then kept for the whole pass."""
+        if name not in self.streams:
+            self.streams[name] = SettlementReceipts(self.board.receipts(name), name)
+        return self.streams[name]
 
     def silenced(self) -> dict[str, str]:
         """The targets that did not answer a pass of this process too recently to ask again.
@@ -211,17 +228,17 @@ class Monitor:
         """Append transfer status without rewriting the computational receipt or exit code."""
         self.cache.delivery(record, status)
         stream, job = streamed(record.name or "", handle=record.handle)
-        bus = self.streams.setdefault(stream, self.board.receipts(stream))
+        bus = self.stream(stream)
         data: dict[str, JsonValue] = {
             **_identity(record),
             "status": status,
             "detail": detail,
             "trials": _cases(receipts),
         }
-        seen = latest(bus.replay(), Topic.EVIDENCE).get(job)
+        seen = bus.get(Topic.EVIDENCE, job)
         if seen is None or seen.data != data:
             try:
-                publish(bus, stream, Topic.EVIDENCE, job=job, data=data)
+                bus.publish(Topic.EVIDENCE, job=job, data=data)
             except OSError as fault:
                 logger.error(
                     "evidence status is cached but its event could not be saved: {}", fault
@@ -335,10 +352,8 @@ class Monitor:
         if not is_batched(record.name):
             return
         stream, job = streamed(record.name, handle=run.handle.id)
-        bus = self.streams.setdefault(stream, self.board.receipts(stream))
-        publish(
-            bus,
-            stream,
+        bus = self.stream(stream)
+        bus.publish(
             Topic.SUBMITTED,
             job=job,
             data={
@@ -410,16 +425,31 @@ class Monitor:
         """Settle selected submissions under the shared lock; rental deadlines remain global.
 
         scope: selects fresh registry rows inside the lock, all unsettled runs when omitted.
+
+        Another process holding the lock ends the pass at once with `busy` naming it. A pass that
+        outlives its deadline, or whose parent session dies, kills this whole process: the lock
+        is the OS's to free, and the next pass retries from the durable checkpoints.
         """
+        try:
+            with _bounded_pass() as deadline:
+                return self._claimed(scope, deadline=deadline)
+        finally:
+            self.streams.clear()
+
+    def _claimed(
+        self, scope: Callable[[RunRecord], bool] | None, *, deadline: str
+    ) -> MonitorReport:
         expired = self.expired()
         lock = self.cache.settlement
         try:
             lock.acquire(timeout=0)
         except Timeout:
             logger.debug("another monitor owns settlement; leaving its cursor untouched")
-            return MonitorReport(running=None, failed=expired)
+            return MonitorReport(busy=SettlementBusy.read(Path(lock.lock_file)), failed=expired)
         try:
+            lock.phase("settling", deadline=deadline)
             report = self._once(scope)
+            lock.succeeded()
             return report.model_copy(update={"failed": [*expired, *report.failed]})
         finally:
             lock.release()
@@ -444,6 +474,8 @@ class Monitor:
         finished: list[Finished] = []
         self.quiet.clear()
         self.fetched.clear()
+        lock = self.cache.settlement
+        lock.phase("resuming held jobs")
         resumed, waiting, failed = self.held(scope)
         records = [record for record in self.cache.tracked() if scope is None or scope(record)]
         failed.extend(
@@ -451,10 +483,12 @@ class Monitor:
             for record in records
             if (reason := _UNCREATED.get(record.verdict or ""))
         )
+        lock.phase("probing hosts")
         resolved = Sweep(self.board, records, down=self.silenced())
         asked = monotonic()
         self.silent = {target: (asked, why) for target, why in resolved.down.items()} | self.silent
         for record in records:
+            lock.phase(f"settling {record.target}/{record.handle}")
             state = resolved.states.get(record)
             if state is None:
                 continue
@@ -483,14 +517,8 @@ class Monitor:
                 failed.append(_failed(record, detail))
                 continue
             stream, name = streamed(record.name or "", handle=record.handle)
-            bus = self.streams.setdefault(stream, self.board.receipts(stream))
-            ours = _identity(record)
-            history = (
-                event
-                for event in bus.replay()
-                if all(event.data.get(key) == value for key, value in ours.items())
-            )
-            previous = latest(history, Topic.EVIDENCE).get(name)
+            lock.phase(f"reading the receipts of {stream}")
+            previous = self.stream(stream).get(Topic.EVIDENCE, name, submission=_identity(record))
             copied = current.evidence in {"copied", "verified"} or (
                 previous is not None and previous.data.get("status") in {"copied", "verified"}
             )
@@ -626,13 +654,13 @@ class Monitor:
         if is_batched(label):
             return
         stream, job = streamed(label, handle=record.handle)
-        bus = self.streams.setdefault(stream, self.board.receipts(stream))
-        seen = latest(bus.replay(), Topic.STATE).get(job)
+        bus = self.stream(stream)
+        seen = bus.get(Topic.STATE, job)
         ours = _identity(record)
         moved = {**ours, "state": state.state or "", "verdict": state.verdict}
         if seen is not None and seen.data == moved:
             return
-        publish(bus, stream, Topic.STATE, job=job, data=moved)
+        bus.publish(Topic.STATE, job=job, data=moved)
         if state.verdict in vocabulary.TERMINAL:
             settled = {
                 **ours,
@@ -640,7 +668,7 @@ class Monitor:
                 "exit_code": state.exit_code,
                 "detail": detail,
             }
-            publish(bus, stream, Topic.SETTLED, job=job, data=settled)
+            bus.publish(Topic.SETTLED, job=job, data=settled)
 
     def watch(self, interval: float) -> Iterator[MonitorReport]:
         """Repeat `once` every `interval` seconds, yielding each pass's report as it lands.
@@ -650,6 +678,36 @@ class Monitor:
         while True:
             yield self.once()
             sleep(interval)
+
+
+@contextmanager
+def _bounded_pass() -> Generator[str]:
+    """Kill the whole process if its parent session dies or the block outlives `_PASS_SECONDS`.
+
+    Yields the deadline as a timestamp. A handler could wait behind the very call that is stuck,
+    so the kill is SIGKILL and the OS frees whatever lock the pass held.
+    """
+    parent = os.getppid()
+    deadline = monotonic() + _PASS_SECONDS
+    ended = threading.Event()
+
+    def watch() -> None:
+        while not ended.wait(_PARENT_POLL):
+            orphaned = os.getppid() != parent
+            if orphaned or monotonic() >= deadline:
+                logger.error(
+                    "settlement pass stopped: {}",
+                    "its parent session ended" if orphaned else "it outlived its deadline",
+                )
+                os.kill(os.getpid(), signal.SIGKILL)
+
+    watcher = threading.Thread(target=watch, name="settlement-watchdog", daemon=True)
+    watcher.start()
+    try:
+        yield (datetime.now(UTC) + timedelta(seconds=_PASS_SECONDS)).isoformat()
+    finally:
+        ended.set()
+        watcher.join()
 
 
 def _identity(record: RunRecord) -> dict[str, JsonValue]:

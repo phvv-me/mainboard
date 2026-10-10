@@ -589,7 +589,9 @@ def build(root: Path | None = None) -> App:
         status`), so a wave of thirty says which run and which queue, since when, and when the
         scheduler expects a start. A run that ended is settled on the way: its results pulled
         back, its verdict recorded, its rental released. Live runs are never cut by `--limit`;
-        what the listing left out is said on stderr, beside what settled this pass.
+        what the listing left out is said on stderr, beside what settled this pass. While another
+        process holds settlement nothing is asked or settled: the cached states are listed and
+        stderr names the holder.
 
         Args:
             limit: how many settled runs to show behind the live ones, newest first.
@@ -619,16 +621,22 @@ def build(root: Path | None = None) -> App:
 
         def listed() -> None:
             workspace = board("local")
-            with progress("settling and asking every host about its live jobs"):
+            with progress("reading job status"):
                 report = workspace.monitor().once()
                 quiet = {down.host: down.reason for down in report.unreachable_hosts}
-                taken = Listing(workspace, limit=limit, project=project, quiet=quiet).taken()
+                taken = Listing(
+                    workspace, limit=limit, project=project, quiet=quiet, busy=report.busy
+                ).taken()
             if output.json_ and not watch:
                 # The periodic pass reads this document: the rows and what the sweep moved.
                 sweep = {**report.model_dump(), "changed": report.changed}
                 print(
                     dumps(
-                        {"jobs": [row.model_dump() for row in taken.rows], "sweep": sweep},
+                        {
+                            "jobs": [row.model_dump() for row in taken.rows],
+                            "sweep": sweep,
+                            "note": taken.note,
+                        },
                         default=str,
                     )
                 )
@@ -2612,6 +2620,8 @@ def _status(status: BatchStatus, output: Output) -> None:
         title=f"{status.batch}: {status.running} running",
         columns=_STATUS_COLUMNS,
     )
+    if status.note:
+        print(status.note, file=sys.stderr)
 
 
 def _stepped(steps: Sequence[Step], output: Output, *, title: str) -> int:

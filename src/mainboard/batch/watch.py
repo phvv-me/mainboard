@@ -52,11 +52,15 @@ class JobStatus(FrozenModel):
 
 class BatchStatus(FrozenModel):
     """One pass over a batch: a row per job dispatched, refused or left out, and how many of
-    them are still `running`."""
+    them are still `running`.
+
+    note: who holds settlement, when another process did, so these rows are its cached states.
+    """
 
     batch: str
     jobs: tuple[JobStatus, ...]
     running: int = 0
+    note: str = ""
 
     @property
     def settled(self) -> bool:
@@ -181,6 +185,7 @@ class Watch:
             batch=self.id,
             jobs=(*rows, *self.unselected(events, dispatched={row.job for row in rows})),
             running=sum(row.verdict not in vocabulary.TERMINAL for row in rows),
+            note=swept.busy.note if swept.busy else "",
         )
         self.close(status, settled=any(landed))
         return status
