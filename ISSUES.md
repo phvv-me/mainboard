@@ -191,6 +191,19 @@ root unit files, no `/etc` edits.
     last passing duration, or make it a declared, reviewed constant raised with the suite. A
     budget miss should say "budget" in the report, not look like a hang.
 
+14. **`lake evict` over a large evidence store runs for an hour with no output and no deletion,
+    competing with settlement.** On 10-12 the lead evicted `current_engine_refresh/evidence`:
+    332,328 files, 21 GB, every one already indexed, as `lake ingest` confirmed. After 75 minutes
+    at about 300% CPU it had printed only its start line and freed nothing. Meanwhile a settling
+    pass spent more than 12 minutes reading one small batch's receipts from the same lake disk,
+    which held up a GPU experiment. The lead killed it by PID: nothing was set aside, nothing
+    lost.
+    - evict should report progress (files checked, removed, bytes);
+    - it should remove in batches as it verifies, so an interruption keeps what it freed;
+    - it should yield to a settling pass (the settlement lock) or run at low I/O priority.
+    The ingest of the same paths took 1,294 s to index nothing new, so a fast path for "already
+    indexed by path with the same size and mtime" would help both verbs.
+
 ## Found setting up pedro-home-wsl, 2026-10-11
 
 ### Mainboard
