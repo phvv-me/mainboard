@@ -204,6 +204,19 @@ root unit files, no `/etc` edits.
     The ingest of the same paths took 1,294 s to index nothing new, so a fast path for "already
     indexed by path with the same size and mtime" would help both verbs.
 
+15. **A fresh host cannot build the workspace's editable `packages/sqlalchemy` fork.** The host
+    Python fix (fd32f38) got a vast hold past the interpreter step, then `pixi install` of `cutok`
+    failed building the fork: setuptools `attr: sqlalchemy.__version__` raised
+    `ModuleNotFoundError: sqlalchemy` (10-12, $0.02, released). Existing hosts carry an old
+    build and never rebuild it.
+    - Locally, `uv build --wheel packages/sqlalchemy` refuses the fork's `pyproject.toml`:
+      `duplicate normalized extra name mssql-pymssql` (line 46).
+    - Either problem stops every first-time host and every rental.
+    - Open questions: whether the fork's extras and the `find where = ["lib"]` with an `attr:`
+      version work under the newest setuptools and uv; whether the mirror ships `lib/` to a fresh
+      host; and whether the default and cutok environments need the fork editable at all, or a
+      built wheel from the fork's branch.
+
 ## Found setting up pedro-home-wsl, 2026-10-11
 
 ### Mainboard
