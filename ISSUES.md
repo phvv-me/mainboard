@@ -4,6 +4,24 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found in the cutok v26 r2 re-acquisition, 2026-10-11
+
+### Mainboard
+
+1. **`job submit --job` ignores `--walltime`.** A single-job submit to crimson wrote 00:30:00
+   into the job script although `--walltime 00:07:00` was passed; batch specs set walltimes per
+   job and are unaffected.
+2. **crimson's pueued runs from a deleted path, and `pueue` is not on a plain ssh PATH.** The
+   daemon's working directory is the removed `~/projects` mirror; dispatch still works, but a
+   restart from that path would fail and `ssh crimson pueue status` does not resolve the binary.
+3. **A job referenced by a module-name string ships without that module.** The serving profile
+   launched `python -m experiments.serving_gh200.pressure`, which no static import reached, so the
+   closure lacked it and the job failed on the host (fixed in the node, 1989cbb79, by importing
+   the module). The closure walker cannot see `-m` strings; M12's declarations (`imports=`) or a
+   refusal of unresolvable `-m` targets at submit would catch it before any queue wait.
+4. **`job list --json` can print nothing at all while settlement is busy.** A watcher reading it
+   took the empty output as every job ended; consumers must treat an empty listing as unknown.
+
 ## Found setting up pedro-home-wsl, 2026-10-11
 
 ### Mainboard
