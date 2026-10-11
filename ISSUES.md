@@ -100,6 +100,15 @@ root unit files, no `/etc` edits.
    refusal of unresolvable `-m` targets at submit would catch it before any queue wait.
 4. **`job list --json` can print nothing at all while settlement is busy.** A watcher reading it
    took the empty output as every job ended; consumers must treat an empty listing as unknown.
+5. **Settling passes outlive their 15-minute deadline.** The agent settling the GH200 r2 batch
+   saw passes run past the bound that 13m's fix sets, so a held lock again makes every listing
+   answer from the cache. Check whether the bound covers the periodic launchd pass as well as an
+   interactive one, and whether a pass blocked in a native DuckDB scan ever reaches the check.
+6. **An interrupted evidence copy leaves a finished job blocked until some later pass.** Job
+   3525659 (miyabi-g, exit 0) reads `blocked: settlement pending; remote evidence retained:
+   [Errno 32] Broken pipe`. Its rows reached the node's report, so nothing is lost, but the job
+   stays blocked until a full pass copies its evidence again, and that must happen before miyabi
+   stops on 10-28. A broken pipe mid-copy should be retried within the same pass, with a bound.
 
 ## Found setting up pedro-home-wsl, 2026-10-11
 
