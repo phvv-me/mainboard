@@ -24,6 +24,7 @@ _SUBDIR = re.compile(r"  subdir: (\S+)")
 # The per-environment mapping from a platform label to its packages, the only other place a lock
 # spells a label, and one of its keys.
 _MAPPING = "    packages:"
+_ENVIRONMENT = re.compile(r"  (\S+):")
 _INDENT = "      "
 _KEY = re.compile(rf"{_INDENT}(\S+):")
 
@@ -90,11 +91,14 @@ def _roster(lines: Sequence[str]) -> tuple[int, int]:
     return (start, stop)
 
 
-def _mappings(lines: Sequence[str]) -> list[tuple[int, int]]:
+def _mappings(lines: Sequence[str], *, environment: str = "") -> list[tuple[int, int]]:
     """Where each environment's platform-keyed packages mapping begins and ends."""
     spans: list[tuple[int, int]] = []
+    selected = not environment
     for index, line in enumerate(lines):
-        if line != _MAPPING:
+        if environment and (named := _ENVIRONMENT.fullmatch(line)):
+            selected = named[1] == environment
+        if line != _MAPPING or not selected:
             continue
         stop = index + 1
         while stop < len(lines) and lines[stop].startswith(_INDENT):
@@ -140,13 +144,13 @@ def _ordered(body: Sequence[str], header: re.Pattern[str], naming: Mapping[str, 
     return [line for _, block in blocks for line in block]
 
 
-def packages(lock: str) -> dict[str, list[str]]:
+def packages(lock: str, *, environment: str = "") -> dict[str, list[str]]:
     """Every package location the lock installs, by subdirectory (`linux-64-system` as
-    `linux-64`)."""
+    `linux-64`), limited to `environment` when named."""
     lines = lock.splitlines()
     subdirs = {label: subdir for label, subdir, _ in _entries(lines)}
     found: dict[str, list[str]] = {}
-    for start, stop in _mappings(lines):
+    for start, stop in _mappings(lines, environment=environment):
         label = ""
         for line in lines[start:stop]:
             if named := _KEY.fullmatch(line):

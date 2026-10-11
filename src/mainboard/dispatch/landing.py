@@ -29,7 +29,7 @@ from .shared import Watcher, announce
 from .shells import HostShell
 from .snapshots import Snapshots
 from .sync import SyncLock
-from .targets import home_of, placed
+from .targets import probe_capabilities, resolve, rooted
 from .transport import SshTransport
 from .wrapping import connection, wrap
 
@@ -165,10 +165,16 @@ class Landing:
             SyncLock(rental.endpoint, self.dispatcher.sync.root),
             connection(where, policy) as remote,
         ):
-            root = placed(self.plan.profile.root, home=home_of(remote))
+            facts = probe_capabilities(where, ssh=policy)
+            self.plan = self.plan.model_copy(update={"profile": resolve(self.plan.profile, facts)})
+            root = rooted(self.plan.profile, host=where)
             listing = self.dispatcher.stage_listing(shipment)
             script = self.script(shipment, root=root, listing=listing)
-            bootstrap = Bootstrap(HostShell(remote, self.plan, root), floor=self.floor)
+            bootstrap = Bootstrap(
+                HostShell(remote, self.plan, root),
+                workspace=self.dispatcher.root,
+                floor=self.floor,
+            )
             self.watch(f"putting uv's CPython on {rental.handle}")
             bootstrap.python()
             self.watch(f"mirroring the workspace to {where}:{root}")

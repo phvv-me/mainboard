@@ -25,6 +25,7 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.backend import PIXI_VERSION
 from ..engines.compile.backend.process import Process
+from ..engines.compile.lockfile import Lockfile
 from ..engines.compile.policy import LockPolicy
 from ..log import logger
 from ..probe.snapshot import HostFacts
@@ -36,6 +37,7 @@ from .targets import Facts, probe_capabilities, resolve, rooted
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from ..context.plan import ExecutionPlan
     from .dispatcher import Dispatcher
@@ -83,9 +85,9 @@ class HostSetup(FrozenModel):
     digest: the manifest digest this host was last provisioned from, empty for a host onboarded
         before this field existed; `doctor` compares it with the manifest to spot drift.
     dotfiles: set up with `--dotfiles`, which every later sync keeps.
-    requires: the digest of the tool's declared requirements as installed there; a sync whose
-        tool declares others reinstalls it, since an editable install follows the mirrored
-        source but never gains a dependency the source added. Empty for an older setup.
+    requires: the digest of the tool's declared requirements and solved Python minor as installed
+        there; a sync changing either reinstalls it, since an editable install follows the
+        mirrored source but never gains a dependency the source added. Empty for an older setup.
     """
 
     host: str
@@ -169,13 +171,21 @@ class Existing(Installer):
     since shipping the source is how the host runs the tool the manifest was written against.
     """
 
-    def __init__(self, shell: HostShell, *, floor: str) -> None:
+    def __init__(self, shell: HostShell, *, floor: str, python: str) -> None:
         super().__init__(shell, probe=shell.dialect.has(_TOOL), command=shell.dialect.noop)
         self.floor = floor
+        self.python = python
 
     def available(self) -> bool:
-        """Whether the machine's own tool already satisfies the declared version."""
-        return satisfied_by(_version(self.shell, _TOOL), self.floor)
+        """Whether uv's installed tool satisfies both the version and the solved interpreter."""
+        if not satisfied_by(_version(self.shell, _TOOL), self.floor):
+            return False
+        probe = (
+            "import sys; "
+            "sys.exit(f'{sys.version_info.major}.{sys.version_info.minor}' != "
+            f"{self.python!r})"
+        )
+        return self.shell.ok(f'"$(uv tool dir)/{_TOOL}/bin/python" -c {shlex.quote(probe)}')
 
 
 def _version(shell: HostShell, program: str) -> str:
@@ -190,6 +200,7 @@ def installers(
     shell: HostShell,
     source: str = _SOURCE,
     *,
+    python: str,
     vendored: bool = True,
     floor: str = "",
     extras: Sequence[str] = (),
@@ -205,6 +216,7 @@ def installers(
     first offering the machine's own tool when that already satisfies it.
 
     source: the tool's source directory inside the synced workspace.
+    python: the workspace's solved default Python minor for this host's platform.
     vendored: whether that source is actually on the machine.
     floor: the version the workspace declares for the tool, read from its own manifest.
     extras: the tool's optional extras to install with it, what a center carries for `plot`.
@@ -214,15 +226,14 @@ def installers(
     has_uv = shell.dialect.has("uv")
     # `--reinstall` because uv reuses a cached build of an unchanged version number.
     install = (
-        "uv tool install --force --reinstall --managed-python "
-        f"--python {shlex.quote(shell.dialect.requires_python)}"
+        f"uv tool install --force --reinstall --managed-python --python {shlex.quote(python)}"
     )
     if vendored:
         editable = f"{install} --editable {shlex.quote(f'{source}{wanted_extras}')}"
         strategy.register("uv", Installer(shell, probe=has_uv, command=editable))
         return strategy
     indexed = f"{install} {shlex.quote(f'{_TOOL}{wanted_extras}{specifier(floor)}')}"
-    strategy.register("present", Existing(shell, floor=floor))
+    strategy.register("present", Existing(shell, floor=floor, python=python))
     strategy.register("uv-index", Installer(shell, probe=has_uv, command=indexed))
     return strategy
 
@@ -235,6 +246,7 @@ class Bootstrap:
     manifest and install the environment from the lock this workspace already solved. A
     declared host and a machine rented for one job both drive this one class.
 
+    workspace: the local workspace whose default lock chooses the tool's interpreter.
     policy: what the machine's install may do to the shipped lock: `locked` refuses one this
         manifest did not solve, the default, and `update` lets the machine solve for itself.
     floor: the version the workspace declares for the tool, used only when the workspace vendors
@@ -246,11 +258,13 @@ class Bootstrap:
         self,
         shell: HostShell,
         *,
+        workspace: Path,
         policy: LockPolicy = LockPolicy.LOCKED,
         floor: str = "",
         extras: Sequence[str] = (),
     ) -> None:
         self.shell = shell
+        self.python_minor = Lockfile(workspace).python_minor(shell.plan.profile.platform)
         self.policy = policy
         self.floor = floor
         self.extras = tuple(extras)
@@ -279,7 +293,7 @@ class Bootstrap:
                     "on no other Python there; install uv on it, then set it up again"
                 )
             shell.run(fetch)
-        shell.run(f"uv python install --no-bin {shlex.quote(shell.dialect.requires_python)}")
+        shell.run(f"uv python install --no-bin {shlex.quote(self.python_minor)}")
 
     def tool(self) -> Resolution[Installer]:
         """Install the tool through the first route the machine supports, keeping the rejections.
@@ -291,7 +305,13 @@ class Bootstrap:
         leads with which family was tried and why, the rejection log behind it.
         """
         vendored = self.shell.ok(self.shell.dialect.is_directory(_SOURCE))
-        routes = installers(self.shell, vendored=vendored, floor=self.floor, extras=self.extras)
+        routes = installers(
+            self.shell,
+            python=self.python_minor,
+            vendored=vendored,
+            floor=self.floor,
+            extras=self.extras,
+        )
         try:
             resolution = routes.cascade()
         except StrategyError as refused:
@@ -538,7 +558,9 @@ class Onboarding:
         self.plan = self.resolved(capabilities)
         root = rooted(self.plan.profile, host=host)
         with open_shell(self.plan, root) as shell:
-            bootstrap = Bootstrap(shell, policy=self.policy, floor=self.floor)
+            bootstrap = Bootstrap(
+                shell, workspace=self.dispatcher.root, policy=self.policy, floor=self.floor
+            )
             self.watch(f"putting uv's CPython on {host}")
             bootstrap.python()
             self._mirror(host, root)
@@ -568,7 +590,7 @@ class Onboarding:
                 hardware=hardware,
                 digest=self.digest,
                 dotfiles=bool(self.dotfiles),
-                requires=_requirements(),
+                requires=_requirements(bootstrap.python_minor),
             )
         recorded = self.dispatcher.cache.save_host(setup)
         logger.info("onboarded {} at {} through {}", host, root, recorded.installer)
@@ -620,11 +642,13 @@ class Onboarding:
             self.plan = self.resolved(recorded.capabilities)
         root = rooted(self.plan.profile, host=host)
         with open_shell(self.plan, root) as shell:
-            bootstrap = Bootstrap(shell, policy=self.policy, floor=self.floor)
+            bootstrap = Bootstrap(
+                shell, workspace=self.dispatcher.root, policy=self.policy, floor=self.floor
+            )
             bootstrap.python()
             self._mirror(host, root)
             tool: dict[str, str | tuple[tuple[str, str], ...]] = {}
-            if recorded.requires != (requirements := _requirements()):
+            if recorded.requires != (requirements := _requirements(bootstrap.python_minor)):
                 self.watch(f"reinstalling {_TOOL} on {host}, its requirements moved")
                 winner = bootstrap.tool()
                 tool = {
@@ -657,7 +681,7 @@ class Onboarding:
         return updated
 
 
-def _requirements() -> str:
-    """A digest of the requirements this tool declares, the ones a host's install must carry."""
-    declared = "\n".join(sorted(requires(_TOOL) or ()))
+def _requirements(python: str) -> str:
+    """The tool's dependencies and interpreter, so a moved lock minor also reinstalls it."""
+    declared = "\n".join([python, *sorted(requires(_TOOL) or ())])
     return hashlib.sha256(declared.encode()).hexdigest()[:16]

@@ -9,6 +9,7 @@
 # it is never mistaken for it.
 
 import json
+import shlex
 from collections.abc import Iterable, Mapping
 from itertools import chain
 from pathlib import Path
@@ -23,10 +24,6 @@ from . import remote
 
 if TYPE_CHECKING:
     from ..probe.census import Json
-
-# The Python every call runs under, the one this tool itself requires, which uv fetches once and
-# manages, never the machine's own.
-PYTHON = "3.14"
 
 # The prefix the answer line carries, the one line of stdout the caller reads.
 MARKER = "mainboard-answer "
@@ -75,16 +72,20 @@ class Carrier:
     uv: the uv executable on that machine, as its probe found it.
     """
 
-    def __init__(self, host: str, uv: str, transport: SshTransport | None = None) -> None:
+    def __init__(
+        self, host: str, uv: str, transport: SshTransport | None = None, *, python: str
+    ) -> None:
         self.host = host
         self.uv = uv
+        self.python = python
         self.transport = transport or SshTransport()
 
     @property
     def argv(self) -> tuple[str, ...]:
         """The ssh command line, the one part of a call a process listing shows."""
         line = (
-            f'"{self.uv}" run --no-project --quiet --managed-python --python {PYTHON} '
+            f'"{self.uv}" run --no-project --quiet --managed-python '
+            f"--python {shlex.quote(self.python)} "
             f'python -c "{_BOOTSTRAP}"'
         )
         return (*self.transport.command(self.host), line)
