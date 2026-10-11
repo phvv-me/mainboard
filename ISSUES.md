@@ -104,6 +104,9 @@ root unit files, no `/etc` edits.
    saw passes run past the bound that 13m's fix sets, so a held lock again makes every listing
    answer from the cache. Check whether the bound covers the periodic launchd pass as well as an
    interactive one, and whether a pass blocked in a native DuckDB scan ever reaches the check.
+   Second witness (RTX 4090 settlement, 10-11): an agent's `job list` was killed at its ssh
+   timeout and left an orphan pass holding the settlement lock for 15 minutes, so parent death
+   did not end it either.
 6. **An interrupted evidence copy leaves a finished job blocked until some later pass.** Job
    3525659 (miyabi-g, exit 0) reads `blocked: settlement pending; remote evidence retained:
    [Errno 32] Broken pipe`. Its rows reached the node's report, so nothing is lost, but the job
@@ -116,6 +119,11 @@ root unit files, no `/etc` edits.
    `$CONDA_PREFIX/bin/python` and failed (10-11). With the environment's bin prepended, the same
    step runs. `ci` should run its steps in the activated workspace environment, as `run` does, and
    not in whatever PATH the caller has.
+8. **A concurrent environment install breaks running `mainboard` calls for a moment.** One agent's
+   `job show` failed with `importlib.metadata.PackageNotFoundError` while another process was
+   reinstalling the environment the editable mainboard lives in (10-11). The version lookup at
+   start-up, or the editable dist-info being rewritten, is not atomic for readers. A reader should
+   retry once, or the install should swap the dist-info atomically.
 
 ## Found setting up pedro-home-wsl, 2026-10-11
 
