@@ -160,6 +160,23 @@ root unit files, no `/etc` edits.
    `error: No solution found when resolving dependencies` and dropped the `cause:` and `hint:`
    lines that name the real reason (here the missing cp315 wheel); the reproduction took a manual
    `uv tool install` over ssh.
+3. **A host's memory is read once, so a raised WSL cap keeps printing the old size.** After the
+   owner set `memory=` to 8 GB, `host list pedro-home-wsl --facts` re-probed and read 8,321,191,936
+   bytes, but the line every `job submit` prints still read `4 GB RAM`, from `sysmem_gb` in the
+   capabilities recorded at `host setup` (`host sync` probes nothing). The submit line and the
+   queue-policy check can rest on a size the host no longer has; a facts probe should refresh the
+   recorded capabilities, or the submit line should read the facts it just printed.
+4. **`host sync HOST` provisions the profile's `default` environment only.** On pedro-home-wsl the
+   cutok jobs enter `env = "cutok"`, and a plain `host sync` printed `installing default ... from
+   the shipped lock` and left the cutok environment on the lock of the setup three hours earlier;
+   `host sync HOST --env cutok` is the call that moves it. A submit without `--env` builds and
+   runs `default`, so a diagnostic taken that way measures a different environment from the arm's
+   jobs without saying so. A job spec that names an environment should make `host sync` (or the
+   submit's own check) say which environment the host's lock is behind on.
+5. **`job show --wait` prints one `settlement busy` line every five seconds while another session
+   settles.** With a settling pass held for ten minutes by another process, a 240 s wait produced
+   about fifty identical lines (the same holder, phase and deadline) and the cached `running` row
+   until the holder finished. One line per holder change would carry the same information.
 
 ## Found building `host hold` for PBS, 2026-10-09
 
