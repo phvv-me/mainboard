@@ -119,11 +119,28 @@ root unit files, no `/etc` edits.
    `$CONDA_PREFIX/bin/python` and failed (10-11). With the environment's bin prepended, the same
    step runs. `ci` should run its steps in the activated workspace environment, as `run` does, and
    not in whatever PATH the caller has.
-8. **A concurrent environment install breaks running `mainboard` calls for a moment.** One agent's
-   `job show` failed with `importlib.metadata.PackageNotFoundError` while another process was
-   reinstalling the environment the editable mainboard lives in (10-11). The version lookup at
-   start-up, or the editable dist-info being rewritten, is not atomic for readers. A reader should
-   retry once, or the install should swap the dist-info atomically.
+8. **A member's manifest edit reinstalls the live environment under running processes.** At about
+   21:40 on 10-11, fast-forwarding `packages/patos` main changed its `pyproject.toml` (ty floor
+   0.0.59 to 0.0.86). The next `mainboard run` re-locked (the `mb.lock` refresh of f273f1495) and
+   reinstalled the default environment in place, and every concurrent process saw `mb` and
+   `patos` vanish:
+   - an agent's `job show` failed with `importlib.metadata.PackageNotFoundError`;
+   - a gate suite had 130 failures.
+   An implicit re-lock and reinstall should never replace an environment that running processes
+   use. Two fixes are possible: build the new environment beside the old one and swap it
+   atomically (a generation directory and a symlink, as M14's recoverable generations do for
+   edits), or refuse with a message naming the processes using it. Until then, change a workspace
+   member's manifest only in a quiet window.
+9. **The center test suite leaks System V shared memory until PostgreSQL cannot start.** The
+   killed-server tests leave 1 to 3 orphaned 56-byte segments per run. macOS allows 32
+   (`kern.sysv.shmmni`), so after about ten runs `initdb` fails with `shmget: No space left on
+   device`. Codex's "sandbox denies shm" was this exhaustion (33 segments from 14:43 to 14:53 on
+   10-11).
+   - Workaround: a sweep of segments owned by the user with no attachments and a dead creator
+     (scratchpad `commit/sweep-shm.sh`).
+   - Fix: the fixture that kills a server should remove its segments (`ipcrm` for the
+     postmaster's key) or stop the server with a fast shutdown, so the gate never depends on a
+     global, sudo-only limit.
 
 ## Found setting up pedro-home-wsl, 2026-10-11
 
