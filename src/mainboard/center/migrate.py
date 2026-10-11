@@ -25,6 +25,7 @@ from ..dispatch.shared import announce
 from ..dispatch.shells import Dialect, open_shell
 from ..dispatch.targets import probe_capabilities
 from ..dispatch.transport import HostUnreachable, SshTransport
+from ..engines.compile.lockfile import Lockfile
 from ..fitness import Fitness, Role
 from ..probe.system import System
 from .carrier import Carrier
@@ -146,7 +147,12 @@ class Migration:
             return report
         self.watch(f"probing {self.destination}")
         facts = self.reach()
-        carrier = Carrier(self.destination, facts.uv, self.transport)
+        carrier = Carrier(
+            self.destination,
+            facts.uv,
+            self.transport,
+            python=Lockfile(self.board.root).python_minor(facts.pixi_platform),
+        )
         where = carrier.call("where", {"root": self.root or _CHECKOUT}, Destination)
         system = carrier.call("census", {"root": where.root}, System)
         place = where.model_copy(update={"system": system.system})
@@ -359,8 +365,9 @@ class Migration:
         """The tool from the cloned source, the fleet's pixi, and the environment from the lock."""
         rows: list[Section] = []
         with open_shell(plan, root, ssh=self.transport) as shell:
+            bootstrap = Bootstrap(shell, workspace=self.board.root, extras=self.extras())
             steps = (
-                ("install tool", lambda: Bootstrap(shell, extras=self.extras()).tool().winner),
+                ("install tool", lambda: bootstrap.tool().winner),
                 (
                     "install pixi",
                     lambda: Onboarding(self.board.dispatcher, plan).align_pixi(

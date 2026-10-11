@@ -17,6 +17,7 @@ import yaml
 from patos import FrozenModel
 
 from ...core import MissionError, Project
+from .pixi_lock import packages
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,6 +42,10 @@ _LOCK = re.compile(r"^lock = '''\r?\n(.*?'{0,2})'''(?!')", re.MULTILINE | re.DOT
 # What a TOML literal string cannot hold once CRLF pairs are taken out: every control character
 # but the tab and the newline, a lone carriage return among them.
 _UNCARRIABLE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+# Conda encodes name, version and build in the artifact's filename, even when the lock omits
+# those fields from its package records. Match Python itself, never python_abi or libpython.
+_PYTHON = re.compile(r"/python-(\d+\.\d+)\.[^-]+-[^/]+\.(?:conda|tar\.bz2)$")
 
 
 class Solved(FrozenModel):
@@ -122,6 +127,36 @@ class Lockfile:
     def get(self, environment: str) -> Solved | None:
         """`environment`'s committed solve, None when the file holds none."""
         return self.environments().get(environment)
+
+    def python_minor(self, platform: str) -> str:
+        """The default environment's solved Python minor on the destination platform.
+
+        The committed solve wins over its generated copy. Never ask uv to choose from the
+        tool's open-ended Requires-Python: a fresh host could then get an unsolved minor.
+        """
+        solved = self.get("default")
+        path = self.path
+        if solved is not None:
+            text = solved.lock
+        else:
+            path = Project().out(self.path.parent) / "envs/default/pixi.lock"
+            try:
+                text = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                text = ""
+        minors = {
+            matched[1]
+            for location in packages(text, environment="default").get(platform, [])
+            if (matched := _PYTHON.search(location))
+        }
+        if len(minors) != 1:
+            raise MissionError(
+                f"{path} must pin one Python minor for default on "
+                f"{platform or '(unknown platform)'!r}; "
+                f"found {', '.join(sorted(minors)) or 'none'}. "
+                f"Run `{Project().name} lock default` for that platform before setting up a host."
+            )
+        return minors.pop()
 
     def put(self, files: Writer, environment: str, solved: Solved) -> None:
         """Record `environment`'s solve atomically, every other section kept as it reads.

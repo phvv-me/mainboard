@@ -2,7 +2,6 @@
 # and the board need are spelled. Every host answers `bash -lc` over plumbum's persistent session.
 
 import shlex
-from importlib.metadata import metadata
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Self
 
@@ -34,10 +33,8 @@ class Dialect:
     # The probe and the line that fetch uv onto a host that has none.
     uv_bootstrap = ("command -v curl", _UV_INSTALLER)
     pixi_installer = POSIX_INSTALLER
-    # The interpreters the tool runs on, as its own metadata requires them.
-    requires_python = metadata(Project().package)["Requires-Python"]
 
-    def python(self, prefix: str, *, host: str) -> str:
+    def python(self, prefix: str, *, host: str, python: str) -> str:
         """The command that starts mainboard's own Python on `host`, under any login shell.
 
         The workspace environment at `prefix` when the host has it, else the uv-managed CPython
@@ -46,14 +43,13 @@ class Dialect:
         written after the command reach the interpreter as they are.
         """
         found = f"{placed(prefix, home='$HOME')}/bin/python"
-        wanted = self.requires_python
         refusal = (
-            f"$0: {host} has neither {found} nor a uv-managed CPython {wanted}; "
+            f"$0: {host} has neither {found} nor a uv-managed CPython {python}; "
             f"run {Project().name} host setup {host}"
         )
         script = (
             f'p="{found}"; [ -x "$p" ] || '
-            f'p=$(PATH={":".join(USER_BINS)}:$PATH; uv python find --managed-python "{wanted}") '
+            f'p=$(PATH={":".join(USER_BINS)}:$PATH; uv python find --managed-python "{python}") '
             f'|| {{ echo "{refusal}" >&2; exit 127; }}; exec "$p" "$@"'
         )
         return f"sh -c {shlex.quote(script)} {Project().package}"
@@ -125,7 +121,7 @@ class HostShell:
         """`command`'s stdout on the host, raising a `MissionError` naming why it failed."""
         retcode, out, err = self.execute(self.stage(command, activate=activate))
         if retcode:
-            reason = failure_reason(err or out, retcode)
+            reason = (err or out).strip() or failure_reason("", retcode)
             raise MissionError(f"`{command}` failed on {self.plan.host!r}: {reason}")
         return out
 

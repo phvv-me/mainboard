@@ -22,6 +22,7 @@ from ..context.plan import environment_prefix
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.generated import GeneratedFiles
+from ..engines.compile.lockfile import Lockfile
 from ..engines.compile.vendor import vendor_root
 from ..log import logger
 from ..manifest.loading import load
@@ -52,6 +53,7 @@ from .shipment import Shipment
 from .snapshots import Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
 from .sync import CARD_LEASES, GitignoreFilter, SyncLock, denied, patterns
+from .targets import probe_capabilities, resolve
 from .transport import SshTransport
 from .vocabulary import JobState, Request, Resources
 from .wrapping import connection, guarded, wrap
@@ -241,8 +243,18 @@ class Dispatcher:
 
         Source synchronization stays separate from this evidence collection.
         """
-        env = load(Project().manifest(self.root)).profile(host).env
-        python = Dialect().python(environment_prefix(root, env), host=host)
+        profile = load(Project().manifest(self.root)).profile(host)
+        if not profile.platform:
+            try:
+                facts = self.cache.host(host).capabilities
+            except LookupError:
+                facts = None
+            profile = resolve(profile, facts or probe_capabilities(host, ssh=ssh))
+        python = Dialect().python(
+            environment_prefix(root, profile.env),
+            host=host,
+            python=Lockfile(self.root).python_minor(profile.platform),
+        )
         try:
             published = Collector(self.root, ssh).pull(
                 host, root=root, path=path.rstrip("/"), python=python
@@ -372,7 +384,11 @@ class Dispatcher:
         ssh: the policy a rental's endpoint rides; a declared host's alias answers for itself.
         """
         policy = ssh or SshTransport()
-        python = Dialect().python(plan.prefix(plan.profile.root), host=plan.host)
+        python = Dialect().python(
+            plan.prefix(plan.profile.root),
+            host=plan.host,
+            python=Lockfile(self.root).python_minor(plan.profile.platform),
+        )
         return Agent(SshLink(plan.host, policy), python=python, patience=policy.deadline)
 
     def scope(
