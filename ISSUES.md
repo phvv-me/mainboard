@@ -172,6 +172,16 @@ root unit files, no `/etc` edits.
       receipt.
     - The refactor's PCIe facts (refactor/mb-pcie) already compute the ceiling and the 80%
       finding, so the gate reuses them.
+11. **`mainboard run` mis-parses `--` when several test files are given.** The E-stages
+    settlement agent (10-12) passed two test files and pytest flags after `--`. Part of the line
+    reached pytest as paths, or the reverse. Reproduce with two node test files and `-- -q -x`,
+    then compare against how `run` splits a single target's arguments (memory note
+    mainboard-local-pytest).
+12. **DuckDB's `shape` raises on an ordered, joined relation.** Calling `.shape` on a relation
+    built by a join followed by `.order(...)` raised in a settlement helper (10-12). `count('*')`
+    on the same relation works. If mainboard's `Results` or `Relations` helpers call `.shape`,
+    they should count instead, or the case should get a regression test against the pinned
+    DuckDB.
 
 ## Found setting up pedro-home-wsl, 2026-10-11
 
