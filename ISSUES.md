@@ -77,7 +77,7 @@ root unit files, no `/etc` edits.
      `job submit --on crimson -- true` ran as 1936, ok.
    - gold: pid 49321 (deleted binary) became 1825573, with 360 done tasks kept, and the trivial
      job ran as 361, Success.
-   A reboot test is still owed on both. purple still lacks a boot entry and was left alone.
+   A reboot test is still owed on both. purple got the same fix at 18:30: pid 1004140 (pixi-global pueued) became 3449891 (environment binary), with 19 done tasks kept, and a crontab entry.
 
 ## Found in the cutok v26 r2 re-acquisition, 2026-10-11
 
