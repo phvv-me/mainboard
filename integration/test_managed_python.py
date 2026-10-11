@@ -18,8 +18,11 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock
 
-import mainboard
 import pytest
+from plumbum import local
+from pydantic import ValidationError
+
+import mainboard
 from mainboard.board import Board
 from mainboard.center.carrier import Carrier
 from mainboard.context import ExecutionPlan
@@ -41,8 +44,6 @@ from mainboard.engines.compile.backend import PIXI_VERSION
 from mainboard.engines.compile.lockfile import Lockfile, Solved
 from mainboard.manifest import HostProfile
 from mainboard.probe.snapshot import HostFacts
-from plumbum import local
-from pydantic import ValidationError
 
 _HOST = "fakehost"
 _ROOT = "/srv/jobs"

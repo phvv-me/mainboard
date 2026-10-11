@@ -217,6 +217,15 @@ root unit files, no `/etc` edits.
       host; and whether the default and cutok environments need the fork editable at all, or a
       built wheel from the fork's branch.
 
+16. **`mainboard run` resolves a passthrough command's relative paths at the monorepo root, not in
+    the caller's directory.** On 10-12 the lead ran `mainboard run ruff check --select I --fix .`
+    from `packages/mainboard`, meaning that package. It ran at the root and sorted imports in
+    4,500 files across 60 repositories, among them vendored paper sources, two forks and
+    research/llm. They were restored file by file (an isort-only check against HEAD), except 7
+    vendored googletest files whose tree already differed from its commit. A passthrough
+    command should run in the caller's working directory, as every shell tool does. Or `run`
+    should refuse a mutating tool given `.` outside the root.
+
 ## Found setting up pedro-home-wsl, 2026-10-11
 
 ### Mainboard
