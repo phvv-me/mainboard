@@ -183,6 +183,14 @@ root unit files, no `/etc` edits.
     they should count instead, or the case should get a regression test against the pinned
     DuckDB.
 
+13. **The isolated gate's fixed 900 s budget fails a passing suite on a loaded machine.** On
+    10-12, main plus the host-Python fix ran 534 tests in 827 s as plain pytest, all passing. The
+    isolated gate killed the same suite at 51% after its 870 s suite limit, because a lake ingest
+    and several agents shared the Mac. The suite grows with every package: integration's 1,108
+    tests take 9 to 11 minutes when quiet. Scale the budget from the collected test count and the
+    last passing duration, or make it a declared, reviewed constant raised with the suite. A
+    budget miss should say "budget" in the report, not look like a hang.
+
 ## Found setting up pedro-home-wsl, 2026-10-11
 
 ### Mainboard
