@@ -126,6 +126,10 @@ root unit files, no `/etc` edits.
    Second witness (RTX 4090 settlement, 10-11): an agent's `job list` was killed at its ssh
    timeout and left an orphan pass holding the settlement lock for 15 minutes, so parent death
    did not end it either.
+   Third witness (10-12 08:25): two orphaned `ssh pedro-cvlab sh -c 'p=".../bin/python" ...'`
+   remote commands (parent launchd) had been alive for 7 and 8 hours, children of passes that
+   ended. A pass's remote commands need their own bound (`ConnectTimeout` covers only the
+   connect) and must die with the pass.
 6. **An interrupted evidence copy leaves a finished job blocked until some later pass.** Job
    3525659 (miyabi-g, exit 0) reads `blocked: settlement pending; remote evidence retained:
    [Errno 32] Broken pipe`. Its rows reached the node's report, so nothing is lost, but the job
