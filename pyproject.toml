@@ -115,6 +115,14 @@ dev = [
 # the manifest has moved past, which is the failure that used to reach CI before anyone ran it.
 # Every step runs on both platforms, the type checkers included, since each narrows
 # `sys.platform` branches to the host it runs on. The tests run the real `mb` (integration/).
+#
+# They run only through the isolated gate (integration/gates/README.md): the conftest refuses a
+# bare `pytest`, because a test that rewrites the user's cache, lake or ssh config must not reach
+# a real one. `uv run` hands the gate this checkout's environment, `seed` is the one lane that
+# goes online (the sandbox has no network, so the DuckDB extensions are installed beforehand),
+# and the report lands in `build/` for a failing job to upload. The sandbox itself is Seatbelt
+# on macOS, which ships with it, and bubblewrap on Linux, which a runner prepares first
+# (integration/gates/linux-runner.sh); a machine without either fails the step, never skips.
 [tool.mainboard.ci]
 os = ["linux", "osx"]
 
@@ -139,8 +147,12 @@ name = "pyrefly"
 run = "uv run pyrefly check"
 
 [[tool.mainboard.ci.steps]]
+name = "seed"
+run = "uv run sh integration/gates/run.sh seed --report build/gate-report"
+
+[[tool.mainboard.ci.steps]]
 name = "test"
-run = "uv run pytest"
+run = "uv run sh integration/gates/run.sh suite --report build/gate-report --budget 1500"
 
 # The contextual lane reads a hosted model, so it names one rather than inheriting the default
 # `codex` backend this workspace retired. DeepSeek V4 Pro carries a one-million-token window,

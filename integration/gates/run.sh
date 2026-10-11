@@ -1,10 +1,13 @@
 #!/bin/sh
 # usage: run.sh MODE [--report DIR] [--budget SECONDS] [NODEID...]
-# MODE is suite, target (NODEIDs), inspect, ruff, pyrefly, ty, mypy or mcmr. Results go to DIR or
-# else a new temporary folder; SECONDS bounds the whole run and defaults to the mode's limit.
+# MODE is suite, target (NODEIDs), inspect, seed, ruff, pyrefly, ty, mypy or mcmr. Results go to DIR
+# or else a new temporary folder; SECONDS bounds the whole run and defaults to the mode's limit.
 set -eu
 projects=${MB_GATE_PROJECTS:-/Users/pedro/Developer/projects}
-bin=$projects/.mainboard/envs/default/.pixi/envs/default/bin
+# `uv run` leaves VIRTUAL_ENV on the project environment it ran from, so CI and `mainboard ci`
+# gate the installation the lock builds; run bare, the workspace's environment answers.
+environment=${VIRTUAL_ENV:-$projects/.mainboard/envs/default/.pixi/envs/default}
+bin=$environment/bin
 gate_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 mode=${1:-suite}
 [ $# -eq 0 ] || shift
@@ -20,7 +23,7 @@ done
 case "$mode" in
     suite) limit=900 ;;
     target|inspect) limit=120 ;;
-    ruff|pyrefly|ty|mypy|mcmr) limit=300 ;;
+    seed|ruff|pyrefly|ty|mypy|mcmr) limit=300 ;;
     *) echo "unknown gate mode: $mode" >&2; exit 64 ;;
 esac
 root=$(mktemp -d /tmp/mb-gate.XXXXXXXX)

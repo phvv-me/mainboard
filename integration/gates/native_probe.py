@@ -28,7 +28,9 @@ def _connect() -> None:
 
 
 def _main(root: Path) -> None:
-    outside = root.parent / f"{root.name}-forbidden"
+    # The checkout is writable by the user natively and refused by both sandboxes; the temporary
+    # directory beside the root is private and writable under bubblewrap, so it proves nothing.
+    outside = Path(__file__).parent / f"{root.name}-forbidden"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     what = f"external write (remove {outside})"
     _refused(what, lambda: os.close(os.open(outside, flags, 0o600)))

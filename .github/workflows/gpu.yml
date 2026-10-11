@@ -15,12 +15,17 @@ jobs:
     runs-on: [self-hosted, linux, gpu]
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # the legacy-runtime witness extracts the c97cb81 archive from history
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
       - run: uv sync --locked
-      # the hermetic suite first, so a real-hardware failure below is unambiguous
-      - run: uv run pytest
+      # the hermetic gate first, so a real-hardware failure below is unambiguous. Its sandbox is
+      # bubblewrap, which this script installs and lets an unprivileged user run with sudo, so the
+      # runner's user needs passwordless sudo or the AppArmor sysctl lifted beforehand.
+      - run: sh integration/gates/linux-runner.sh
+      - run: uv run --locked mainboard ci
       # then assert a GPU was actually detected on this box
       - run: |
           uv run python - <<'PY'

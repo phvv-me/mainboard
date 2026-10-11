@@ -6,12 +6,12 @@ Only test infrastructure lives here. Run it from any worktree of this repository
 sh integration/gates/run.sh MODE [--report DIR] [--budget SECONDS] [NODEID...]
 ```
 
-`MODE` is `suite`, `target` (the given pytest node ids), `inspect`, `ruff`, `pyrefly`, `ty`, `mypy`
-or `mcmr`. `--report` names the folder the logs, `MODE.json` and `MODE.xml` land in; without it a
-new `/tmp/mb-gate-report.*` folder is made and printed. `--budget` is the hard limit of the
-whole run in seconds: 900 for `suite`, 120 for `inspect` and `target`, 300 for a checker. The worker
-gets the budget less 30 seconds reserved for launch, preflight and cleanup, and `MODE.json` records
-`budget_seconds`, `wall_seconds` and each step's `limit_seconds` and `seconds`.
+`MODE` is `suite`, `target` (the given pytest node ids), `inspect`, `seed`, `ruff`, `pyrefly`, `ty`,
+`mypy` or `mcmr`. `--report` names the folder the logs, `MODE.json` and `MODE.xml` land in; without
+it a new `/tmp/mb-gate-report.*` folder is made and printed. `--budget` is the hard limit of the
+whole run in seconds: 900 for `suite`, 120 for `inspect` and `target`, 300 for `seed` and a
+checker. The worker gets the budget less 30 seconds reserved for launch, preflight and cleanup, and
+`MODE.json` records `budget_seconds`, `wall_seconds` and each step's `limit_seconds` and `seconds`.
 
 ```sh
 sh integration/gates/run.sh suite --report /tmp/m07-gate
@@ -21,12 +21,42 @@ sh integration/gates/run.sh mcmr
 
 Later packages use the same commands from their integrated worktree. A package adds its golden,
 fault and recovery witnesses to the existing fixtures and passes them as `target` node ids; `suite`
-includes every cumulative witness. The launcher runs the environment's own interpreter
-(`$MB_GATE_PROJECTS/.mainboard/envs/default`, default `/Users/pedro/Developer/projects`) beneath
-`mainboard proc timeout`, so no compile, sync lock or install touches the live workspace, and it
-prints and asserts `mainboard.__file__` on every invocation. Every pytest command names this
+includes every cumulative witness. The launcher runs an environment's own interpreter beneath
+`mainboard proc timeout`, so no compile, sync lock or install touches the live workspace: the
+environment `uv run` leaves in `VIRTUAL_ENV` when there is one, else the workspace's
+(`$MB_GATE_PROJECTS/.mainboard/envs/default`, default `/Users/pedro/Developer/projects`). It prints
+and asserts `mainboard.__file__` on every invocation. Every pytest command names this
 worktree's `pyproject.toml`, disables `randomly`, the cache provider and plugin autoload, and uses a
-temporary basetemp. Each test starts in its own empty directory, never in the checkout.
+temporary basetemp. The worker and each test start in an empty directory, never in the checkout.
+
+## In CI
+
+`[tool.mainboard.ci]` runs the gate as two steps, `uv run sh integration/gates/run.sh seed` and
+`uv run sh integration/gates/run.sh suite --report build/gate-report --budget 1500`, so
+`mainboard ci`, `mainboard ci --matrix` and the GitHub workflows gate the installation this
+checkout's lock builds. A bare `pytest` is refused by `conftest.py`, with no fallback.
+
+- `seed` is the one lane that goes online. The sandbox has no network and downloads nothing, so
+  this installs the DuckDB extensions `Lake` loads into the user cache that every sandbox copies
+  from; what is already there is left alone. A `suite` without them stops with `M00-EXTENSIONS`.
+- macOS needs nothing: Seatbelt ships with it.
+- Linux needs bubblewrap and, where AppArmor restricts unprivileged user namespaces (Ubuntu
+  24.04's default), `kernel.apparmor_restrict_unprivileged_userns=0`; without that, bubblewrap
+  stops at `loopback: Failed RTM_NEWADDR`. It also needs zsh, which an Ubuntu runner lacks and
+  the three `test_managed_python` login-shell cases skip without, an unexpected skip.
+  `linux-runner.sh` installs both and lifts the restriction, with sudo and only where a probe
+  shows bubblewrap cannot run, and fails unless bubblewrap then makes a network namespace. It
+  changes the whole machine, so only a throwaway CI runner runs it, from the workflow, never from
+  a step of `[tool.mainboard.ci]`. Where nothing isolates, `suite` exits 78 (`M00-OS`).
+- The checkout needs its history (`fetch-depth: 0`): the legacy-runtime witness extracts the
+  c97cb81 archive with `git archive`.
+- A lane holds only its own tool to the recorded versions: pytest for `suite`, `target` and
+  `inspect`, the checker for a checker lane, nothing for `seed`. The lock supplies pytest but not
+  ty or mcmr, and its ruff, mypy and pyrefly are newer than the checker baseline below.
+- The worker starts in the gate's empty temporary root, not in the checkout. Test modules are
+  imported there, so a constant computed at import (`Project().out_dir()` in
+  `test_managed_python`) agrees with the same call inside a test, whether or not the checkout
+  sits beneath a workspace manifest, as this one does in the monorepo.
 
 ## Isolation boundary
 
@@ -95,7 +125,7 @@ verifies the temporary data directory and disabled TCP.
 
 ## Checker contract
 
-The launcher refuses tool-version drift against the recorded versions: pytest 9.1.1, Ruff 0.17.0,
+A lane refuses drift of its own tool against the recorded versions: pytest 9.1.1, Ruff 0.17.0,
 pyrefly 1.4.0.dev3, ty 0.0.85, mypy 2.4.0 and mcmr 0.0.4. Do not install or upgrade tools during
 gates. Ruff covers `src` and `integration`; the three type checkers retain the existing `src` scope
 and explicit worktree config; pyrefly includes warnings. Deterministic MCMR covers the worktree with

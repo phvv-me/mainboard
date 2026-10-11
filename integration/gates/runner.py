@@ -12,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 
+import duckdb
 import pytest
 from cyclopts import App
 from guard import Guard
@@ -34,6 +35,13 @@ _HOMES = {
     "MYPY_CACHE_DIR": "cache/mypy",
 }
 _POSTGRES = ["postgres", "pg_ctl", "initdb", "psql"]
+# A lane holds only the tool it runs to that tool's recorded version: pytest for the lanes that
+# run it, else the checker the lane is named after, and none for `seed`.
+_TESTERS = {"suite", "target", "inspect"}
+# The DuckDB extensions `mainboard.state.lake` loads to attach a lake and to serve or reach one
+# over Quack, and the user cache every sandbox copies them from.
+_EXTENSIONS = ("ducklake", "sqlite", "httpfs", "quack")
+_SEED = Path.home() / ("Library/Caches" if sys.platform == "darwin" else ".cache") / "mb/duckdb"
 # What the inspect lane runs in this process, where every child process is refused.
 _HARNESS = "integration/gates/test_harness.py"
 _WITNESSES = [
@@ -48,7 +56,7 @@ _WITNESSES = [
 class Gate:
     """One lane of the gate: its worker's environment, sandbox, bounds and report."""
 
-    def __init__(self) -> None:
+    def __init__(self, mode: str) -> None:
         self.tree = Path(os.environ["MB_GATE_WORKTREE"]).resolve()
         self.root = Path(os.environ["MB_GATE_ROOT"]).resolve()
         self.report = Path(os.environ["MB_GATE_REPORT"]).resolve()
@@ -57,7 +65,8 @@ class Gate:
         self.baseline = json.loads(
             (self.tree / "integration/gates/baseline.json").read_text(encoding="utf-8")
         )
-        versions = {name: importlib.metadata.version(name) for name in _TOOLS}
+        tool = "pytest" if mode in _TESTERS else mode
+        versions = {name: importlib.metadata.version(name) for name in _TOOLS if name == tool}
         self.result = {
             "import": mainboard.__file__,
             "python": sys.executable,
@@ -73,6 +82,8 @@ class Gate:
             return self._inspect()
         if mode in {"suite", "target"}:
             return self._pytest(mode, selection)
+        if mode == "seed":
+            return self._install()
         return self._execute(mode, self._checker(mode), self.budget, isolated=False)
 
     def save(self, name: str) -> None:
@@ -128,6 +139,12 @@ class Gate:
         bindings = [
             part for mount in sorted(mounts) for part in ("--ro-bind", str(mount), str(mount))
         ]
+        executable = Path(sys.executable)
+        target = executable.parent / os.readlink(executable) if executable.is_symlink() else None
+        # uv's `bin/python` names its interpreter through a directory that is itself a symlink to
+        # the versioned one, and only the real directory is mounted above.
+        links = [link for link in reversed(target.parents) if link.is_symlink()] if target else []
+        symlinks = [part for link in links for part in ("--symlink", os.readlink(link), str(link))]
         return [
             bwrap,
             "--die-with-parent",
@@ -137,6 +154,7 @@ class Gate:
             "--tmpfs",
             "/",
             *bindings,
+            *symlinks,
             "--tmpfs",
             "/tmp",
             "--tmpfs",
@@ -250,7 +268,7 @@ class Gate:
         with (self.report / f"{name}.log").open("w", encoding="utf-8") as output:
             child = subprocess.Popen(
                 self._sandbox(command) if isolated else command,
-                cwd=self.tree,
+                cwd=self.root if isolated else self.tree,
                 env=self._environment(),
                 stdout=output,
                 stderr=subprocess.STDOUT,
@@ -264,6 +282,18 @@ class Gate:
             "seconds": round(time.monotonic() - started, 3),
         }
         return code
+
+    def _install(self) -> int:
+        """Install the extensions a sandbox is seeded from, the one lane that goes online.
+
+        A machine that never ran the tool needs it once; installing what is there changes nothing.
+        """
+        connection = duckdb.connect()
+        connection.execute(f"SET extension_directory = '{_SEED.as_posix()}'")
+        for name in _EXTENSIONS:
+            connection.install_extension(name)
+        self.result["seed"] = {"directory": str(_SEED), "extensions": _EXTENSIONS}
+        return 0
 
     def _inspect(self) -> int:
         """Collect, then run the reviewed witnesses here with every child process refused.
@@ -302,7 +332,7 @@ class Gate:
             *self._arguments(),
             "--junitxml",
             str(self.report / f"{mode}.xml"),
-            *(selection or [str(self.tree / "integration")]),
+            *(str(self.tree / node) for node in selection or ["integration"]),
         ]
         return self._execute(mode, command, self.budget)
 
@@ -342,25 +372,26 @@ class Gate:
 
     def _seed_extensions(self) -> None:
         """Copy the preinstalled DuckDB extensions; a gate never downloads code on demand."""
+        if not _SEED.is_dir():
+            raise RuntimeError(
+                f"M00-EXTENSIONS: offline DuckDB cache missing: {_SEED}; run `run.sh seed` first"
+            )
         darwin = sys.platform == "darwin"
-        seed = Path.home() / ("Library/Caches/mb/duckdb" if darwin else ".cache/mb/duckdb")
-        if not seed.is_dir():
-            raise RuntimeError(f"M00-EXTENSIONS: offline DuckDB cache missing: {seed}")
         cache = self.root / ("home/Library/Caches/mb/duckdb" if darwin else "cache/mb/duckdb")
-        shutil.copytree(seed, cache, dirs_exist_ok=True)
+        shutil.copytree(_SEED, cache, dirs_exist_ok=True)
 
     def _verify(self, versions: dict[str, str]) -> None:
-        """Refuse a worktree other than this one and any checker that drifted from the baseline."""
+        """Refuse a worktree other than this one and a lane tool that drifted from the baseline."""
         assert Path(mainboard.__file__).resolve() == self.tree / "src/mainboard/__init__.py"
-        assert versions == {name: self.baseline["versions"][name] for name in _TOOLS}, (
+        assert versions == {name: self.baseline["versions"][name] for name in versions}, (
             "M00-VERSIONS: tool version changed; explicitly rebaseline before accepting results"
         )
         sys.stdout.write(f"mainboard.__file__ = {mainboard.__file__}\n")
 
 
 def _main(mode: str = "suite", *selection: str) -> None:
-    """Run lane `mode` (suite, target, inspect or a checker); `target` takes pytest node ids."""
-    gate = Gate()
+    """Run lane `mode` (suite, target, inspect, seed or a checker); `target` takes node ids."""
+    gate = Gate(mode)
     try:
         code = gate.run(mode, list(selection))
     finally:
