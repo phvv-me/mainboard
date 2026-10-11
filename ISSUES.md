@@ -609,6 +609,15 @@ root unit files, no `/etc` edits.
     a stream cost one replay instead of 300. Still open until M23 replaces the replay with
     durable cursors: that replay (`Journal.replay`, a scan of the events table) is unchanged, and
     what opens the blob files is not diagnosed.
+    Second witness, 2026-10-12. Two passes in a row spent more than 13 minutes at about 450%
+    CPU and 2.5 GB resident "reading the receipts of" one kernel-tier batch (44 MB, 4,485 files).
+    A native sample showed DuckDB `FileOpener`/`OpenFile`/`sqlite_scanner` frames dominating.
+    Each pass died at its 15-minute deadline, so the batch never settled and a GPU experiment
+    stalled for about an hour. After `mb lake compact` (under a minute), the same batch settled
+    and `job list --batch` answered in 3.2 s. So for now compaction IS the remedy for the events
+    and data tables. The settler should compact on its own when the small-file count or a pass's
+    duration crosses a bound, and a pass that hits its deadline twice on the same stream should
+    say so.
 13o. **Archive members are unreadable once eviction removes their archive parts** (2026-10-10).
     53,444 early-September cutok artifacts (396 MB, 1,415 runs, 15 nodes) have no standalone blob:
     they live inside the 1,631 parts of `datasets/experiments/artifacts.parquet/<xx>/part-N.parquet`
