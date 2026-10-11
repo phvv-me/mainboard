@@ -109,6 +109,13 @@ root unit files, no `/etc` edits.
    [Errno 32] Broken pipe`. Its rows reached the node's report, so nothing is lost, but the job
    stays blocked until a full pass copies its evidence again, and that must happen before miyabi
    stops on 10-28. A broken pipe mid-copy should be retried within the same pass, with a bound.
+7. **`mainboard ci` leaves the workspace environment behind PATH entries already ahead of it.** On
+   the center, the login PATH starts with `~/.pixi/arm64/bin`. So `cargo` in mcmr's
+   `extension-clippy` step resolved to the pixi-global trampoline, which sets
+   `CONDA_PREFIX=~/.pixi/arm64/envs/rust`. PyO3's build script then looked for
+   `$CONDA_PREFIX/bin/python` and failed (10-11). With the environment's bin prepended, the same
+   step runs. `ci` should run its steps in the activated workspace environment, as `run` does, and
+   not in whatever PATH the caller has.
 
 ## Found setting up pedro-home-wsl, 2026-10-11
 
