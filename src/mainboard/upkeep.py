@@ -25,8 +25,10 @@ from .core.host import LINUX
 from .core.project import Project
 from .core.section import Section, Verdict
 
-# How long one manager may take to say what is pending before it is skipped.
-_ASK_SECONDS = 120
+# How long one manager may take to say what is pending before the audit calls it unknown. A
+# manager whose daemon is unreachable keeps retrying for minutes (`snap` without snapd's socket),
+# so the audit takes at most this long per manager, whatever the machine can reach.
+_ASK_SECONDS = 30
 
 # Below this share of the home filesystem free, the audit warns.
 _FREE_FLOOR = 0.10
@@ -127,8 +129,8 @@ def pixi_home() -> Path:
     return arch if (arch / "manifests").is_dir() else Path.home() / ".pixi"
 
 
-def _ask(argv: Sequence[str]) -> str:
-    """What a read-only command printed, empty when it could not answer in time."""
+def _ask(argv: Sequence[str]) -> str | None:
+    """What a read-only command printed, None when it could not answer in time."""
     try:
         done = subprocess.run(
             list(argv),
@@ -141,8 +143,18 @@ def _ask(argv: Sequence[str]) -> str:
             env={**os.environ, "PIXI_HOME": str(pixi_home())},
         )
     except OSError, subprocess.TimeoutExpired:
-        return ""
+        return None
     return done.stdout + done.stderr
+
+
+def _unknown(name: str, argv: Sequence[str]) -> Section:
+    """The row for a command that gave no answer in time; its fix is to run it and see why."""
+    return Section(
+        section=name,
+        verdict=Verdict.WARN,
+        detail=f"unknown, no answer in {_ASK_SECONDS} s",
+        fix=shlex.join(argv),
+    )
 
 
 def _present() -> list[Manager]:
@@ -153,20 +165,25 @@ def audit() -> list[Section]:
     """What this machine could and should update, one row each, read-only.
 
     A row that warns names the command that fixes it; `host upgrade` runs every such command
-    except firmware, which is the owner's to schedule.
+    except firmware, which is the owner's to schedule. A manager that does not answer within
+    `_ASK_SECONDS` warns as unknown instead, naming the command to run by hand.
     """
     rows: list[Section | None] = [_system()]
     for manager in _present():
-        pending = manager.count(_ask(manager.pending))
-        fix = " && ".join(manager.steps)
-        rows.append(
-            Section(
-                section=manager.name,
-                verdict=Verdict.WARN if pending else Verdict.PASS,
-                detail=f"{pending} update(s) pending" if pending else "up to date",
-                fix=fix if pending else "",
+        said = _ask(manager.pending)
+        if said is None:
+            rows.append(_unknown(manager.name, manager.pending))
+        else:
+            pending = manager.count(said)
+            fix = " && ".join(manager.steps)
+            rows.append(
+                Section(
+                    section=manager.name,
+                    verdict=Verdict.WARN if pending else Verdict.PASS,
+                    detail=f"{pending} update(s) pending" if pending else "up to date",
+                    fix=fix if pending else "",
+                )
             )
-        )
         if manager.name == "apt":
             rows.append(_apt_lists())
     rows += [_reboot(), _disk(), _snapshot(), _dotfiles()]
@@ -285,7 +302,10 @@ def _dotfiles() -> Section | None:
         argv = ["chezmoi", "status"]
     else:
         return None
-    drift = _lines(_ask(argv))
+    said = _ask(argv)
+    if said is None:
+        return _unknown("dotfiles", argv)
+    drift = _lines(said)
     return Section(
         section="dotfiles",
         verdict=Verdict.WARN if drift else Verdict.PASS,

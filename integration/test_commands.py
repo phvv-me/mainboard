@@ -5,13 +5,16 @@ import os
 import pty
 import subprocess
 import sys
+import time
 from decimal import Decimal
 
 import duckdb
 import pytest
 
+from mainboard import upkeep
 from mainboard.cli import build
 from mainboard.core.errors import MissionError
+from mainboard.core.section import Section, Verdict
 from mainboard.delimiter import Delimiter
 from mainboard.results import Results
 from mainboard.state.relations import records
@@ -189,6 +192,21 @@ def test_the_audit_reads_this_machine_and_names_every_fix(mb) -> None:
     rows = {row["section"]: row for row in json.loads(ran.out)}
     assert "system" in rows and "disk" in rows
     assert all(row["fix"] for row in rows.values() if row["verdict"] == "warn")
+
+
+def test_a_manager_that_never_answers_is_unknown_instead_of_waited_for(monkeypatch) -> None:
+    """`snap` without snapd's socket retries for two minutes; the audit gives each manager 30 s."""
+    stuck = upkeep.Manager(
+        name="stuck", program="sleep", pending=("sleep", "60"), count=len, steps=("true",)
+    )
+    monkeypatch.setattr(upkeep, "MANAGERS", (stuck,))
+    monkeypatch.setattr(upkeep, "_ASK_SECONDS", 0.5)
+    started = time.monotonic()
+    rows = {row.section: row for row in upkeep.audit()}
+    assert time.monotonic() - started < 30
+    assert rows["stuck"] == Section(
+        section="stuck", verdict=Verdict.WARN, detail="unknown, no answer in 0.5 s", fix="sleep 60"
+    )
 
 
 def test_an_upgrade_dry_run_only_prints_its_steps(mb) -> None:
