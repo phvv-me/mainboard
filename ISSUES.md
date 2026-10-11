@@ -63,13 +63,21 @@ root unit files, no `/etc` edits.
    artifact, not link the mirror's `.mainboard`.
 6. **Owed once the queue drains: `mainboard host sync pedro-cvlab`.** The 4090's mirror and
    environment were left alone because the registered v26 program (jobs 677-709) was running.
-7. **crimson is still pending (2026-10-11 18:25).** Its restart and boot entry wait for a gap in
-   `/tmp/gate.lock`, but four more `flock -w` gates queue behind the one that holds it, a chain
-   with no gap in sight. The prepared steps, each guarded: the queue holds nothing running or
-   waiting and no gate holds the lock, `pueue shutdown`, the `runtime_directory` key, a cron-like
-   start under `env -i` (no `XDG_RUNTIME_DIR`), a second start proving idempotence, then the
-   `@reboot` line. Then `host sync crimson` and `job submit --on crimson -- true`. Gold's daemon
-   (item 2) was left alone too: a restart of it was refused as outside this task.
+7. **crimson and gold done (2026-10-11 18:25, the lead, on the owner's "fix all open issues").**
+   Both queues were empty. On each host the steps were:
+   - `pueue shutdown`;
+   - `runtime_directory: ~/.local/share/pueue` in pueue.yml, with the old file kept as
+     `pueue.yml.before-runtime-directory`;
+   - a cron-like start under `env -i`, from the live environment binary;
+   - a second start, which was a no-op;
+   - the user crontab `@reboot` line.
+   The gate-lock guard was dropped, because a 5 s near-zero-CPU restart cannot disturb the gate
+   chain. Results:
+   - crimson: pid 65612 (deleted aside-r5 binary) became 821436, with 1,935 done tasks kept, and
+     `job submit --on crimson -- true` ran as 1936, ok.
+   - gold: pid 49321 (deleted binary) became 1825573, with 360 done tasks kept, and the trivial
+     job ran as 361, Success.
+   A reboot test is still owed on both. purple still lacks a boot entry and was left alone.
 
 ## Found in the cutok v26 r2 re-acquisition, 2026-10-11
 
