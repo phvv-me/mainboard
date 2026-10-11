@@ -4,6 +4,73 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found fixing the fleet's host issues, 2026-10-11
+
+Owner rule (17:55): hosts keep their daemons alive without sudo. No `loginctl enable-linger`, no
+root unit files, no `/etc` edits.
+
+### Mainboard
+
+1. **Nothing restarts pueued after a reboot.** `Onboarding.verify_queue` (`dispatch/onboard.py`)
+   answers `pueue status` in the activated shell and only when it does not, installs pueue with
+   `pixi global install pueue` (when `command -v pueued` finds none) and starts `pueued -d`. Every
+   step is user-level; the only `sudo` in the source is the OS package upkeep in `upkeep.py`. But
+   `setup` and `sync` run only when someone runs them: pedro-cvlab rebooted at 15:25 on 10-11 and
+   its queue stayed dead until an agent started `pueued` by hand at 15:37. crimson, purple and
+   gold hold no boot entry either (Linger=no, no crontab). Sudo-free mechanisms,
+   chosen by what each host allows (`loginctl show-user <user> -p Linger` and `systemctl
+   is-active cron` are readable without sudo; cron is active on all four hosts):
+   - Lingering already on (pedro-cvlab, a pre-existing setting): a `systemd --user` unit
+     `~/.config/systemd/user/pueued.service`, enabled, running the pixi-global pueued by full path
+     in the foreground. `ExecCondition=/bin/sh -c '! pueue status ...'` skips it when a daemon
+     already answers, so it never starts a second one. `XDG_RUNTIME_DIR` is the user manager's own,
+     so the socket sits where every client looks.
+   - Lingering off (crimson, purple, gold): a user crontab `@reboot` line that is `verify_queue`'s
+     own recipe, `bash -lc 'cd ~/.mb-jobs && . .mainboard/envs/default/activate.sh && { pueue
+     status || pueued -d; }'`, idempotent by the same `||`.
+   - Pitfall for the cron route: pueue puts its socket and pid under `$XDG_RUNTIME_DIR` (pueue's
+     changelog, #243) and falls back to the pueue directory when it is unset (shown on macOS
+     2026-10-11: socket and pid landed in `pueue_directory`). Cron and a boot without lingering
+     have no `/run/user/<uid>`, while an ssh session's clients look there, so the boot daemon would
+     be invisible and the next `sync` would start a second daemon on the same state file. The host's
+     `~/.config/pueue/pueue.yml` must set `shared.runtime_directory` to one absolute path so the
+     daemon and every client agree.
+   Code to write: `host setup` probes `Linger`, installs the matching mechanism (and the
+   `runtime_directory` key for cron), and `doctor` reports a host with neither.
+2. **`verify_queue` never replaces a healthy daemon that runs from a deleted path.** It starts a
+   daemon only when `pueue status` fails, so a daemon whose binary or directory was wiped lives on
+   through every `sync`: crimson's pid 65612 (up since 09-24) runs `.mainboard.aside-r5/.../pueued
+   (deleted)`, and gold's pid 49321 (up since 10-07) has both cwd and exe `(deleted)` (the
+   10-07 wipe), which the next env rebuild would also leave behind. `doctor` should warn on a
+   `/proc/<pid>/exe` or `cwd` ending ` (deleted)`; `sync` could shut such a daemon down and start a
+   fresh one when its queue holds nothing running or waiting.
+3. **`ssh <host> pueue status` cannot work on a plain ssh PATH, by design.** Dispatch finds pueue
+   through the activation (`wrapping.USER_BINS` plus the environment's `bin`). The login PATH of
+   the bash hosts adds the dotfiles' pixi-global dirs (crimson: `~/.pixi/x86_64/bin` has `pueue`),
+   the non-interactive one adds nothing, and `~/.config/mainboard/path.sh` is written for the center
+   only. Supported spellings: `ssh <host> 'bash -lc "pueue status"'`, the full path
+   (`~/.mb-jobs/.mainboard/envs/default/.pixi/envs/default/bin/pueue`), or `mainboard shell --on
+   <host>`. Putting the environment on every non-interactive PATH would shadow the system tools.
+4. **A job host keeps a staging lake, on purpose.** `Lake.at(root).ready()` in
+   `dispatch/provenance.py` (`archive`) creates `.mainboard/lake` and `lake.sqlite` the first time
+   a registered trial runs on a host: pedro-cvlab 10-07, crimson 10-08, gold 10-11 08:40. It is not
+   an artifact of a scratch run, and later real jobs write into it (gold's `events` at 11:23).
+   Nothing collects it; the evidence travels through the tree. Say so in `host setup`'s output
+   or `doctor`, so nobody deletes it.
+5. **An A/B scratch tree links into the live mirror.** Each of gold's `/tmp/ab-r2/{new,old,prime,
+   ps,final,split}` held `.mainboard` and `data` symlinks to `~/.mb-jobs`. `rm -rf` does not follow
+   them, `find -L`, `rsync -L` and `du -L` do. Whatever builds such trees should copy the compiled
+   artifact, not link the mirror's `.mainboard`.
+6. **Owed once the queue drains: `mainboard host sync pedro-cvlab`.** The 4090's mirror and
+   environment were left alone because the registered v26 program (jobs 677-709) was running.
+7. **crimson is still pending (2026-10-11 18:25).** Its restart and boot entry wait for a gap in
+   `/tmp/gate.lock`, but four more `flock -w` gates queue behind the one that holds it, a chain
+   with no gap in sight. The prepared steps, each guarded: the queue holds nothing running or
+   waiting and no gate holds the lock, `pueue shutdown`, the `runtime_directory` key, a cron-like
+   start under `env -i` (no `XDG_RUNTIME_DIR`), a second start proving idempotence, then the
+   `@reboot` line. Then `host sync crimson` and `job submit --on crimson -- true`. Gold's daemon
+   (item 2) was left alone too: a restart of it was refused as outside this task.
+
 ## Found in the cutok v26 r2 re-acquisition, 2026-10-11
 
 ### Mainboard
@@ -14,6 +81,10 @@ campaign first; move an entry to the bottom section once fixed and verified.
 2. **crimson's pueued runs from a deleted path, and `pueue` is not on a plain ssh PATH.** The
    daemon's working directory is the removed `~/projects` mirror; dispatch still works, but a
    restart from that path would fail and `ssh crimson pueue status` does not resolve the binary.
+   Diagnosed 2026-10-11: the daemon's cwd is `/home/crimson`; its binary is the deleted
+   `.mainboard.aside-r5/.../pueued`; the queue is empty (1935 done, nothing running or waiting).
+   The PATH half is by design (see the first section, items 2 and 3). Restart pending a gate-free
+   window (first section, item 7).
 3. **A job referenced by a module-name string ships without that module.** The serving profile
    launched `python -m experiments.serving_gh200.pressure`, which no static import reached, so the
    closure lacked it and the job failed on the host (fixed in the node, 1989cbb79, by importing
@@ -421,9 +492,11 @@ campaign first; move an entry to the bottom section once fixed and verified.
 
 15. **Dangling `~/.local/bin/pueue` → `~/mainboard-managed/...`** on pedro-cvlab and purple after the
     October 7 wipe; plumbum resolved it first and the 4090 submit failed with exit 127. Removed by
-    hand on both. `host setup` should detect and repair dangling tool links.
-16. pedro-cvlab's `pueued` runs from a deleted binary (`~/.mainboard-jobs.aside-r5/...`, up since
-    October 1). Restart it under the pixi-global pueue at a quiet moment.
+    hand on both (verified gone 2026-10-11, see "Fixed and verified"). Still open in code:
+    `host setup` should detect and repair dangling tool links.
+16. (fixed on the host, see "Fixed and verified": pedro-cvlab's daemon now runs from the live
+    pixi-global binary and a boot unit exists. gold's and crimson's are the same defect, first
+    section, item 2.)
 17. `macmini` is a declared host that does not resolve from the Mac mini itself, so `doctor` always
     warns about the fleet. Mark the center's own entry as such, or drop it.
 18. pedro-home still answers ssh and sits in `~/.ssh/config`, but left mainboard's hosts with the
@@ -467,4 +540,31 @@ campaign first; move an entry to the bottom section once fixed and verified.
 
 ## Fixed and verified
 
-(none yet)
+### 2026-10-11, hosts (no sudo anywhere; killed no process, touched no other user's)
+
+- **pedro-cvlab, pueued without boot persistence.** Added `~/.config/systemd/user/pueued.service`
+  (pixi-global `pueued` by full path, `ExecCondition` skipping it while a daemon answers), then
+  `systemctl --user daemon-reload` and `enable`, not started. Lingering was already on
+  (`loginctl show-user pedro -p Linger` read `Linger=yes` before any change). Evidence:
+  `systemd-analyze --user verify` exit 0; `is-enabled` reads `enabled`, `is-active` `inactive`;
+  the condition exits 1 while the daemon answers (the unit would skip) and 0 with
+  `XDG_RUNTIME_DIR=/nonexistent` (it would start); the running daemon, pid 12643 up since 15:37,
+  kept its pid and its running task through every step. A reboot will test the one thing not
+  shown: that the user manager starts the unit at boot and the queue it restores resumes.
+- **pedro-cvlab, items 15 and 16.** `~/.local/bin` holds no `pueue` link, and `command -v pueue`
+  resolves `~/.pixi/x86_64/bin/pueue`. The running daemon's exe is
+  `~/.pixi/x86_64/envs/pueue/bin/pueued`, not deleted, cwd `/home/pedro`. No switch is owed. Its
+  `/tmp/ab-r2` does not exist.
+- **gold, A/B leftovers.** `/tmp/ab-r2` (164 MB, six trees) deleted after unlinking the twelve
+  `.mainboard` and `data` symlinks into the live mirror (`find -type l -delete`, then none left,
+  then `rm -rf`); `~/.mb-jobs/.mainboard` and `data` listed intact afterwards. Nothing referenced
+  it: `grep -rl ab-r2` over `envs/`, `pins/`, `prefixes/`, `run/` and `dispatch/` found no file, and
+  `envs/default/state.toml` already read `compiled_at = /home/pedro/.mb-jobs` (`cutok` reads the
+  center path, as it does on pedro-cvlab: the shipped artifact). `ssh localhost "cd
+  ~/Developer/projects && mainboard proc timeout 2400 mainboard host sync gold"` took 24.5 s
+  (70 of 14774 paths, `installing default ... from the shipped lock`), re-shipped `envs/default/
+  pixi.toml` and `state.toml` at 17:55:21, and every `doctor` finding passed. `cd ~/.mb-jobs &&
+  ~/.local/bin/mainboard run python -c "print(6*7)"` printed 42, exit 0, in the mirror's environment.
+- **gold's lake is legitimate and was kept** (first section, item 4): a code path creates it
+  (`provenance.archive`), pedro-cvlab and crimson hold the same, and jobs of 09:48 and 11:23 wrote
+  into it after the A/B run.
