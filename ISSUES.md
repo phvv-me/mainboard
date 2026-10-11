@@ -4,6 +4,25 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found renting a vast RTX 4090 for the cutok version sweep, 2026-10-11 23:30
+
+1. **`host hold vast --env cutok` fails on every fresh machine: `ModuleNotFoundError: sqlalchemy`.**
+   Two tries (a Threadripper PRO 3975WX / RTX 4090 landed first, then another), both at the step
+   "installing cutok in <alias>'s mirror from the shipped lock", which ran `mainboard install cutok
+   --profile <alias>` on the host and died with `ModuleNotFoundError: sqlalchemy`; the hold then
+   released the rental correctly (credit 83.1451 to 83.1274, about $0.02 for the two). The tool is
+   installed from the mirror's `packages/mainboard`, whose dependencies now include
+   `sqlalchemy>=2.1.3` and `duckdb-sqlalchemy` (the lake layer), so a machine that never had the
+   tool before is the first to meet them; gold, pedro-cvlab and crimson were set up earlier and
+   nothing reinstalled their tool. Most likely the same fault as item 1 of "Found setting up
+   pedro-home-wsl" below (a machine with no CPython gets 3.15, for which a dependency has no wheel);
+   `hold` gives no way to pre-install the tool onto 3.14 as that workaround did. Cost: no rented
+   machine can be onboarded, so the card-versus-host
+   arm of a diagnosis (a 4090 on a non-Intel host) cannot run. Not investigated further: the
+   provider's sshd log is all `job logs` returns for the hold. Check first whether the host's
+   `uv tool install --editable` resolves the workspace fork (`packages/sqlalchemy`) or PyPI's
+   sqlalchemy, and whether `host setup` of a new SSH host hits the same.
+
 ## Found fixing the fleet's host issues, 2026-10-11
 
 Owner rule (17:55): hosts keep their daemons alive without sudo. No `loginctl enable-linger`, no
@@ -141,6 +160,18 @@ root unit files, no `/etc` edits.
    - Fix: the fixture that kills a server should remove its segments (`ipcrm` for the
      postmaster's key) or stop the server with a fast shutdown, so the gate never depends on a
      global, sudo-only limit.
+   FIXED on refactor/mb-integration (ci36, merged 8910fb3): a killed test postmaster marks its
+   own segment for deletion first. The isolated suite left 0 segments.
+10. **Nothing stops a registered acquisition on a degraded host link.** From 07:50 UTC on 10-11,
+    pedro-cvlab's RTX 4090 and its root port sat at PCIe gen 1 (2.5 GT/s) under load. Pinned
+    32 MB copies fell from 18.4 to about 1.9 GB/s, and 19 registered timing jobs ran to "ok" on it.
+    Admission checks only utilization and other processes; the facts are probed at setup.
+    - Proposed: before timing, the acquisition fixture runs one pinned copy of the cell's size.
+      It reads the trained link (sysfs `current_link_speed` or NVML during the copy) and refuses
+      below a fraction of what the slot and card both support, recording the reading in the
+      receipt.
+    - The refactor's PCIe facts (refactor/mb-pcie) already compute the ceiling and the 80%
+      finding, so the gate reuses them.
 
 ## Found setting up pedro-home-wsl, 2026-10-11
 
