@@ -34,7 +34,8 @@ class LegacyRuntime(FrozenModel):
         prefix = where / "interpreter"
         venv.EnvBuilder(system_site_packages=True, with_pip=False).create(prefix)
         runtime = cls(
-            root=root, interpreter=prefix / "bin/python",
+            root=root,
+            interpreter=prefix / "bin/python",
             archive_sha256=hashlib.sha256(archive).hexdigest(),
         )
         proof = runtime.run("import mainboard; print(mainboard.__file__)")
@@ -45,8 +46,14 @@ class LegacyRuntime(FrozenModel):
         """Run `program` with the legacy sources as the only import root, not the new tree's."""
         environment = {**os.environ, "PYTHONPATH": str(self.root / "src")}
         return subprocess.run(
-            [str(self.interpreter), "-c", program], cwd=self.root, env=environment,
-            capture_output=True, text=True, encoding="utf-8", timeout=30, check=True,
+            [str(self.interpreter), "-c", program],
+            cwd=self.root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=True,
         )
 
     @staticmethod
@@ -54,6 +61,8 @@ class LegacyRuntime(FrozenModel):
         """The immutable git archive of the legacy revision."""
         tree = Path(__file__).resolve().parents[1]
         return subprocess.run(
-            ["git", "-C", str(tree), "archive", _REVISION], capture_output=True, timeout=30,
+            ["git", "-C", str(tree), "archive", _REVISION],
+            capture_output=True,
+            timeout=30,
             check=True,
         ).stdout

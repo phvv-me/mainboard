@@ -52,9 +52,22 @@ def test_the_installed_hook_runs_first() -> None:
 def test_a_real_ssh_cannot_connect() -> None:
     """The kernel refuses before a packet leaves, to a reserved address no host answers at."""
     done = subprocess.run(
-        ["ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
-         "192.0.2.1", "true"],
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=False,
+        [
+            "ssh",
+            "-F",
+            "/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "192.0.2.1",
+            "true",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
     )
     assert done.returncode == 255
     assert "Operation not permitted" in done.stderr or "Network is unreachable" in done.stderr
@@ -66,7 +79,11 @@ def test_a_subprocess_mb_runs_the_worktrees_source() -> None:
     interpreter = script.read_text(encoding="utf-8").splitlines()[0].removeprefix("#!")
     done = subprocess.run(
         [interpreter, "-c", "import mainboard.cli as cli; print(cli.__file__)"],
-        capture_output=True, text=True, encoding="utf-8", timeout=60, check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
     )
     source = Path(mainboard.__file__).resolve().with_name("cli.py")
     assert Path(done.stdout.strip()).resolve() == source
@@ -82,11 +99,22 @@ def test_the_legacy_runtime_imports_only_its_own_archive(legacy_runtime) -> None
 def test_postgres_is_a_temporary_catalog(postgres: str) -> None:
     psql = Path(sysconfig.get_path("scripts")) / "psql"
     done = subprocess.run(
-        [str(psql), postgres, "-XAt", "-v", "ON_ERROR_STOP=1", "-c",
-         "CREATE SCHEMA gate; CREATE TABLE gate.proof (id integer PRIMARY KEY); "
-         "INSERT INTO gate.proof VALUES (1); SELECT count(*) FROM gate.proof; "
-         "SHOW data_directory; SHOW listen_addresses;"],
-        check=True, capture_output=True, text=True, encoding="utf-8", timeout=20,
+        [
+            str(psql),
+            postgres,
+            "-XAt",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "CREATE SCHEMA gate; CREATE TABLE gate.proof (id integer PRIMARY KEY); "
+            "INSERT INTO gate.proof VALUES (1); SELECT count(*) FROM gate.proof; "
+            "SHOW data_directory; SHOW listen_addresses;",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
     )
     assert "\n1\n" in done.stdout
     assert os.environ["MB_GATE_ROOT"] in done.stdout

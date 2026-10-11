@@ -45,23 +45,39 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     baseline = json.loads(
         (Path(__file__).parent / "gates/baseline.json").read_text(encoding="utf-8")
     )
-    known_skips = {case["nodeid"] for case in baseline["cases"]
-                   if case["classification"] in {"skipped", "excluded"}}
-    known_skips.update({
-        "integration/test_lake.py::test_a_second_workspace_reads_and_writes_the_served_lake",
-        "integration/test_lake.py::test_a_served_lake_refuses_maintenance_and_strangers",
-        "integration/gates/test_harness.py::test_postgres_is_a_temporary_catalog",
-    })
-    unexpected = [node for node, report in _OUTCOMES.items()
-                  if report["outcome"] == "skipped" and node not in known_skips]
+    known_skips = {
+        case["nodeid"]
+        for case in baseline["cases"]
+        if case["classification"] in {"skipped", "excluded"}
+    }
+    known_skips.update(
+        {
+            "integration/test_lake.py::test_a_second_workspace_reads_and_writes_the_served_lake",
+            "integration/test_lake.py::test_a_served_lake_refuses_maintenance_and_strangers",
+            "integration/gates/test_harness.py::test_postgres_is_a_temporary_catalog",
+        }
+    )
+    unexpected = [
+        node
+        for node, report in _OUTCOMES.items()
+        if report["outcome"] == "skipped" and node not in known_skips
+    ]
     failed = any(report["outcome"] == "failed" for report in _OUTCOMES.values())
     if unexpected or failed:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
     destination = Path(os.environ["MB_GATE_REPORT"]) / "outcomes.json"
-    destination.write_text(json.dumps({
-        "cases": _OUTCOMES, "unexpected_skips": unexpected,
-        "not_run": sorted({item.nodeid for item in session.items} - _OUTCOMES.keys()),
-    }, indent=2) + "\n", encoding="utf-8")
+    destination.write_text(
+        json.dumps(
+            {
+                "cases": _OUTCOMES,
+                "unexpected_skips": unexpected,
+                "not_run": sorted({item.nodeid for item in session.items} - _OUTCOMES.keys()),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -105,8 +121,12 @@ def _own_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _pg(name: str, *args: str) -> subprocess.CompletedProcess[str]:
     """Run the environment's PostgreSQL program `name`, never a system one."""
     return subprocess.run(
-        [str(_SCRIPTS / name), *args], capture_output=True, text=True, encoding="utf-8",
-        timeout=30, check=True,
+        [str(_SCRIPTS / name), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=True,
     )
 
 
@@ -118,8 +138,11 @@ def _stop(data: Path) -> None:
 @pytest.fixture
 def postgres(tmp_path: Path, request: pytest.FixtureRequest) -> str:
     """A new catalog on a private Unix socket; never use a system PostgreSQL or TCP port."""
-    missing = [name for name in ("postgres", "initdb", "pg_ctl", "psql")
-               if not (_SCRIPTS / name).is_file()]
+    missing = [
+        name
+        for name in ("postgres", "initdb", "pg_ctl", "psql")
+        if not (_SCRIPTS / name).is_file()
+    ]
     if missing:
         pytest.skip(f"M00-POSTGRES: conda-forge postgresql missing from environment: {missing}")
     data, sockets = tmp_path / "pgdata", tmp_path / "socket"
@@ -128,8 +151,10 @@ def postgres(tmp_path: Path, request: pytest.FixtureRequest) -> str:
     # unix_socket_permissions keeps even temporary trust auth private to this user.
     escaped = str(sockets).replace("'", "''")
     with (data / "postgresql.conf").open("a", encoding="utf-8") as config:
-        config.write(f"\nlisten_addresses = ''\nunix_socket_directories = '{escaped}'\n"
-                     "unix_socket_permissions = 0700\n")
+        config.write(
+            f"\nlisten_addresses = ''\nunix_socket_directories = '{escaped}'\n"
+            "unix_socket_permissions = 0700\n"
+        )
     request.addfinalizer(lambda: _stop(data))
     _pg("pg_ctl", "-D", str(data), "-l", str(tmp_path / "postgres.log"), "-w", "-t", "20", "start")
     return f"host={sockets} dbname=postgres user=gate"
@@ -199,7 +224,8 @@ def _in_process(workspace: Path) -> Callable[..., Ran]:
         assert env is None, "the inspect lane cannot set a child's environment"
         out, err = io.StringIO(), io.StringIO()
         with (
-            contextlib.chdir(cwd or workspace), contextlib.redirect_stdout(out),
+            contextlib.chdir(cwd or workspace),
+            contextlib.redirect_stdout(out),
             contextlib.redirect_stderr(err),
         ):
             try:

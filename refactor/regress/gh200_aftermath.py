@@ -34,9 +34,19 @@ TEMPLATES = {
     "decomposed": "Café, déjà vu, Å, ñ, ạ́, 한글. ",
 }
 ROW = {
-    "corpus": "ascii", "target_bytes": 65536, "engine": "cutok", "call": 0, "repetition": 0,
-    "accepted": True, "input_bytes": 65120, "documents": 73, "corpus_digest": "0" * 64,
-    "seconds": 0.001, "mb_per_second": 60.0, "boundary": "device_ready_utf8", "workers": 72,
+    "corpus": "ascii",
+    "target_bytes": 65536,
+    "engine": "cutok",
+    "call": 0,
+    "repetition": 0,
+    "accepted": True,
+    "input_bytes": 65120,
+    "documents": 73,
+    "corpus_digest": "0" * 64,
+    "seconds": 0.001,
+    "mb_per_second": 60.0,
+    "boundary": "device_ready_utf8",
+    "workers": 72,
 }
 
 
@@ -121,7 +131,7 @@ _SHARED = None
 
 
 def patched_row() -> None:
-    """The proposed `Log.table` body: one process-wide database, the row's table dropped after its bytes."""
+    """The proposed `Log.table` body: one process-wide database, each row's table dropped after."""
     global _SHARED
     from mainboard.state.relations import Relations, parquet_bytes
 
@@ -168,15 +178,21 @@ def main() -> None:
     workspace = Workspace(cp)
     document = TEMPLATES[args.template] * 16
     texts = [document] * max(1, args.size // len(document.encode()))
-    expected = np.frombuffer("".join(unicodedata.normalize("NFC", t) for t in texts).encode(), np.uint8)
+    expected = np.frombuffer(
+        "".join(unicodedata.normalize("NFC", t) for t in texts).encode(), np.uint8
+    )
 
     def call() -> float:
         cp.cuda.runtime.deviceSynchronize()
         started = perf_counter()
         raw, offsets = HostBatch.from_documents(texts).direct()
-        output = stage.stage(Chunks.whole(cp.asarray(raw), cp.asarray(offsets), arrays=cp), workspace=workspace)
+        output = stage.stage(
+            Chunks.whole(cp.asarray(raw), cp.asarray(offsets), arrays=cp), workspace=workspace
+        )
         spans = output.spans
-        output = output.rewritten(spans.text.bytes.copy(), starts=spans.starts.copy(), ends=spans.ends.copy())
+        output = output.rewritten(
+            spans.text.bytes.copy(), starts=spans.starts.copy(), ends=spans.ends.copy()
+        )
         cp.cuda.runtime.deviceSynchronize()
         seconds = perf_counter() - started
         assert np.array_equal(cp.asnumpy(output.spans.text.bytes), expected)
@@ -198,19 +214,30 @@ def main() -> None:
             gap_ms = (perf_counter() - gap_started) * 1e3
             threads = psutil.Process().num_threads()
             rows.append(
-                {"block": block, "gap": kind, "gap_ms": gap_ms, "ms": call(), "threads": threads,
-                 "omp_wait_policy": os.environ.get("OMP_WAIT_POLICY", ""), "host": os.uname().nodename}
+                {
+                    "block": block,
+                    "gap": kind,
+                    "gap_ms": gap_ms,
+                    "ms": call(),
+                    "threads": threads,
+                    "omp_wait_policy": os.environ.get("OMP_WAIT_POLICY", ""),
+                    "host": os.uname().nodename,
+                }
             )
-    with open(args.out, "a") as handle:
+    with open(args.out, "a", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row) + "\n")
     import statistics as st
 
-    print(f"{'gap':12} {'n':>4} {'median ms':>10} {'p10':>8} {'p90':>8} {'gap ms':>8}  (omp {os.environ.get('OMP_WAIT_POLICY', 'unset')}, {os.uname().nodename})")
+    omp = os.environ.get("OMP_WAIT_POLICY", "unset")
+    head = f"{'gap':12} {'n':>4} {'median ms':>10} {'p10':>8} {'p90':>8} {'gap ms':>8}"
+    print(f"{head}  (omp {omp}, {os.uname().nodename})")
     for kind in GAPS:
         values = sorted(r["ms"] for r in rows if r["gap"] == kind)
         gaps = [r["gap_ms"] for r in rows if r["gap"] == kind]
-        print(f"{kind:12} {len(values):4d} {st.median(values):10.3f} {values[len(values) // 10]:8.3f} {values[-len(values) // 10 - 1]:8.3f} {st.median(gaps):8.1f}")
+        low, high = values[len(values) // 10], values[-len(values) // 10 - 1]
+        middle, gap = st.median(values), st.median(gaps)
+        print(f"{kind:12} {len(values):4d} {middle:10.3f} {low:8.3f} {high:8.3f} {gap:8.1f}")
 
 
 if __name__ == "__main__":

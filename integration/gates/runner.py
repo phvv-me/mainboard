@@ -23,9 +23,15 @@ _RESERVE = 30
 _TOOLS = ["pytest", "ruff", "pyrefly", "ty", "mypy", "mcmr"]
 _INHERITED = ["PATH", "LANG", "SYSTEMROOT", "DYLD_FALLBACK_LIBRARY_PATH"]
 _HOMES = {
-    "HOME": "home", "TMPDIR": "tmp", "XDG_CACHE_HOME": "cache", "XDG_CONFIG_HOME": "config",
-    "XDG_DATA_HOME": "data", "PIXI_CACHE_DIR": "cache/pixi", "UV_CACHE_DIR": "cache/uv",
-    "MPLCONFIGDIR": "cache/matplotlib", "MYPY_CACHE_DIR": "cache/mypy",
+    "HOME": "home",
+    "TMPDIR": "tmp",
+    "XDG_CACHE_HOME": "cache",
+    "XDG_CONFIG_HOME": "config",
+    "XDG_DATA_HOME": "data",
+    "PIXI_CACHE_DIR": "cache/pixi",
+    "UV_CACHE_DIR": "cache/uv",
+    "MPLCONFIGDIR": "cache/matplotlib",
+    "MYPY_CACHE_DIR": "cache/mypy",
 }
 _POSTGRES = ["postgres", "pg_ctl", "initdb", "psql"]
 # What the inspect lane runs in this process, where every child process is refused.
@@ -53,8 +59,10 @@ class Gate:
         )
         versions = {name: importlib.metadata.version(name) for name in _TOOLS}
         self.result = {
-            "import": mainboard.__file__, "python": sys.executable,
-            "temporary_root": str(self.root), "budget_seconds": self.budget + _RESERVE,
+            "import": mainboard.__file__,
+            "python": sys.executable,
+            "temporary_root": str(self.root),
+            "budget_seconds": self.budget + _RESERVE,
             "versions": versions,
         }
         self._verify(versions)
@@ -92,15 +100,23 @@ class Gate:
         original = {case["nodeid"] for case in self.baseline["cases"]}
         assert original <= collected, f"unaccounted baseline cases: {sorted(original - collected)}"
         return {
-            "historical_counts": self.baseline["counts"], "original_collected": len(original),
-            "new_collected": len(collected - original), "collected": sorted(collected),
+            "historical_counts": self.baseline["counts"],
+            "original_collected": len(original),
+            "new_collected": len(collected - original),
+            "collected": sorted(collected),
             "execution": "collection only; historical outcomes are not fresh gate passes",
         }
 
     def _arguments(self) -> list[str]:
         return [
-            "-c", str(self.tree / "pyproject.toml"), "-p", "no:randomly", "-p", "no:cacheprovider",
-            "--basetemp", str(self.root / "pytest"),
+            "-c",
+            str(self.tree / "pyproject.toml"),
+            "-p",
+            "no:randomly",
+            "-p",
+            "no:cacheprovider",
+            "--basetemp",
+            str(self.root / "pytest"),
         ]
 
     def _bubblewrap(self, bwrap: str, command: list[str]) -> list[str]:
@@ -113,10 +129,29 @@ class Gate:
             part for mount in sorted(mounts) for part in ("--ro-bind", str(mount), str(mount))
         ]
         return [
-            bwrap, "--die-with-parent", "--new-session", "--unshare-net", "--unshare-pid",
-            "--tmpfs", "/", *bindings, "--tmpfs", "/tmp", "--tmpfs", "/run",
-            "--dev", "/dev", "--proc", "/proc", "--bind", str(self.root), str(self.root),
-            "--bind", str(self.report), str(self.report), *command,
+            bwrap,
+            "--die-with-parent",
+            "--new-session",
+            "--unshare-net",
+            "--unshare-pid",
+            "--tmpfs",
+            "/",
+            *bindings,
+            "--tmpfs",
+            "/tmp",
+            "--tmpfs",
+            "/run",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--bind",
+            str(self.root),
+            str(self.root),
+            "--bind",
+            str(self.report),
+            str(self.report),
+            *command,
         ]
 
     def _checker(self, mode: str) -> list[str]:
@@ -124,17 +159,62 @@ class Gate:
         config = str(self.tree / "pyproject.toml")
         findings = self.report / "mcmr-findings.json"
         return {
-            "ruff": ["ruff", "check", "--config", config, "--no-cache", "--output-format",
-                     "json", "src", "integration"],
-            "pyrefly": ["pyrefly", "check", "--config", config, "--min-severity", "warn",
-                        "--output-format", "json"],
-            "ty": ["ty", "check", "--project", str(self.tree), "--python", sys.executable,
-                   "--output-format", "concise", "src"],
-            "mypy": ["mypy", "--config-file", config, "--no-incremental",
-                     "--show-error-codes", "--no-color-output", "src"],
-            "mcmr": ["mcmr", "check", str(self.tree), "--deterministic", "--no-contextual",
-                     "--no-external", "--no-writeback", "--repair", "none", "--format",
-                     "concise", "--output", str(findings)],
+            "ruff": [
+                "ruff",
+                "check",
+                "--config",
+                config,
+                "--no-cache",
+                "--output-format",
+                "json",
+                "src",
+                "integration",
+            ],
+            "pyrefly": [
+                "pyrefly",
+                "check",
+                "--config",
+                config,
+                "--min-severity",
+                "warn",
+                "--output-format",
+                "json",
+            ],
+            "ty": [
+                "ty",
+                "check",
+                "--project",
+                str(self.tree),
+                "--python",
+                sys.executable,
+                "--output-format",
+                "concise",
+                "src",
+            ],
+            "mypy": [
+                "mypy",
+                "--config-file",
+                config,
+                "--no-incremental",
+                "--show-error-codes",
+                "--no-color-output",
+                "src",
+            ],
+            "mcmr": [
+                "mcmr",
+                "check",
+                str(self.tree),
+                "--deterministic",
+                "--no-contextual",
+                "--no-external",
+                "--no-writeback",
+                "--repair",
+                "none",
+                "--format",
+                "concise",
+                "--output",
+                str(findings),
+            ],
         }[mode]
 
     def _collect(self) -> tuple[int, str]:
@@ -153,27 +233,34 @@ class Gate:
             environment[key] = str(self.root / child)
         environment.update(
             PYTHONPATH=f"{self.tree / 'src'}:{self.tree / 'integration/gates/worker'}",
-            PYTHONDONTWRITEBYTECODE="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", NO_COLOR="1",
-            MB_GATE_ROOT=str(self.root), MB_GATE_REPORT=str(self.report),
-            MB_GATE_WORKTREE=str(self.tree), MB_GATE_OS=sys.platform,
+            PYTHONDONTWRITEBYTECODE="1",
+            PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
+            NO_COLOR="1",
+            MB_GATE_ROOT=str(self.root),
+            MB_GATE_REPORT=str(self.report),
+            MB_GATE_WORKTREE=str(self.tree),
+            MB_GATE_OS=sys.platform,
             MB_GATE_PROJECTS=os.environ["MB_GATE_PROJECTS"],
         )
         return environment
 
-    def _execute(
-        self, name: str, command: list[str], limit: int, *, isolated: bool = True
-    ) -> int:
+    def _execute(self, name: str, command: list[str], limit: int, *, isolated: bool = True) -> int:
         """Run `command` in its own process group, ended whole once `limit` seconds pass."""
         started = time.monotonic()
         with (self.report / f"{name}.log").open("w", encoding="utf-8") as output:
             child = subprocess.Popen(
-                self._sandbox(command) if isolated else command, cwd=self.tree,
-                env=self._environment(), stdout=output, stderr=subprocess.STDOUT,
+                self._sandbox(command) if isolated else command,
+                cwd=self.tree,
+                env=self._environment(),
+                stdout=output,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
             code = self._wait(child, limit)
         self.result[name] = {
-            "argv": command, "limit_seconds": limit, "exit_code": code,
+            "argv": command,
+            "limit_seconds": limit,
+            "exit_code": code,
             "seconds": round(time.monotonic() - started, 3),
         }
         return code
@@ -188,7 +275,8 @@ class Gate:
         witnesses = pytest.main([*self._arguments(), *(str(self.tree / n) for n in _WITNESSES)])
         binaries = Path(sys.executable).parent
         self.result.update(
-            collection_exit=code, baseline_accounting=self._accounting(listing),
+            collection_exit=code,
+            baseline_accounting=self._accounting(listing),
             witnesses={"nodes": _WITNESSES, "exit_code": int(witnesses)},
             postgres={"missing": [n for n in _POSTGRES if not (binaries / n).is_file()]},
         )
@@ -208,8 +296,12 @@ class Gate:
             return 78
         self._seed_extensions()
         command = [
-            sys.executable, "-m", "pytest", *self._arguments(),
-            "--junitxml", str(self.report / f"{mode}.xml"),
+            sys.executable,
+            "-m",
+            "pytest",
+            *self._arguments(),
+            "--junitxml",
+            str(self.report / f"{mode}.xml"),
             *(selection or [str(self.tree / "integration")]),
         ]
         return self._execute(mode, command, self.budget)

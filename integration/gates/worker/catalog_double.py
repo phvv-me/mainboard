@@ -12,8 +12,13 @@ import gpuhunt
 
 _CALLS = Path(os.environ["MB_GATE_CATALOG"])
 _OFFER = SimpleNamespace(
-    provider="vastai", gpu_name="RTX4090", gpu_count=1, price=0.5,
-    spot=False, location="fixture", instance_name="offline-4090",
+    provider="vastai",
+    gpu_name="RTX4090",
+    gpu_count=1,
+    price=0.5,
+    spot=False,
+    location="fixture",
+    instance_name="offline-4090",
 )
 
 
