@@ -15,7 +15,16 @@ from mainboard.probe.reverse.parsers import (
 from mainboard.probe.reverse.providers import Request, ReverseProvider
 from mainboard.probe.reverse.runner import ToolOutput
 
-from .reverse_fixtures import ELF, NVDISASM, PTX, RESOURCE, SASS, SASS_REAL, FixtureRunner, artifact
+from .reverse_fixtures import (
+    ELF,
+    NVDISASM,
+    PTX,
+    RESOURCE,
+    SASS,
+    SASS_REAL,
+    FixtureRunner,
+    artifact,
+)
 
 
 def test_listed_images_are_architecture_coverage_not_kernel_names() -> None:
