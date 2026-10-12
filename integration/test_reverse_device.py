@@ -15,7 +15,7 @@ from mainboard.probe.reverse.parsers import (
 from mainboard.probe.reverse.providers import Request, ReverseProvider
 from mainboard.probe.reverse.runner import ToolOutput
 
-from .reverse_fixtures import ELF, NVDISASM, PTX, RESOURCE, SASS, FixtureRunner, artifact
+from .reverse_fixtures import ELF, NVDISASM, PTX, RESOURCE, SASS, SASS_REAL, FixtureRunner, artifact
 
 
 def test_listed_images_are_architecture_coverage_not_kernel_names() -> None:
@@ -46,6 +46,17 @@ def test_resources_keep_observed_zero_distinct_from_unknown() -> None:
     missing = parse_resources("arch = sm_90\nFunction missing:\nREG:16\n")
     assert missing.result.kernels[0].shared_bytes.value is None
     assert missing.coverage == Coverage.partial and missing.unresolved
+
+
+def test_real_fatbin_preamble_lines_are_metadata_not_unknowns() -> None:
+    parsed = parse_sass(SASS_REAL)
+    assert parsed.coverage is Coverage.complete
+    assert parsed.unresolved == ()
+    assert [listing.kernel for listing in parsed.result.listings] == ["_Z6kernelPi"]
+    only = parsed.result.listings[0]
+    assert only.arch == "sm_90a"
+    assert [insn.opcode for insn in only.instructions] == ["MOV", "EXIT", "BRA"]
+    assert parsed.result.branches.unresolved == 0
 
 
 @pytest.mark.parametrize("text", [SASS, NVDISASM])

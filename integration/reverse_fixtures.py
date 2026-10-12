@@ -46,6 +46,48 @@ compile_size = 64bit
         /*0010*/              @!P0 BRX R2 -0x10 ;         /* 0x0000000002007950 */
         /*0020*/                   EXIT ;                /* 0x000000000000794d */
 """
+# A real `cuobjdump --dump-sass` fatbin dump: an empty compressed section, then a populated one,
+# carrying the per-image headers a live toolkit prints (`compressed`, a `ptxasOptions` line, the
+# tab-indented `code for`/`.target` directives) and the trailing progress dots. None is an
+# instruction; a regression that stops treating them as metadata resurfaces them as false unknowns.
+SASS_REAL = "\n".join(
+    [
+        "",
+        "Fatbin elf code:",
+        "================",
+        "arch = sm_75",
+        "code version = [1,8]",
+        "host = linux",
+        "compile_size = 64bit",
+        "compressed",
+        "",
+        "\tcode for sm_75",
+        "\t.target\tsm_75",
+        "",
+        "",
+        "Fatbin elf code:",
+        "================",
+        "arch = sm_90a",
+        "code version = [1,8]",
+        "host = linux",
+        "compile_size = 64bit",
+        "compressed",
+        "ptxasOptions = --allow-expensive-optimizations=true",
+        "",
+        "\tcode for sm_90a",
+        "\t.target\tsm_90a",
+        "\t\tFunction : _Z6kernelPi",
+        '.headerflags\t@"EF_CUDA_SM90 EF_CUDA_VIRTUAL_SM(EF_CUDA_SM90)"',
+        "        /*0000*/                   MOV R1, c[0x0][0x28] ;  /* 0x00000a0000017a02 */",
+        "                                                          /* 0x000fc60000000f00 */",
+        "        /*0010*/                   EXIT ;                  /* 0x000000000000794d */",
+        "                                                          /* 0x000fea0003800000 */",
+        "        /*0020*/                   BRA 0x20 ;              /* 0xfffffff000007947 */",
+        "                                                          /* 0x000fc0000383ffff */",
+        "\t\t..........",
+        "",
+    ]
+)
 NVDISASM = """.headerflags @\"EF_CUDA_TEXMODE_UNIFIED EF_CUDA_64BIT_ADDRESS EF_CUDA_SM90\"
 .elftype @\"ET_EXEC\"
 .section .text._Z6kernelPi,\"ax\",@progbits

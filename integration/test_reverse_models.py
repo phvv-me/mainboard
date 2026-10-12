@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
@@ -21,21 +21,24 @@ from mainboard.probe.reverse.models import (
 
 from .reverse_fixtures import evidence
 
+# Keys and strings stay short and recursion shallow: the property is about canonical encoding,
+# not volume, and an unbounded recursive strategy trips Hypothesis's input-entropy health check.
+_TEXT = st.text(max_size=16)
 _JSON = st.recursive(
     st.none()
     | st.booleans()
     | st.integers()
     | st.floats(allow_nan=False, allow_infinity=False)
-    | st.text(),
+    | _TEXT,
     lambda children: (
-        st.lists(children, max_size=5) | st.dictionaries(st.text(), children, max_size=5)
+        st.lists(children, max_size=3) | st.dictionaries(_TEXT, children, max_size=3)
     ),
-    max_leaves=15,
+    max_leaves=6,
 )
 
 
-@settings(database=None)
-@given(st.dictionaries(st.text(), _JSON, max_size=8))
+@settings(database=None, suppress_health_check=[HealthCheck.too_slow])
+@given(st.dictionaries(_TEXT, _JSON, max_size=4))
 def test_evidence_roundtrip_and_independent_cache_address(params: dict[str, JsonValue]) -> None:
     original = evidence(params)
     restored = Evidence[KernelInventory].model_validate_json(original.model_dump_json())
@@ -110,8 +113,8 @@ def test_inventory_diff_reports_exact_metadata_changes() -> None:
     assert max(Provenance.IMPORTED, Provenance.ANALYSIS) == Provenance.ANALYSIS
 
 
-@settings(database=None)
-@given(st.sets(st.text(min_size=1), max_size=15))
+@settings(database=None, suppress_health_check=[HealthCheck.too_slow])
+@given(st.sets(st.text(min_size=1, max_size=16), max_size=15))
 def test_inventory_diff_is_independent_of_order(names: set[str]) -> None:
     kernels = tuple(Kernel(name=name, arch="sm_90") for name in sorted(names))
     before = KernelInventory(kernels=kernels, arches=("sm_90",))

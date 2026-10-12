@@ -32,13 +32,23 @@ _RESOURCE_TOKEN = re.compile(
     r"\b(?:REG|SHARED|STACK|LOCAL|GLOBAL|CONSTANT\[\d+\]|TEXTURE|SURFACE|SAMPLER):\s*\d+(?=\s|$)"
 )
 _CUT = re.compile(r"\btruncated\b|\[\.\.\.\]|^\s*\.\.\.\s*$", re.IGNORECASE | re.MULTILINE)
+# cuobjdump prints a run of progress dots per image; four or more never spells the three-dot
+# truncation ellipsis `_CUT` watches for, so this stays noise rather than a missing-content signal.
+_PROGRESS = re.compile(r"\.{4,}")
 _METADATA = (
     "Fatbin ",
     "arch =",
     "code version",
     "host =",
     "compile_size",
+    "compressed",
     "identifier",
+    # Per-architecture fatbin section headers a real cuobjdump --dump-sass prints before each
+    # image: `code for sm_90`, a ptxas `.target` line, and the `ptxasOptions = ...` the image
+    # was built with. They carry no instruction, and the arch already arrives via `arch =`.
+    "code for",
+    ".target",
+    "ptxasOptions",
     ".headerflags",
     ".elftype",
     ".sectioninfo",
@@ -86,6 +96,7 @@ def _metadata(line: str) -> bool:
         not line
         or line.startswith(_METADATA)
         or set(line) <= {"=", "-", " "}
+        or bool(_PROGRESS.fullmatch(line))
         or bool(_ENCODING.fullmatch(line))
     )
 
