@@ -931,7 +931,7 @@ search = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "mainboard", extra = ["plot"] },
+    { name = "mainboard", extra = ["adversarial", "plot"] },
     { name = "mypy" },
     { name = "pyrefly" },
     { name = "pytest" },
@@ -974,7 +974,7 @@ provides-extras = ["adversarial", "search", "cuda", "modal", "plot"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mainboard", extras = ["plot"] },
+    { name = "mainboard", extras = ["plot", "adversarial"] },
     { name = "mypy", specifier = ">=1.11" },
     { name = "pyrefly", specifier = ">=1" },
     { name = "pytest", specifier = ">=8.0" },

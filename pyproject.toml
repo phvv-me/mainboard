@@ -98,7 +98,7 @@ mainboard = "mainboard.cli:main"
 dev = [
     # The plotting layer is an extra for consumers but part of the source both type checkers
     # read, so the gate installs it the way a plotting workspace would.
-    "mainboard[plot]",
+    "mainboard[plot,adversarial]",
     "mypy>=1.11",
     "pyrefly>=1",
     "pytest>=8.0",
