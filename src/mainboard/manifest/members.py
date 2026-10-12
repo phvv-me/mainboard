@@ -393,6 +393,13 @@ class Composition:
             return env
         sourced = self._sourced(env)
         chain = _python(sourced).model_dump(mode="python", round_trip=True)
+        # The validated toolchain dump drops the env's own pypi-options (dependency-overrides,
+        # index urls) when its `[python]` table carries no `deps`/`dev`, so carry them from the raw
+        # table: a lean env's own override must survive composition, not only the member pins.
+        own = (sourced.model_extra or {}).get(_PYTHON, {})
+        for key, value in (own if isinstance(own, dict) else {}).items():
+            if key not in ("deps", "dev"):
+                chain.setdefault(key, value)
         # The extras the top level unions are what `default` asks; a lean environment asks only
         # through its own requirements, so it pins each member's directory alone.
         bare = {

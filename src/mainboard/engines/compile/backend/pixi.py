@@ -240,9 +240,15 @@ class Pixi(Tool):
         return Process.output(command, "pixi shell-hook")
 
     def update(self, env: str, names: Sequence[str] = ()) -> None:
-        """Move `env`'s lock to the newest releases the manifest allows, `names` alone when given,
-        installing nothing: the caller installs once the lock is committed."""
-        if self.within_cwd(Process.stream, "update", "--no-install", "-e", env, *names).returncode:
+        """Move `env`'s lock to the newest releases the manifest allows, `names` alone when given.
+
+        Install nothing when the lock carries no editable source; with one, pixi must build the
+        environment to read that source's metadata, so `--no-install` fails the solve
+        ("installation of conda environment is required to solve PyPI source dependencies") and is
+        dropped, exactly as `environment_result` installs such a lock `--frozen`.
+        """
+        flags = () if self._has_editable_paths() else ("--no-install",)
+        if self.within_cwd(Process.stream, "update", *flags, "-e", env, *names).returncode:
             raise MissionError("`pixi update` failed (see its output above)")
 
     @staticmethod

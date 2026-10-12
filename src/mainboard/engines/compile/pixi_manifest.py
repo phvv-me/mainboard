@@ -293,9 +293,14 @@ def dependency_tables(scope: Scope, *, over: Scope | None = None) -> dict[str, T
 
 
 def pypi_options(scope: Scope) -> dict[str, Toml]:
-    """Forward the pixi-defined `[python]` extras (untyped, never lagging uv) as pypi-options."""
-    python: Toolchain | None = scope.toolchains().get("python")
-    declared = (python.model_extra or {}) if python else {}
+    """Forward the pixi-defined `[python]` extras (untyped, never lagging uv) as pypi-options.
+
+    Read the raw `[python]` table rather than a validated toolchain, so an environment declaring
+    only options (a `dependency-overrides` with no `deps`/`dev`, say) still carries them:
+    `toolchains()` surfaces a `[python]` table only when it has a `deps` or `dev` key.
+    """
+    python = (scope.model_extra or {}).get("python")
+    declared = python if isinstance(python, dict) else {}
     return {key: declared[key] for key in _PYPI_OPTION_KEYS if key in declared}
 
 

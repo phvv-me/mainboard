@@ -731,3 +731,25 @@ root unit files, no `/etc` edits.
 - **gold's lake is legitimate and was kept** (first section, item 4): a code path creates it
   (`provenance.archive`), pedro-cvlab and crimson hold the same, and jobs of 09:48 and 11:23 wrote
   into it after the A/B run.
+
+## 2026-10-12 — RESOLVED on refactor/mb-envfix: per-env overrides + update with editable members
+
+- **Per-env PyPI dependency-overrides** now reach a `no-default` environment. `pypi_options`
+  (`engines/compile/pixi_manifest.py`) reads the raw `[python]` table instead of a validated
+  toolchain, so an env declaring only a `dependency-overrides` (no `deps`/`dev`) still carries it;
+  `members._alone` carries the env's own pypi-options through composition so the member path-pins no
+  longer overwrite them. A `[envs.<name>.python.dependency-overrides]` now lands in
+  `[feature.<name>.pypi-options]`. Test: `integration/test_env_overrides.py`.
+- **`mb update`/`mb upgrade` with editable members** now work. `Pixi.update`
+  (`engines/compile/backend/pixi.py`) drops pixi's `--no-install` when `_has_editable_paths()` is
+  true, so pixi builds the env to read the editable sources' metadata instead of failing
+  "installation of conda environment is required to solve PyPI source dependencies".
+
+## 2026-10-12 — follow-up: collapse below 4 environments (not yet done)
+
+The workspace can reach 4 envs today (default, cutok, toktier, tl) by deleting the dead `[envs.repro]`
+and pruning the orphan `gpu`/`cutile` solves. Going lower is blocked by: numpy `<2.5` in default
+(numba-cuda 0.30.4 + pytensor via pymc + cutoken's own pin) vs `>=2.5.3` in toktier/tl; and vLLM 0.31
+pinning default to torch 2.13 + transformers <5.18. To merge further, bump numba-cuda (numpy>=2.5) +
+pymc/pytensor + lift cutoken's numpy pin together, and move to a vLLM accepting torch 2.14 +
+transformers>=5.19. Each tested per project; cutok frozen until its campaign ends.
