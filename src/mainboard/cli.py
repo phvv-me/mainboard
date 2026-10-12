@@ -49,6 +49,8 @@ from .log import configure
 from .manifest.loading import composition, load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
+from .probe.reverse.service import DeviceProbe
+from .probe.reverse.service import compact as device_rows
 from .probe.system import System
 from .proc import Processes
 from .render import diverted, mode_of, plain, progress, record, rows, totals
@@ -213,15 +215,58 @@ def build(root: Path | None = None) -> App:
     app.command(host)
     app.command(job)
     paper = App(name="paper", help="Build a declared manuscript and plot figures from results.")
+    probe = App(
+        name="probe", help="Inspect device code and preserve normalized analysis evidence."
+    )
     app.command(lake)
     app.command(paper)
     app.command(self_)
+    app.command(probe)
 
     def workspace_root() -> Path:
         return root or project.find_root(Path.cwd())
 
     def board(on: str) -> Board:
         return Board(workspace_root(), host=on)
+
+    @probe.command
+    def device(
+        library: Path,
+        operation: Literal["inventory", "sass", "arch", "resource", "compare"],
+        *,
+        arch: str = "",
+        function: str = "",
+        against: str = "",
+        on: str = "local",
+        json: bool = False,
+    ) -> None:
+        """Inspect CUDA device code and append its evidence to the workspace lake.
+
+        Args:
+            library: a native library, fatbin, cubin or PTX artifact.
+            operation: the finding to collect; compare reports inventory metadata changes.
+            arch: one exact CUDA target, such as sm_90a.
+            function: one mangled kernel name.
+            against: the newer library for compare, with library as the baseline.
+            on: local only until device analysis is wired into job dispatch.
+            json: print the normalized evidence as JSON instead of compact TSV rows.
+        """
+        if on != "local":
+            # TODO(lead): dispatch via jobs, including artifact staging and evidence collection.
+            raise MissionError("probe device currently runs locally; dispatch via jobs is pending")
+        evidence = DeviceProbe(Lake.at(workspace_root())).run(
+            library,
+            operation,
+            arch=arch,
+            function=function,
+            against=against,
+        )
+        if json:
+            record(evidence.model_dump(mode="json"), mode="json", fields=(), title="device")
+        else:
+            payloads = device_rows(evidence)
+            columns = tuple(dict.fromkeys(key for row in payloads for key in row))
+            Output().print_rows(payloads, title="device", columns=columns)
 
     @app.command(name="help")
     def help_(*query: str) -> None:

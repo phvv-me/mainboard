@@ -47,8 +47,8 @@ DIALECT = Dialect(paramstyle="qmark")
 # The schema's own version, recorded in `schema_log` by `Lake.create` beside the DuckLake spec
 # and by `Lake.evolve` when an older lake gains what this one added. 2 added `blobs`, 5 chunked
 # them (`ordinal`) and added `evidence_log`, 6 added `checksums`, 7 bounded the row groups of
-# blob files.
-VERSION = 7
+# blob files; 8 added artifact/operation-keyed reverse-engineering findings (`re_evidence`).
+VERSION = 8
 
 _BARE = MetaData()
 LAKE = MetaData()
@@ -181,6 +181,25 @@ evidence_log = _dropping(
     Column("node", String),
     Column("run", String),
 )
+# RE findings identify an analysis of artifact bytes, independently of the workspace-relative
+# file archive above. The full record preserves artifact identity, profile and raw diagnostics;
+# result_json and the other projections let SQL query findings without decoding that envelope.
+re_evidence = _dropping(
+    "re_evidence",
+    Column("evidence_id", String),
+    Column("artifact_sha256", String),
+    Column("kind", String),
+    Column("provider", String),
+    Column("tool_version", String),
+    Column("operation", String),
+    Column("params_json", JSON),
+    Column("analysis_profile_digest", String),
+    Column("coverage", String),
+    Column("limitations_json", JSON),
+    Column("unresolved_json", JSON),
+    Column("result_json", JSON),
+    Column("record_json", JSON),
+)
 log_lines = _stamped(
     "log_lines",
     Column("batch", String),
@@ -258,8 +277,9 @@ VIEWS = (
     View("holds", latest(_bare["holds_log"], "alias")),
     View("evidence", latest(_bare["evidence_log"], "path")),
     View("offers", _offers()),
+    View("re_evidence_current", latest(_bare["re_evidence"], "evidence_id")),
 )
-runs, hosts, holds, evidence, offers = (view.table for view in VIEWS)
+runs, hosts, holds, evidence, offers, re_evidence_current = (view.table for view in VIEWS)
 
 # Every table, in the order a new lake creates them.
 TABLES = tuple(table for table in LAKE.sorted_tables if table.name in _bare)
