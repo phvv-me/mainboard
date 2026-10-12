@@ -753,3 +753,16 @@ and pruning the orphan `gpu`/`cutile` solves. Going lower is blocked by: numpy `
 pinning default to torch 2.13 + transformers <5.18. To merge further, bump numba-cuda (numpy>=2.5) +
 pymc/pytensor + lift cutoken's numpy pin together, and move to a vLLM accepting torch 2.14 +
 transformers>=5.19. Each tested per project; cutok frozen until its campaign ends.
+
+## 2026-10-12 — RE engine (`probe/reverse/`) follow-ups
+
+The no-REA GPU reverse-engineering core shipped (0.5.6). Two deliberate `TODO(lead)`s remain:
+- **`probe device --on HOST` dispatch is not wired** — the verb raises for a non-local host. Wire it
+  through the job path (artifact staging + evidence collection) so device analysis runs as a settled
+  mainboard job on the GPU hosts.
+- **The toolkit-flag contract (`device.STANDARD_FLAGS`) and the parsers are validated against synthetic
+  fixtures only.** Exercise them against real cuobjdump/nvdisasm `--help`/`--version` and real cuBLAS
+  13.x output on a GPU host, and adjust the contract/parsers if the live output differs.
+
+The REA host-code/breadth half (`rea.py`, callgraph/trace/compare-host, the `mainboard.toml`
+`rea-agents` pin) is deferred to its own phase, pending the owner's npm install allow.
