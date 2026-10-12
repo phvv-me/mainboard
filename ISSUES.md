@@ -766,3 +766,16 @@ The no-REA GPU reverse-engineering core shipped (0.5.6). Two deliberate `TODO(le
 
 The REA host-code/breadth half (`rea.py`, callgraph/trace/compare-host, the `mainboard.toml`
 `rea-agents` pin) is deferred to its own phase, pending the owner's npm install allow.
+
+## 2026-10-12 — killed test runs leak SysV shared memory until PostgreSQL tests cannot start
+
+Integration runs killed mid-suite (two Codex lanes stopped by their time limits on 10-12) left 33
+SysV shared-memory segments: owner pedro, keys 0x07c0xxxx, NATTCH 0, creators dead, no postgres
+running. macOS caps the table at `kern.sysv.shmmni = 32`, so every later PostgreSQL test failed at
+initdb with `shmget ... No space left on device` (51 to 52 setup errors in the plain and isolated
+suites alike, mistaken at first for a host-capacity limit). ci36 freed the segments of test
+postmasters that exit; a SIGKILLed suite never reaches that cleanup. Removed by hand at 20:05 (each
+segment checked: no attachment, creator gone). To fix: the gate's harness (or `mb doctor`) reports
+orphaned segments of the current user at start and reaps those whose creator is dead and NATTCH is 0
+before a suite, and a lane's time limit sends SIGTERM with a grace period before SIGKILL so the
+test postmasters' teardown runs.
