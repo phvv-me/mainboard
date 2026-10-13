@@ -1,6 +1,7 @@
 """One query surface over project-owned results, including work still running."""
 
 import json
+import math
 import os
 from collections.abc import Collection, Generator
 from contextlib import contextmanager
@@ -11,12 +12,26 @@ from tempfile import TemporaryDirectory
 import duckdb
 
 from .core.errors import MissionError
+from .core.project import Project
 from .dispatch import vocabulary
 from .observe.files import FrameFile
+from .render.query import Query, ResultHash, Stamp, canonical, execution_timeout
 from .runtime.tree import FileBudget
 from .state.evidence import EvidenceTree
 from .state.lake import ALIAS, Lake, ndjson, quoted
 from .state.relations import Relation, Relations, records
+
+
+def _tokens(sql: str) -> list[str]:
+    encoded = sql.encode()
+    positions = duckdb.tokenize(sql)
+    return [
+        encoded[start:end].decode().strip().casefold()
+        for (start, kind), end in zip(
+            positions, [pos for pos, _ in positions[1:]] + [len(encoded)], strict=True
+        )
+        if kind != duckdb.token_type.comment
+    ]
 
 
 class Results:
@@ -31,6 +46,7 @@ class Results:
             raise ValueError("experiment must name one experiment directory")
         self.root = root.resolve()
         self.experiment = experiment
+        self.provenance: list[Stamp] = []
 
     def rows(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> list[dict]:
         """Query a fresh local snapshot of runs, trials, events, artifacts, dispatch jobs and
@@ -43,21 +59,81 @@ class Results:
         Network refresh belongs to `mb job list`, never an SQL side effect.
         """
         relations = Relations()
-        with self._connected(sql, project, relations.connection) as text:
+        with self._connected(sql, project, relations.connection) as (text, _):
             return records(relations.connection.sql(text))
 
     def query(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> Relation:
-        """`rows` as a DuckDB relation, for plotting and experiments, read in whole so it
+        """`rows` as a DuckDB relation, for experiments, read in whole so it
         outlives the lake and every file the query read."""
         relations = Relations()
-        with self._connected(sql, project, relations.connection) as text:
-            return relations.kept(text)
+        with self._connected(sql, project, relations.connection) as (text, _):
+            return self._kept(relations, text)
 
-    def export(self, sql: str | Path, path: Path, *, project: str = "") -> Path:
+    def stamped(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> Relation:
+        """Materialize a result and record its rendered identity for plot provenance.
+
+        SQL naming `lake.*` attaches the lake and pins its snapshot, creating it when needed
+        in a workspace. File views and `jobs` are collected separately and are not pinned;
+        queries without `lake.*` leave the snapshot id at zero.
+        """
+        relations = Relations()
+        with self._connected(sql, project, relations.connection, snapshot=True) as (
+            text,
+            snapshot,
+        ):
+            digest = ResultHash(relations.connection.sql(text).columns)
+            relation = self._kept(relations, text)
+            while batch := relation.fetchmany(256):
+                for row in batch:
+                    digest.add(tuple(canonical(value) for value in row))
+            self.provenance.append(digest.stamp(snapshot))
+            return relation.project("*")
+
+    @staticmethod
+    def _kept(relations: Relations, text: str) -> Relation:
+        # EXPLAIN is a relation, but not valid after CREATE TABLE AS.
+        if relations.connection.extract_statements(text)[0].type == duckdb.StatementType.EXPLAIN:
+            relations.connection.sql(text).to_table("explanation")
+            return relations.connection.table("explanation")
+        return relations.kept(text)
+
+    @contextmanager
+    def stream(
+        self, sql: str | Path, *, project: str = "", timeout: float = 10
+    ) -> Generator[Query]:
+        """One cursor over a pinned lake snapshot; the caller must consume it inside the block.
+
+        Timeout is the client's DuckDB execution limit in seconds; zero disables it. Quack
+        blocking operators use the server's own limit, not this client's setting.
+        """
+        if timeout < 0 or not math.isfinite(timeout):
+            raise MissionError("query timeout must be finite and nonnegative")
+        relations = Relations()
+        connection = relations.connection
+        try:
+            with self._connected(sql, project, connection, snapshot=True) as (
+                text,
+                snapshot,
+            ):
+                connection.execute(f"SET max_execution_time = {math.ceil(timeout * 1000)}")
+                explain = _tokens(text)[0] == "explain"
+                yield Query(connection.execute(text), snapshot, timeout=timeout, explain=explain)
+        except duckdb.Error as fault:
+            if execution_timeout(fault):
+                raise MissionError(f"query timed out (client limit {timeout:g}s)") from None
+            raise MissionError(str(fault).strip()) from None
+        finally:
+            connection.close()
+
+    def export(
+        self, sql: str | Path, path: Path, *, project: str = "", timeout: float = 0
+    ) -> Path:
         """Export one SELECT to a new CSV, Parquet, or JSON file, inferred from its suffix.
 
         Only a complete file is published and an existing destination is never overwritten.
         """
+        if timeout < 0 or not math.isfinite(timeout):
+            raise MissionError("query timeout must be finite and nonnegative")
         formats = {
             ".csv": "FORMAT csv, HEADER",
             ".parquet": "FORMAT parquet, COMPRESSION zstd",
@@ -68,45 +144,106 @@ class Results:
         except KeyError:
             raise ValueError("output suffix must be .csv, .parquet, or .json") from None
         path = path.expanduser().absolute()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(dir=path.parent) as staged:
-            temporary = Path(staged) / path.name
-            relations = Relations()
-            with self._connected(sql, project, relations.connection) as text:
-                target = temporary.as_posix().replace("'", "''")
-                relations.connection.execute(f"COPY ({text}) TO '{target}' ({options})")
-            with temporary.open("rb+") as completed:
-                os.fsync(completed.fileno())
-            os.link(temporary, path)
+        relations = Relations()
+        try:
+            with self._connected(sql, project, relations.connection) as (text, _):
+                ResultHash(relations.connection.sql(text).columns)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with TemporaryDirectory(dir=path.parent) as staged:
+                    temporary = Path(staged) / path.name
+                    relations.connection.execute(
+                        f"SET max_execution_time = {math.ceil(timeout * 1000)}"
+                    )
+                    target = temporary.as_posix().replace("'", "''")
+                    relations.connection.execute(
+                        f"COPY ({text}) TO '{target}' ({options})"
+                    ).fetchall()
+                    with temporary.open("rb+") as completed:
+                        os.fsync(completed.fileno())
+                    os.link(temporary, path)
+        except duckdb.Error as fault:
+            if execution_timeout(fault):
+                raise MissionError(f"query timed out (client limit {timeout:g}s)") from None
+            raise MissionError(str(fault).strip()) from None
         return path
 
     @contextmanager
     def _connected(
-        self, sql: str | Path, project: str, connection: duckdb.DuckDBPyConnection
-    ) -> Generator[str]:
+        self,
+        sql: str | Path,
+        project: str,
+        connection: duckdb.DuckDBPyConnection,
+        *,
+        snapshot: bool = False,
+    ) -> Generator[tuple[str, int]]:
         """`connection` holding every results view, and the lake while the SQL that names it
-        runs; the SQL text."""
+        runs; the SQL text and its snapshot id (zero when no snapshot was requested)."""
         if isinstance(sql, Path):
             try:
                 sql = sql.expanduser().read_text(encoding="utf-8")
             except UnicodeError as fault:
                 raise ValueError(f"SQL file {sql} must contain UTF-8 text: {fault}") from fault
-        statements = connection.extract_statements(sql)
-        if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
-            raise ValueError("results queries must be one SELECT statement")
-        attached = f"{ALIAS}." in sql.lower()
-        with FileBudget.permitted():
-            self._views(connection, project, sql)
-            if attached:
-                # Everything the workspace recorded, read-only beside the collected results; a
-                # workspace that recorded nothing yet gets its empty lake, not a missing schema.
-                Lake.at(self.root).current().attach(connection)
+        try:
+            statements = connection.extract_statements(sql)
+            if len(statements) != 1:
+                raise ValueError("results queries require one statement")
+        except duckdb.Error as fault:
+            raise MissionError(str(fault).strip()) from None
+        lake = Lake.at(self.root)
+        tokens = _tokens(sql)
+        attached = any(
+            name.strip('"') == ALIAS and separator == "."
+            for name, separator in zip(tokens, tokens[1:], strict=False)
+        )
+        workspace = Project().manifest(self.root).is_file()
+        if attached and not lake.exists():
+            if not workspace:
+                raise MissionError(
+                    f"no state lake at {lake.catalog}; {self.root} is not a workspace"
+                )
+            for target in (self.root, lake.home, lake.lock.parent):
+                parent = target
+                while not parent.exists():
+                    parent = parent.parent
+                if not os.access(parent, os.W_OK | os.X_OK):
+                    raise MissionError(
+                        f"no state lake at {lake.catalog}; "
+                        "cannot create it in a read-only workspace"
+                    )
+        if attached and workspace:
             try:
-                yield sql
+                lake = lake.current()
+            except OSError as fault:
+                raise MissionError(
+                    f"cannot prepare the state lake at {lake.catalog}: {fault}"
+                ) from None
+        pinned = snapshot and attached
+        with FileBudget.permitted():
+            snapshot_id = 0
+            completed = False
+            began = False
+            mounted = False
+            try:
+                if attached:
+                    lake.attach(connection)
+                    mounted = True
+                self._views(connection, project, sql)
+                if pinned:
+                    connection.execute("BEGIN")
+                    began = True
+                    [(snapshot_id,)] = connection.execute(
+                        f"SELECT * FROM {ALIAS}.current_snapshot()"
+                    ).fetchmany(1)
+                yield sql, snapshot_id
+                completed = True
             except duckdb.Error as fault:
+                if execution_timeout(fault):
+                    raise
                 raise MissionError(str(fault).strip()) from None
             finally:
-                if attached:
+                if began:
+                    connection.execute("COMMIT" if completed else "ROLLBACK")
+                if mounted:
                     connection.execute(f"DETACH {ALIAS}")
 
     def table(
@@ -158,7 +295,7 @@ class Results:
         return [path for path in candidates if not project or path.parents[1].name == project]
 
     def _views(self, connection: duckdb.DuckDBPyConnection, project: str, sql: str) -> None:
-        """Load only the collected sources the SELECT depends on."""
+        """Load only the collected sources the statement depends on."""
         dependencies: dict[str, set[str]] = {
             "runs": {"trials", "events"},
             "metrics": {"events"},

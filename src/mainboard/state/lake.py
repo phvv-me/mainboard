@@ -41,6 +41,7 @@
 
 import base64
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -107,12 +108,15 @@ _OPTIONS = (
 # suits log rows and costs a catalog its size for source-file bytes: 598 blobs made D:\projects'
 # catalog 102 MB of its 104. And DuckDB holds a whole row group while writing and 2,048 rows of a
 # vector while reading, so 8 MB chunks in the default 122,880-row groups and 512 MB files ran a
-# 24 GB center out of memory merging 27k blob files. Groups of 16 rows let a writer split files
-# at 64 MB, which a 2,048-row vector never exceeds.
+# 24 GB center out of memory merging 27k blob files. The Parquet writer consumes whole vectors,
+# so a row limit alone cannot split a vector of 32 large chunks. A one-byte flush threshold
+# makes every input vector from `blobs._Batch` its own group. The batch bounds those vectors
+# by payload bytes, splitting below the writer's minimum 2,048 rows only for large chunks.
 _BYTES = (schema.blobs,)
 _BYTES_OPTIONS = (
     ("data_inlining_row_limit", "0"),
     ("parquet_row_group_size", "16"),
+    ("parquet_row_group_size_bytes", "'1B'"),
     ("target_file_size", "'64MB'"),
 )
 
@@ -775,7 +779,9 @@ class Lake(FrozenModel):
         _ANSWERED.add(self.home)
 
     @contextmanager
-    def serving(self, port: int = PORT, token: str = "") -> Generator[tuple[str, str]]:
+    def serving(
+        self, port: int = PORT, token: str = "", *, timeout: float = 10
+    ) -> Generator[tuple[str, str]]:
         """This lake served over Quack on localhost `port` while the block runs, yielding the
         URI and the token a client attaches with.
 
@@ -783,7 +789,11 @@ class Lake(FrozenModel):
         DuckDB is opened on the catalog itself, the one database a Quack client resolves names
         in, after an ordinary attach brought the schema up to date. Appends from this machine
         keep going straight to the files beside it, as they always do.
+        timeout: server execution limit in seconds, inherited by Quack sessions, including
+            blocking operators; zero disables it. Client execution limits are not forwarded.
         """
+        if timeout < 0 or not math.isfinite(timeout):
+            raise MissionError("lake server timeout must be finite and nonnegative")
         self._held("serve")
         with self.ready().open(write=True) as connection:
             self.evolve(connection)
@@ -806,6 +816,7 @@ class Lake(FrozenModel):
             try:
                 served.execute(f"SET GLOBAL ducklake_max_retry_count = {_RETRIES}")
                 served.execute("SET GLOBAL TimeZone = 'UTC'")
+                served.execute(f"SET GLOBAL max_execution_time = {math.ceil(timeout * 1000)}")
                 self._load(served, _QUACK)
                 served.execute(f"CALL quack_serve({quoted(uri)}, token => {quoted(token)})")
                 yield uri, token

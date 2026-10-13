@@ -5,7 +5,9 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -89,6 +91,35 @@ def test_a_second_workspace_reads_and_writes_the_served_lake(
         "query", "SELECT count(*) AS n FROM lake.schema_log WHERE spec = 'from-far'", "--json"
     )
     assert json.loads(ran.out) == [{"n": 1}]
+
+
+def test_a_blocking_served_query_obeys_the_server_timeout(mb, workspace, served) -> None:
+    from mainboard.state import schema
+    from mainboard.state.lake import Lake
+
+    lake = Lake.at(workspace)
+    lake.append(
+        schema.schema_log,
+        [
+            {"ts": datetime.now(UTC), "version": 0, "spec": "timeout", "engine": "it"}
+            for _ in range(3000)
+        ],
+    )
+    start = time.monotonic()
+    ran = mb(
+        "query",
+        "SELECT count(*) FROM lake.schema_log a, lake.schema_log b, "
+        "lake.schema_log c, lake.schema_log d",
+        "--timeout",
+        "0.02",
+        env=served,
+        timeout=25,
+    )
+    # Client limits are not forwarded. The server's default 10s cap must beat the 30s HTTP
+    # timeout and stop the pushed-down aggregate; a streaming-only interrupt cannot do so.
+    assert ran.code != 0 and "timed out" in ran.err
+    assert time.monotonic() - start < 20
+    assert mb("query", "SELECT count(*) FROM lake.schema_log", env=served).code == 0
 
 
 def test_a_served_lake_refuses_maintenance_and_strangers(mb, served, tmp_path_factory) -> None:

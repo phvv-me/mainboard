@@ -17,6 +17,7 @@ from patos import FrozenModel
 
 import mainboard
 from mainboard.cli import build
+from mainboard.core.errors import MissionError
 
 from .legacy import LegacyRuntime
 
@@ -232,6 +233,9 @@ def _in_process(workspace: Path) -> Callable[..., Ran]:
                 code = build()(args, exit_on_error=False)
             except SystemExit as status:
                 code = status.code
+            except MissionError as fault:
+                print(fault, file=err)
+                code = 1
         return Ran(code=code or 0, out=out.getvalue(), err=err.getvalue())
 
     return run

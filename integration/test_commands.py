@@ -94,7 +94,7 @@ def test_relation_queries_preserve_types_without_pyarrow(workspace, monkeypatch)
         results.query("SELECT not_a_column")
     with pytest.raises(MissionError, match="Could not convert"):
         results.query("SELECT CAST('bad' AS INTEGER)")
-    with pytest.raises(ValueError, match="one SELECT"):
+    with pytest.raises(ValueError, match="one statement"):
         results.query("SELECT 1; SELECT 2")
 
 

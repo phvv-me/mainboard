@@ -1,33 +1,15 @@
 """A selected result as named columns of plain values, the shape Seaborn is handed."""
 
 import math
-from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Self, cast
-from uuid import UUID
+
+from ..render.query import Value
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ..state.relations import Relation
-
-# What DuckDB hands back for one cell.
-type Value = (
-    str
-    | int
-    | float
-    | bool
-    | Decimal
-    | date
-    | datetime
-    | time
-    | timedelta
-    | UUID
-    | bytes
-    | None
-    | list[Value]
-    | dict[str, Value]
-)
 
 # The DuckDB type ids a plot reads as numbers.
 _NUMERIC = frozenset(

@@ -4,6 +4,20 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found hardening `mb query` (streaming, result hash, read-only lake), 2026-10-13
+
+1. **A served lake is writable from `mb query`.** A local lake is protected by DuckLake's own
+   `READ_ONLY` attach (`Lake.attach`'s default), which refuses every lake write including a
+   data-modifying CTE. Over Quack (`MB_LAKE=quack:`) the pinned 2.0 dev build does not honor a client
+   `READ_ONLY` attach, and `quack_query_by_name('lake', 'DELETE …')` committed a delete on the served
+   lake during review. The server is where this belongs: serve a second, read-only endpoint (a
+   `quack_serve` from a read-only attach) for queries, beside the writable one mb's writers append
+   through. DuckLake time travel recovers any such delete meanwhile, since mb never expires snapshots.
+2. **`integration/gates/baseline.json` names a renamed test.** It still lists
+   `integration/test_evidence.py::test_check_records_the_checksums_of_chunks_kept_before_them`, so the
+   gate's inspect lane fails its baseline accounting (the suite lane is unaffected). Present on `main`
+   before this work. Refresh the nodeid when the baseline is next re-measured.
+
 ## Found renting a vast RTX 4090 for the cutok version sweep, 2026-10-11 23:30
 
 1. **`host hold vast --env cutok` fails on every fresh machine: `ModuleNotFoundError: sqlalchemy`.**

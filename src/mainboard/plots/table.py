@@ -1,5 +1,6 @@
 """Render selected result columns with Seaborn and the house figure style."""
 
+import json
 import os
 from contextlib import ExitStack
 from pathlib import Path
@@ -12,10 +13,11 @@ import matplotlib.style as mplstyle
 import seaborn as sns
 
 from ..manifest.schema.plot import PlotStyle
+from ..render.query import Stamp
 from .columns import Columns, Value
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Sequence
 
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
@@ -32,9 +34,16 @@ _KINDS: dict[str, tuple[Callable[..., Axes], dict[str, str | int | bool | None]]
 class Plot:
     """One already selected table; SQL owns filtering, grouping, and aggregation."""
 
-    def __init__(self, frame: Columns, style: PlotStyle | None = None) -> None:
+    def __init__(
+        self,
+        frame: Columns,
+        style: PlotStyle | None = None,
+        *,
+        provenance: Sequence[Stamp] = (),
+    ) -> None:
         self.frame = frame
         self.style = style if style is not None else PlotStyle()
+        self.provenance = provenance
 
     def save(
         self,
@@ -114,8 +123,9 @@ class Plot:
         if len(set(absolute)) != len(absolute):
             raise ValueError("plot output paths must be distinct")
         for path in absolute:
-            if os.path.lexists(path):
-                raise FileExistsError(f"plot output already exists: {path}")
+            for target in (path, path.with_name(path.name + ".metadata.json")):
+                if os.path.lexists(target):
+                    raise FileExistsError(f"plot output already exists: {target}")
         return absolute
 
     def _publish(self, canvas: Figure, paths: tuple[Path, ...]) -> None:
@@ -130,8 +140,39 @@ class Plot:
                 directory = staging.enter_context(TemporaryDirectory(dir=path.parent))
                 temporary.append(Path(directory) / path.name)
             for path in temporary:
-                canvas.savefig(path)
+                if self.provenance:
+                    document = (
+                        json.dumps(
+                            {"results": [stamp.model_dump() for stamp in self.provenance]},
+                            indent=2,
+                        )
+                        + "\n"
+                    )
+                    key = {
+                        ".png": "Description",
+                        ".pdf": "Subject",
+                        ".svg": "Description",
+                        ".svgz": "Description",
+                    }.get(path.suffix.casefold())
+                    if key:
+                        canvas.savefig(path, metadata={key: document})
+                    else:
+                        canvas.savefig(path)
+                    path.with_name(path.name + ".metadata.json").write_text(
+                        document, encoding="utf-8"
+                    )
+                else:
+                    canvas.savefig(path)
             for source, target in zip(temporary, paths, strict=True):
-                with source.open("rb+") as complete:
-                    os.fsync(complete.fileno())
+                artifacts = [source]
+                if self.provenance:
+                    artifacts.append(source.with_name(source.name + ".metadata.json"))
+                for artifact in artifacts:
+                    with artifact.open("rb+") as complete:
+                        os.fsync(complete.fileno())
                 os.link(source, target)
+                if self.provenance:
+                    os.link(
+                        source.with_name(source.name + ".metadata.json"),
+                        target.with_name(target.name + ".metadata.json"),
+                    )

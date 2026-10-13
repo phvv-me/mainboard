@@ -30,7 +30,7 @@ import os
 import re
 from collections.abc import Collection, Iterable, Iterator, Mapping
 from io import BytesIO
-from itertools import groupby
+from itertools import batched, groupby
 from operator import itemgetter
 from pathlib import Path
 from typing import IO
@@ -47,6 +47,10 @@ from .owned import OwnedFile
 # One chunk of an object, and the most bytes of chunks one insert stages.
 CHUNK_BYTES = 8 << 20
 STAGED_BYTES = 256 << 20
+# A Parquet group holds at most this many payload bytes. Tiny chunks can use ordinary
+# 2,048-row vectors; large chunks need smaller input vectors to honor the byte budget.
+_ROW_GROUP_BYTES = 16 << 20
+_VECTOR_ROWS = 2048
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
@@ -305,16 +309,65 @@ class _Batch:
         if not self.rows:
             return
         with staged(schema.blobs, self.rows) as staging:
-            self.connection.execute(f"CREATE OR REPLACE TEMP TABLE {_STAGED} AS {staging}")
-        self.connection.execute(
-            f"INSERT INTO {ALIAS}.blobs BY NAME SELECT sha256, ordinal, bytes FROM {_STAGED}"
+            self.connection.execute(
+                f"CREATE OR REPLACE TEMP TABLE {_STAGED} AS "
+                f"SELECT *, row_number() OVER () - 1 AS position FROM ({staging})"
+            )
+        # Parquet flushes only between input vectors; a one-byte threshold flushes every
+        # vector. Bound their bytes, splitting only when an ordinary vector would be too big.
+        options = dict(
+            self.connection.execute(
+                f"SELECT option_name, value FROM {ALIAS}.options() "
+                "WHERE option_name = 'parquet_row_group_size_bytes' "
+                "AND (scope = 'GLOBAL' OR (scope = 'SCHEMA' AND scope_entry = 'main') "
+                "OR (scope = 'TABLE' AND scope_entry = 'main.blobs')) "
+                "ORDER BY CASE scope WHEN 'GLOBAL' THEN 0 WHEN 'SCHEMA' THEN 1 ELSE 2 END"
+            ).fetchmany(6)
         )
+        if "parquet_row_group_size_bytes" not in options:
+            # Existing schema-current lakes need this correction without a schema bump.
+            self.connection.execute(
+                f"CALL {ALIAS}.set_option('parquet_row_group_size_bytes', '1B', "
+                "table_name => 'blobs')"
+            )
+        self.connection.execute(f"INSERT INTO {ALIAS}.blobs BY NAME {self._source()}")
         self.connection.execute(
             f"INSERT INTO {ALIAS}.checksums BY NAME SELECT sha256, ordinal, md5(bytes) AS md5 "
             f"FROM {_STAGED}"
         )
         self.connection.execute(f"DROP TABLE {_STAGED}")
         self.rows, self.size = [], 0
+
+    def _source(self) -> str:
+        """One scan for small chunks; byte-sized windows for large or mixed chunks.
+
+        Each window scans the staged table, so partition by actual payload bytes rather than
+        the largest chunk's row limit: even a mixed batch has only O(staged bytes / budget)
+        UNION arms, and cannot turn a million tiny objects into a quadratic UNION tree.
+        """
+        source = f"SELECT sha256, ordinal, bytes FROM {_STAGED}"
+        sizes = []
+        for row in self.rows:
+            payload = row["bytes"]
+            assert isinstance(payload, bytes)
+            sizes.append(len(payload))
+        group_rows = _ROW_GROUP_BYTES // max(1, max(sizes))
+        if group_rows >= _VECTOR_ROWS:
+            return source
+        sources = []
+        start = size = 0
+        for position, chunk_size in enumerate(sizes):
+            if size and size + chunk_size > _ROW_GROUP_BYTES:
+                sources.append(f"{source} WHERE position >= {start} AND position < {position}")
+                start, size = position, 0
+            size += chunk_size
+        sources.append(f"{source} WHERE position >= {start}")
+        while len(sources) > 1:
+            sources = [
+                "(" + ") UNION ALL (".join(pair) + ")"
+                for pair in batched(sources, 2, strict=False)
+            ]
+        return sources[0]
 
     def keep(self, digest: str, source: bytes | Path) -> int:
         """Add `source`'s chunks as `digest`'s, returning how many bytes it held.

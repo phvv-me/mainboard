@@ -13,13 +13,14 @@ from .panel import PanelPlot
 from .table import Plot
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from matplotlib.figure import Figure
     from matplotlib.legend import Legend
 
     from ..manifest import FigureSpec
     from ..manifest.schema.plot import PlotStyle
+    from ..render.query import Stamp
     from ..state.relations import Relation
 
 
@@ -35,9 +36,11 @@ class FigurePlot(Plot):
         query: Callable[[str | Path], Relation],
         *paths: Path,
         dpi: int | None = None,
+        provenance: Sequence[Stamp] = (),
     ) -> tuple[Path, ...]:
         """Render one named figure; all SQL and output paths use the caller's cwd."""
         paths = self._outputs(paths or specification.out, dpi)
+        self.provenance = provenance
         tables = {
             name: Columns.of(query(panel.file or panel.sql))
             for name, panel in specification.panels.items()

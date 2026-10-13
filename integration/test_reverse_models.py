@@ -30,9 +30,7 @@ _JSON = st.recursive(
     | st.integers()
     | st.floats(allow_nan=False, allow_infinity=False)
     | _TEXT,
-    lambda children: (
-        st.lists(children, max_size=3) | st.dictionaries(_TEXT, children, max_size=3)
-    ),
+    lambda children: st.lists(children, max_size=3) | st.dictionaries(_TEXT, children, max_size=3),
     max_leaves=6,
 )
 

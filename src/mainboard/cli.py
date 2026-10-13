@@ -5,7 +5,7 @@ from contextlib import suppress
 from functools import partial
 from importlib import metadata
 from io import TextIOWrapper
-from json import dumps, loads
+from json import dumps
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NoReturn, Self, TypedDict
 
@@ -1531,9 +1531,16 @@ def build(root: Path | None = None) -> App:
         file: Path | None = None,
         project: str = "",
         json: bool = False,
+        human: bool = False,
+        max_rows: int = 1000,
+        max_bytes: int = 10000,
+        timeout: float = 10,
         out: Path | None = None,
     ) -> None:
         """Explore collected results across servers; each query sees newly arrived files.
+
+        The lake is attached read-only (writes go to session scratch tables), and DuckLake
+        time travel (`AT (VERSION => n)`) recovers prior snapshots.
 
         Views: runs, trials, events, metrics, artifacts, jobs, and every table of the
         workspace's state lake as `lake.<table>` (lake.events, lake.log_lines, lake.costs...).
@@ -1541,13 +1548,28 @@ def build(root: Path | None = None) -> App:
         jobs always shows the fleet. Monitor refreshes tracked jobs; collect also imports
         results from native remote runs. Neither requires a shared database service.
 
+        The hash identifies rendered values, not raw SQL types or an integrity seal. The
+        snapshot_id covers lake.* only; file-backed views and jobs are not snapshot-pinned.
+
         Args:
-            sql: one DuckDB SELECT statement; defaults to SELECT * FROM runs without --file.
+            sql: one DuckDB statement; defaults to SELECT * FROM runs.
+                Use unique column aliases for results that return rows.
             file: read SQL from a UTF-8 file instead of the positional statement.
                 Both the file and paths inside SQL resolve from the caller's current directory.
             project: restrict scientific rows to this research project.
             json: print JSON when no output file is requested.
-            out: export to a new .csv, .parquet, or .json file instead of printing rows.
+                Its row-count/hash/snapshot footer goes to stderr to keep the array parseable.
+            human: print a rich table instead of TSV. TSV NULL is bare NULL; text NULL is quoted.
+            max_rows: displayed row limit, 1000 by default; 0 or -1 removes the limit.
+            max_bytes: encoded data-row byte limit, 10000 by default; 0 or -1 removes the limit.
+                After truncation count/hash at most 10000 more rows, then stop the query early.
+                Rows wider than the cap are omitted whole; the marker reports displayed rows.
+            timeout: DuckDB execution limit in seconds, 10 by default; 0 disables it.
+                Timeouts fail the command. A client limit cannot interrupt a blocking Quack
+                operator: `mb lake serve --timeout` sets the server limit (default 10s).
+            out: export a complete new .csv, .parquet, or .json file; display caps and output
+                modes do not apply. The execution timeout still applies.
+
         """
         source = _query_source(sql, file)
         if source is None:
@@ -1557,11 +1579,22 @@ def build(root: Path | None = None) -> App:
         )
 
         results = Results(workspace_root())
-        if out is not None:
-            print(results.export(source, out, project=project))
-            return
-        rows = loads(dumps(results.rows(source, project=project), default=str))
-        Output(json_=json).print_rows(rows, title="results")
+        output = Output(json_=json, human=human)
+        if max_rows < -1 or max_bytes < -1:
+            raise MissionError("query limits must be nonnegative or -1")
+        try:
+            if out is not None:
+                if json or human or max_rows != 1000 or max_bytes != 10000:
+                    raise MissionError(
+                        "--out exports all rows; display caps, --json and --human do not apply"
+                    )
+                print(results.export(source, out, project=project, timeout=timeout))
+                return
+            with results.stream(source, project=project, timeout=timeout) as query:
+                query.render(mode=output.mode, max_rows=max_rows, max_bytes=max_bytes)
+                sys.stdout.flush()
+        except ValueError as fault:
+            raise MissionError(str(fault)) from None
 
     @paper.command
     def plot(
@@ -1644,15 +1677,22 @@ def build(root: Path | None = None) -> App:
         results = Results(workspace_root())
         if specification is not None:
             saved = FigurePlot(settings).render(
-                specification, partial(results.query, project=project), *out, dpi=dpi
+                specification,
+                partial(results.stamped, project=project),
+                *out,
+                dpi=dpi,
+                provenance=results.provenance,
             )
         else:
             assert source is not None
-            saved = Plot(Columns.of(results.query(source, project=project)), settings).save(
+            frame = Columns.of(results.stamped(source, project=project))
+            saved = Plot(frame, settings, provenance=results.provenance).save(
                 *out, x=x, y=y, hue=hue, kind=kind, dpi=dpi, title=title
             )
         for path in saved:
             print(path)
+        for stamp in results.provenance:
+            print(stamp.footer)
 
     # The cutok artifact's README runs `mainboard plot`; kept until that artifact is frozen.
     app.command(plot, name="plot", show=False)
@@ -2152,7 +2192,7 @@ def build(root: Path | None = None) -> App:
         print(Lake.at(workspace_root()).upgrade())
 
     @lake.command
-    def serve(*, port: int = PORT, token: str = "") -> None:
+    def serve(*, port: int = PORT, token: str = "", timeout: float = 10) -> None:
         """Serve this workspace's lake over DuckDB's Quack protocol until interrupted.
 
         Listens on localhost only; another machine reaches it through an ssh tunnel (`ssh -R
@@ -2164,9 +2204,11 @@ def build(root: Path | None = None) -> App:
         Args:
             port: the local port to listen on.
             token: what clients must present; the one kept in the state directory when omitted.
+            timeout: execution limit for each server query in seconds, including blocking
+                Quack operators; 10 by default, 0 disables it. Client limits are not forwarded.
         """
         lake_ = Lake.at(workspace_root())
-        with lake_.serving(port, token) as (uri, _):
+        with lake_.serving(port, token, timeout=timeout) as (uri, _):
             kept = "the one given" if token else str(lake_.token)
             said = f"serving {lake_.catalog} at {uri} (token: {kept}); Ctrl-C stops it"
             print(said, flush=True)
@@ -2777,6 +2819,11 @@ def main() -> None:
             _profiled(Path(profiled), lambda: app(Delimiter(app).placed(sys.argv[1:])))
         else:
             app(Delimiter(app).placed(sys.argv[1:]))
+    except BrokenPipeError:
+        # Suppress the second EPIPE from Python's shutdown flush as well as this write.
+        with open(os.devnull, "w", encoding="utf-8") as sink:
+            os.dup2(sink.fileno(), sys.stdout.fileno())
+        raise SystemExit(0) from None
     except (MissionError, NoWorkspace, HostUnreachable) as error:
         # A host that will not answer is an answer, not a crash: it used to end a verb as a
         # traceback forty lines long with the one sentence that mattered last.
