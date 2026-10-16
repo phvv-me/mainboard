@@ -123,7 +123,7 @@ class Linter:
     def _hygiene(self, files: Sequence[Path]) -> list[Outcome]:
         """The built-in text repairs over every existing file, one outcome if anything is left."""
         started = time.monotonic()
-        existing = [path for path in files if path.is_file()]
+        existing = [path for path in files if path.is_file() or path.is_symlink()]
         attributes = self.inventory.attributes(existing)
         with ThreadPoolExecutor() as pool:
             found = pool.map(
@@ -142,7 +142,9 @@ class Linter:
     def _examined(self, path: Path, attributes: Attributes) -> list[str]:
         """Repair one file's text, or name the repair in a check, then say what is left.
 
-        A new file past the size limit is left too, since no repair can shrink it.
+        A new file past the size limit is left too, since no repair can shrink it, and so is a
+        name that differs from a neighbor's only in case or Unicode form, which no checkout on a
+        case-insensitive disk can hold.
         """
         examination = text.examined(path, attributes)
         problems = list(examination.problems)
@@ -151,7 +153,9 @@ class Linter:
                 problems.insert(0, f"needs repair: {', '.join(examination.untidy)}")
             else:
                 path.write_bytes(examination.repaired)
-        size = path.stat().st_size
+        if twins := text.twins(path.name, self.inventory.siblings(path)):
+            problems.append(f"differs only in case or Unicode form from {', '.join(twins)}")
+        size = path.stat().st_size if path.exists() else 0
         if size > self.table.max_kb * 1024 and not self.inventory.tracked(path):
             problems.append(f"is {size // 1024} KB, above the {self.table.max_kb} KB limit")
         return problems
@@ -166,7 +170,9 @@ class Linter:
         for path in files:
             relative = self._relative(path)
             if chosen.match_file(relative) and not skipped.match_file(relative):
-                owned.setdefault(self.owners.of(path.parent), []).append(path)
+                owner = self.owners.of(path.parent)
+                if not tool.only_configured or self._configured(owner, name):
+                    owned.setdefault(owner, []).append(path)
         return [
             Invocation(
                 step=name,
@@ -225,12 +231,23 @@ class Linter:
                 yield word.replace("{root}", str(self.root))
 
     def _parallel(self, invocations: Sequence[Invocation]) -> list[Outcome]:
-        """Run `invocations` at once, each environment activated once for the whole pass."""
+        """Run `invocations` at once, each environment activated once for the whole pass.
+
+        The commands of a `serial` tool queue behind one another, beside the rest, so a few
+        owners at once never put several memory-hungry commands in the machine together.
+        """
         for env in {invocation.env for invocation in invocations} - self._environments.keys():
             with self._provisioner.activated(env):
                 self._environments[env] = local.env.getdict()
+
+        def run(job: Invocation) -> Outcome:
+            return job.run(self._environments[job.env])
+
+        heavy = [job for job in invocations if self._tools[job.step].serial]
+        light = [job for job in invocations if job not in heavy]
         with ThreadPoolExecutor() as pool:
-            return list(pool.map(lambda job: job.run(self._environments[job.env]), invocations))
+            queue = pool.submit(lambda: [run(job) for job in heavy])
+            return [*pool.map(run, light), *queue.result()]
 
     def _narrowed(self, outcome: Outcome, read: frozenset[str]) -> Outcome:
         """A whole-owner check's verdict over the files `read` alone (workspace-relative); a

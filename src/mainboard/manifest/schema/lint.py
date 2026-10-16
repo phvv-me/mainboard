@@ -29,6 +29,10 @@ class LintTool(Declared):
         no `[tool.<name>]` table. A checker run in a directory without its configuration climbs to
         an ancestor's, so it is told where to look, while one with its configuration is given no
         path because a named path bypasses that configuration's excludes.
+    only_configured: whether the tool runs solely in owners whose own `pyproject.toml` has a
+        `[tool.<name>]` table, for a checker whose strictness is a per-project choice (mypy).
+    serial: whether the tool's commands run one at a time instead of beside every other
+        command, for one that fills the machine's memory (the analysis engine).
     timeout: seconds before the command and its children are killed.
     """
 
@@ -37,6 +41,8 @@ class LintTool(Declared):
     files: tuple[str, ...]
     exclude: tuple[str, ...] = ()
     path_when_unconfigured: str = ""
+    only_configured: bool = False
+    serial: bool = False
     env: str = "default"
     timeout: float = 120.0
 
@@ -67,8 +73,9 @@ class Lint(Declared):
     """The `[lint]` table: what `lint` leaves alone, who owns what, and the tools it runs.
 
     The built-in step `text` keeps every text file UTF-8 with its `.gitattributes` newline (LF
-    unless `eol=crlf`), no trailing whitespace and one final newline, and fails conflict
-    markers, private keys, unparsable TOML or YAML, and untracked files above `max-kb`.
+    unless `eol=crlf`), no trailing whitespace (Markdown hard-break spaces included) and one
+    final newline, and fails case-conflicting names, broken symlinks, conflict markers, private
+    keys, unparsable TOML or YAML, and untracked files above `max-kb`.
 
     exclude: gitignore-style patterns no step touches (vendored sources, frozen evidence), on
         top of what `.gitignore` hides.

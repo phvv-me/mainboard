@@ -1,12 +1,15 @@
 import codecs
+import os
 import re
 import tomllib
+import unicodedata
 from typing import TYPE_CHECKING
 
 import yaml
 from patos import FrozenModel
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from .inventory import Attributes
@@ -21,7 +24,13 @@ _SNIFF = 8000
 # Both halves of an unresolved merge, so a lone `=======` underline in a document never counts.
 _CONFLICT = (re.compile(r"^<{7}(?: |$)", re.MULTILINE), re.compile(r"^>{7}(?: |$)", re.MULTILINE))
 
-_PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----|PuTTY-User-Key-File-")
+# A PEM header, or a PuTTY key file's first line. The PuTTY header is written in two pieces and
+# anchored to a line start, so neither this file nor a document that quotes the header mid-line
+# carries a key.
+_PRIVATE_KEY = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----|^PuTTY-User-" "Key-File-",
+    re.MULTILINE,
+)
 
 
 def decoded(data: bytes) -> str | None:
@@ -85,9 +94,13 @@ class Examination(FrozenModel):
 def examined(path: Path, attributes: Attributes) -> Examination:
     """Read `path` and say what normalizing it changes and what is left to fix, writing nothing.
 
-    path: an existing regular file.
+    path: an existing file, or a symlink, whose target is all that is asked of it.
     """
-    if attributes.binary or path.is_symlink():
+    if path.is_symlink():
+        return Examination(
+            problems=() if path.exists() else (f"is a symlink to nowhere ({os.readlink(path)})",)
+        )
+    if attributes.binary:
         return Examination()
     data = path.read_bytes()
     try:
@@ -120,6 +133,21 @@ def untidiness(data: bytes, text: str, newline: str = "\n") -> tuple[str, ...]:
         "blank lines or a missing newline at the end": normalized(trimmed) != trimmed,
     }
     return tuple(change for change, present in found.items() if present)
+
+
+def twins(name: str, neighbors: Iterable[str]) -> list[str]:
+    """The `neighbors` spelled differently from `name` yet equal once Unicode form and case are
+    folded, names a case-insensitive or normalizing disk cannot hold side by side.
+
+    name: a file name.
+    neighbors: the names beside it in its directory.
+    """
+    folded = _folded(name)
+    return sorted(other for other in set(neighbors) if other != name and _folded(other) == folded)
+
+
+def _folded(name: str) -> str:
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold())
 
 
 def _syntax(name: str, text: str) -> str:

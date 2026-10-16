@@ -44,6 +44,7 @@ from .holds import Holds
 from .jobs import lanes as lanes_module
 from .line import Line
 from .lint import Inventory, Linter
+from .lint.git import topmost
 from .listing import Listing
 from .log import configure
 from .manifest.loading import composition, load, load_plot_config
@@ -222,6 +223,8 @@ def build(root: Path | None = None) -> App:
     app.command(paper)
     app.command(self_)
     app.command(probe)
+    # Imported on first use: the engine brings DuckDB and the whole rule catalog.
+    app.command("mainboard.analysis.cli:analyze", name="analyze")
 
     def workspace_root() -> Path:
         return root or project.find_root(Path.cwd())
@@ -1698,7 +1701,13 @@ def build(root: Path | None = None) -> App:
     app.command(plot, name="plot", show=False)
 
     @app.command
-    def lint(*paths: Path, check: bool = False, only: str = "", json: bool = False) -> int:
+    def lint(
+        *paths: Path,
+        check: bool = False,
+        only: str = "",
+        staged: bool = False,
+        json: bool = False,
+    ) -> int:
         """Fix what can be fixed, then check, over the changed files or everything under PATHS.
 
         With no path the pass reads every file that differs from HEAD or is new, owned
@@ -1713,12 +1722,20 @@ def build(root: Path | None = None) -> App:
                 text hygiene would repair, the mode for CI and for verifying a tree.
             only: the steps to run, comma-separated tool names with `text` for the built-in
                 hygiene; every step when empty, so `--only ruff-format` is a formatter alone.
+            staged: read the files in the index of the root and of each owned submodule, what a
+                commit would hold, the file set of the pre-commit hook. It answers to the
+                topmost superproject's workspace, wherever it runs. A fixer rewrites the
+                working file, so the commit stops once and the files are staged again.
             json: print the report as canonical JSON instead of the findings and a summary line.
         """
-        root = workspace_root()
+        if staged and paths:
+            raise MissionError("--staged reads the index; name no paths with it")
+        root = (topmost(Path.cwd()) if staged else None) or workspace_root()
         manifest = load(project.manifest(root))
         inventory = Inventory(root, manifest.git)
-        if paths:
+        if staged:
+            files = inventory.staged()
+        elif paths:
             files = inventory.under([path.resolve() for path in paths])
         else:
             files = inventory.changed()
