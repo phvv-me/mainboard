@@ -1540,7 +1540,8 @@ def build(root: Path | None = None) -> App:
         """Explore collected results across servers; each query sees newly arrived files.
 
         The lake is attached read-only (writes go to session scratch tables), and DuckLake
-        time travel (`AT (VERSION => n)`) recovers prior snapshots.
+        time travel (`AT (VERSION => n)`) recovers snapshots `lake compact` has not yet expired
+        (older than 30 days).
 
         Views: runs, trials, events, metrics, artifacts, jobs, and every table of the
         workspace's state lake as `lake.<table>` (lake.events, lake.log_lines, lake.costs...).

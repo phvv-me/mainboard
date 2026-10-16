@@ -12,7 +12,8 @@ campaign first; move an entry to the bottom section once fixed and verified.
    `READ_ONLY` attach, and `quack_query_by_name('lake', 'DELETE …')` committed a delete on the served
    lake during review. The server is where this belongs: serve a second, read-only endpoint (a
    `quack_serve` from a read-only attach) for queries, beside the writable one mb's writers append
-   through. DuckLake time travel recovers any such delete meanwhile, since mb never expires snapshots.
+   through. Meanwhile DuckLake time travel can recover such a delete only until `lake compact` expires
+   snapshots older than 30 days (`expire_older_than`; files go 7 days after that, `delete_older_than`).
 2. **`integration/gates/baseline.json` names a renamed test.** It still lists
    `integration/test_evidence.py::test_check_records_the_checksums_of_chunks_kept_before_them`, so the
    gate's inspect lane fails its baseline accounting (the suite lane is unaffected). Present on `main`
@@ -793,3 +794,30 @@ segment checked: no attachment, creator gone). To fix: the gate's harness (or `m
 orphaned segments of the current user at start and reaps those whose creator is dead and NATTCH is 0
 before a suite, and a lane's time limit sends SIGTERM with a grace period before SIGKILL so the
 test postmasters' teardown runs.
+
+## 2026-10-15 — analysis engine: a 3 GB DuckDB budget runs out of memory on large projects
+
+The mb-analysis worktree's `Budget` (facts.py: 3 GB memory, 8 threads, 2 GB spill cap, all by SET;
+measured in scratchpad/mcmr-mb/DUCKDB-RESOURCES.md after the 14:58 kernel panic) holds
+research/reproducibility near 3 GB. On packages/sqlalchemy/lib (256 files) a kernel-only
+`run_lint.py check --rule PY-COLL0001` fails with DuckDB OutOfMemory at 3 GB (review4,
+scratchpad/mcmr-mb/progress/review4.md). Failing at the cap is the intended behavior, but the engine
+should finish: find the relation that peaks (likely a multi-join derivation over a large python CTE,
+as ComprehensionFact's set_loop_candidates on reproducibility), and either make it cheaper or let
+the budget scale threads down for large trees rather than raise memory.
+
+## 2026-10-15 — release provider (seed of the separate dependency checker): four defects
+
+The mb-analysis worktree's `analysis/providers/releases.py` ports mcmr's DependencyRefresher (PyPI
+simple index, release JSON, GitHub archived flag; 24 h cache in ~/.cache/mainboard/releases). The
+owner decided online dependency auditing becomes its own mb checker, apart from `check`. Review14
+(scratchpad/mcmr-mb/progress/review14.md) confirmed it matches mcmr and found, to fix when that
+checker is built:
+1. A GitHub 403 (unauthenticated limit) or 5xx is not served from an expired cache entry: HTTPError
+   escapes the stale fallback, the dependency becomes "unknown" and raises ALL-DEPE0004.
+2. `_store` sits outside the try, so a read-only cache directory crashes the run.
+3. A malformed `pyproject.toml` (TOMLDecodeError) or a list-valued `mainboard.toml` dependency
+   (AttributeError in `_constraint`) crashes the run; mcmr crashes there too.
+4. One unparsable version in `uv.lock` breaks `locked` for every package.
+Also: a single timeout marks the whole run offline, so a dependency with no cached answer empties
+the family.
