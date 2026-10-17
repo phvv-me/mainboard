@@ -225,15 +225,32 @@ class Compiler:
             "machine and commit the lock it writes."
         )
 
-    def resolution_digest(self) -> str:
-        """Hash what a solve reads: the compiled manifest on disk and local projects' metadata.
+    def resolution_moved(self) -> bool:
+        """Whether compiling the manifest as it reads now would change what a solve reads.
+
+        The compile on disk lags a manifest edited since (a host syncs the manifest and compiles
+        at its next run), and an edit to tasks or activation changes the compile without moving
+        any package, so nothing need be installed for it.
+        """
+        pending = PixiManifest.from_manifest(
+            self.manifest,
+            project_name=Project().package,
+            environment=self.environment,
+            generated_dir=self.generated_dir,
+        ).to_toml()
+        return self.resolution_digest(pending) != self.resolution_digest()
+
+    def resolution_digest(self, compiled: str | None = None) -> str:
+        """Hash what a solve reads: the compiled manifest and local projects' metadata.
 
         Tasks and activation cannot move a resolution, and activation would tie the digest to
         the workspace's location, refusing every host rooted elsewhere.
+
+        compiled: the generated manifest's text, the one on disk when None.
         """
         digest = hashlib.sha256()
-        compiled = self._resolution_manifest(self.pixi.manifest.read_text(encoding="utf-8"))
-        digest.update(_canonical(compiled))
+        text = self.pixi.manifest.read_text(encoding="utf-8") if compiled is None else compiled
+        digest.update(_canonical(self._resolution_manifest(text)))
         for declared in self._local_python_projects():
             project = self.root / declared / "pyproject.toml"
             digest.update(declared.encode())
