@@ -10,7 +10,10 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
+import duckdb
 import pytest
+
+from mainboard.state.lake import Lake
 
 from .conftest import MB
 
@@ -130,3 +133,20 @@ def test_a_served_lake_refuses_maintenance_and_strangers(mb, served, tmp_path_fa
     stranger = {**served, "MB_LAKE_TOKEN": "not-the-token"}
     ran = mb("query", "SELECT 1 FROM lake.runs", cwd=elsewhere, env=stranger)
     assert ran.code == 1 and "Authentication failed" in ran.err
+
+
+def test_a_sessions_exit_time_detach_leaves_it_holding_no_connection(workspace: Path) -> None:
+    # A session cached for the life of the process is still alive when the interpreter's finalizer
+    # runs, and a closed connection it kept is what nanobind reported as leaked at exit.
+    lake = Lake.at(workspace)
+    lake.create()
+    session = lake.session()
+    assert session.rows("SELECT 1") == [(1,)]
+    attached = session._attachment.connection
+
+    session._attachment.close()
+
+    assert session._attachment.connection is None
+    with pytest.raises(duckdb.Error):
+        attached.execute("SELECT 1")
+    assert session.rows("SELECT 2") == [(2,)]

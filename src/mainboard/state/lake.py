@@ -914,6 +914,25 @@ def recoverable(fault: BaseException) -> bool:
     )
 
 
+class _Attachment:
+    """The connection a session holds and the stack that detaches it.
+
+    Kept apart from the session so its finalizer can close the attachment without holding the
+    session: a finalizer that dropped only the stack left the closed connection on the session,
+    and a session cached for the life of the process (the evidence keeper's) still held it when
+    the interpreter's extension modules were torn down, which nanobind reports as a leak.
+    """
+
+    def __init__(self) -> None:
+        self.stack = ExitStack()
+        self.connection: duckdb.DuckDBPyConnection | None = None
+
+    def close(self) -> None:
+        """Detach and close the connection, and let it go."""
+        self.stack.close()
+        self.connection = None
+
+
 class Session:
     """One lake attached read-write for as long as its owner keeps it, attached on first use.
 
@@ -926,18 +945,16 @@ class Session:
 
     def __init__(self, lake: Lake) -> None:
         self.lake = lake
-        self._stack = ExitStack()
-        self._connection: duckdb.DuckDBPyConnection | None = None
+        self._attachment = _Attachment()
         self._turn = RLock()
         # Detaching is the collector's job, not a caller's: otherwise only interpreter exit
         # releases the catalog.
-        weakref.finalize(self, self._stack.close)
+        weakref.finalize(self, self._attachment.close)
 
     def close(self) -> None:
         """Detach now; the next statement attaches again."""
         with self._turn:
-            self._stack.close()
-            self._connection = None
+            self._attachment.close()
 
     def rows(
         self, statement: ClauseElement | str, parameters: Iterable[object] = ()
@@ -966,13 +983,14 @@ class Session:
     def _attached(self) -> duckdb.DuckDBPyConnection:
         """The connection, attaching first; a fresh workspace's lake is created on this use and
         an older release's lake brought up to this schema."""
-        if self._connection is None:
-            connection = self._stack.enter_context(
+        attachment = self._attachment
+        if attachment.connection is None:
+            connection = attachment.stack.enter_context(
                 self.lake.ready()._attached(write=True, create=False)
             )
             self.lake.evolve(connection)
-            self._connection = connection
-        return self._connection
+            attachment.connection = connection
+        return attachment.connection
 
 
 def _patiently(
