@@ -1,7 +1,7 @@
 """Read Apple's installed toolchain and test evidence without launching the IDE."""
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from patos import FrozenModel
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
@@ -37,6 +37,15 @@ class Summary(FrozenModel):
         )
 
 
+class FailureNode(FrozenModel):
+    """Xcode nests diagnostic leaves without verdicts inside failed test cases."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    name: str
+    kind: Literal["Failure Message"] = Field(alias="nodeType")
+
+
 class TestNode(FrozenModel):
     model_config = ConfigDict(extra="ignore", strict=True)
 
@@ -45,13 +54,14 @@ class TestNode(FrozenModel):
     result: str
     identifier: str = Field(default="", alias="nodeIdentifierURL")
     seconds: float | None = Field(default=None, alias="durationInSeconds", ge=0)
-    children: list[TestNode] = Field(default_factory=list)
+    children: list[TestNode | FailureNode] = Field(default_factory=list)
 
     def cases(self) -> Iterator[TestNode]:
         if self.kind == "Test Case":
             yield self
         for child in self.children:
-            yield from child.cases()
+            if isinstance(child, TestNode):
+                yield from child.cases()
 
 
 class TestTree(FrozenModel):

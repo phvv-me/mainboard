@@ -980,6 +980,8 @@ use an exact bundle when checking a particular run. The command never falls back
 an older successful run. Failed, unknown, empty, incomplete or unreadable results
 exit nonzero. Skips stay visible and are not themselves failures. Xcode's test-case
 timings are preserved; parameterized arguments are not counted again as test cases.
+Nested failure-message leaves have no verdict of their own; the parser accepts
+these diagnostics while still requiring verdicts for test cases and suites.
 Tool reads have a 30-second deadline each and bounded retained output. These commands
 inspect evidence; they do not build, launch Xcode, or install a simulator runtime.
 

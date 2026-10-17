@@ -426,3 +426,53 @@ def test_build_cli_verdict_and_newest_bundle_selection(
     document = json.loads(capsys.readouterr().out)
     assert document["bundle"] == str(newest)
     assert document["build_successful"] == (status == "succeeded")
+
+
+def test_failed_case_accepts_xcode_diagnostic_leaves_without_verdicts(
+    result_tool: ResultTool,
+    bundle: Path,
+) -> None:
+    failure: dict[str, JsonValue] = {"failureText": "XCTAssertTrue failed"}
+    result_tool.summary.update(
+        result="Failed", passedTests=1, failedTests=1, testFailures=[failure]
+    )
+    result_tool.nodes = [
+        {
+            "name": "practice",
+            "nodeType": "Test Case",
+            "result": "Failed",
+            "durationInSeconds": 25.8,
+            "children": [
+                {
+                    "name": "XCTAssertTrue failed",
+                    "nodeType": "Failure Message",
+                    "sourceLocation": {
+                        "filePath": "/project/ReviewFlowTests.swift",
+                        "lineNumber": 62,
+                    },
+                }
+            ],
+        }
+    ]
+    report = Apple(result_tool).results(bundle)
+    assert not report.summary.successful
+    assert report.summary.failures == [failure]
+    assert [(case.name, case.result) for case in report.slowest] == [("practice", "Failed")]
+
+
+@pytest.mark.parametrize("kind", ["Test Case", "Test Suite", "Arguments", "Unknown Node"])
+def test_non_diagnostic_nodes_still_require_verdicts(
+    result_tool: ResultTool,
+    bundle: Path,
+    kind: str,
+) -> None:
+    result_tool.nodes = [
+        {
+            "name": "parent",
+            "nodeType": "Test Suite",
+            "result": "Passed",
+            "children": [{"name": "missing verdict", "nodeType": kind}],
+        }
+    ]
+    with pytest.raises(MissionError, match="invalid xcresulttool"):
+        Apple(result_tool).results(bundle)
