@@ -19,6 +19,7 @@ from .inventory import Attributes, Inventory
 from .owners import Owners
 from .process import MISSING, TIMED_OUT, Invocation, Outcome
 from .report import Report
+from .sealed import Sealed
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -69,6 +70,7 @@ class Linter:
         self._tools = {name: tool for name, tool in self.table.tools.items() if name in self.steps}
         self.inventory = Inventory(root, manifest.git)
         self.owners = Owners(root, self.table.owners, self.table.markers)
+        self.sealed = Sealed(root)
         self._configured = cache(self._configures)
         self._provisioner = Provisioner(root, manifest)
         self._environments: dict[str, Mapping[str, str]] = {}
@@ -82,9 +84,15 @@ class Linter:
         """Repair text, run the writing tools in declared order, then every check at once.
 
         paths: absolute files beneath the root. One that no longer exists still wakes the
-            checks that read its whole owner, since a deletion can break what imported it.
+            checks that read its whole owner, since a deletion can break what imported it. A
+            file a registration has sealed is left out of every step, since the digest it was
+            registered under covers its bytes.
         """
-        files = [path for path in paths if not self._excluded.match_file(self._relative(path))]
+        files = [
+            path
+            for path in paths
+            if not self._excluded.match_file(self._relative(path)) and not self.sealed.holds(path)
+        ]
         before = {path: _fingerprint(path) for path in files}
         outcomes = self._hygiene(files) if TEXT in self.steps else []
         writers = [] if self.check else [name for name, tool in self._tools.items() if tool.writes]

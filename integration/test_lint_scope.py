@@ -8,11 +8,18 @@ files the pass reads and no others, so linting a few files is red only for those
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
+from mainboard.analysis.apply import Plan
+from mainboard.analysis.edits import Delete
+from mainboard.analysis.findings import Span
 from mainboard.core.project import Project
 from mainboard.lint import Inventory, Linter
 from mainboard.lint.process import TIMED_OUT, Outcome
 from mainboard.manifest.loading import load
 from mainboard.manifest.schema.git import GitPolicy
+from mainboard.manifest.schema.lint import LintTool
 
 from .conftest import committed, git
 
@@ -90,3 +97,52 @@ def test_a_checker_names_its_path_only_where_its_own_configuration_is_absent(
         "bare": ("checker", "run", "."),
         ".": ("checker", "run", "."),
     }
+
+
+def test_no_step_rewrites_a_file_a_registration_sealed(tracked: Path) -> None:
+    sealed = tracked / "experiments" / "registered"
+    drafted = tracked / "experiments" / "drafted"
+    sealed.mkdir(parents=True)
+    drafted.mkdir()
+    node = "---\nregistration_sha256: {}\n---\n# Node\n"
+    (sealed / "node.md").write_text(node.format("ab" * 32), encoding="utf-8")
+    (drafted / "node.md").write_text(node.format("0" * 64), encoding="utf-8")
+    pins = sealed / "pins.json"
+    pins.write_bytes(b'{"shapes":{}}')
+    (sealed / "nested").mkdir()
+    deeper = sealed / "nested" / "notes.txt"
+    deeper.write_bytes(b"trailing   \n")
+    open_draft = drafted / "pins.json"
+    open_draft.write_bytes(b'{"shapes":{}}')
+    linter = Linter(tracked, load(Project().manifest(tracked)))
+
+    report = linter.lint([pins, deeper, open_draft])
+
+    assert pins.read_bytes() == b'{"shapes":{}}'
+    assert deeper.read_bytes() == b"trailing   \n"
+    assert open_draft.read_bytes() == b'{"shapes":{}}\n'
+    assert report.rewritten == ("experiments/drafted/pins.json",)
+
+
+def test_an_analysis_fix_waits_when_a_sealed_file_is_among_its_edits(tmp_path: Path) -> None:
+    sealed = tmp_path / "node"
+    sealed.mkdir()
+    (sealed / "node.md").write_text(
+        f"---\nregistration_sha256: {'cd' * 32}\n---\n# Node\n", encoding="utf-8"
+    )
+    (sealed / "protocol.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "free.py").write_text("x = 1\n", encoding="utf-8")
+    plan = Plan(tmp_path)
+
+    assert not plan.add([_deletion("node/protocol.py")])
+    assert plan.add([_deletion("free.py")])
+    assert plan.deferred == 1
+
+
+def _deletion(path: str) -> Delete:
+    return Delete(span=Span(path=path, start_line=1, end_line=1))
+
+
+def test_a_fix_that_names_no_files_is_refused_at_load() -> None:
+    with pytest.raises(ValidationError, match="must take"):
+        LintTool(check="fmt --check {files}", fix="fmt .", files=("*.py",))

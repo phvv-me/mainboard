@@ -57,8 +57,14 @@ class LintTool(Declared):
     @field_validator("fix")
     @classmethod
     def fixes(cls, fix: str) -> str:
-        """Refuse, at load, a fix whose quoting never closes, and read a blank one as none."""
-        return fix if split(fix) else ""
+        """Refuse, at load, a fix whose quoting never closes or that names no `{files}`, and read
+        a blank one as none. A fix over its whole owner could rewrite files lint leaves alone
+        (a registration's sealed sources), where one given the files cannot."""
+        if not split(fix):
+            return ""
+        if FILES not in split(fix):
+            raise ValueError(f"a fix must take {FILES}, the files lint allows it to rewrite")
+        return fix
 
     @property
     def writes(self) -> bool:

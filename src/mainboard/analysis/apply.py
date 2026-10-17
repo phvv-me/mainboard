@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ..lint.sealed import Sealed
 from .edits import Delete, Edit, Import, Insert, Move, Remove, Rename, Replace
 from .facts import listed
 
@@ -78,6 +79,7 @@ class Plan:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.sealed = Sealed(root)
         self.sources: dict[str, Source] = {}
         self.text: list[TextEdit] = []
         self.renamed: dict[str, str] = {}
@@ -94,7 +96,11 @@ class Plan:
 
     def add(self, edits: Sequence[Edit]) -> bool:
         """Take one finding's edits unless they collide with ones already taken (or a rename
-        would land on a path that exists); return whether."""
+        would land on a path that exists, or any edit changes a file a registration has sealed);
+        return whether."""
+        if any(self.sealed.holds(self.root / edit.file()) for edit in edits):
+            self.deferred += 1
+            return False
         expanded = [piece for edit in edits for piece in self._expand(edit)]
         removals = {edit.path for edit in edits if isinstance(edit, Remove)}
         renames = {edit.path: edit.target for edit in edits if isinstance(edit, Rename)}
