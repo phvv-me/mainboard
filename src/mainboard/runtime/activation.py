@@ -61,6 +61,26 @@ class WheelLibraries(Step):
         prepended(environ, "LD_LIBRARY_PATH", found)
 
 
+class CudnnSublibraries(Step):
+    """The cuDNN wheel's sublibraries under the full versioned names cuDNN 9.2x dlopens.
+
+    The wheel ships `libcudnn_graph.so.9` only, while cuDNN asks for `libcudnn_graph.so.9.27.0`.
+    Found nowhere on `LD_LIBRARY_PATH`, that name falls through to a host's own cuDNN of the same
+    version, a CUDA 12 build that aborts on `libcublasLt.so.12`. A link beside each library makes
+    the environment's own win, in every environment whatever its activation scripts.
+    """
+
+    def apply(self, environ: MutableMapping[str, str], prefix: Path) -> None:
+        del environ
+        for site in prefix.glob("lib/python3*/site-packages"):
+            for dist in site.glob("nvidia_cudnn_cu13-*.dist-info"):
+                version = dist.stem.partition("-")[2].split(".")
+                minor_patch = ".".join(version[1:3])
+                for library in (site / "nvidia/cudnn/lib").glob("libcudnn*.so.9"):
+                    with suppress(OSError):
+                        library.with_name(f"{library.name}.{minor_patch}").symlink_to(library.name)
+
+
 class BuildPaths(Step):
     """The prefix's own `pkg-config` directory and libclang, for native builds inside it.
 
@@ -117,7 +137,12 @@ class Runtime:
     def __init__(
         self,
         prefix: Path,
-        steps: Sequence[Step] = (WheelLibraries(), BuildPaths(), CompileCaches()),
+        steps: Sequence[Step] = (
+            WheelLibraries(),
+            CudnnSublibraries(),
+            BuildPaths(),
+            CompileCaches(),
+        ),
     ) -> None:
         self.prefix = prefix
         self.steps = steps
