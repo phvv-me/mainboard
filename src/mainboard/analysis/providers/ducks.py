@@ -72,6 +72,9 @@ class Ducks(FrozenModel):
     cache: Path = Field(default_factory=lambda data: data["budget"].folder / "ast.duckdb")
     # The cache serves this project alone, so `register` drops the trees of contents it lacks.
     exclusive: bool = False
+    # Whether `register` warns about valid files the grammar misreads. The files of other
+    # repositories (a consumer's imports are read, nothing else) are not this run's to report.
+    report_gaps: bool = True
 
     # The grammar each language parses with (CUDA is C++ to tree-sitter) and its suffixes, the
     # grammar's own first.
@@ -218,7 +221,8 @@ class Ducks(FrozenModel):
                 )
         if attached:
             db.execute("DETACH astcache")
-        self._report_gaps(facts, root)
+        if self.report_gaps:
+            self._report_gaps(facts, root)
 
     def _attach(self, db: duckdb.DuckDBPyConnection) -> bool:
         """Name the cache file `astcache` in `db`, or, when another process holds it, keep the

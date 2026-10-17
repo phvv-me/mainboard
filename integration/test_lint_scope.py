@@ -7,13 +7,16 @@ files the pass reads and no others, so linting a few files is red only for those
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import duckdb
 import pytest
 from pydantic import ValidationError
 
 from mainboard.analysis.apply import Plan
 from mainboard.analysis.edits import Delete
 from mainboard.analysis.findings import Span
+from mainboard.analysis.providers.ducks import Ducks
 from mainboard.core.project import Project
 from mainboard.lint import Inventory, Linter
 from mainboard.lint.process import TIMED_OUT, Outcome
@@ -146,3 +149,19 @@ def _deletion(path: str) -> Delete:
 def test_a_fix_that_names_no_files_is_refused_at_load() -> None:
     with pytest.raises(ValidationError, match="must take"):
         LintTool(check="fmt --check {files}", fix="fmt .", files=("*.py",))
+
+
+@pytest.mark.parametrize("reports", [True, False])
+def test_a_consumer_read_does_not_report_grammar_gaps_in_other_repositories(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reports: bool
+) -> None:
+    said: list[str] = []
+    monkeypatch.setattr(Ducks, "_attach", lambda self, db: False)
+    monkeypatch.setattr(Ducks, "sources", lambda self, root: [])
+    monkeypatch.setattr(Ducks, "parse", lambda self, db, root, sources: 0)
+    monkeypatch.setattr(Ducks, "_report_gaps", lambda self, facts, root: said.append("gaps"))
+    facts = SimpleNamespace(db=duckdb.connect(), adopt=lambda *args: None)
+
+    Ducks(report_gaps=reports).register(facts, tmp_path)
+
+    assert said == (["gaps"] if reports else [])
