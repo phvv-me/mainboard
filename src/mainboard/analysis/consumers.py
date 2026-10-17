@@ -382,7 +382,9 @@ class Consumers:
                 (mirror / file).parent.mkdir(parents=True, exist_ok=True)
                 (mirror / file).symlink_to(top / file)
             facts = Facts(mirror, budget)
-            Ducks(budget=budget, cache=self._cache(), exclusive=True).register(facts, mirror)
+            Ducks(budget=budget, cache=self._cache(), exclusive=True, report_gaps=False).register(
+                facts, mirror
+            )
             for module, name, consumer in facts.db.execute(_PAIRS).fetchall():
                 if module.split(".")[0] not in packages:
                     continue

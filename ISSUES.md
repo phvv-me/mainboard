@@ -120,6 +120,8 @@ root unit files, no `/etc` edits.
 1. **`job submit --job` ignores `--walltime`.** A single-job submit to crimson wrote 00:30:00
    into the job script although `--walltime 00:07:00` was passed; batch specs set walltimes per
    job and are unaffected.
+   FIXED on fix/mb-bugs (474bd73): a `--job` batch takes the resource flags (`--walltime`, `--queue`, `--gpus`, ...) as
+   every job's defaults, and `--batch spec.toml` refuses them by name since the spec sets them per job.
 2. **crimson's pueued runs from a deleted path, and `pueue` is not on a plain ssh PATH.** The
    daemon's working directory is the removed `~/projects` mirror; dispatch still works, but a
    restart from that path would fail and `ssh crimson pueue status` does not resolve the binary.
@@ -821,3 +823,114 @@ checker is built:
 4. One unparsable version in `uv.lock` breaks `locked` for every package.
 Also: a single timeout marks the whole run offline, so a dependency with no cached answer empties
 the family.
+
+## 2026-10-17 — pedro-cvlab: every cuDNN convolution fails (system cuDNN 9.27 shadows the pip 9.20)
+
+On pedro-cvlab (torch 2.13.0+cu132, lock's `nvidia-cudnn-cu13` 9.20.0.48) any `conv2d` raises
+`CUDNN_BACKEND_TENSOR_DESCRIPTOR cudnnFinalize failed ... CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`
+(bf16, fp32 and under `cudnn.deterministic`; jobs 1026, 1027 of the exploratory routes study). The pip
+cuDNN ships no `libcudnn_engines_tensor_ir.so.9`, so the loader falls through to the system copy
+`/usr/lib/x86_64-linux-gnu/libcudnn_engines_tensor_ir.so.9.27.0` (apt `cudnn9-cuda-12` 9.27.0.42,
+installed 2026-09-29), and the version check between the 9.20 graph library and that 9.27 sub-library
+fails. Every CNN node (classifier sandbox and flip density CNNs) cannot run there until this is fixed.
+Workaround used (inside one probe, no system change): compile an empty library with that soname and
+`ctypes.CDLL(..., RTLD_GLOBAL)` it before the first convolution; conv then works (job 1028) and the
+default route reproduced the September CNN decisions on every image. Proper fixes: remove the apt
+cuDNN from the host (no sudo here, owner), or have the host setup put the stub on the environment's
+library path, or move the lock to a cuDNN that ships the sub-library.
+
+### Resolved 2026-10-17 (monorepo e308d3ed4): cuDNN fault on pedro-cvlab
+
+`nvidia-cudnn-cu13 = { version = ">=9.27.0.42,<9.28", env-markers = "sys_platform == 'linux'" }` in the root
+`[python.dependency-overrides]` (the wheel then ships all ten libraries; 9.28.0.27.dev… is a sdist-only prerelease
+that fails to build, hence the upper bound). Moving the lock alone was not enough: cuDNN 9.27 dlopens its sublibraries by
+their full versioned name (`libcudnn_graph.so.9.27.0`), the wheel ships only `.so.9`, so the loader fell to the host's apt
+CUDA 12 copy of the same version and aborted on `libcublasLt.so.12`. `scripts/activate.sh` now links
+`libcudnn*.so.9` to `.so.9.<minor>.<patch>` inside the wheel's directory, which sits first on `LD_LIBRARY_PATH`. Proof job
+1042 (fp32, bf16, deterministic conv and CUDA graph replay, all cuDNN maps from the environment). Any host with an apt
+cuDNN of the same version needs the links, which the activation script makes. The old comment's "aborts inside any
+traced graph" was this same system-library mix, not the 9.24 wheel.
+
+### Library doctor, 2026-10-17 (merged from feat/lib-doctor into fix/mb-bugs)
+
+What was missing was the check that would have named this before a kernel failed:
+
+- `doctor` gains a `libraries` row per installed environment, and `host list <host> --audit` carries the
+  same rows (the host's own `doctor` code answers it, so a host shows them once it has the release).
+  `mainboard.libs` reads the CUDA libraries the wheels (RECORD) and conda packages (`conda-meta`)
+  installed, parses each ELF's `DT_NEEDED`, `RPATH` and `RUNPATH` itself (no `readelf`), reads the bare
+  sub-library names cuDNN carries (`libcudnn_graph.so`, version appended when opened), and replays the
+  loader order (RPATH without RUNPATH, `LD_LIBRARY_PATH` as `Runtime.entered` builds it, RUNPATH,
+  `ldconfig -p`, default directories). It reports a family soname that loads from outside the
+  environment, a linked one found nowhere, a family in two releases (host copy included, the break; two
+  packages of the environment, a warning), and wheels for several CUDA majors.
+- `doctor --fix` repairs only what leaks in from the host: `Raise` (the package that owns the family goes
+  through `add <package> --lang python|conda`, a manifest edit, re-locked and installed) first, then
+  `Relink` (a symlink inside the environment's lib directory when the file is there under another
+  spelling). Neither touches a system package. A transitive pin torch holds makes `add` refuse; the row
+  says so and points at `[python.dependency-overrides]`. A family split between packages of the
+  environment itself (a pip wheel next to a conda build: pip `nvidia-cuda-runtime` 13.2.75 against conda
+  `cuda-cudart` 13.4.92, NCCL 2.29.7 against 2.32.3.1 on pedro-cvlab) is report only: which one to keep is
+  the owner's call.
+- Run on pedro-cvlab with this code (shipped to `/tmp`, read-only against the environments): the
+  `default`, `cutok` and `toktier` environments no longer have the cuDNN clash. The original clash was
+  reproduced from the 9.24 wheel minus `libcudnn_engines_tensor_ir` against the apt 9.27:
+  `outside`/`split fail`, fix `add nvidia-cudnn-cu13 --lang python`.
+- Open: the remedy for a library whose directory is not on the loader path at all (neither `nvidia/*/lib`
+  nor `lib*/lib64` nor the prefix's `lib/`) is none; it needs a persistent activation setting. The
+  `Relink` links are lost on a reinstall, which `activate.sh` or `doctor --fix` makes again.
+  `mainboard add` for pip/conda splits asks the solver once per package; batch them behind one lock if
+  `--fix` is run on many.
+
+## 2026-10-17 — trial jobs exit 1 after a passing test (nanobind DuckDB leak), and two smaller traps
+
+1. Every pytest job of `classifier_ess` (and `pytest` on the center, e.g. the settlement) prints `nanobind: leaked 2 instances
+   _duckdb.DuckDBPyConnection` at interpreter exit and exits 1 after `1 known` and a complete receipt. `mb job list` then shows
+   `failed`, `settled` empty. The connections come from `mainboard.trials` (`Relations()` behind `Log.table` and the artifact
+   store). They should be closed before exit, or the exit status taken from the trial's receipt.
+2. `@job(resources=...)` and `fetch=` must be literal in the decorator: a module constant is refused with `vanished ... must be
+   literal` before anything runs.
+3. `mainboard lint <folder>` also rewrites sealed `.json` files (it reformatted `pins.json`, whose bytes are an artifact's
+   digest). Lint python files by name when a folder holds pinned data.
+4. `mb job list` settles but leaves a trial's receipts on the host (`result transfer failed` for older jobs); the receipts of a new node
+   came in with `mainboard job collect --on <host> <node dir>` and `mainboard lake materialize <node dir>`, both through `ssh localhost`.
+
+### Resolved 2026-10-17 on fix/mb-bugs
+
+1. **Not the nanobind report that failed these jobs, and the leak is fixed anyway.** nanobind only prints the leak report
+   at exit (reproduced: a passing trial exits 0 beside it). The exit status 1 of the classifier_ess jobs came from the trial
+   session's own refusal, printed just above it: `classifier_ess did not release what it held: 41943040 bytes resident
+   against the 0 it opened with` (`trials/stage.py`; a 40 MiB cuBLASLt workspace the node keeps, in research code), and the
+   job's `cause` showed the report's last line instead. The leak: the evidence keeper (`state/evidence.py _kept`, cached for
+   the life of the process) holds a lake `Session`; its finalizer closed the attach but the session kept the closed
+   connection, still alive when the extension modules were torn down. With torch imported and a lake present, a tiny trial
+   reproduced it (1 instance); the session's connection now lives in an `_Attachment` its finalizer clears (5740204,
+   `test_a_sessions_exit_time_detach_leaves_it_holding_no_connection`). The cause line of a failed job should now name the
+   real refusal. Still open in the node: release or account for the 40 MiB workspace.
+   The center's pytest settlement ran without a GPU, so its exit 1 has no stage residue to blame; it was not reproduced.
+2. (unchanged, by design: literal `fetch=`/`resources=`.)
+3. **Lint rewrote a sealed file.** A node whose `node.md` carries a real `registration_sha256` seals every file in or under its
+   folder; no lint step (text hygiene, writing tools, the analysis engine's fixes) writes them any more, and a `fix` command
+   must take `{files}` so none can rewrite a whole owner (0bade83, `test_no_step_rewrites_a_file_a_registration_sealed`).
+   Sources a seal names from outside the node's folder (shared `src/` modules) are not discoverable from the manifest and stay
+   a `[lint] exclude` entry.
+4. **Not a failed fetch.** The pass did fetch (`fetched .../classifier_ess from pedro-cvlab` in the settler log); collection
+   writes the lake and no tree files, so the folder looked empty until `lake materialize`. The fetch line now says so
+   (415c14a). Old `result transfer failed` rows (pedro-cvlab 621, 631, 632, 1029) are runs whose fetch folder was never
+   created on the host: `ssh collect` raises FileNotFoundError every pass. Retire them with `job cancel`, or make a missing
+   remote folder of a failed job settle as "nothing to fetch" (not done).
+
+## 2026-10-17 — resolved on fix/mb-bugs: consumers warning, divergence table, stale-compile rows
+
+- `lint` on one patos file warned that the Python grammar misreads two `packages/mcmr` files: the consumer guard reads every
+  owned repository that imports the project (mcmr, frozen, still does) and reported grammar gaps in them. A consumer read
+  now parses silently (`Ducks(report_gaps=False)`, 9d202a5); the files still count as consumers, so a rename cannot break
+  frozen code unseen.
+- The PY-CUDA divergence table gave `warp.inclusive_sum` and `warp.reserve` result level 1 (the warp's); each lane gets its
+  own value (level 2). Fixed in `CudaCollectiveCalls` (fc1450b); regression suite unchanged (0 unaccepted, 0 stale), and a new
+  PY-CUDA0019 example fails on the old table.
+- pedro-cvlab's doctor said `compiled before the current manifest` after a sync. Real staleness of the generated
+  `pixi.toml`, not of the environment: the host syncs the manifest and compiles at its next run (it did at 13:45:11 JST), and
+  the digest covers tasks, so any edit to a task or to activation raised the row with the fix `install`. The row now fires
+  only when the edit moves the resolution or the second-stage toolchains (`Compiler.resolution_moved`, b996d8b). The `hosts`
+  row (`diverged from the current manifest`) still compares the full compile digest and flags task-only edits; open.

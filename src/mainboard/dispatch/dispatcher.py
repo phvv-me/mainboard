@@ -261,7 +261,12 @@ class Dispatcher:
             )
         except (ValueError, RuntimeError, BadZipFile) as fault:
             raise MissionError(f"collection of {path} from {host} failed: {fault}") from fault
-        logger.info("fetched {} from {}", path, host)
+        logger.info(
+            "fetched {} from {} into the lake; `lake materialize {}` writes it to the tree",
+            path,
+            host,
+            path,
+        )
         return published
 
     def hold(self, asked: Request, *, reason: str) -> RunRecord:

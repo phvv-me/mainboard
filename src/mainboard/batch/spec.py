@@ -172,13 +172,22 @@ class BatchSpec(FrozenModel):
         return f"{self.name}-{digest}"
 
     @classmethod
-    def inline(cls, name: str, declared: Sequence[str]) -> BatchSpec:
-        """The batch `name` from one `target:command` argument per job, the file-free way."""
+    def inline(
+        cls, name: str, declared: Sequence[str], defaults: Mapping[str, Json] | None = None
+    ) -> BatchSpec:
+        """The batch `name` from one `target:command` argument per job, the file-free way.
+
+        defaults: the fields every job takes beyond its target and command (`--walltime`).
+        """
         split = [job.partition(_INLINE) for job in declared]
         if bare := [job for job, separator, _ in split if not separator]:
             raise MissionError(f"jobs are written target:command, not {bare[0]!r}")
         return cls.of(
-            name, [{"target": target, "command": command} for target, _, command in split]
+            name,
+            [
+                {**(defaults or {}), "target": target, "command": command}
+                for target, _, command in split
+            ],
         )
 
     @classmethod

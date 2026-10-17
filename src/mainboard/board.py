@@ -476,9 +476,14 @@ class Board:
             return read_facts(shell.run(facts_command(), activate=True))
 
     def audit(self) -> list[Section]:
-        """What this host could and should update, as its own tool judges it."""
+        """What this host could and should update, and whether its environments' CUDA libraries
+        load from the environments or from the host, as its own tool judges it."""
         if self.local:
-            return upkeep.audit()
+            try:
+                libraries = self.doctor().library_rows()
+            except MissionError:
+                libraries = []  # a manifest that will not load is the doctor's row to report
+            return [*upkeep.audit(), *libraries]
         with open_shell(self.plan(container="none"), self.remote_root()) as shell:
             said = shell.run(f"{self.project.name} host list local --audit --json")
         start = said.find("[")

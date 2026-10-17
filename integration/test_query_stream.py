@@ -513,7 +513,7 @@ def test_query_help_documents_snapshot_and_remote_timeout_scope(mb) -> None:
     help_text = " ".join(ran.out.split())
     assert "not snapshot-pinned" in help_text and "server limit" in help_text
     assert "attached read-only" in help_text and "session scratch tables" in help_text
-    assert "AT (VERSION => n)" in help_text and "recovers prior snapshots" in help_text
+    assert "AT (VERSION => n)" in help_text and "recovers snapshots" in help_text
 
 
 def test_forwarded_timeout_errors_are_recognized() -> None:

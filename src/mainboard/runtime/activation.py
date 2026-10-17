@@ -126,6 +126,15 @@ class Runtime:
         for step in self.steps:
             step.apply(environ, self.prefix)
 
+    def entered(self, environ: Mapping[str, str]) -> dict[str, str]:
+        """`environ` as a job enters the environment: every step applied, then the prefix's own
+        `lib/` leading the loader path, so a library the environment ships wins over the host's
+        copy and a wheel's."""
+        entered = dict(environ)
+        self.apply(entered)
+        prepended(entered, "LD_LIBRARY_PATH", [self.prefix / "lib"])
+        return entered
+
     def changes(self, environ: Mapping[str, str]) -> dict[str, str]:
         """The variables applying the steps to `environ` would set."""
         applied = dict(environ)

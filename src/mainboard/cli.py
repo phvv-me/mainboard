@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     from .engines.compile.backend.pixi import Pixi
     from .git import Step
     from .manifest.held import Held
+    from .manifest.render.interpolate import Json
     from .manuscript import Report as PaperReport
     from .render.values import Node
     from .verdicts import StreamVerdict
@@ -159,18 +160,37 @@ class Declared(FrozenModel):
     set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = ()
     """a `name=value` filling one of the spec file's `[vars]`, repeatable."""
 
-    def batch(self, board: Board, spec: str, *, name: str = "") -> Batch:
-        """The declared batch over `board`'s workspace, `spec` relative to its root."""
-        return board.batch(self._spec(board.root, spec, name), selection=Selection.of(self.only))
+    def batch(
+        self,
+        board: Board,
+        spec: str,
+        *,
+        name: str = "",
+        resources: Mapping[str, Json] | None = None,
+    ) -> Batch:
+        """The declared batch over `board`'s workspace, `spec` relative to its root.
 
-    def _spec(self, root: Path, spec: str, name: str) -> BatchSpec:
+        resources: the flags of the verb that name what each job asks of its host, which a
+            `--job` batch takes as every job's defaults and a spec file refuses (it declares
+            them itself, per job).
+        """
+        spec_ = self._spec(board.root, spec, name, resources or {})
+        return board.batch(spec_, selection=Selection.of(self.only))
+
+    def _spec(self, root: Path, spec: str, name: str, resources: Mapping[str, Json]) -> BatchSpec:
         if spec:
+            if resources:
+                flags = ", ".join(f"--{field.replace('_', '-')}" for field in resources)
+                raise MissionError(
+                    f"{flags} would be ignored by {spec}, which sets them per job: "
+                    "declare them in its [defaults] or its [[jobs]]"
+                )
             return BatchSpec.load(root / spec, _answers(self.set_))
         if self.set_:
             raise MissionError("--set fills a spec file's [vars]; a --job batch declares none")
         if not self.job:
             raise MissionError("declare a batch: --batch <spec file>, or --job target:command")
-        return BatchSpec.inline(name or "batch", self.job)
+        return BatchSpec.inline(name or "batch", self.job, resources)
 
 
 _SPEC_ONLY = Declared()
@@ -401,7 +421,28 @@ def build(root: Path | None = None) -> App:
             yes: dispatch without asking, what a script passes.
         """
         if batch or declared.job:
-            return _submit_batch(batch, declared, name=name, estimate=estimate, wait=wait)
+            asked: dict[str, Json] = {
+                "queue": queue,
+                "walltime": walltime,
+                "mem_gb": mem_gb,
+                "gpus": gpus,
+                "gpu_name": gpu_name,
+                "max_usd": max_usd,
+                "spot": spot,
+                "arch": arch,
+                "fetch": fetch,
+                "node": node,
+                "env": env,
+                "container": container,
+            }
+            return _submit_batch(
+                batch,
+                declared,
+                name=name,
+                resources={field: value for field, value in asked.items() if value},
+                estimate=estimate,
+                wait=wait,
+            )
         if resume:
             cache = board("local").dispatcher.cache
             previous = cache.run(resume, on or None)
@@ -485,10 +526,16 @@ def build(root: Path | None = None) -> App:
         return show(submitted.handle.id, on=on, wait=True)
 
     def _submit_batch(
-        spec: str, declared: Declared, *, name: str, estimate: bool, wait: bool
+        spec: str,
+        declared: Declared,
+        *,
+        name: str,
+        resources: Mapping[str, Json],
+        estimate: bool,
+        wait: bool,
     ) -> int:
         """Price, or dispatch, every job a batch declares; print the batch id and each row."""
-        batched = declared.batch(board("local"), spec, name=name)
+        batched = declared.batch(board("local"), spec, name=name, resources=resources)
         if estimate:
             with progress(f"pricing {batched.id}"):
                 priced = [row.model_dump() for row in batched.estimate().jobs]
@@ -899,7 +946,12 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def doctor(
-        env: str = "", *, center: bool = False, members: bool = False, output: Output = _COMPACT
+        env: str = "",
+        *,
+        center: bool = False,
+        members: bool = False,
+        fix: bool = False,
+        output: Output = _COMPACT,
     ) -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
@@ -916,9 +968,18 @@ def build(root: Path | None = None) -> App:
                 torch and CUDA smoke run, scripts that behave differently here.
             members: also check every `[workspace] members` project works cloned alone: no import,
                 path or task that only the monorepo satisfies, and a clean `uv` install.
+            fix: first repair the CUDA library clashes the `libraries` rows name, as a manifest
+                edit (the owning package raised to its newest release, then re-locked and
+                installed) or a link inside the environment, never a system package, and print
+                one row for each change. The report that follows shows what is left.
         """
+        local = board("local")
+        if fix:
+            with progress("repairing library clashes"):
+                repaired = local.doctor(env).repair()
+            if repaired:
+                _sectioned(repaired, output, title="fix", heading=True)
         with progress("examining the workspace"):
-            local = board("local")
             sections = Verification(local).sections() if center else local.doctor(env).sections()
         code = _sectioned(sections, output, title="doctor")
         if members:
