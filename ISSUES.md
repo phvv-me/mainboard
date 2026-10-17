@@ -934,3 +934,23 @@ What was missing was the check that would have named this before a kernel failed
   the digest covers tasks, so any edit to a task or to activation raised the row with the fix `install`. The row now fires
   only when the edit moves the resolution or the second-stage toolchains (`Compiler.resolution_moved`, b996d8b). The `hosts`
   row (`diverged from the current manifest`) still compares the full compile digest and flags task-only edits; open.
+
+## 2026-10-17 — found by the dependency upgrade: lean environments and the Node lock
+
+1. **Lean environments skip the workspace activation scripts.** `[workspace] scripts` is documented as sourced after the dotenv
+   loader on every entry, but pixi's `no-default` drops the workspace `[activation]` table, and `declared_feature` re-adds only
+   the unset script (`pixi_manifest.py`, for a clearing manifest). So `cutok`, `toktier`, `repro` and `tl` never source
+   `scripts/activate.sh`: no `.env` loading, no wheel library paths, no nvJitLink link, and (what showed it) no cuDNN versioned
+   links, so job 1082 on `repro` failed until the links became a runtime step. Not fixed: the script also exports
+   `PYTHONPATH=<repo>:<research>` and loads every `.env`, which lean environments are lean to avoid, so sourcing it there changes
+   what they run. Decide first which of the two is true: scripts apply to default-feature environments only (then fix the
+   documentation of `scripts`), or every environment gets them (then split the script into what every environment needs, the
+   library paths, and what only the default environment wants, the `PYTHONPATH`). Runtime steps (`Runtime`, `activation.py`) already
+   reach every environment and are the place for what must hold everywhere.
+2. **Node lock regeneration only checks, it never resolves.** `Node.sync(resolve=False)` runs `pnpm install --frozen-lockfile`
+   (`npm ci`), so a manifest edit that moves a Node dependency leaves `pnpm-lock.yaml` stale and the install refuses; the upgrade
+   regenerated it by hand with `pnpm install --lockfile-only`. `mainboard lock` / `update` should resolve the Node lock the way
+   they resolve the conda and Python ones.
+
+Done with the upgrade: the cuDNN versioned links are the runtime step `CudnnSublibraries` (553e99a), and the duplicate block in the
+root `scripts/activate.sh` (and its `unset` names) is removed, uncommitted in the monorepo.
