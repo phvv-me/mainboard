@@ -16,7 +16,10 @@ class Header(Model):
     """Workspace identity and solve surface.
 
     scripts: workspace-relative shell scripts pixi sources after the dotenv loader on every
-        entry, for setup a static table cannot express (a library path across installed wheels).
+        entry of a full environment, for setup a static table cannot express (a library path
+        across installed wheels). Lean environments skip them, since they also set a global
+        PYTHONPATH and load every `.env`; what every environment needs runs in the activation
+        steps instead (`runtime.activation`, e.g. the cuDNN sublibrary links).
     data: the paths that are data, not source; a host still ships what its sync include names.
         Left out of the compile digest, since no environment reads it.
     members: workspace-relative globs of the projects composed into this workspace (see
