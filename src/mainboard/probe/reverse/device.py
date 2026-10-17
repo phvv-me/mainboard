@@ -9,6 +9,7 @@ from typing import ClassVar
 from patos import FrozenModel
 
 from ...core.errors import MissionError
+from ...core.tool import Runner, ToolOutput, ToolRunner
 from .models import (
     AnalysisProfile,
     ArchCoverage,
@@ -29,7 +30,6 @@ from .models import (
 )
 from .parsers import normalize_arch, parse_list_elf, parse_list_ptx, parse_resources, parse_sass
 from .providers import Availability, Effects, Request, ReverseProvider
-from .runner import Runner, ToolOutput, ToolRunner
 
 # These standard toolkit spellings are checked against the installed tool's --help before
 # analysis. TODO(lead): exercise these contracts on real CUDA 13.x binaries and library fixtures.

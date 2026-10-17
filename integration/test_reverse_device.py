@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from mainboard.core.errors import MissionError
+from mainboard.core.tool import ToolOutput
 from mainboard.probe.reverse.device import CuobjdumpProvider, NvdisasmProvider
 from mainboard.probe.reverse.models import ArchCoverage, Coverage, KernelInventory, SassResult
 from mainboard.probe.reverse.parsers import (
@@ -13,7 +14,6 @@ from mainboard.probe.reverse.parsers import (
     parse_sass,
 )
 from mainboard.probe.reverse.providers import Request, ReverseProvider
-from mainboard.probe.reverse.runner import ToolOutput
 
 from .reverse_fixtures import (
     ELF,

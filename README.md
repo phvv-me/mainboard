@@ -954,3 +954,54 @@ scoring hosts by fit,
 price, and time to result across private clusters and commercial GPU clouds,
 is under active development.
 Automatic host selection remains under development.
+
+## Apple development
+
+Keep build, test and dependency-resolution commands in `[tasks]`, using `xcrun swift`
+for Swift packages and `xcodebuild` for app targets. Set `DEVELOPER_DIR` in the task's
+`env` to select Xcode without changing the machine's global selection. Bound long
+commands with `mainboard proc timeout`; retain their exit status and result bundles.
+Use distinct derived-data directories for independently runnable suites. Simulator
+UI runs sharing a device still need to run sequentially.
+
+```sh
+mainboard apple toolchain --json
+mainboard apple results path/to/Test.xcresult --json
+mainboard apple results path/to/DerivedData/Logs/Test --json
+mainboard lint --check --only swift-format path/to/Changed.swift
+```
+
+`apple results` uses the installed `xcresulttool get test-results` interface for both
+Swift Testing and XCTest. It reports the exact bundle, Xcode's summary (including
+failures, skips, expected failures, devices and warnings), and the ten slowest test
+cases. A directory selects its newest direct `.xcresult` child by modification time;
+use an exact bundle when checking a particular run. The command never falls back to
+an older successful run. Failed, unknown, empty, incomplete or unreadable results
+exit nonzero. Skips stay visible and are not themselves failures. Xcode's test-case
+timings are preserved; parameterized arguments are not counted again as test cases.
+Tool reads have a 30-second deadline each and bounded retained output. These commands
+inspect evidence; they do not build, launch Xcode, or install a simulator runtime.
+
+Register Apple's bundled formatter through the existing lint machinery:
+
+```toml
+[lint.tools.swift-format]
+check = "/usr/bin/xcrun swift format lint --strict {files}"
+fix = "/usr/bin/xcrun swift format format --in-place {files}"
+files = ["*.swift"]
+exclude = ["**/Pods/**", "**/Generated/**"]
+```
+
+Run on a host with the selected Xcode installed. Explicit file paths include new
+untracked files and avoid a shell pipeline or staging just to format. The no-path
+changed-file scan covers the workspace's owned repositories; an unregistered nested
+fork needs explicit paths. Lint's existing batching, exclusions, timeouts and reports
+apply. Keep formatting out of build phases.
+
+Mainboard orchestrates the native dependency tools: `Package.swift` and
+`Package.resolved` remain SwiftPM's dependency declarations and resolution evidence;
+`Podfile.lock` remains authoritative until a project's CocoaPods migration completes.
+Declare resolution commands as tasks. A build/test run should not silently upgrade
+these dependencies or re-solve an unrelated Mainboard environment. Task and lint
+configuration changes alone need no dependency solve; `run --as-is` uses the installed
+environment. Mainboard is development infrastructure, not an app runtime dependency.

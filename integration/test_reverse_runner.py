@@ -4,7 +4,7 @@ from typing import BinaryIO
 
 import pytest
 
-from mainboard.probe.reverse.runner import ToolRunner
+from mainboard.core.tool import ToolRunner
 
 
 @pytest.mark.parametrize("timeout", [False, True])

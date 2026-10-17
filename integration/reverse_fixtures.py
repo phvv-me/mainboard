@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from mainboard.core.tool import ToolOutput
 from mainboard.probe.reverse.device import STANDARD_FLAGS
 from mainboard.probe.reverse.models import (
     AnalysisProfile,
@@ -12,7 +13,6 @@ from mainboard.probe.reverse.models import (
     KernelInventory,
     digest,
 )
-from mainboard.probe.reverse.runner import ToolOutput
 
 ELF = """ELF file    1: lib.1.sm_90a.cubin
 ELF file    2: lib.2.sm_100.cubin

@@ -17,6 +17,7 @@ from rich.console import Console
 
 from . import staleness, upkeep
 from .agents import Agents
+from .apple import Apple
 from .batch.spec import BatchSpec, Selection
 from .board import Board
 from .center.migrate import Migration
@@ -2050,6 +2051,34 @@ def build(root: Path | None = None) -> App:
         Args:
         """
         return _sectioned(Agents.at(workspace_root()).update(), output, title="agents update")
+
+    apple = App(
+        name="apple", help="Inspect the selected Xcode toolchain and structured test results."
+    )
+    app.command(apple)
+
+    @apple.command(name="toolchain")
+    def apple_toolchain(*, output: Output = _COMPACT) -> None:
+        """Report Xcode and Swift selected by DEVELOPER_DIR or xcode-select; change neither.
+
+        Args:
+        """
+        output.print_record(Apple().toolchain(), title="Apple toolchain")
+
+    @apple.command(name="results")
+    def apple_results(path: Path, *, output: Output = _COMPACT) -> int:
+        """Read xcresult test counts, failures, devices and the ten slowest test cases.
+
+        Exit 1 for failed, unknown or empty runs. Skips and expected failures stay visible.
+        Build failures without test evidence are errors, never a successful zero-test run.
+        Supports Swift Testing and XCTest through the installed xcresulttool.
+
+        Args:
+            path: an exact .xcresult bundle or a Logs/Test directory (newest direct bundle).
+        """
+        report = Apple().results(path)
+        output.print_record(report.document(), title="Apple tests")
+        return 0 if report.summary.successful else 1
 
     proc = App(
         name="proc",
