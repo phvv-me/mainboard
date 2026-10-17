@@ -966,6 +966,7 @@ UI runs sharing a device still need to run sequentially.
 
 ```sh
 mainboard apple toolchain --json
+mainboard apple diagnostics path/to/Build.xcresult --json
 mainboard apple results path/to/Test.xcresult --json
 mainboard apple results path/to/DerivedData/Logs/Test --json
 mainboard lint --check --only swift-format path/to/Changed.swift
@@ -981,6 +982,16 @@ exit nonzero. Skips stay visible and are not themselves failures. Xcode's test-c
 timings are preserved; parameterized arguments are not counted again as test cases.
 Tool reads have a 30-second deadline each and bounded retained output. These commands
 inspect evidence; they do not build, launch Xcode, or install a simulator runtime.
+
+`apple diagnostics` reads the build action through `xcresulttool get build-results`,
+including when compilation failed before tests could start. It preserves compiler
+errors, warnings, analyzer warnings, source URLs and target names, plus Xcode's
+action and destination metadata. Failed or unknown builds exit nonzero; warnings
+remain visible without failing a successful build. Missing, malformed or truncated
+evidence is an error. Its `build_successful` field establishes only build success:
+use `apple results` for the test verdict. Incremental-build diagnostics describe that
+action, not every warning in the project. Give build-only tasks a fresh
+`-resultBundlePath` too, then inspect the exact bundle instead of grepping build logs.
 
 Register Apple's bundled formatter through the existing lint machinery:
 

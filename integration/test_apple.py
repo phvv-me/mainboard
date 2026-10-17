@@ -296,3 +296,133 @@ def test_empty_simulator_inventory_is_valid_and_cli_read_only(
     assert stopped.value.code == 0
     assert json.loads(capsys.readouterr().out) == []
     assert result_tool.calls == [("simctl", "list", "devices", "available", "--json")]
+
+
+@pytest.fixture
+def build_summary() -> dict[str, JsonValue]:
+    return {
+        "status": "succeeded",
+        "errorCount": 0,
+        "warningCount": 1,
+        "analyzerWarningCount": 0,
+        "errors": [],
+        "warnings": [
+            {
+                "issueType": "Swift Compiler Warning",
+                "message": "Actor-isolated property cannot be referenced here",
+                "targetName": "StudyUI",
+                "sourceURL": "file:///tmp/Study%20View.swift#StartingLineNumber=42",
+                "className": "DVTTextDocumentLocation",
+            }
+        ],
+        "analyzerWarnings": [],
+        "destination": {"platform": "macOS", "architecture": "arm64"},
+        "actionTitle": "Building project Example with scheme Example",
+    }
+
+
+def test_build_diagnostics_preserve_locations_and_metadata_without_reading_tests(
+    result_tool: ResultTool,
+    build_summary: dict[str, JsonValue],
+    bundle: Path,
+) -> None:
+    result_tool.failure = ToolOutput(stdout=json.dumps(build_summary))
+    report = Apple(result_tool).diagnostics(bundle)
+    assert report.summary.successful
+    assert report.document() == {
+        "bundle": str(bundle.resolve()),
+        "build_successful": True,
+        "summary": build_summary,
+    }
+    assert result_tool.calls == [
+        ("xcresulttool", "get", "build-results", "--path", str(bundle.resolve()), "--compact")
+    ]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"status": "failed"},
+        {"status": "cancelled"},
+        {"status": "unknown"},
+        {"errorCount": 1},
+        {"errors": [{"issueType": "Swift Compiler Error", "message": "Missing symbol"}]},
+    ],
+)
+def test_build_failures_cannot_be_reported_as_success(
+    result_tool: ResultTool,
+    build_summary: dict[str, JsonValue],
+    bundle: Path,
+    change: dict[str, JsonValue],
+) -> None:
+    build_summary.update(change)
+    result_tool.failure = ToolOutput(stdout=json.dumps(build_summary))
+    assert not Apple(result_tool).diagnostics(bundle).summary.successful
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"errorCount": -1},
+        {"errorCount": True},
+        {"warningCount": "1"},
+        {"errors": [{}]},
+        {"warnings": [{"message": "Missing issue type"}]},
+        {"analyzerWarnings": None},
+    ],
+)
+def test_invalid_build_evidence_fails(
+    result_tool: ResultTool,
+    build_summary: dict[str, JsonValue],
+    bundle: Path,
+    change: dict[str, JsonValue],
+) -> None:
+    build_summary.update(change)
+    result_tool.failure = ToolOutput(stdout=json.dumps(build_summary))
+    with pytest.raises(MissionError, match="invalid xcresulttool build evidence"):
+        Apple(result_tool).diagnostics(bundle)
+
+
+@pytest.mark.parametrize("payload", ["not JSON", "{}", '{"status":"succeeded"}'])
+def test_incomplete_build_evidence_is_not_a_zero_error_success(
+    result_tool: ResultTool, bundle: Path, payload: str
+) -> None:
+    result_tool.failure = ToolOutput(stdout=payload)
+    with pytest.raises(MissionError, match="invalid xcresulttool build evidence"):
+        Apple(result_tool).diagnostics(bundle)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [ToolOutput(returncode=1, stderr="unreadable"), ToolOutput(stdout="{}", truncated=True)],
+)
+def test_build_tool_failures_remain_errors(
+    result_tool: ResultTool, bundle: Path, failure: ToolOutput
+) -> None:
+    result_tool.failure = failure
+    with pytest.raises(MissionError, match="xcrun .* failed"):
+        Apple(result_tool).diagnostics(bundle)
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed", "unknown"])
+def test_build_cli_verdict_and_newest_bundle_selection(
+    result_tool: ResultTool,
+    build_summary: dict[str, JsonValue],
+    bundle: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    status: str,
+) -> None:
+    newest = bundle.parent / "newest.xcresult"
+    newest.mkdir()
+    os.utime(bundle, (10, 10))
+    os.utime(newest, (20, 20))
+    build_summary["status"] = status
+    result_tool.failure = ToolOutput(stdout=json.dumps(build_summary))
+    monkeypatch.setattr("mainboard.cli.Apple", lambda: Apple(result_tool))
+    with pytest.raises(SystemExit) as stopped:
+        build()(["apple", "diagnostics", str(bundle.parent), "--json"])
+    assert stopped.value.code == (0 if status == "succeeded" else 1)
+    document = json.loads(capsys.readouterr().out)
+    assert document["bundle"] == str(newest)
+    assert document["build_successful"] == (status == "succeeded")

@@ -2053,7 +2053,7 @@ def build(root: Path | None = None) -> App:
         return _sectioned(Agents.at(workspace_root()).update(), output, title="agents update")
 
     apple = App(
-        name="apple", help="Inspect Xcode, available simulators and structured test results."
+        name="apple", help="Inspect Xcode, simulators, build diagnostics and test results."
     )
     app.command(apple)
 
@@ -2075,6 +2075,22 @@ def build(root: Path | None = None) -> App:
         Args:
         """
         output.print_rows(Apple().simulators(), title="Apple simulators")
+
+    @apple.command(name="diagnostics")
+    def apple_diagnostics(path: Path, *, output: Output = _COMPACT) -> int:
+        """Read compiler errors, warnings, source locations and the build action's status.
+
+        Exit 1 for failed or unknown builds; malformed or incomplete evidence is an error.
+        Warnings remain visible without failing a successful build. Works when compilation
+        failed before tests started. Build success does not establish test success; use
+        apple results for that. Incremental builds are not a whole-project warning audit.
+
+        Args:
+            path: an exact .xcresult bundle or a directory (newest direct bundle).
+        """
+        report = Apple().diagnostics(path)
+        output.print_record(report.document(), title="Apple build diagnostics")
+        return 0 if report.summary.successful else 1
 
     @apple.command(name="results")
     def apple_results(path: Path, *, output: Output = _COMPACT) -> int:

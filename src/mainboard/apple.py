@@ -76,6 +76,45 @@ class TestReport(FrozenModel):
         }
 
 
+class BuildIssue(FrozenModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    kind: str = Field(alias="issueType")
+    message: str
+    target: str | None = Field(default=None, alias="targetName")
+    source: str | None = Field(default=None, alias="sourceURL")
+
+
+class BuildSummary(FrozenModel):
+    """Keep compiler locations and unknown metadata; warnings do not fail a build."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    status: str
+    error_count: int = Field(alias="errorCount", ge=0)
+    warning_count: int = Field(alias="warningCount", ge=0)
+    analyzer_warning_count: int = Field(alias="analyzerWarningCount", ge=0)
+    errors: list[BuildIssue]
+    warnings: list[BuildIssue]
+    analyzer_warnings: list[BuildIssue] = Field(alias="analyzerWarnings")
+
+    @property
+    def successful(self) -> bool:
+        return self.status == "succeeded" and not (self.error_count or self.errors)
+
+
+class BuildReport(FrozenModel):
+    bundle: Path
+    summary: BuildSummary
+
+    def document(self) -> dict[str, Node]:
+        return {
+            "bundle": str(self.bundle),
+            "build_successful": self.summary.successful,
+            "summary": self.summary.model_dump(mode="json", by_alias=True, exclude_none=True),
+        }
+
+
 class Simulator(FrozenModel):
     model_config = ConfigDict(extra="ignore", strict=True)
 
@@ -141,6 +180,24 @@ class Apple:
             summary=summary,
             slowest=sorted(cases, key=lambda case: case.seconds or 0, reverse=True)[:10],
         )
+
+    def diagnostics(self, path: Path) -> BuildReport:
+        """Read the build action, including bundles that failed before tests could start.
+
+        A successful build action says nothing about subsequent test results. Incremental
+        builds report only the diagnostics Xcode retained for that action.
+        """
+        bundle = self._bundle(path)
+        payload = self._run(
+            "xcresulttool", "get", "build-results", "--path", str(bundle), "--compact"
+        )
+        try:
+            summary = BuildSummary.model_validate_json(payload)
+        except ValidationError as fault:
+            raise MissionError(
+                f"invalid xcresulttool build evidence for {bundle}: {fault}"
+            ) from fault
+        return BuildReport(bundle=bundle, summary=summary)
 
     def _result(self, section: str, bundle: Path) -> str:
         return self._run(
