@@ -120,6 +120,8 @@ root unit files, no `/etc` edits.
 1. **`job submit --job` ignores `--walltime`.** A single-job submit to crimson wrote 00:30:00
    into the job script although `--walltime 00:07:00` was passed; batch specs set walltimes per
    job and are unaffected.
+   FIXED on fix/mb-bugs (474bd73): a `--job` batch takes the resource flags (`--walltime`, `--queue`, `--gpus`, ...) as
+   every job's defaults, and `--batch spec.toml` refuses them by name since the spec sets them per job.
 2. **crimson's pueued runs from a deleted path, and `pueue` is not on a plain ssh PATH.** The
    daemon's working directory is the removed `~/projects` mirror; dispatch still works, but a
    restart from that path would fail and `ssh crimson pueue status` does not resolve the binary.
