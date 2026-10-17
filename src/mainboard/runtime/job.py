@@ -61,10 +61,7 @@ class PrefixActivation(FrozenModel):
         if not (self._stamped(prefix) and script.is_file()):
             raise Refusal(self.refusal)
         entered = activated(base, script=script, cwd=cwd)
-        installed = prefix / ".pixi" / "envs" / self.env
-        Runtime(installed).apply(entered)
-        prepended(entered, "LD_LIBRARY_PATH", [installed / "lib"])
-        return entered
+        return Runtime(prefix / ".pixi" / "envs" / self.env).entered(entered)
 
     @staticmethod
     def _stamped(prefix: Path) -> bool:

@@ -899,7 +899,12 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def doctor(
-        env: str = "", *, center: bool = False, members: bool = False, output: Output = _COMPACT
+        env: str = "",
+        *,
+        center: bool = False,
+        members: bool = False,
+        fix: bool = False,
+        output: Output = _COMPACT,
     ) -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
@@ -916,9 +921,18 @@ def build(root: Path | None = None) -> App:
                 torch and CUDA smoke run, scripts that behave differently here.
             members: also check every `[workspace] members` project works cloned alone: no import,
                 path or task that only the monorepo satisfies, and a clean `uv` install.
+            fix: first repair the CUDA library clashes the `libraries` rows name, as a manifest
+                edit (the owning package raised to its newest release, then re-locked and
+                installed) or a link inside the environment, never a system package, and print
+                one row for each change. The report that follows shows what is left.
         """
+        local = board("local")
+        if fix:
+            with progress("repairing library clashes"):
+                repaired = local.doctor(env).repair()
+            if repaired:
+                _sectioned(repaired, output, title="fix", heading=True)
         with progress("examining the workspace"):
-            local = board("local")
             sections = Verification(local).sections() if center else local.doctor(env).sections()
         code = _sectioned(sections, output, title="doctor")
         if members:

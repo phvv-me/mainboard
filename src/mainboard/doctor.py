@@ -14,13 +14,14 @@ from plumbum.commands.processes import ProcessTimedOut
 from . import durable, staleness
 from .compute import Access, Survey
 from .core.errors import MissionError
-from .core.host import current_platform
+from .core.host import LINUX, current_platform
 from .core.project import Project
 from .core.section import Section, Verdict
 from .engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER, EnvironmentAudit
 from .engines.compile.lockfile import Lockfile
 from .engines.compile.provisioner import Provisioner
 from .engines.compile.state import SyncState
+from .libs import LibraryAudit, Raise, Relink
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -153,6 +154,50 @@ class Doctor:
             verdict=Verdict.PASS,
             detail=f"{environment} is provisioned, fresh and whole, on pixi {solver}",
         )
+
+    def libraries(self, env: str = "") -> Section | None:
+        """Whether the environment's CUDA libraries load from the environment, in one release.
+
+        A wheel that omits a library its siblings open by name makes the loader take the host's
+        copy, and a host copy of another release fails at the first kernel that needs it (cuDNN
+        9.20's wheel with the apt 9.27: `CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH` on every
+        convolution, 2026-10-17). Nothing to say for an environment that is not installed or a
+        machine that is not Linux.
+
+        env: the environment to examine, this report's own when empty.
+        """
+        audit = self.audit(env)
+        return audit.section() if audit else None
+
+    def library_rows(self) -> list[Section]:
+        """The `libraries` row of every examined environment that has one."""
+        rows = (self.libraries(name) for name in self.examined())
+        return [row for row in rows if row is not None]
+
+    def audit(self, env: str = "") -> LibraryAudit | None:
+        """The library audit of one installed environment here, None where none applies."""
+        if not LINUX:
+            return None
+        environment = self.board.plan(env=env or self.env, container="none").env
+        pixi = Provisioner(self.board.root, self.board.manifest).pixi_for(environment)
+        if not pixi.ready(environment):
+            return None
+        return LibraryAudit.entered(
+            pixi.env_prefix(environment), env="" if environment == "default" else environment
+        )
+
+    def repair(self) -> list[Section]:
+        """Apply the library repairs every examined environment calls for, one row each.
+
+        Raising a package comes first because the install it ends in replaces the environment's
+        directory; the links are found again afterwards, from a fresh audit, and made last.
+        """
+        rows: list[Section] = []
+        for kind in (Raise, Relink):
+            for name in self.examined():
+                if audit := self.audit(name):
+                    rows += [remedy.apply(self.board) for remedy in audit.remedies(kind)]
+        return rows
 
     @staticmethod
     def _committed(
@@ -360,8 +405,9 @@ class Doctor:
         if manifest.verdict is Verdict.FAIL:
             return [manifest]
         setups = self.survey.onboarded()
-        asked: list[Callable[[], Section]] = [
+        asked: list[Callable[[], Section | None]] = [
             *(partial(self.environment, name) for name in self.examined()),
+            *(partial(self.libraries, name) for name in self.examined()),
             self.layout,
             self.snapshot,
             self.settling,
@@ -370,7 +416,8 @@ class Doctor:
             *(partial(self.gate, name) for name in self.board.manifest.gates),
         ]
         with ThreadPoolExecutor(max_workers=len(asked)) as pool:
-            return [manifest, *pool.map(lambda question: question(), asked)]
+            answers = pool.map(lambda question: question(), asked)
+            return [manifest, *(answer for answer in answers if answer is not None)]
 
     def examined(self) -> tuple[str, ...]:
         """Every environment this report covers: the one it was asked about, or all declared.

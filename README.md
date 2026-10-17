@@ -336,6 +336,28 @@ $ mainboard doctor --members              # every member, as somebody who clones
 $ mainboard doctor --members llm-head     # one: imports, paths, tasks, then a clone installed by uv
 ```
 
+### Libraries the host answers instead of the environment
+
+On Linux `doctor` (and `host list <host> --audit`, which asks the host's own copy) carries a
+`libraries` row per installed environment. It reads the CUDA libraries the environment's wheels and
+conda packages installed (cuDNN, cuBLAS, NCCL, ...), replays the dynamic loader over them and over
+torch's (`DT_NEEDED`, the sub-libraries cuDNN opens by name, `RPATH`/`RUNPATH`, the activation's
+`LD_LIBRARY_PATH`, `ld.so.cache`, the default directories), and reports a library that loads from
+outside the environment, one found nowhere, and a family installed in two releases. pedro-cvlab,
+2026-10-17: torch's cuDNN 9.20 wheel lacked `libcudnn_engines_tensor_ir`, the loader took the apt
+9.27 copy, and every convolution raised `CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`.
+
+```console
+$ mainboard doctor --fix                  # first apply what the libraries rows name, one row each
+```
+
+Each finding names its repair, never a system package and never `sudo`: the owning package raised
+to its newest release (`add <package> --lang python`, a manifest edit, re-locked and installed; a
+transitive pin torch holds is refused and needs `[python.dependency-overrides]`), or, when the
+environment already ships the library under another spelling than the one it is opened by
+(`.so.9` against `.so.9.27.0`), a link inside the environment's own directory, made again by
+`--fix` after a reinstall.
+
 ## One repository tree
 
 A workspace that is a git repository with submodules, nested ones included, is

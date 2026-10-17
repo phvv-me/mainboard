@@ -821,3 +821,50 @@ checker is built:
 4. One unparsable version in `uv.lock` breaks `locked` for every package.
 Also: a single timeout marks the whole run offline, so a dependency with no cached answer empties
 the family.
+
+## 2026-10-17 — pedro-cvlab: every cuDNN convolution fails (system cuDNN 9.27 shadows the pip 9.20)
+
+On pedro-cvlab (torch 2.13.0+cu132, lock's `nvidia-cudnn-cu13` 9.20.0.48) any `conv2d` raises
+`CUDNN_BACKEND_TENSOR_DESCRIPTOR cudnnFinalize failed ... CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`
+(bf16, fp32 and under `cudnn.deterministic`; jobs 1026, 1027 of the exploratory routes study). The pip
+cuDNN ships no `libcudnn_engines_tensor_ir.so.9`, so the loader falls through to the system copy
+`/usr/lib/x86_64-linux-gnu/libcudnn_engines_tensor_ir.so.9.27.0` (apt `cudnn9-cuda-12` 9.27.0.42,
+installed 2026-09-29), and the version check between the 9.20 graph library and that 9.27 sub-library
+fails. Every CNN node (classifier sandbox and flip density CNNs) cannot run there until this is fixed.
+Workaround used (inside one probe, no system change): compile an empty library with that soname and
+`ctypes.CDLL(..., RTLD_GLOBAL)` it before the first convolution; conv then works (job 1028) and the
+default route reproduced the September CNN decisions on every image. Proper fixes: remove the apt
+cuDNN from the host (no sudo here, owner), or have the host setup put the stub on the environment's
+library path, or move the lock to a cuDNN that ships the sub-library.
+
+Lock fixed by another agent the same day (`nvidia-cudnn-cu13 >=9.27.0.42` override in the root
+manifest; `scripts/activate.sh` links the versioned names, since cuDNN opens `libcudnn_graph.so.9.27.0`,
+not `.so.9`). What was missing was the check that would have named this before a kernel failed; built
+in the `feat/lib-doctor` worktree (not merged, not committed):
+
+- `doctor` gains a `libraries` row per installed environment, and `host list <host> --audit` carries the
+  same rows (the host's own `doctor` code answers it, so a host shows them once it has the release).
+  `mainboard.libs` reads the CUDA libraries the wheels (RECORD) and conda packages (`conda-meta`)
+  installed, parses each ELF's `DT_NEEDED`, `RPATH` and `RUNPATH` itself (no `readelf`), reads the bare
+  sub-library names cuDNN carries (`libcudnn_graph.so`, version appended when opened), and replays the
+  loader order (RPATH without RUNPATH, `LD_LIBRARY_PATH` as `Runtime.entered` builds it, RUNPATH,
+  `ldconfig -p`, default directories). It reports a family soname that loads from outside the
+  environment, a linked one found nowhere, a family in two releases (host copy included, the break; two
+  packages of the environment, a warning), and wheels for several CUDA majors.
+- `doctor --fix` applies the repairs the rows name and prints one row per change: `Raise` (the package
+  that owns the family goes through `add <package> --lang python|conda`, a manifest edit, re-locked and
+  installed) first, then `Relink` (a symlink inside the environment's lib directory when the file is
+  there under another spelling). Neither touches a system package. A transitive pin torch holds makes
+  `add` refuse; the row says so and points at `[python.dependency-overrides]`.
+- Run on pedro-cvlab with this code (shipped to `/tmp`, read-only against the environments): the
+  `default`, `cutok` and `toktier` environments no longer have the cuDNN clash (default 9.27 with the
+  versioned links; cutok and toktier 9.24 ship all ten), and the rows show the in-environment splits
+  instead (pip `nvidia-cuda-runtime` 13.2.75 against conda `cuda-cudart` 13.4.92, NCCL 2.29.7 against
+  2.32.3.1, NVTX in `default`, NVVM in `cutok`). The original clash was reproduced from the 9.24 wheel
+  minus `libcudnn_engines_tensor_ir` against the apt 9.27: `outside`/`split fail`, fix `add
+  nvidia-cudnn-cu13 --lang python`.
+- Open: the remedy for a library whose directory is not on the loader path at all (neither `nvidia/*/lib`
+  nor `lib*/lib64` nor the prefix's `lib/`) is none; it needs a persistent activation setting. The
+  `Relink` links are lost on a reinstall, which `activate.sh` or `doctor --fix` makes again.
+  `mainboard add` for in-environment pip/conda splits asks the solver once per package; batch them
+  behind one lock if `--fix` is run on many.
