@@ -228,3 +228,71 @@ def test_invalid_counts_are_not_coerced_to_success(
     result_tool.summary["passedTests"] = count
     with pytest.raises(MissionError, match="invalid xcresulttool"):
         Apple(result_tool).results(bundle)
+
+
+def test_simulators_keep_runtime_identity_and_exclude_unavailable(
+    result_tool: ResultTool,
+) -> None:
+    device = {"name": "Same name", "udid": "device-a", "state": "Shutdown", "isAvailable": True}
+    result_tool.failure = ToolOutput(
+        stdout=json.dumps(
+            {
+                "devices": {
+                    "runtime-new": [device, {**device, "udid": "gone", "isAvailable": False}],
+                    "runtime-old": [{**device, "udid": "device-b", "state": "Booted"}],
+                }
+            }
+        )
+    )
+    assert Apple(result_tool).simulators() == [
+        {"runtime": "runtime-new", "name": "Same name", "udid": "device-a", "state": "Shutdown"},
+        {"runtime": "runtime-old", "name": "Same name", "udid": "device-b", "state": "Booted"},
+    ]
+    assert result_tool.calls == [("simctl", "list", "devices", "available", "--json")]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not JSON",
+        "{}",
+        '{"devices": []}',
+        '{"devices": {"runtime": [{"name": "Device", "udid": "id", "state": "Booted"}]}}',
+        '{"devices": {"runtime": [{"name": "Device", "udid": "id", '
+        '"state": "Booted", "isAvailable": "true"}]}}',
+    ],
+)
+def test_malformed_simulator_inventory_fails(result_tool: ResultTool, payload: str) -> None:
+    result_tool.failure = ToolOutput(stdout=payload)
+    with pytest.raises(MissionError, match="invalid simctl"):
+        Apple(result_tool).simulators()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ToolOutput(returncode=72, stderr="simctl not available"),
+        ToolOutput(stdout='{"devices": {}}', truncated=True),
+    ],
+)
+def test_unavailable_or_truncated_simulator_tools_fail(
+    result_tool: ResultTool,
+    failure: ToolOutput,
+) -> None:
+    result_tool.failure = failure
+    with pytest.raises(MissionError, match="xcrun simctl .* failed"):
+        Apple(result_tool).simulators()
+
+
+def test_empty_simulator_inventory_is_valid_and_cli_read_only(
+    result_tool: ResultTool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result_tool.failure = ToolOutput(stdout='{"devices": {}}')
+    monkeypatch.setattr("mainboard.cli.Apple", lambda: Apple(result_tool))
+    with pytest.raises(SystemExit) as stopped:
+        build()(["apple", "simulators", "--json"])
+    assert stopped.value.code == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert result_tool.calls == [("simctl", "list", "devices", "available", "--json")]

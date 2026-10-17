@@ -2053,7 +2053,7 @@ def build(root: Path | None = None) -> App:
         return _sectioned(Agents.at(workspace_root()).update(), output, title="agents update")
 
     apple = App(
-        name="apple", help="Inspect the selected Xcode toolchain and structured test results."
+        name="apple", help="Inspect Xcode, available simulators and structured test results."
     )
     app.command(apple)
 
@@ -2064,6 +2064,17 @@ def build(root: Path | None = None) -> App:
         Args:
         """
         output.print_record(Apple().toolchain(), title="Apple toolchain")
+
+    @apple.command(name="simulators")
+    def apple_simulators(*, output: Output = _COMPACT) -> None:
+        """List available simulator names, runtime identifiers, UDIDs and current states.
+
+        Uses the selected Xcode without changing device state. A device's availability
+        does not establish eligibility for a particular project's scheme or deployment target.
+
+        Args:
+        """
+        output.print_rows(Apple().simulators(), title="Apple simulators")
 
     @apple.command(name="results")
     def apple_results(path: Path, *, output: Output = _COMPACT) -> int:

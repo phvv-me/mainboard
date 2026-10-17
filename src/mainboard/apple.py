@@ -76,6 +76,21 @@ class TestReport(FrozenModel):
         }
 
 
+class Simulator(FrozenModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    name: str = Field(min_length=1)
+    udid: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+    available: bool = Field(alias="isAvailable")
+
+
+class SimulatorInventory(FrozenModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    devices: dict[str, list[Simulator]]
+
+
 class Apple:
     """Use xcrun's selected Xcode (including DEVELOPER_DIR), with bounded tool output."""
 
@@ -89,6 +104,20 @@ class Apple:
             "swift_path": self._run("--find", "swift").strip(),
             "xcresulttool_path": self._run("--find", "xcresulttool").strip(),
         }
+
+    def simulators(self) -> list[dict[str, str]]:
+        """List available devices without booting, creating or erasing a simulator."""
+        payload = self._run("simctl", "list", "devices", "available", "--json")
+        try:
+            inventory = SimulatorInventory.model_validate_json(payload)
+        except ValidationError as fault:
+            raise MissionError(f"invalid simctl device inventory: {fault}") from fault
+        return [
+            {"runtime": runtime, "name": device.name, "udid": device.udid, "state": device.state}
+            for runtime, devices in sorted(inventory.devices.items())
+            for device in sorted(devices, key=lambda item: (item.name, item.udid))
+            if device.available
+        ]
 
     def results(self, path: Path) -> TestReport:
         """Read an exact bundle, or the newest direct child of a Logs/Test directory.

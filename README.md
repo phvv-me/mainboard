@@ -1005,3 +1005,21 @@ Declare resolution commands as tasks. A build/test run should not silently upgra
 these dependencies or re-solve an unrelated Mainboard environment. Task and lint
 configuration changes alone need no dependency solve; `run --as-is` uses the installed
 environment. Mainboard is development infrastructure, not an app runtime dependency.
+
+Use `mainboard apple simulators --json` to discover installed, available simulator
+names, runtime identifiers, UDIDs and states before choosing a test destination.
+The compact form avoids dumping simulator filesystem paths and cache sizes. It never
+boots, creates or erases a device, and availability does not prove that a particular
+scheme supports it. Preserve the runtime and UDID when names repeat across versions.
+This command follows the same Xcode selection and bounded runner as `toolchain`.
+If the system selects Command Line Tools, use a declared task with `DEVELOPER_DIR`
+pointing at the intended Xcode; do not change global `xcode-select` as a workaround.
+
+For ordinary Xcode builds/tests, pass `-onlyUsePackageVersionsFromResolvedFile`.
+Give dependency restoration its own bounded task using `xcodebuild
+-resolvePackageDependencies -onlyUsePackageVersionsFromResolvedFile`; existing
+CocoaPods projects use `pod install --deployment`. Review dependency upgrades as
+separate changes. For run-specific evidence, pass a fresh, nonexistent
+`-resultBundlePath` to Xcode and inspect that exact path with `apple results`, keeping
+the command exit code as well. Directory-based result inspection remains useful for
+browsing saved runs; it cannot attest which run just finished.
