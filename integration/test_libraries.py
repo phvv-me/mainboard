@@ -159,7 +159,7 @@ def test_two_packages_holding_one_family_in_two_releases_are_a_split(tmp_path: P
     found = {finding.family: finding for finding in audit(prefix, tmp_path / "none").findings()}
 
     assert found["NCCL"].verdict is Verdict.WARN
-    assert found["NCCL"].remedy == Raise(package="nvidia-nccl-cu13", ecosystem="python")
+    assert found["NCCL"].remedy is None
     assert "nccl 2.32.3" in found["NCCL"].detail
     assert found["CUDA"].verdict is Verdict.FAIL
     assert "nvidia-cublas-cu12, nvidia-nccl-cu13" in found["CUDA"].detail

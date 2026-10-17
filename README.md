@@ -356,7 +356,9 @@ to its newest release (`add <package> --lang python`, a manifest edit, re-locked
 transitive pin torch holds is refused and needs `[python.dependency-overrides]`), or, when the
 environment already ships the library under another spelling than the one it is opened by
 (`.so.9` against `.so.9.27.0`), a link inside the environment's own directory, made again by
-`--fix` after a reinstall.
+`--fix` after a reinstall. A family held in two releases by packages of the environment itself
+(a pip wheel beside a conda build) is only reported: which one to keep is the owner's call, so
+`--fix` leaves it alone.
 
 ## One repository tree
 

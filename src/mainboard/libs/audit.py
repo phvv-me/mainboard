@@ -322,26 +322,21 @@ class LibraryAudit:
     def _split(self, family: Family, releases: Mapping[Release, Provided | None]) -> Finding:
         """A family in two releases: broken when the host is one, a warning when all are ours.
 
-        A mix inside the environment is repaired by raising its oldest package; the host's copy
-        is reported with the library the environment lacks, which is what raising completes.
+        Report only. A mix inside the environment is the owner's to settle, since a pip wheel
+        beside a conda build is declared on purpose; the host's copy is repaired through the
+        library the environment lacks, which the unresolved finding raises or relinks.
         """
         host = None in releases.values()
         spoken = [
             f"{p.provider.name} {p.provider.version}" if p else "the host"
             for p in releases.values()
         ]
-        oldest = releases[min(releases)]
         return Finding(
             kind=Kind.SPLIT,
             family=family.name,
             detail=("releases mixed in one process: " if host else "releases installed together: ")
             + ", ".join(spoken),
             verdict=Verdict.FAIL if host else Verdict.WARN,
-            remedy=None
-            if host or oldest is None
-            else Raise(
-                package=oldest.provider.name, ecosystem=oldest.provider.ecosystem, env=self.env
-            ),
         )
 
     def _majors(self) -> list[Finding]:
