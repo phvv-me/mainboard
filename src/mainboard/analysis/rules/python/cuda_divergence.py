@@ -114,4 +114,36 @@ class DivergentCollective(Rule, id="PY-CUDA0019", applicability="review"):
                 "    if x > 64:\n        cuda.syncthreads()\n"
             ),
         ),
+        Example(
+            bad=(
+                "from patos.cuda.primitives import warp\n"
+                "from patos.cuda.typed import Per, cuda, kernel, thread_in_block\n\n\n"
+                "@kernel(per=Per.BLOCK, threads=128)\ndef pack(x: int) -> None:\n"
+                "    emitted = warp.ballot_prefix(thread_in_block() < x)\n"
+                "    if emitted.before == 0:\n        cuda.syncwarp()\n"
+            ),
+            good=(
+                "from patos.cuda.primitives import warp\n"
+                "from patos.cuda.typed import Per, cuda, kernel, thread_in_block\n\n\n"
+                "@kernel(per=Per.BLOCK, threads=128)\ndef pack(x: int) -> None:\n"
+                "    emitted = warp.ballot_prefix(thread_in_block() < x)\n"
+                "    if emitted.total == 0:\n        cuda.syncwarp()\n"
+            ),
+        ),
+        Example(
+            bad=(
+                "from patos.cuda.typed import Per, Struct, cuda, device, i32, kernel, thread_in_block\n\n\n"
+                "class Pair(Struct):\n    each: i32\n    every: i32\n\n\n"
+                "@device\ndef pair(x: i32) -> Pair:\n    return Pair(thread_in_block(), x)\n\n\n"
+                "@kernel(per=Per.BLOCK, threads=128)\ndef run(x: int) -> None:\n"
+                "    both = pair(x)\n    if both.each < 64:\n        cuda.syncthreads()\n"
+            ),
+            good=(
+                "from patos.cuda.typed import Per, Struct, cuda, device, i32, kernel, thread_in_block\n\n\n"
+                "class Pair(Struct):\n    each: i32\n    every: i32\n\n\n"
+                "@device\ndef pair(x: i32) -> Pair:\n    return Pair(thread_in_block(), x)\n\n\n"
+                "@kernel(per=Per.BLOCK, threads=128)\ndef run(x: int) -> None:\n"
+                "    both = pair(x)\n    if both.every < 64:\n        cuda.syncthreads()\n"
+            ),
+        ),
     )

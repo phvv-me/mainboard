@@ -3,9 +3,10 @@
 A launch is a call that runs a device kernel from the host: `kernel[grid, block, stream](...)`
 (numba-cuda, patos, Triton and Helion spell it with a subscript or a plain call of the decorated
 function), `cuda.core.launch(stream, config, kernel, ...)`, `warp.launch(kernel, ..., stream=)`.
-`stream_kind` is `explicit` when a stream is passed, `none` when the framework then uses the
-default stream (numba's `kernel[grid, block](...)`), `ambient` when it reads the current one
-(patos, Triton, Helion).
+`stream_kind` is `explicit` when a stream is passed (numba's third subscript item, or the `stream=`
+keyword of the call, which is how patos, Triton and Helion take one), `none` when the framework
+then uses the default stream (numba's `kernel[grid, block](...)`), `ambient` when it reads the
+current one (patos, Triton and Helion without a `stream=`).
 """
 
 from .cuda_base import CudaRelation
@@ -80,6 +81,8 @@ class CudaLaunches(CudaRelation):
             AND (a.keyword = 'stream' OR (a.position = 0 AND c.qualified_name LIKE 'cuda.core%'))
           WHERE c.qualified_name IN ('cuda.core.launch', 'cuda.core.experimental.launch',
                                      'warp.launch')
+        ), named AS (
+          SELECT fact_id, call_id, value_id FROM cuda_arguments() WHERE keyword = 'stream'
         ), launched AS (
           SELECT * FROM via_subscript UNION ALL SELECT * FROM via_member
           UNION ALL SELECT * FROM via_call
@@ -87,8 +90,10 @@ class CudaLaunches(CudaRelation):
         )
         SELECT l.fact_id, c.path, l.call_id AS node_id, c.start_line, c.start_column, c.end_line,
                c.end_column, c.scope_id, c.shown, l.kernel_key, l.framework,
-               CASE WHEN l.stream_kind = 'explicit' AND l.stream_id IS NULL THEN 'none'
+               CASE WHEN n.value_id IS NOT NULL THEN 'explicit'
+                    WHEN l.stream_kind = 'explicit' AND l.stream_id IS NULL THEN 'none'
                     ELSE l.stream_kind END AS stream_kind,
-               l.stream_id
+               coalesce(l.stream_id, n.value_id) AS stream_id
         FROM launched l JOIN cuda_calls() c ON c.fact_id = l.fact_id AND c.node_id = l.call_id
+        LEFT JOIN named n ON n.fact_id = l.fact_id AND n.call_id = l.call_id
     """

@@ -10,7 +10,9 @@ Levels start at atoms (thread indices, collectives with a uniform result) and fl
 along stores (each store is its own key, and a use reads the stores that can reach it), function
 returns, arguments to parameters and, for a store made under a branch, the branch's condition.
 Keys name what carries a level: `s:<fact>:<node>` the value one store binds, `r:<fact>:<function
-node>` what a function returns, `b:<fact>:<node>` a branch's condition.
+node>` what a function returns (`#<position>` one element of a tuple or record, `.<field>` one
+field of a record), `b:<fact>:<node>` a branch's condition. A field read off a record a call just
+built takes the level of that field alone (`cuda_field_reads`).
 """
 
 from .cuda_base import NUMBA_CUDA as _NUMBA
@@ -216,6 +218,9 @@ class CudaLevelAtoms(CudaRelation):
           FROM cuda_collective_calls() k
           JOIN cuda_nodes() a ON a.fact_id = k.fact_id AND a.node_id = k.arguments_id
           WHERE k.result_level IS NOT NULL
+          UNION ALL
+          SELECT fact_id, node_id, level, ref, label, mask_first, mask_last
+          FROM cuda_field_reads()
         )
         SELECT r.*,
                coalesce(
@@ -307,6 +312,87 @@ class CudaReturnElements(CudaRelation):
           AND a.position IS NOT NULL
         JOIN cuda_nodes() x ON x.fact_id = a.fact_id AND x.node_id = a.value_id
         WHERE r.type = 'call'
+        UNION ALL
+        SELECT r.fact_id, 'r:' || r.fact_id || ':' || r.function_id || '.' || coalesce(f.field, a.keyword),
+               x.node_id, x.node_id + x.descendant_count
+        FROM returns r
+        JOIN cuda_calls() c ON c.fact_id = r.fact_id AND c.node_id = r.value_id
+        LEFT JOIN cuda_call_targets() t ON t.fact_id = c.fact_id AND t.node_id = c.node_id
+          AND t.kind = 'class'
+        JOIN cuda_arguments() a ON a.fact_id = c.fact_id AND a.call_id = c.node_id
+        JOIN cuda_nodes() x ON x.fact_id = a.fact_id AND x.node_id = a.value_id
+        LEFT JOIN cuda_record_fields() f ON f.record = coalesce(t.key, c.qualified_name)
+          AND f.position = a.position
+        WHERE r.type = 'call' AND coalesce(f.field, a.keyword) IS NOT NULL
+    """
+
+
+class CudaRecordFields(CudaRelation):
+    """The fields of the records a call can build, by `record` (the key of a class the project
+    defines, else the dotted name of one a library does) and the `position` a positional argument
+    fills: the annotated fields of the class in the order its body writes them."""
+
+    stored = True
+    query = """
+        SELECT o.class_key AS record, f.name AS field, o.position
+        FROM cuda_field_order() o JOIN cuda_fields() f ON f.field = o.field
+        UNION
+        SELECT record, field, position FROM cuda_library_results()
+    """
+
+
+class CudaFieldReads(CudaRelation):
+    """The attributes read off a record that a call has just built, as the atoms they are:
+    `warps.total` after `warps = self._prefixed(x)` takes the level of what `_prefixed` returns as
+    `total` (`ref`), and `emitted.before` after `emitted = warp.ballot_prefix(f)` the library's
+    level of that field (`level`), not the level of the whole record, which is the highest of its
+    fields. A read is listed only when every store its name can see is such a call, so
+    it hides the nodes of its object (`mask_first`..`mask_last`) and everything else reads the
+    whole record."""
+
+    stored = True
+    query = """
+        WITH reads AS (
+          SELECT x.fact_id, x.node_id, x.name AS label, o.node_id AS object_id,
+                 o.node_id + o.descendant_count AS object_last, o.type AS object_type, f.name AS field
+          FROM cuda_nodes() x
+          JOIN cuda_nodes() o ON o.fact_id = x.fact_id AND o.parent_id = x.node_id
+            AND o.sibling_index = 0
+          JOIN cuda_nodes() f ON f.fact_id = x.fact_id AND f.parent_id = x.node_id
+            AND f.sibling_index = 1
+          WHERE x.type = 'attribute' AND o.type IN ('identifier', 'call')
+            AND EXISTS (SELECT 1 FROM cuda_device_code() d
+                        WHERE d.fact_id = x.fact_id AND d.function_id = x.scope."function")
+        ), sources AS (
+          SELECT r.*, st.source_id AS call_id, st.kind = 'assignment' AS assigned
+          FROM reads r
+          JOIN cuda_reaching_stores() g ON g.fact_id = r.fact_id AND g.use_id = r.object_id
+          JOIN cuda_level_stores() ls ON ls.key = g.key
+          JOIN cuda_stores() st ON st.fact_id = ls.fact_id AND st.node_id = ls.node_id
+          WHERE r.object_type = 'identifier'
+          UNION ALL
+          SELECT r.*, r.object_id, true FROM reads r WHERE r.object_type = 'call'
+        ), told AS (
+          SELECT s.*, l.level,
+                 'r:' || t.definition_fact || ':' || t.definition_id || '.' || s.field AS ref
+          FROM sources s
+          LEFT JOIN cuda_calls() c ON c.fact_id = s.fact_id AND c.node_id = s.call_id AND s.assigned
+          LEFT JOIN cuda_library_results() l ON l.function = c.qualified_name AND l.field = s.field
+          LEFT JOIN cuda_resolved_calls() t ON t.fact_id = s.fact_id AND t.node_id = s.call_id
+            AND s.assigned AND t.kind = 'function' AND t.via <> 'override'
+        ), told_known AS (
+          SELECT t.*, t.level IS NOT NULL
+                      OR EXISTS (SELECT 1 FROM cuda_return_elements() e WHERE e.key = t.ref) AS known
+          FROM told t
+        ), every AS (
+          SELECT *, bool_and(known) OVER (PARTITION BY fact_id, node_id) AS all_known
+          FROM told_known
+        )
+        SELECT DISTINCT fact_id, node_id, coalesce(level, 0) AS level,
+               CASE WHEN level IS NULL THEN ref END AS ref, label, object_id AS mask_first,
+               object_last AS mask_last
+        FROM every
+        WHERE all_known
     """
 
 

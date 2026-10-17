@@ -10,13 +10,34 @@ _WARP_API = "ballot|broadcast|sum|min|max|and_|or_|xor|inclusive_sum|ballot_pref
 _FULL_MASK = r"(?i)^(0x0*f{8}|.*full.*|.*all_lanes.*)$"
 
 
+class CudaLibraryResults(CudaRelation):
+    """What a library collective returns in a record, field by field: `function` returns a
+    `record` whose `field` (the `position`th) holds a value of `level` (0 the whole block agrees,
+    1 the lanes of a warp, 2 each lane has its own). A project that defines the record or the
+    function derives the same from their bodies; a project that only calls them (a package built
+    on patos) cannot see those bodies, so patos's own contract is written here, from
+    `warp.ballot_prefix`: `before` is the lane's rank among the lanes that voted (its own),
+    `total` their count (the warp's)."""
+
+    stored = True
+    query = """
+        SELECT * FROM (VALUES
+          ('patos.cuda.primitives.warp.ballot_prefix', 'patos.cuda.primitives.warp.Prefix',
+           'before', 0, 2),
+          ('patos.cuda.primitives.warp.ballot_prefix', 'patos.cuda.primitives.warp.Prefix',
+           'total', 1, 1)
+        ) AS t(function, record, field, position, level)
+    """
+
+
 class CudaCollectiveCalls(CudaRelation):
     """The calls that need every thread of a block (`requires` `block`) or of a warp (`warp`) to
     arrive: `cuda.syncthreads()`, `cuda.syncwarp()`, the shuffles and votes, patos's `warp.*` and
     `block.over(...)` operations, `cuda.cooperative` block and warp primitives. A warp call with a
     mask that is not the full warp is left out, since it names the lanes that arrive.
     `result_level` is the level of the value the call returns when every thread gets the same
-    (`syncthreads_count`, a vote, a reduction), null when each thread gets its own."""
+    (`syncthreads_count`, a vote, a reduction), null when each thread gets its own; a call that
+    returns a record (`cuda_library_results`) has the highest level among its fields."""
 
     stored = True
     query = rf"""
@@ -39,10 +60,12 @@ class CudaCollectiveCalls(CudaRelation):
                       WHEN regexp_matches(q, '^cuda\.(coop|cooperative)(\.\w+)*\.block\.') THEN 'block'
                       WHEN regexp_matches(q, '^cuda\.(coop|cooperative)(\.\w+)*\.warp\.') THEN 'warp'
                  END AS requires,
-                 CASE WHEN regexp_matches(q, '\.syncthreads_(count|and|or)$') THEN 0
-                      WHEN regexp_matches(q, '\.(all_sync|any_sync|eq_sync|ballot_sync)$') THEN 1
-                      WHEN regexp_matches(q, '^patos\.cuda\.primitives\.warp\.({_WARP_API})$')
-                      THEN 1 END AS result_level,
+                 coalesce(
+                   (SELECT max(r.level) FROM cuda_library_results() r WHERE r.function = n.q),
+                   CASE WHEN regexp_matches(q, '\.syncthreads_(count|and|or)$') THEN 0
+                        WHEN regexp_matches(q, '\.(all_sync|any_sync|eq_sync|ballot_sync)$') THEN 1
+                        WHEN regexp_matches(q, '^patos\.cuda\.primitives\.warp\.({_WARP_API})$')
+                        THEN 1 END) AS result_level,
                  regexp_matches(q, '^{_NUMBA}\.(syncwarp|\w+_sync)$') AS masked
           FROM named n
         )

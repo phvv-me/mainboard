@@ -204,7 +204,7 @@ class CudaNameUses(CudaRelation):
 class CudaArguments(CudaRelation):
     """The arguments of every call, in order: a positional one has its `position` (from 0), a
     keyword one its `keyword`; `value_id` is the node of the value. Calls with a `*args` or
-    `**kwargs` argument before the argument are left out of the positions."""
+    `**kwargs` argument before the argument have no positions after it; keywords always count."""
 
     stored = True
     query = """
@@ -230,5 +230,5 @@ class CudaArguments(CudaRelation):
           AND v.sibling_index = 2 AND w.type = 'keyword_argument'
         LEFT JOIN splatted s ON s.fact_id = w.fact_id AND s.call_id = w.call_id
         WHERE w.type NOT IN ('list_splat', 'dictionary_splat')
-          AND (s.first_splat IS NULL OR w.slot < s.first_splat)
+          AND (w.type = 'keyword_argument' OR s.first_splat IS NULL OR w.slot < s.first_splat)
     """

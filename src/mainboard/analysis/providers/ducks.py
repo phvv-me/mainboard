@@ -8,8 +8,8 @@ the fact base: a run's own (in the run's budget folder) or a persistent one a co
 its own fact base instead.
 
 Parsing runs in this process when the engine's DuckDB loads `sitting_duck` (decided once, by
-`in_process`) and otherwise through a DuckDB 1.5 command-line binary, which writes the nodes to a
-Parquet file this process inserts.
+`in_process`) and otherwise through a DuckDB 1.5 command-line binary (`DuckCli`, fetched with the
+extension on first use), which writes the nodes to a Parquet file this process inserts.
 
 The extension is not in the community repository for DuckDB 2.0.0-alpha43385 (the engine's wheel
 2.0.0.dev2609250715, commit ca15f79c32); its first signed build arrives with 2.0 GA. Until then
@@ -37,6 +37,7 @@ from pydantic import Field
 
 from ...log import logger
 from ..facts import UNSIGNED, Budget, listed
+from .duckdb_cli import DuckCli
 
 if TYPE_CHECKING:
     from ..facts import Facts
@@ -66,7 +67,7 @@ class Source(FrozenModel):
 class Ducks(FrozenModel):
     """Syntax trees from `sitting_duck`, through a DuckDB that has the extension."""
 
-    cli: Path = Path.home() / ".cache/mainboard/duckdb/v1.5.6/duckdb"
+    cli: DuckCli = Field(default_factory=DuckCli)
     budget: Budget = Field(default_factory=Budget)
     cache: Path = Field(default_factory=lambda data: data["budget"].folder / "ast.duckdb")
     # The cache serves this project alone, so `register` drops the trees of contents it lacks.
@@ -277,23 +278,17 @@ class Ducks(FrozenModel):
     def _cli(self, script: str, scratch: str) -> None:
         """Run `script` in the DuckDB command line under the budget, from `scratch`, so nothing
         it writes lands in the caller's working directory."""
-        try:
-            subprocess.run(
-                [str(self.cli)],
-                input=(
-                    f"{self.budget.script()}LOAD sitting_duck;\nSET threads = {os.cpu_count()};\n"
-                    f"SET preserve_insertion_order = false;\n{script}"
-                ),
-                text=True,
-                capture_output=True,
-                check=True,
-                cwd=scratch,
-            )
-        except FileNotFoundError as error:
-            raise FileNotFoundError(
-                f"parsing needs the DuckDB 1.5.6 command line at {self.cli} with `INSTALL "
-                "sitting_duck FROM community` run in it (this DuckDB cannot load the extension)"
-            ) from error
+        subprocess.run(
+            [str(self.cli.ready())],
+            input=(
+                f"{self.budget.script()}LOAD sitting_duck;\nSET threads = {os.cpu_count()};\n"
+                f"SET preserve_insertion_order = false;\n{script}"
+            ),
+            text=True,
+            capture_output=True,
+            check=True,
+            cwd=scratch,
+        )
 
     def _report_gaps(self, facts: Facts, root: Path) -> None:
         """Warn about Python files Python itself accepts but whose syntax tree has errors:

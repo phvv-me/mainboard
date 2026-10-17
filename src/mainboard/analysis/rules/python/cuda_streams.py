@@ -76,6 +76,16 @@ class StreamNotChosen(Rule, id="PY-CUDA0003", applicability="review"):
             bad="from numba import cuda\n\n\n@cuda.jit\ndef kernel(x):\n    x[0] = 1\n\n\ndef run(x, stream):\n    kernel[1, 32](x)\n",
             good="from numba import cuda\n\n\n@cuda.jit\ndef kernel(x):\n    x[0] = 1\n\n\ndef run(x, stream):\n    kernel[1, 32, stream](x)\n",
         ),
+        Example(
+            bad=(
+                "from patos.cuda.typed import kernel\n\n\n@kernel(threads=256)\ndef place(x) -> None:\n"
+                "    x[0] = 1\n\n\ndef run(x, stream):\n    place[1](x)\n"
+            ),
+            good=(
+                "from patos.cuda.typed import kernel\n\n\n@kernel(threads=256)\ndef place(x) -> None:\n"
+                "    x[0] = 1\n\n\ndef run(x, stream):\n    place[1](x, stream=stream)\n"
+            ),
+        ),
     )
 
 
