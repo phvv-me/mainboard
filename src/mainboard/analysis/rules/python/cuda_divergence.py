@@ -132,6 +132,22 @@ class DivergentCollective(Rule, id="PY-CUDA0019", applicability="review"):
         ),
         Example(
             bad=(
+                "from patos.cuda.primitives import warp\n"
+                "from patos.cuda.typed import Per, cuda, kernel\n\n\n"
+                "@kernel(per=Per.BLOCK, threads=128)\ndef scan(x: int) -> None:\n"
+                "    upto = warp.inclusive_sum(x)\n"
+                "    if upto > 64:\n        cuda.syncwarp()\n"
+            ),
+            good=(
+                "from patos.cuda.primitives import warp\n"
+                "from patos.cuda.typed import Per, cuda, kernel\n\n\n"
+                "@kernel(per=Per.BLOCK, threads=128)\ndef scan(x: int) -> None:\n"
+                "    total = warp.sum(x)\n"
+                "    if total > 64:\n        cuda.syncwarp()\n"
+            ),
+        ),
+        Example(
+            bad=(
                 "from patos.cuda.typed import Per, Struct, cuda, device, i32, kernel, thread_in_block\n\n\n"
                 "class Pair(Struct):\n    each: i32\n    every: i32\n\n\n"
                 "@device\ndef pair(x: i32) -> Pair:\n    return Pair(thread_in_block(), x)\n\n\n"

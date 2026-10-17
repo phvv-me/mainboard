@@ -6,7 +6,12 @@ whose condition decides whether code runs (`cuda_levels` says how much threads a
 from .cuda_base import NUMBA_CUDA as _NUMBA
 from .cuda_base import CudaRelation
 
-_WARP_API = "ballot|broadcast|sum|min|max|and_|or_|xor|inclusive_sum|ballot_prefix|reserve"
+# patos's warp operations whose result is one value for the whole warp, and the ones that give each
+# lane its own (a prefix sum, the slot a lane claims). `ballot_prefix` returns a record whose
+# fields `CudaLibraryResults` levels one by one.
+_WARP_SHARED = "ballot|broadcast|sum|min|max|and_|or_|xor"
+_WARP_PER_LANE = "inclusive_sum|reserve"
+_WARP_API = f"{_WARP_SHARED}|{_WARP_PER_LANE}|ballot_prefix"
 _FULL_MASK = r"(?i)^(0x0*f{8}|.*full.*|.*all_lanes.*)$"
 
 
@@ -36,8 +41,10 @@ class CudaCollectiveCalls(CudaRelation):
     `block.over(...)` operations, `cuda.cooperative` block and warp primitives. A warp call with a
     mask that is not the full warp is left out, since it names the lanes that arrive.
     `result_level` is the level of the value the call returns when every thread gets the same
-    (`syncthreads_count`, a vote, a reduction), null when each thread gets its own; a call that
-    returns a record (`cuda_library_results`) has the highest level among its fields."""
+    (`syncthreads_count`, a vote, a reduction), 2 for a collective that gives each lane its own
+    value (`warp.inclusive_sum`, `warp.reserve`), null when the call is not one that fixes its
+    result's level; a call that returns a record (`cuda_library_results`) has the highest level
+    among its fields."""
 
     stored = True
     query = rf"""
@@ -64,8 +71,10 @@ class CudaCollectiveCalls(CudaRelation):
                    (SELECT max(r.level) FROM cuda_library_results() r WHERE r.function = n.q),
                    CASE WHEN regexp_matches(q, '\.syncthreads_(count|and|or)$') THEN 0
                         WHEN regexp_matches(q, '\.(all_sync|any_sync|eq_sync|ballot_sync)$') THEN 1
-                        WHEN regexp_matches(q, '^patos\.cuda\.primitives\.warp\.({_WARP_API})$')
-                        THEN 1 END) AS result_level,
+                        WHEN regexp_matches(q, '^patos\.cuda\.primitives\.warp\.({_WARP_SHARED})$')
+                        THEN 1
+                        WHEN regexp_matches(q, '^patos\.cuda\.primitives\.warp\.({_WARP_PER_LANE})$')
+                        THEN 2 END) AS result_level,
                  regexp_matches(q, '^{_NUMBA}\.(syncwarp|\w+_sync)$') AS masked
           FROM named n
         )
