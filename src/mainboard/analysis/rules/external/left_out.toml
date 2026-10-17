@@ -1,0 +1,56 @@
+# The Ruff codes the Ruff lane reports and the ones it does not, each with the mcmr rule that owns,
+# restates or contradicts it. A table per kind maps a rule or reason to the codes it covers (space
+# separated).
+
+# The codes of the mcmr rules that were dropped because Ruff answers them: the lane adds exactly
+# these to the project's own Ruff configuration (`--extend-select`) and reports only these.
+[extended]
+ALL-COMM0002 = "ERA001"
+ALL-COMM0003 = "FIX001 FIX002 FIX003 FIX004"
+ALL-CONT0001 = "RET505 RET506 RET507 RET508"
+ALL-CONT0003 = "T100 T201 T203"
+ALL-ENCA0001 = "SLF001"
+ALL-ERRO0002 = "B904"
+ALL-ERRO0004 = "TRY301"
+ALL-FUNC0007 = "PLR0912"
+ALL-FUNC0010 = "PLR0913 PLR0917"
+ALL-PARA0003 = "FBT001 FBT002 FBT003"
+ALL-SECU0002 = "S324"
+ALL-SECU0003 = "S311"
+ALL-SECU0004 = "S105 S106 S107"
+ALL-SECU0005 = "S602 S604 S605"
+PY-CACH0002 = "B019"
+PY-IMPO0003 = "F401 PLC0414"
+
+# mcmr's own coverage table claims the code as native or adapted: the key is the rule.
+[owned]
+PY-TYPE0004 = "ANN401"
+ALL-CONT0002 = "B015 B018"
+PY-EXCE0004 = "SIM105"
+ALL-STRI0001 = "ISC003"
+ALL-WAIV0001 = "PGH003 PGH004"
+ALL-CLAS0003 = "PLR0904"
+ALL-MODU0006 = "PLR0915"
+ALL-ERRO0001 = "S110 S112"
+ALL-ERRO0003 = "TRY002"
+
+# The code flags what an mcmr rule flags, in the same place or against the same ceiling, so both
+# would report one problem.
+[restates]
+PY-CLAS0008 = "PLR0202 PLR0203"
+ALL-FUNC0008 = "C901"
+ALL-FUNC0009 = "PLR1702"
+PY-EXCE0002 = "PLW0717"
+PY-COLL0004 = "C409"
+
+# The code asks for what an mcmr rule rejects, or repairs into what it flags.
+[contradicts]
+"PY-IMPO0001 prefers relative imports" = "TID252"
+"PY-MODU0002 flags an empty package initializer" = "INP001 D104"
+"PY-MODE0005 replaces dataclasses with models" = "B903"
+"ALL-COMM0003 removes work markers" = "TD001 TD002 TD003 TD004 TD005 TD006 TD007"
+"PY-DOCU0001 rejects Google and NumPy docstring sections" = "D214 D215 D405 D406 D407 D408 D409 D410 D411 D412 D413 D414 D416 D417 D420 DOC102 DOC201 DOC202 DOC402 DOC403 DOC501 DOC502"
+
+# Ruff's own list of rules that conflict with its formatter, which owns layout.
+[formatter]
+"conflicts with `ruff format`" = "COM812 COM819 ISC001 ISC002 Q000 Q001 Q002 Q003 W191 E111 E114 E117 D206 D300"

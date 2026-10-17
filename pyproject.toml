@@ -38,9 +38,14 @@ dependencies = [
     "filelock>=4.0",
     # cuda-bindings 13.3.1 imports NumPy from its NVML extension but does not declare it in the
     # wheel metadata. Mainboard reads that official extension for inventory and sensors, so keep
-    # its actual runtime dependency beside the binding until NVIDIA declares it upstream.
-    "numpy>=2.0; sys_platform == 'linux'",
+    # its actual runtime dependency beside the binding until NVIDIA declares it upstream. On every
+    # platform the analysis engine's Arrow functions in DuckDB need it too.
+    "numpy>=2.0",
     "packaging>=24.0",
+    # The analysis engine's fact base: Arrow frames into DuckDB, and the view names each rule's SQL
+    # reads.
+    "pyarrow>=25.0",
+    "sqlglot>=30.0",
     "patos>=0.0.13",
     "plumbum>=1.8",
     "pathspec>=0.12",
@@ -123,6 +128,16 @@ dev = [
 # and the report lands in `build/` for a failing job to upload. The sandbox itself is Seatbelt
 # on macOS, which ships with it, and bubblewrap on Linux, which a runner prepares first
 # (integration/gates/linux-runner.sh); a machine without either fails the step, never skips.
+[tool.mypy]
+# The CI step `mypy src` as a table, so `mainboard lint` (which runs mypy only where a project
+# configures it) checks this package too.
+files = ["src"]
+
+# pyarrow ships no type stubs; the engine only builds Arrow arrays for DuckDB's functions.
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
 [tool.mainboard.ci]
 os = ["linux", "osx"]
 
@@ -603,5 +618,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "PLW1514", "TID251"]
 # The owner's rule is no dataclasses: a record is a patos model. The two remote scripts
 # (`dispatch/agent/program.py`, `dispatch/collection/pack.py`) run on hosts with the standard
 # library alone and use none; one that ever needs one takes a per-file ignore, not a model.
+# A rule's SQL and its good/bad examples are verbatim text the engine runs and compares, so a long
+# line in them is part of the rule, not prose to wrap.
+[tool.ruff.lint.per-file-ignores]
+"src/mainboard/analysis/rules/**" = ["E501"]
+
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "dataclasses".msg = "Use patos's Model, FrozenModel, FlexModel or FrozenFlexModel (`from patos import ...`); pydantic refuses positional arguments, so construct with keywords."

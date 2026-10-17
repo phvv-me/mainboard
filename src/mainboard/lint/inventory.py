@@ -1,5 +1,5 @@
-from functools import cached_property
-from pathlib import Path
+from functools import cache, cached_property
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -42,6 +42,22 @@ class Inventory:
     def __init__(self, root: Path, policy: GitPolicy) -> None:
         self.root = root
         self.policy = policy
+        self._listing = cache(self._listed_names)
+
+    def staged(self) -> list[Path]:
+        """Every file the index of an owned repository changes against its HEAD, deletions
+        included: what a commit made right now would hold, the root's and each submodule's."""
+        base = self.root.resolve()
+        return sorted(
+            self.root / repository.relative_to(base) / name
+            for repository in self._entered
+            for name in self._names(repository, "diff", "--cached", "--name-only", "-z")
+            if not (repository / name).is_dir()
+        )
+
+    def siblings(self, path: Path) -> list[str]:
+        """The names git knows directly in `path`'s directory, tracked or new."""
+        return self._listing(path.parent)
 
     def changed(self) -> list[Path]:
         """Every file that differs from HEAD or is new, deletions included.
@@ -82,6 +98,21 @@ class Inventory:
         """Whether HEAD already holds `path`, so a size limit on new files leaves it alone."""
         return not git(path.parent, "cat-file", "-e", f"HEAD:./{path.name}").returncode
 
+    @staticmethod
+    def _listed_names(directory: Path) -> list[str]:
+        """The entries of `directory` itself, none when git cannot say."""
+        answer = git(
+            directory,
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            ":(glob)*",
+        )
+        return [PurePosixPath(name).name for name in printed(answer.stdout).split("\0") if name]
+
     def _changed(self, repository: Path) -> Iterator[Path]:
         names = [
             *self._names(repository, "ls-files", "--others", "--exclude-standard", "-z"),
@@ -107,7 +138,7 @@ class Inventory:
         for name in names:
             path = directory / name
             if not path.is_dir():
-                if path.exists():
+                if path.exists() or path.is_symlink():
                     yield path
             elif path.resolve() in self._entered:
                 yield from self._listed(path)

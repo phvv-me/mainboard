@@ -55,6 +55,7 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
         {
             "integration/test_lake.py::test_a_second_workspace_reads_and_writes_the_served_lake",
             "integration/test_lake.py::test_a_served_lake_refuses_maintenance_and_strangers",
+            "integration/test_lake.py::test_a_blocking_served_query_obeys_the_server_timeout",
             "integration/gates/test_harness.py::test_postgres_is_a_temporary_catalog",
         }
     )
