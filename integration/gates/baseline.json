@@ -1248,7 +1248,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/test_evidence.py::test_check_records_the_checksums_of_chunks_kept_before_them",
+      "nodeid": "integration/test_evidence.py::test_check_leaves_the_checksums_of_chunks_kept_before_them_unrecorded",
       "classification": "passed",
       "reason": ""
     },
