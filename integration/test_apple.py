@@ -460,6 +460,30 @@ def test_failed_case_accepts_xcode_diagnostic_leaves_without_verdicts(
     assert [(case.name, case.result) for case in report.slowest] == [("practice", "Failed")]
 
 
+def test_passing_case_retains_runtime_warning_without_treating_it_as_a_test(
+    result_tool: ResultTool,
+    bundle: Path,
+) -> None:
+    message = "Invalid frame dimension (negative or non-finite)."
+    result_tool.summary["runtimeWarnings"] = [{"issueType": "Runtime Warning", "message": message}]
+    result_tool.nodes = [
+        {
+            "name": "editor",
+            "nodeType": "Test Case",
+            "result": "Passed",
+            "durationInSeconds": 32.9,
+            "children": [{"name": message, "nodeType": "Runtime Warning"}],
+        }
+    ]
+    report = Apple(result_tool).results(bundle)
+    assert report.summary.successful
+    assert [(case.name, case.seconds) for case in report.slowest] == [("editor", 32.9)]
+    assert report.slowest[0].children[0].name == message
+    summary = report.document()["summary"]
+    assert isinstance(summary, dict)
+    assert summary["runtimeWarnings"] == result_tool.summary["runtimeWarnings"]
+
+
 @pytest.mark.parametrize("kind", ["Test Case", "Test Suite", "Arguments", "Unknown Node"])
 def test_non_diagnostic_nodes_still_require_verdicts(
     result_tool: ResultTool,

@@ -37,13 +37,13 @@ class Summary(FrozenModel):
         )
 
 
-class FailureNode(FrozenModel):
-    """Xcode nests diagnostic leaves without verdicts inside failed test cases."""
+class DiagnosticNode(FrozenModel):
+    """Xcode diagnostic leaves lack verdicts, including warnings in passing cases."""
 
     model_config = ConfigDict(extra="allow", strict=True)
 
     name: str
-    kind: Literal["Failure Message"] = Field(alias="nodeType")
+    kind: Literal["Failure Message", "Runtime Warning"] = Field(alias="nodeType")
 
 
 class TestNode(FrozenModel):
@@ -54,7 +54,7 @@ class TestNode(FrozenModel):
     result: str
     identifier: str = Field(default="", alias="nodeIdentifierURL")
     seconds: float | None = Field(default=None, alias="durationInSeconds", ge=0)
-    children: list[TestNode | FailureNode] = Field(default_factory=list)
+    children: list[TestNode | DiagnosticNode] = Field(default_factory=list)
 
     def cases(self) -> Iterator[TestNode]:
         if self.kind == "Test Case":
