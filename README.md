@@ -957,14 +957,24 @@ Automatic host selection remains under development.
 
 ## Apple development
 
-Keep build, test and dependency-resolution commands in `[tasks]`, using `xcrun swift`
-for Swift packages and `xcodebuild` for app targets. Set `DEVELOPER_DIR` in the task's
-`env` to select Xcode without changing the machine's global selection. Bound long
-commands with `mainboard proc timeout`; retain their exit status and result bundles.
-Use distinct derived-data directories for independently runnable suites. Simulator
-UI runs sharing a device still need to run sequentially.
+Keep app-specific schemes, destinations and test filters in `[tasks]`. Mainboard owns
+native execution, committed package resolution, unique result bundles, process-tree
+timeouts and verdicts. Set `DEVELOPER_DIR` in the task environment without changing
+the machine's global selection. Use distinct derived-data directories for independent
+suites; UI runs sharing a device still need to run sequentially.
+
+`apple execute` accepts an Xcode workspace, project or Swift package directory. Its
+`test` action requires actual passing cases; a build cannot stand in for a test pass.
+Native output streams to the terminal and a fresh `.xcresult` is retained under
+`--results` (default `.build/Results`). Filters and `--setting KEY=VALUE` are literal
+arguments, with no shell. CocoaPods restoration and SwiftPM command-line unit tests
+remain native commands bounded by `mainboard proc timeout`.
 
 ```sh
+mainboard apple execute App/Example.xcworkspace --scheme Example --action test \
+  --destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
+  --derived-data .build/Xcode/iOS --setting CODE_SIGNING_ALLOWED=NO --timeout 900
+mainboard apple execute Shared --scheme Example-Package --action test --destination platform=macOS
 mainboard apple toolchain --json
 mainboard apple diagnostics path/to/Build.xcresult --json
 mainboard apple results path/to/Test.xcresult --json
@@ -1037,3 +1047,14 @@ separate changes. For run-specific evidence, pass a fresh, nonexistent
 `-resultBundlePath` to Xcode and inspect that exact path with `apple results`, keeping
 the command exit code as well. Directory-based result inspection remains useful for
 browsing saved runs; it cannot attest which run just finished.
+
+For host-delivered simulator links, add `--url-test path/to/routes.json` to a test
+invocation and select one exact available simulator. The JSON contains
+`runner_bundle`, a container-relative `marker` and unique `routes`, for example
+`{"runner_bundle":"example.tests.xctrunner","marker":"tmp/request.json","routes":["example:///reviews"]}`.
+The test atomically writes `{"id":"<fresh UUID>","url":"example:///reviews"}` there
+when ready. Mainboard only consumes fresh markers, opens the explicitly allowed
+custom-scheme routes and requires all routes plus the native tests to pass. Escaped
+marker paths, ambiguous simulators, query strings and network hosts are refused.
+The general Swift host ships inside Mainboard; applications keep only their own
+fixture contract. No app token or live account is needed for this test pattern.

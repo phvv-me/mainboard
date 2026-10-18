@@ -8,6 +8,7 @@ from io import TextIOWrapper
 from json import dumps
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NoReturn, Self, TypedDict
+from uuid import uuid4
 
 from cyclopts import App, Parameter
 from patos import FrozenModel
@@ -2075,6 +2076,70 @@ def build(root: Path | None = None) -> App:
         Args:
         """
         output.print_rows(Apple().simulators(), title="Apple simulators")
+
+    @apple.command(name="execute")
+    def apple_execute(
+        project: Path,
+        *,
+        scheme: str,
+        action: Literal["build", "test", "build-for-testing", "resolve"] = "build",
+        destination: str = "",
+        configuration: str = "Debug",
+        derived_data: Path | None = None,
+        results: Path = Path(".build/Results"),
+        only_testing: tuple[str, ...] = (),
+        skip_testing: tuple[str, ...] = (),
+        setting: tuple[str, ...] = (),
+        timeout: float = 900,
+        url_test: Path | None = None,
+    ) -> int:
+        """Run Xcode on a project/workspace/package; retain fresh evidence and its verdict.
+
+        Native tool output is streamed to this terminal. No shell, signing changes,
+        simulator erasure or global Xcode selection is performed. Committed Swift
+        package versions are required. Tests must report actual passing cases.
+
+        Args:
+            project: an .xcworkspace, .xcodeproj or Swift package directory.
+            scheme: the shared Xcode scheme to build/test.
+            action: build, test, build-for-testing or resolve.
+            destination: native Xcode destination, including exact simulator runtime.
+            configuration: build configuration, normally Debug or Release.
+            derived_data: reusable generated build directory.
+            results: parent for a new, unique .xcresult bundle on every invocation.
+            only_testing: repeatable native test identifiers to include.
+            skip_testing: repeatable native test identifiers to exclude.
+            setting: repeatable literal KEY=VALUE Xcode build settings.
+            timeout: hard limit in seconds, including descendant processes.
+            url_test: JSON runner bundle, relative marker and explicit custom-scheme routes.
+        """
+        apple_tools = Apple()
+        bundle = None if action == "resolve" else results / f"{action}-{uuid4().hex}.xcresult"
+        if bundle is not None:
+            _COMPACT.print_record({"bundle": str(bundle.resolve())}, title="Apple execution")
+        code = apple_tools.execute(
+            project,
+            scheme=scheme,
+            action=action,
+            destination=destination,
+            configuration=configuration,
+            derived_data=derived_data,
+            bundle=bundle,
+            only_testing=only_testing,
+            skip_testing=skip_testing,
+            settings=setting,
+            timeout=timeout,
+            url_test=url_test,
+        )
+        if code or bundle is None:
+            return code
+        if action == "test":
+            test_report = apple_tools.results(bundle)
+            _COMPACT.print_record(test_report.document(), title="Apple tests")
+            return 0 if test_report.summary.successful else 1
+        build_report = apple_tools.diagnostics(bundle)
+        _COMPACT.print_record(build_report.document(), title="Apple build")
+        return 0 if build_report.summary.successful else 1
 
     @apple.command(name="diagnostics")
     def apple_diagnostics(path: Path, *, output: Output = _COMPACT) -> int:

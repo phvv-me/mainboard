@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from mainboard.apple import Apple
 from mainboard.cli import build
 from mainboard.core.errors import MissionError
 from mainboard.core.tool import ToolOutput
+from mainboard.proc import Processes
 
 
 class ResultTool:
@@ -500,3 +502,224 @@ def test_non_diagnostic_nodes_still_require_verdicts(
     ]
     with pytest.raises(MissionError, match="invalid xcresulttool"):
         Apple(result_tool).results(bundle)
+
+
+@pytest.mark.parametrize("kind", ["xcworkspace", "xcodeproj", "package"])
+def test_execution_uses_literal_native_arguments_and_package_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    project = tmp_path / ("Package" if kind == "package" else f"App '$literal.{kind}")
+    project.mkdir()
+    if kind == "package":
+        (project / "Package.swift").write_text("// swift-tools-version: 6.4\n")
+    bundle = tmp_path / "results" / "fresh.xcresult"
+    calls: list[tuple[float, list[str], Path | None]] = []
+
+    def execute(_self: Apple, seconds: float, command: list[str], *, cwd: Path | None) -> int:
+        calls.append((seconds, command, cwd))
+        return 65
+
+    monkeypatch.setattr("mainboard.apple.Processes.timeout", execute)
+    code = Apple().execute(
+        project,
+        scheme="An app",
+        action="test",
+        destination="platform=macOS",
+        derived_data=tmp_path / "build",
+        bundle=bundle,
+        only_testing=("UITests/Flow/testA",),
+        skip_testing=("UITests/Flow/testB",),
+        settings=("DISPLAY_NAME=日本 '$()",),
+        timeout=123,
+    )
+    assert code == 65 and len(calls) == 1
+    seconds, command, cwd = calls[0]
+    assert seconds == 123 and cwd == (project if kind == "package" else project.parent)
+    assert command[:3] == ["/usr/bin/xcrun", "xcodebuild", "test"]
+    assert "-onlyUsePackageVersionsFromResolvedFile" in command
+    assert command[command.index("-resultBundlePath") + 1] == str(bundle)
+    assert command[command.index("-parallel-testing-enabled") + 1] == "NO"
+    assert command[-3:] == [
+        "-only-testing:UITests/Flow/testA",
+        "-skip-testing:UITests/Flow/testB",
+        "DISPLAY_NAME=日本 '$()",
+    ]
+    if kind != "package":
+        assert command[3:5] == [
+            "-workspace" if kind == "xcworkspace" else "-project",
+            str(project),
+        ]
+    assert bundle.parent.is_dir() and not bundle.exists()
+
+
+def test_execution_refuses_old_evidence_and_invalid_inputs(tmp_path: Path) -> None:
+    project = tmp_path / "App.xcodeproj"
+    project.mkdir()
+    old = tmp_path / "old.xcresult"
+    old.mkdir()
+    with pytest.raises(MissionError, match="overwrite"):
+        Apple().execute(project, scheme="App", bundle=old)
+    with pytest.raises(MissionError, match="positive timeout"):
+        Apple().execute(project, scheme="App", timeout=0)
+    with pytest.raises(MissionError, match="fresh result"):
+        Apple().execute(project, scheme="App")
+    with pytest.raises(MissionError, match="no Apple project"):
+        Apple().execute(tmp_path / "missing", scheme="App")
+    with pytest.raises(MissionError, match="expected an"):
+        Apple().execute(tmp_path, scheme="App")
+
+
+@pytest.mark.parametrize("native_code, passed", [(0, True), (0, False), (65, True)])
+def test_execution_cli_uses_actual_test_verdict(
+    result_tool: ResultTool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    native_code: int,
+    passed: bool,
+) -> None:
+    project = tmp_path / "App.xcodeproj"
+    project.mkdir()
+    result_tool.summary["result"] = "Passed" if passed else "Failed"
+    apple = Apple(result_tool)
+
+    def execute(*_args: Path, **kwargs: str | Path | None | tuple[str, ...] | float) -> int:
+        result = kwargs["bundle"]
+        assert isinstance(result, Path)
+        result.mkdir(parents=True)
+        return native_code
+
+    monkeypatch.setattr(apple, "execute", execute)
+    monkeypatch.setattr("mainboard.cli.Apple", lambda: apple)
+    with pytest.raises(SystemExit) as stopped:
+        build()(
+            [
+                "apple",
+                "execute",
+                str(project),
+                "--scheme",
+                "App",
+                "--action",
+                "test",
+                "--results",
+                str(tmp_path / "out"),
+            ]
+        )
+    assert stopped.value.code == (native_code or (0 if passed else 1))
+
+
+def test_process_timeout_runs_package_commands_in_the_requested_directory(tmp_path: Path) -> None:
+    code = Processes().timeout(
+        10,
+        [sys.executable, "-c", "from pathlib import Path; Path('receipt').write_text('ok')"],
+        cwd=tmp_path,
+    )
+    assert code == 0 and (tmp_path / "receipt").read_text() == "ok"
+
+
+@pytest.mark.parametrize(
+    "marker,routes",
+    [
+        ("../escape", ["fixture:///reviews"]),
+        ("/absolute", ["fixture:///reviews"]),
+        ("tmp/request.json", ["fixture:///reviews?credential=x"]),
+        ("tmp/request.json", ["fixture://host/reviews"]),
+        ("tmp/request.json", ["fixture:///reviews", "fixture:///reviews"]),
+    ],
+)
+def test_url_host_rejects_escaped_markers_and_unexpected_routes(
+    marker: str,
+    routes: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "App.xcodeproj"
+    project.mkdir()
+    configuration = tmp_path / "url.json"
+    configuration.write_text(
+        json.dumps({"runner_bundle": "example.runner", "marker": marker, "routes": routes})
+    )
+
+    def forbidden(*_args: str) -> list[dict[str, str]]:
+        pytest.fail("invalid configuration must not inspect or launch a simulator")
+
+    apple = Apple()
+    monkeypatch.setattr(apple, "simulators", forbidden)
+    with pytest.raises(MissionError):
+        apple.execute(
+            project,
+            scheme="App",
+            action="test",
+            bundle=tmp_path / "test.xcresult",
+            url_test=configuration,
+        )
+
+
+def test_url_host_uses_exact_destination_and_temporary_literal_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "App.xcodeproj"
+    project.mkdir()
+    configuration = tmp_path / "url.json"
+    configuration.write_text(
+        json.dumps(
+            {
+                "runner_bundle": "example.runner",
+                "marker": "tmp/request.json",
+                "routes": ["fixture:///reviews"],
+            }
+        )
+    )
+    apple = Apple()
+    monkeypatch.setattr(
+        apple,
+        "simulators",
+        lambda: [
+            {
+                "name": "Example",
+                "udid": "chosen",
+                "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                "state": "Booted",
+            }
+        ],
+    )
+    descriptors: list[Path] = []
+
+    def execute(
+        _self: Processes, seconds: float, command: list[str], *, cwd: Path | None = None
+    ) -> int:
+        assert seconds == 12 and cwd == project.parent
+        assert command[:2] == ["/usr/bin/xcrun", "swift"]
+        assert Path(command[2]).name == "apple_url_tests.swift"
+        descriptor = Path(command[3])
+        descriptors.append(descriptor)
+        data = json.loads(descriptor.read_text(encoding="utf-8"))
+        assert data["device"] == "chosen" and data["routes"] == ["fixture:///reviews"]
+        assert data["command"][0:3] == ["/usr/bin/xcrun", "xcodebuild", "test"]
+        assert "-only-testing:Suite/Case" in data["command"]
+        return 65
+
+    monkeypatch.setattr(Processes, "timeout", execute)
+    assert (
+        apple.execute(
+            project,
+            scheme="App",
+            action="test",
+            destination="platform=iOS Simulator,name=Example,OS=27.0",
+            bundle=tmp_path / "test.xcresult",
+            url_test=configuration,
+            only_testing=("Suite/Case",),
+            timeout=12,
+        )
+        == 65
+    )
+    assert len(descriptors) == 1 and not descriptors[0].exists()
+    with pytest.raises(MissionError, match="exact simulator"):
+        apple.execute(
+            project,
+            scheme="App",
+            action="test",
+            destination="platform=iOS Simulator,name=Other,OS=27.0",
+            bundle=tmp_path / "other.xcresult",
+            url_test=configuration,
+        )

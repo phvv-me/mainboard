@@ -82,7 +82,7 @@ class Processes:
                 gone.append(pid)
         return gone
 
-    def timeout(self, seconds: float, command: Sequence[str]) -> int:
+    def timeout(self, seconds: float, command: Sequence[str], *, cwd: Path | None = None) -> int:
         """Run `command` with this terminal's stdio, stopping its whole tree after `seconds`.
 
         Answers the command's own exit status, or `TIMED_OUT` when it had to be stopped. The
@@ -92,7 +92,7 @@ class Processes:
         if not command:
             raise MissionError("proc timeout needs a command to run")
         try:
-            process = subprocess.Popen(list(command))  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the caller's own argv, run without a shell since=2026-09-25
+            process = subprocess.Popen(list(command), cwd=cwd)  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the caller's own argv, run without a shell since=2026-09-25
         except OSError as fault:
             raise MissionError(f"cannot start {command[0]}: {fault}") from fault
         try:

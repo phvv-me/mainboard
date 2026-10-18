@@ -1,13 +1,17 @@
 """Read Apple's installed toolchain and test evidence without launching the IDE."""
 
+import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import urlsplit
 
 from patos import FrozenModel
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
 from .core.errors import MissionError
 from .core.tool import Runner, ToolRunner
+from .proc import Processes
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -140,6 +144,31 @@ class SimulatorInventory(FrozenModel):
     devices: dict[str, list[Simulator]]
 
 
+class URLTestConfiguration(FrozenModel):
+    """Routes delivered by a host while an isolated simulator UI test runs."""
+
+    runner_bundle: str = Field(min_length=1)
+    marker: str = Field(min_length=1)
+    routes: tuple[str, ...] = Field(min_length=1)
+
+    def validate_routes(self) -> None:
+        marker = Path(self.marker)
+        if marker.is_absolute() or ".." in marker.parts:
+            raise MissionError("URL test marker must stay inside the runner data container")
+        if len(set(self.routes)) != len(self.routes):
+            raise MissionError("URL test routes must be unique")
+        for route in self.routes:
+            value = urlsplit(route)
+            if (
+                not value.scheme
+                or value.netloc
+                or not value.path.startswith("/")
+                or value.query
+                or value.fragment
+            ):
+                raise MissionError("URL tests require explicit local custom-scheme paths")
+
+
 class Apple:
     """Use xcrun's selected Xcode (including DEVELOPER_DIR), with bounded tool output."""
 
@@ -167,6 +196,111 @@ class Apple:
             for device in sorted(devices, key=lambda item: (item.name, item.udid))
             if device.available
         ]
+
+    def execute(
+        self,
+        project: Path,
+        *,
+        scheme: str,
+        action: Literal["build", "test", "build-for-testing", "resolve"] = "build",
+        destination: str = "",
+        configuration: str = "Debug",
+        derived_data: Path | None = None,
+        bundle: Path | None = None,
+        only_testing: tuple[str, ...] = (),
+        skip_testing: tuple[str, ...] = (),
+        settings: tuple[str, ...] = (),
+        timeout: float = 900,
+        url_test: Path | None = None,
+    ) -> int:
+        """Build/test a workspace, project or Swift package with the selected Xcode.
+
+        Keep native stdout and exit status, use committed package versions, and stop the
+        entire process tree on timeout. Result bundles must be fresh, never overwritten.
+        """
+        project = project.expanduser().resolve()
+        if timeout <= 0 or not scheme.strip():
+            raise MissionError("Apple execution needs a scheme and a positive timeout")
+        if not project.is_dir():
+            raise MissionError(f"no Apple project at {project}")
+        if project.suffix in {".xcworkspace", ".xcodeproj"}:
+            source: tuple[str, ...] = (
+                "-workspace" if project.suffix == ".xcworkspace" else "-project",
+                str(project),
+            )
+            cwd = project.parent
+        elif (project / "Package.swift").is_file():
+            source = ()
+            cwd = project
+        else:
+            raise MissionError("expected an .xcworkspace, .xcodeproj or Swift package directory")
+        command = [
+            "/usr/bin/xcrun",
+            "xcodebuild",
+            "-resolvePackageDependencies" if action == "resolve" else action,
+            *source,
+            "-scheme",
+            scheme,
+            "-onlyUsePackageVersionsFromResolvedFile",
+        ]
+        if action != "resolve":
+            if bundle is None:
+                raise MissionError("Apple builds/tests need a fresh result bundle path")
+            bundle = bundle.expanduser().resolve()
+            if bundle.exists():
+                raise MissionError(f"refusing to overwrite result evidence at {bundle}")
+            bundle.parent.mkdir(parents=True, exist_ok=True)
+            command += ["-resultBundlePath", str(bundle), "-configuration", configuration]
+            if destination:
+                command += ["-destination", destination]
+            if action == "test":
+                command += ["-parallel-testing-enabled", "NO"]
+        if derived_data is not None:
+            command += ["-derivedDataPath", str(derived_data.expanduser().resolve())]
+        command += [f"-only-testing:{value}" for value in only_testing]
+        command += [f"-skip-testing:{value}" for value in skip_testing]
+        command += list(settings)
+        if url_test is None:
+            return Processes().timeout(timeout, command, cwd=cwd)
+        if action != "test":
+            raise MissionError("URL delivery requires the test action")
+        try:
+            config = URLTestConfiguration.model_validate_json(url_test.read_text())
+        except (OSError, ValidationError) as fault:
+            raise MissionError(f"invalid URL test configuration: {fault}") from fault
+        config.validate_routes()
+        fields = dict(part.split("=", 1) for part in destination.split(",") if "=" in part)
+        if fields.get("platform") != "iOS Simulator":
+            raise MissionError("URL delivery is only supported on an iOS simulator")
+        candidates = [
+            device
+            for device in self.simulators()
+            if (not fields.get("id") or device["udid"] == fields["id"])
+            and (not fields.get("name") or device["name"] == fields["name"])
+            and (
+                not fields.get("OS")
+                or device["runtime"].endswith(".iOS-" + fields["OS"].replace(".", "-"))
+            )
+        ]
+        if len(candidates) != 1:
+            raise MissionError("URL tests require one exact simulator destination")
+        with TemporaryDirectory(prefix="mainboard-apple-url-") as temporary:
+            descriptor = Path(temporary) / "request.json"
+            descriptor.write_text(
+                json.dumps(
+                    {
+                        **config.model_dump(mode="json"),
+                        "device": candidates[0]["udid"],
+                        "command": command,
+                    }
+                )
+            )
+            helper = Path(__file__).with_name("apple_url_tests.swift")
+            return Processes().timeout(
+                timeout,
+                ["/usr/bin/xcrun", "swift", str(helper), str(descriptor)],
+                cwd=cwd,
+            )
 
     def results(self, path: Path) -> TestReport:
         """Read an exact bundle, or the newest direct child of a Logs/Test directory.
