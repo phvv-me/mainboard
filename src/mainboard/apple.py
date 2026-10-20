@@ -1,6 +1,8 @@
 """Read Apple's installed toolchain and test evidence without launching the IDE."""
 
 import json
+import math
+import struct
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
@@ -169,6 +171,27 @@ class URLTestConfiguration(FrozenModel):
                 raise MissionError("URL tests require explicit local custom-scheme paths")
 
 
+class FontPreview(FrozenModel):
+    source: Path
+    image: Path
+    font: str = Field(min_length=1)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+    def document(self) -> dict[str, Node]:
+        return {
+            "source": str(self.source),
+            "image": str(self.image),
+            "font": self.font,
+            "width": self.width,
+            "height": self.height,
+        }
+
+
+class FontPreviews(FrozenModel):
+    images: list[FontPreview] = Field(min_length=1)
+
+
 class Apple:
     """Use xcrun's selected Xcode (including DEVELOPER_DIR), with bounded tool output."""
 
@@ -301,6 +324,78 @@ class Apple:
                 ["/usr/bin/xcrun", "swift", str(helper), str(descriptor)],
                 cwd=cwd,
             )
+
+    def font_previews(
+        self,
+        paths: tuple[Path, ...],
+        *,
+        text: str,
+        output: Path,
+        width: float = 320,
+        size: float = 24,
+        scale: float = 3,
+    ) -> list[dict[str, Node]]:
+        """Render the first face of each font with Core Text; never install fonts or launch UI."""
+        if not text.strip() or len(text) > 8192:
+            raise MissionError("font previews need 1-8192 characters of nonblank text")
+        if any(not math.isfinite(value) or value <= 0 for value in (width, size, scale)):
+            raise MissionError("font preview dimensions must be positive and finite")
+        fonts: set[Path] = set()
+        for path in paths:
+            path = path.expanduser().resolve()
+            if path.is_dir():
+                fonts.update(
+                    file.resolve()
+                    for file in path.iterdir()
+                    if file.is_file()
+                    and file.suffix.lower() in {".ttf", ".otf", ".woff", ".woff2", ".ttc", ".otc"}
+                )
+            elif path.is_file():
+                fonts.add(path)
+            else:
+                raise MissionError(f"font source does not exist: {path}")
+        if not fonts or len({file.stem.casefold() for file in fonts}) != len(fonts):
+            raise MissionError("font previews need files with distinct output stems")
+        output = output.expanduser().resolve()
+        if output.exists():
+            raise MissionError(f"refusing to overwrite font previews at {output}")
+        with TemporaryDirectory(prefix="mainboard-fonts-") as temporary:
+            request = Path(temporary) / "request.json"
+            request.write_text(
+                json.dumps(
+                    {
+                        "fonts": [str(file) for file in sorted(fonts)],
+                        "text": text,
+                        "output": str(output),
+                        "width": width,
+                        "size": size,
+                        "scale": scale,
+                    }
+                )
+            )
+            payload = self._run(
+                "swift", str(Path(__file__).with_name("apple_fonts.swift")), str(request)
+            )
+        try:
+            report = FontPreviews.model_validate_json(payload)
+        except ValidationError as fault:
+            raise MissionError(f"invalid native font preview report: {fault}") from fault
+        if len(report.images) != len(fonts) or {item.source for item in report.images} != fonts:
+            raise MissionError("native renderer did not report every requested font exactly once")
+        for item in report.images:
+            expected = output / (item.source.stem + ".png")
+            if item.image != expected or item.image.is_symlink() or not item.image.is_file():
+                raise MissionError("native renderer reported an unexpected or missing image")
+            with item.image.open("rb") as image:
+                header = image.read(24)
+            if (
+                len(header) != 24
+                or header[:8] != b"\x89PNG\r\n\x1a\n"
+                or header[12:16] != b"IHDR"
+                or struct.unpack(">II", header[16:24]) != (item.width, item.height)
+            ):
+                raise MissionError(f"invalid font preview image: {item.image}")
+        return [item.document() for item in report.images]
 
     def results(self, path: Path) -> TestReport:
         """Read an exact bundle, or the newest direct child of a Logs/Test directory.

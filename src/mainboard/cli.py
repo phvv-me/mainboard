@@ -2077,6 +2077,39 @@ def build(root: Path | None = None) -> App:
         """
         output.print_rows(Apple().simulators(), title="Apple simulators")
 
+    @apple.command(name="font-previews")
+    def apple_font_previews(
+        paths: tuple[Path, ...],
+        *,
+        text: str,
+        results: Path = Path(".build/Results"),
+        width: float = 320,
+        size: float = 24,
+        scale: float = 3,
+        output: Output = _COMPACT,
+    ) -> None:
+        """Render transparent PNG previews with installed Apple text APIs, without an app.
+
+        Each source can be a font file or a directory of fonts. Collections use the first
+        face. Every glyph must exist in that face; system font fallback is rejected.
+        A fresh output directory is retained on each run. No global fonts are installed.
+
+        Args:
+            paths: font files or directories.
+            text: preview text; whitespace alone is invalid.
+            results: parent for a fresh font-preview directory.
+            width: logical width in points.
+            size: font size in points.
+            scale: pixels per point.
+        """
+        directory = results.expanduser().resolve() / ("fonts-" + uuid4().hex)
+        output.print_rows(
+            Apple().font_previews(
+                paths, text=text, output=directory, width=width, size=size, scale=scale
+            ),
+            title="Font previews",
+        )
+
     @apple.command(name="execute")
     def apple_execute(
         project: Path,

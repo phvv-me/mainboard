@@ -982,6 +982,16 @@ mainboard apple results path/to/DerivedData/Logs/Test --json
 mainboard lint --check --only swift-format path/to/Changed.swift
 ```
 
+`apple font-previews` renders transparent PNGs with Core Text and ImageIO without
+launching a developer app, installing fonts or requiring a simulator. Pass font files
+or directories and explicit `--text`; collections use their first face. Missing glyphs,
+font substitution and existing output paths fail. Each run retains a fresh directory
+under `--results` and reports the exact face, source and pixel dimensions.
+
+```sh
+mainboard apple font-previews Resources/Fonts --text '日本語の見本' --json
+```
+
 `apple results` uses the installed `xcresulttool get test-results` interface for both
 Swift Testing and XCTest. It reports the exact bundle, Xcode's summary (including
 failures, skips, expected failures, devices and warnings), and the ten slowest test
