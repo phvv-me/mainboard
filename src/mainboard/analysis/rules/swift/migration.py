@@ -1,12 +1,14 @@
 """Platform and Objective-C interoperability boundaries to review, never blanket API bans."""
 
 from ...catalog import Example, Rule
+from .provenance import apple_review
 
 
 class SwiftParserCoverage(Rule, id="SW-PARSE0001"):
     """A Swift file the selected Swift toolchain cannot parse completely."""
 
     query = "SELECT * FROM swift_source_facts WHERE parser_gaps > 0"
+    provenance = apple_review("SwiftParser diagnostics and exact requested-file coverage protocol")
     message = (
         "SwiftParser reported {parser_gaps} syntax diagnostics; SwiftUI checks skipped "
         "this file. Verify with the selected Swift compiler. {parser_message}"
@@ -23,6 +25,7 @@ class SwiftParserCoverage(Rule, id="SW-PARSE0001"):
 class PlatformFrameworkImport(Rule, id="SW-MIG0001", applicability="review"):
     """A Swift source explicitly imports a platform UI framework."""
 
+    provenance = apple_review("ImportDeclSyntax: UIKit/AppKit named imports")
     query = """
         SELECT *, name AS framework,
                'https://developer.apple.com/documentation/swiftui/' ||
@@ -56,6 +59,7 @@ class PlatformFrameworkImport(Rule, id="SW-MIG0001", applicability="review"):
 class PlatformUIBoundary(Rule, id="SW-MIG0002", applicability="review"):
     """A named platform view superclass or SwiftUI representable marks a UI boundary."""
 
+    provenance = apple_review("InheritanceClauseSyntax and SwiftUI platform representables")
     query = """
         SELECT *, CASE
           WHEN contains(inherited, 'Representable') THEN
@@ -66,12 +70,20 @@ class PlatformUIBoundary(Rule, id="SW-MIG0002", applicability="review"):
           ELSE 'https://developer.apple.com/documentation/swiftui/uikit-integration'
           END AS reference
         FROM swift_source_conformances
-        WHERE split_part(inherited, '.', -1) IN (
+        WHERE shadowed = 0 AND split_part(inherited, '.', -1) IN (
           'UIView', 'UIViewController', 'UITableViewController', 'UICollectionViewController',
           'UINavigationController', 'UITabBarController', 'UIHostingController',
           'NSView', 'NSViewController', 'NSWindowController', 'NSHostingController',
           'UIViewRepresentable', 'UIViewControllerRepresentable',
           'NSViewRepresentable', 'NSViewControllerRepresentable')
+          AND (NOT contains(inherited, '.') OR inherited IN (
+            'UIKit.UIView', 'UIKit.UIViewController', 'UIKit.UITableViewController',
+            'UIKit.UICollectionViewController', 'UIKit.UINavigationController',
+            'UIKit.UITabBarController', 'AppKit.NSView', 'AppKit.NSViewController',
+            'AppKit.NSWindowController', 'SwiftUI.UIHostingController',
+            'SwiftUI.NSHostingController', 'SwiftUI.UIViewRepresentable',
+            'SwiftUI.UIViewControllerRepresentable', 'SwiftUI.NSViewRepresentable',
+            'SwiftUI.NSViewControllerRepresentable'))
     """
     message = (
         "`{owner}` inherits/conforms to named type `{inherited}`: review replacing the screen "
@@ -82,8 +94,9 @@ class PlatformUIBoundary(Rule, id="SW-MIG0002", applicability="review"):
         "First identify behavior SwiftUI can preserve directly; replace that UI incrementally "
         "and test it. Keep a representable when platform functionality is still required, "
         "with lifecycle and delegate coordination in that bridge. This audit reports named "
-        "inheritance, including conditional branches; it cannot resolve aliases, custom "
-        "same-named types or subclasses through another superclass. An intentional bridge is "
+        "inheritance, including conditional branches, excluding known project shadows and "
+        "non-framework qualifiers. It cannot resolve aliases, external same-named types or "
+        "subclasses through another superclass. An intentional bridge is "
         "a supported Apple integration mechanism, not an error or an automatic deletion."
     )
     references = (
@@ -102,6 +115,7 @@ class PlatformUIBoundary(Rule, id="SW-MIG0002", applicability="review"):
 class ObjectiveCExposure(Rule, id="SW-MIG0003", applicability="review"):
     """Explicit Objective-C exposure remains in Swift source."""
 
+    provenance = apple_review("AttributeSyntax: explicit objc/objcMembers runtime exposure")
     query = """
         SELECT * FROM swift_source_attributes WHERE attribute IN ('objc', 'objcMembers')
     """
@@ -127,6 +141,7 @@ class ObjectiveCExposure(Rule, id="SW-MIG0003", applicability="review"):
 class HandwrittenDatabaseDependency(Rule, id="SW-MIG0004", applicability="review"):
     """A Swift source explicitly imports a direct SQLite interface."""
 
+    provenance = apple_review("ImportDeclSyntax: SQLite3/FMDB; SwiftData public model/query APIs")
     query = """
         SELECT *, name AS framework FROM swift_source_imports
         WHERE split_part(name, '.', 1) IN ('SQLite3', 'FMDB')

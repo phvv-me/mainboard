@@ -1,6 +1,7 @@
 """Account for Apple source size and placed migration evidence without deciding deletability."""
 
 import hashlib
+from datetime import UTC, datetime
 from enum import StrEnum, auto
 from pathlib import Path, PurePosixPath
 from typing import Annotated
@@ -12,7 +13,7 @@ from ...core.errors import MissionError
 from ..facts import Budget, Facts, lint_excludes, marked, project_files, vendored
 from ..findings import Finding, Span
 from ..lint import app
-from ..providers.swift import SwiftSource
+from ..providers.swift import SwiftSource, SwiftToolchain
 from ..rules.general.apple import ObjectiveCImplementation
 from ..rules.swift.migration import (
     HandwrittenDatabaseDependency,
@@ -27,6 +28,8 @@ from ..rules.swift.persistence import (
     PersistenceConstruction,
 )
 from ..rules.swift.platform import UIKitSymbolReference
+from ..rules.swift.style import LegacyNavigationView, ObservableModelMigration
+from ..rules.swift.ui import PrivateViewState, RedundantBodyErasure
 from .catalog import RuleEntry
 from .report import Report
 from .scope import Scope
@@ -34,6 +37,10 @@ from .scope import Scope
 _LANGUAGES = {".swift": "swift", ".m": "objective_c", ".mm": "objective_cpp"}
 _RULES = (
     SwiftParserCoverage,
+    PrivateViewState,
+    RedundantBodyErasure,
+    LegacyNavigationView,
+    ObservableModelMigration,
     PlatformFrameworkImport,
     PlatformUIBoundary,
     ObjectiveCExposure,
@@ -53,6 +60,14 @@ class SourceKind(StrEnum):
     vendored = auto()
 
 
+class SyntaxStatus(StrEnum):
+    pending = auto()
+    parsed = auto()
+    parse_error = auto()
+    excluded = auto()
+    not_swift = auto()
+
+
 class Condition(Span):
     """Unevaluated #if/#elseif syntax, including branches inactive for the current platform."""
 
@@ -69,6 +84,8 @@ class AppleSourceFile(FrozenModel):
     sha256: str
     physical_lines: int
     nonblank_lines: int
+    syntax_status: SyntaxStatus
+    syntax_reason: str | None
     parsed: bool = False
     parser_gaps: int | None = None
     parser_message: str | None = None
@@ -90,6 +107,9 @@ class SourceTotal(FrozenModel):
 class SwiftInventory(Report):
     root: Path
     scope: str
+    observed_at: datetime
+    toolchain: SwiftToolchain | None
+    context_issues: tuple[Finding, ...]
     files: list[AppleSourceFile]
     totals: list[SourceTotal]
     rules: list[RuleEntry]
@@ -106,13 +126,29 @@ class SwiftInventory(Report):
         "keeps them. Excluded files contribute size; missing syntax never means zero boundaries.",
         "Boundary queries use catalog defaults and ignore per-rule disables/exclusions. "
         "They establish syntax only, not ownership, equivalent APIs, dead code or safe deletion.",
+        "Toolchain metadata identifies the parser host compiler/SDK, not an app-target build. "
+        "Rule provenance dates describe an offline guidance review, not a live docs refresh.",
+        "Parse diagnostics in project siblings outside the reported directory appear in "
+        "context_issues because syntax shadows use project declaration context.",
+        "Cross-file shadows use top-level declarations; local names conservatively suppress "
+        "within their own file. Lexical visibility and target membership are not resolved.",
         "Git ignores untracked build outputs. Outside git the existing fallback listing is used. "
         "Objective-C implementations are counted but not parsed; "
         "headers/build graphs are not read.",
     )
 
     def text(self) -> str:
-        lines = [f"{len(self.files)} Apple source files under {self.scope} ({self.root})"]
+        lines = [
+            f"{len(self.files)} Apple source files under {self.scope} ({self.root})",
+            f"observed at {self.observed_at.isoformat()}",
+        ]
+        if self.toolchain:
+            compiler_version = self.toolchain.compiler_version.replace("\n", "; ")
+            lines.append(
+                f"parser compiler: {compiler_version}; "
+                f"SDK: {self.toolchain.sdk or 'not specified'}; "
+                f"helper: {self.toolchain.helper_identity}"
+            )
         lines.extend(
             f"{total.language}\t{total.kind}\t{total.files} files\t"
             f"{total.physical_lines} lines\t{total.nonblank_lines} nonblank\t"
@@ -120,14 +156,13 @@ class SwiftInventory(Report):
             for total in self.totals
         )
         for file in self.files:
-            syntax = (
-                "parsed" if file.parsed else "parse-error" if file.parser_gaps else "not-parsed"
-            )
             lines.append(
                 f"{file.path}\t{file.kind}\t{file.physical_lines} lines\t"
-                f"{file.nonblank_lines} nonblank\tlint={file.lint_scope}\t{syntax}\t"
+                f"{file.nonblank_lines} nonblank\tlint={file.lint_scope}\t{file.syntax_status}\t"
                 f"imports={','.join(file.imports) or '-'}"
             )
+            if file.syntax_reason:
+                lines.append(f"{file.path}: syntax coverage: {file.syntax_reason}")
             lines.extend(
                 f"{condition.path}:{condition.start_line}:{condition.start_column}: "
                 f"#if/#elseif {condition.expression}"
@@ -138,6 +173,11 @@ class SwiftInventory(Report):
                 f"{hit.rule} {hit.message}"
                 for hit in file.boundaries
             )
+        lines.extend(
+            f"{hit.span.path}:{hit.span.start_line}:{hit.span.start_column}: "
+            f"project context {hit.rule} {hit.message}"
+            for hit in self.context_issues
+        )
         return "\n".join([*lines, *self.notes])
 
 
@@ -162,17 +202,31 @@ class SwiftSourceInventory:
                 raise MissionError(f"source inventory refuses a symbolic link: {path}")
             data = path.read_bytes()
             kind, reason = self._kind(name, vendor, generated)
+            lint_scope = name not in vendor and not excluded(name)
+            swift = path.suffix.lower() == ".swift"
+            if not swift:
+                status = SyntaxStatus.not_swift
+                syntax_reason = "Objective-C file inventory only; no Objective-C parser"
+            elif lint_scope:
+                status, syntax_reason = SyntaxStatus.pending, None
+            else:
+                status = SyntaxStatus.excluded
+                syntax_reason = "Excluded by vendor attribute or analysis lint scope"
             files[name] = AppleSourceFile(
                 path=name,
                 language=_LANGUAGES[path.suffix.lower()],
                 kind=kind,
                 classification=reason,
-                lint_scope=name not in vendor and not excluded(name),
+                lint_scope=lint_scope,
                 byte_count=len(data),
                 sha256=hashlib.sha256(data).hexdigest(),
                 physical_lines=len(data.splitlines()),
                 nonblank_lines=sum(bool(line.strip()) for line in data.splitlines()),
+                syntax_status=status,
+                syntax_reason=syntax_reason,
             )
+        toolchain = None
+        context_issues: tuple[Finding, ...] = ()
         if any(file.language == "swift" and file.lint_scope for file in files.values()):
             for name in names:
                 if (
@@ -186,7 +240,7 @@ class SwiftSourceInventory:
             try:
                 provider = SwiftSource()
                 provider.register(facts, provider.run(root))
-                self._syntax(facts, files)
+                toolchain, context_issues = self._syntax(facts, files)
             finally:
                 facts.close()
                 budget.close()
@@ -227,6 +281,9 @@ class SwiftSourceInventory:
         return SwiftInventory(
             root=root,
             scope=self.scope.prefix or ".",
+            observed_at=datetime.now(UTC),
+            toolchain=toolchain,
+            context_issues=context_issues,
             files=list(files.values()),
             totals=totals,
             rules=[RuleEntry.of(rule) for rule in (*_RULES, ObjectiveCImplementation)],
@@ -253,7 +310,10 @@ class SwiftSourceInventory:
         return SourceKind.production, "remaining source path; target membership is not inferred"
 
     @staticmethod
-    def _syntax(facts: Facts, files: dict[str, AppleSourceFile]) -> None:
+    def _syntax(
+        facts: Facts, files: dict[str, AppleSourceFile]
+    ) -> tuple[SwiftToolchain, tuple[Finding, ...]]:
+        context_issues: list[Finding] = []
         for name, gaps, message in facts.db.execute(
             "SELECT path, parser_gaps, parser_message FROM swift_source_facts"
         ).fetchall():
@@ -263,6 +323,11 @@ class SwiftSourceInventory:
                         "parsed": gaps == 0,
                         "parser_gaps": gaps,
                         "parser_message": message or None,
+                        "syntax_status": SyntaxStatus.parse_error if gaps else SyntaxStatus.parsed,
+                        "syntax_reason": (
+                            "SwiftParser diagnostics prevent reliable style/migration evidence"
+                            if gaps else None
+                        ),
                     }
                 )
         for name, module in facts.db.execute(
@@ -286,14 +351,16 @@ class SwiftSourceInventory:
             for name, line, column, message in facts.db.execute(
                 rule.statement(), rule.rows().parameters
             ).fetchall():
+                hit = Finding(
+                    rule=rule.id,
+                    span=Span(path=name, start_line=line, start_column=column),
+                    message=message,
+                )
                 if name in files:
                     file = files[name]
-                    hit = Finding(
-                        rule=rule.id,
-                        span=Span(path=name, start_line=line, start_column=column),
-                        message=message,
-                    )
                     files[name] = file.model_copy(update={"boundaries": (*file.boundaries, hit)})
+                elif rule.id == SwiftParserCoverage.id:
+                    context_issues.append(hit)
         for file in files.values():
             if file.language == "swift" and file.lint_scope and file.parser_gaps is None:
                 raise MissionError(f"Swift syntax coverage is missing for {file.path}")
@@ -309,6 +376,13 @@ class SwiftSourceInventory:
                     ),
                 }
             )
+        metadata = facts.db.execute("SELECT * FROM swift_source_toolchain")
+        columns = [column[0] for column in metadata.description]
+        rows = metadata.fetchall()
+        if len(rows) != 1:
+            raise MissionError("Swift syntax toolchain provenance is missing or ambiguous")
+        toolchain = SwiftToolchain.model_validate(dict(zip(columns, rows[0], strict=True)))
+        return toolchain, tuple(sorted(context_issues, key=lambda hit: hit.span.path))
 
 
 @app.command

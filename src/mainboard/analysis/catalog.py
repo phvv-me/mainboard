@@ -30,6 +30,7 @@ fields are its parameters.
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from datetime import date
 from functools import cache
 from string import Formatter
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -191,6 +192,16 @@ class Family(Evidenced):
         creates it once."""
 
 
+class RuleProvenance(FrozenModel):
+    """A dated guidance review, separate from the toolchain actually used for analysis."""
+
+    reviewed_on: date
+    method: str
+    review_context: str
+    inspected: tuple[str, ...]
+    limits: str
+
+
 class Rule(FrozenModel):
     """A relation whose rows are findings; its fields are the settings `query` reads as `$name`."""
 
@@ -203,6 +214,7 @@ class Rule(FrozenModel):
     examples: ClassVar[tuple[Example, ...]] = ()
     guidance: ClassVar[str] = ""
     references: ClassVar[tuple[str, ...]] = ()
+    provenance: ClassVar[RuleProvenance | None] = None
     defined: ClassVar[dict[str, type[Rule]]] = {}
 
     def __init_subclass__(cls, *, id: str = "", applicability: Applicability = "none") -> None:

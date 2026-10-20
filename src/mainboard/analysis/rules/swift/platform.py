@@ -1,11 +1,15 @@
 """A finite UIKit syntax inventory, including transitive references without UIKit imports."""
 
 from ...catalog import Example, Rule
+from .provenance import apple_review
 
 
 class UIKitSymbolReference(Rule, id="SW-MIG0005", applicability="review"):
     """A directly named UIKit presentation or layout type remains in Swift source."""
 
+    provenance = apple_review(
+        "Finite UIKit name/receiver syntax and SwiftUI presentation alternatives"
+    )
     query = """
         SELECT r.path, r.start_line, r.start_column, r.name, ui.alternative
         FROM swift_source_references r

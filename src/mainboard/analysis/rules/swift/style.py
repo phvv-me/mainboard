@@ -1,11 +1,15 @@
 """Conservative SwiftUI migration audits; syntax evidence never authorizes a rewrite."""
 
 from ...catalog import Example, Rule
+from .provenance import apple_review
 
 
 class LegacyNavigationView(Rule, id="SW-UI0003", applicability="review"):
     """A directly named SwiftUI NavigationView constructor remains in modern UI code."""
 
+    provenance = apple_review(
+        "SwiftUI.NavigationView/NavigationStack/NavigationSplitView declarations"
+    )
     query = """
         SELECT c.path, c.start_line, c.start_column
         FROM swift_source_calls c
@@ -43,6 +47,9 @@ class LegacyNavigationView(Rule, id="SW-UI0003", applicability="review"):
 class ObservableModelMigration(Rule, id="SW-UI0004", applicability="review"):
     """A SwiftUI-importing class combines ObservableObject and instance Published storage."""
 
+    provenance = apple_review(
+        "Combine.ObservableObject/Published; Observation macro migration guidance"
+    )
     query = """
         SELECT c.path, c.start_line, c.start_column, c.owner
         FROM swift_source_conformances c
@@ -57,6 +64,7 @@ class ObservableModelMigration(Rule, id="SW-UI0004", applicability="review"):
                 AND a.attribute IN ('Published', 'Combine.Published', 'SwiftUI.Published'))
           AND NOT EXISTS (SELECT 1 FROM swift_source_attributes a
               WHERE a.fact_id = c.fact_id AND a.owner_id = c.owner_id
+                AND a.shadowed = 0
                 AND a.attribute IN ('Observable', 'Observation.Observable', 'SwiftUI.Observable'))
     """
     message = (

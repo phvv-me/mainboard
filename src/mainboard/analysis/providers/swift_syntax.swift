@@ -17,47 +17,63 @@ struct Owner {
 
 final class Declarations: SyntaxVisitor {
   var names = Set<String>()
+  var topLevel = Set<String>()
   init() { super.init(viewMode: .sourceAccurate) }
+  func insert(_ name: String, at node: some SyntaxProtocol) {
+    names.insert(name)
+    var parent = node.parent
+    while let current = parent {
+      if current.is(SourceFileSyntax.self) {
+        topLevel.insert(name)
+        return
+      }
+      if current.is(CodeBlockSyntax.self) || current.is(ClosureExprSyntax.self)
+        || current.is(MemberBlockSyntax.self)
+        || (current.is(DeclSyntax.self) && !current.is(IfConfigDeclSyntax.self))
+      { return }
+      parent = current.parent
+    }
+  }
   override func visit(_ node: StructDeclSyntax) -> SyntaxVisitorContinueKind {
-    names.insert(node.name.text)
+    insert(node.name.text, at: node)
     return .visitChildren
   }
   override func visit(_ node: ClassDeclSyntax) -> SyntaxVisitorContinueKind {
-    names.insert(node.name.text)
+    insert(node.name.text, at: node)
     return .visitChildren
   }
   override func visit(_ node: EnumDeclSyntax) -> SyntaxVisitorContinueKind {
-    names.insert(node.name.text)
+    insert(node.name.text, at: node)
     return .visitChildren
   }
   override func visit(_ node: ActorDeclSyntax) -> SyntaxVisitorContinueKind {
-    names.insert(node.name.text)
+    insert(node.name.text, at: node)
     return .visitChildren
   }
   override func visit(_ node: ProtocolDeclSyntax) -> SyntaxVisitorContinueKind {
-    names.insert(node.name.text)
+    insert(node.name.text, at: node)
     return .visitChildren
   }
   override func visit(_ node: TypeAliasDeclSyntax) -> SyntaxVisitorContinueKind {
-    names.insert(node.name.text)
+    insert(node.name.text, at: node)
     return .visitChildren
   }
   override func visit(_ node: FunctionDeclSyntax) -> SyntaxVisitorContinueKind {
-    names.insert(node.name.text)
+    insert(node.name.text, at: node)
     return .visitChildren
   }
   override func visit(_ node: FunctionParameterSyntax) -> SyntaxVisitorContinueKind {
-    names.insert((node.secondName ?? node.firstName).text)
+    insert((node.secondName ?? node.firstName).text, at: node)
     return .visitChildren
   }
   override func visit(_ node: GenericParameterSyntax) -> SyntaxVisitorContinueKind {
-    names.insert(node.name.text)
+    insert(node.name.text, at: node)
     return .visitChildren
   }
   override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {
     for binding in node.bindings {
       if let name = binding.pattern.as(IdentifierPatternSyntax.self) {
-        names.insert(name.identifier.text)
+        insert(name.identifier.text, at: node)
       }
     }
     return .visitChildren
@@ -268,7 +284,7 @@ final class FactsVisitor: SyntaxVisitor {
   override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {
     guard let owner = container(node), imports.contains("SwiftUI"),
       owner.inherited.contains(where: {
-        $0 == "SwiftUI.View" || ($0 == "View" && !declarations.contains("View"))
+        ["View", "SwiftUI.View"].contains($0) && shadowed($0) == 0
       })
     else { return .visitChildren }
     for element in node.attributes {
@@ -287,6 +303,7 @@ final class FactsVisitor: SyntaxVisitor {
         let type = binding.typeAnnotation?.type.as(SomeOrAnyTypeSyntax.self),
         type.someOrAnySpecifier.text == "some",
         ["View", "SwiftUI.View"].contains(type.constraint.trimmedDescription),
+        shadowed(type.constraint.trimmedDescription) == 0,
         let accessors = binding.accessorBlock, case .getter(let statements) = accessors.accessors,
         statements.count == 1, let statement = statements.first,
         let call = statement.item.as(FunctionCallExprSyntax.self),
@@ -303,8 +320,8 @@ final class FactsVisitor: SyntaxVisitor {
 func main() throws {
   let input = try JSONDecoder().decode(
     Input.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))
-  var trees: [(String, SourceFileSyntax, [Diagnostic])] = []
-  let declarations = Declarations()
+  var trees: [(String, SourceFileSyntax, [Diagnostic], Set<String>)] = []
+  var declarations = Set<String>()
   for path in input.files {
     let source = try String(
       contentsOfFile: URL(fileURLWithPath: input.root).appendingPathComponent(path).path,
@@ -313,11 +330,18 @@ func main() throws {
     let errors = ParseDiagnosticsGenerator.diagnostics(for: tree).filter {
       $0.diagMessage.severity == .error
     }
-    trees.append((path, tree, errors))
-    declarations.walk(tree)
+    let local = Declarations()
+    if errors.isEmpty {
+      local.walk(tree)
+      declarations.formUnion(local.topLevel)
+    }
+    trees.append((path, tree, errors, local.names))
   }
-  var output: [String: [[Any]]] = [:]
-  for (path, tree, errors) in trees {
+  var output: [String: [[Any]]] = Dictionary(uniqueKeysWithValues: [
+    "facts", "imports", "conditions", "conformances", "attributes", "attribute_options",
+    "calls", "references", "states", "erasures",
+  ].map { ($0, []) })
+  for (path, tree, errors, localNames) in trees {
     let importVisitor = Imports()
     importVisitor.walk(tree)
     let imports = importVisitor.names
@@ -327,7 +351,7 @@ func main() throws {
     ])
     guard errors.isEmpty else { continue }
     let visitor = FactsVisitor(
-      path: path, tree: tree, imports: imports, declarations: declarations.names)
+      path: path, tree: tree, imports: imports, declarations: declarations.union(localNames))
     visitor.walk(tree)
     for (table, rows) in visitor.tables { output[table, default: []].append(contentsOf: rows) }
   }

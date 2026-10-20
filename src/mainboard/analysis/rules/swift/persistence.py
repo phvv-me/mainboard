@@ -1,11 +1,13 @@
 """Placed persistence syntax for review, without inferring model ownership or writer races."""
 
 from ...catalog import Example, Rule
+from .provenance import apple_review
 
 
 class OpaqueModelAttribute(Rule, id="SW-MIG0006", applicability="review"):
     """A SwiftData model property explicitly selects Codable or transformable storage."""
 
+    provenance = apple_review("SwiftData.Schema.Attribute.Option: codable/transformable(by:)")
     query = """
         SELECT o.path, o.start_line, o.start_column, o.container, o.owner, o.option
         FROM swift_source_attribute_options o
@@ -57,6 +59,7 @@ class OpaqueModelAttribute(Rule, id="SW-MIG0006", applicability="review"):
 class PersistenceConstruction(Rule, id="SW-MIG0007", applicability="review"):
     """A directly named SwiftData ModelContainer or ModelContext constructor needs an owner."""
 
+    provenance = apple_review("SwiftData.ModelContainer/ModelContext/ModelActor declarations")
     query = """
         SELECT c.path, c.start_line, c.start_column,
                CASE WHEN c.name = 'init' THEN split_part(c.receiver, '.', -1)
@@ -106,6 +109,7 @@ class PersistenceConstruction(Rule, id="SW-MIG0007", applicability="review"):
 class DirectSQLiteCall(Rule, id="SW-MIG0008", applicability="review"):
     """A finite directly named SQLite execution/preparation call remains in Swift source."""
 
+    provenance = apple_review("SDK sqlite3.h: sqlite3_exec/prepare/prepare_v2/prepare_v3/step")
     query = """
         SELECT c.path, c.start_line, c.start_column, c.name
         FROM swift_source_calls c

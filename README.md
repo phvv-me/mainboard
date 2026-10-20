@@ -1078,6 +1078,16 @@ Categories are attributed or inferred from named path conventions, not compiled 
 membership. Nonblank lines include comments. Imports are not resolved dependencies,
 and a small file or empty boundary list is not evidence that deletion is safe.
 
+The inventory includes all fourteen Swift/Objective-C rules, with per-file syntax
+status/reason and project-sibling parse diagnostics in `context_issues`. Native output
+must cover every requested file exactly once, explicitly emit empty relation tables,
+and keep malformed-file facts out of style/migration queries; missing or malformed
+output refuses the analysis. Reports include the observed UTC timestamp and selected
+parser compiler/host-SDK/helper identity. This is not the app's target SDK or a build.
+`catalog --json` and `explain` include dated rule-review provenance: the installed SDK
+context and inspected evidence. These dates describe an offline Mainboard guidance
+review, not a new documentation fetch or an availability/type-resolution guarantee.
+
 Use one formatter and complementary correctness checks. SwiftLint is a community tool;
 its style choices are not Apple's language standard. SwiftLint also loads SourceKit at
 startup, so select a compatible Xcode even for rules implemented using SwiftSyntax.

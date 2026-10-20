@@ -9,7 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import TypeAdapter
+from patos import FrozenModel
+from pydantic import TypeAdapter, ValidationError
 
 from ...core.errors import MissionError
 from ...core.tool import Runner, ToolRunner
@@ -23,7 +24,7 @@ PLACE = {
     "start_line": "BIGINT",
     "start_column": "BIGINT",
 }
-TABLES = {
+SYNTAX_TABLES = {
     "facts": PLACE | {"parser_gaps": "BIGINT", "parser_message": "VARCHAR"},
     "imports": PLACE | {"name": "VARCHAR"},
     "conditions": PLACE | {"condition": "VARCHAR"},
@@ -65,6 +66,27 @@ TABLES = {
     "states": PLACE | {"name": "VARCHAR", "attribute": "VARCHAR", "is_private": "BIGINT"},
     "erasures": PLACE | {"view_name": "VARCHAR"},
 }
+TABLES = SYNTAX_TABLES | {
+    "toolchain": {
+        "compiler": "VARCHAR",
+        "compiler_version": "VARCHAR",
+        "sdk": "VARCHAR",
+        "host_libraries": "VARCHAR",
+        "helper_identity": "VARCHAR",
+        "helper_source_sha256": "VARCHAR",
+    },
+}
+
+
+class SwiftToolchain(FrozenModel):
+    """The selected parser build inputs, not the analyzed app's target SDK or type-check result."""
+
+    compiler: str
+    compiler_version: str
+    sdk: str | None
+    host_libraries: str
+    helper_identity: str
+    helper_source_sha256: str
 
 
 class SwiftSource(Tool):
@@ -85,8 +107,66 @@ class SwiftSource(Tool):
             result = runner.run(str(helper), (str(request),), cwd=root)
         if result.returncode or result.truncated:
             raise MissionError(f"SwiftSyntax analysis failed: {result.stderr or result.stdout}")
-        rows = TypeAdapter(dict[str, list[Row]]).validate_json(result.stdout)
-        return {name: (columns, rows.get(name, [])) for name, columns in TABLES.items()}
+        try:
+            rows = TypeAdapter(dict[str, list[Row]]).validate_json(result.stdout, strict=True)
+        except ValidationError as error:
+            raise MissionError("SwiftSyntax emitted invalid result data") from error
+        self._validate(rows, files)
+        try:
+            provenance = SwiftToolchain.model_validate_json(
+                (helper.parent / "toolchain.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError) as error:
+            raise MissionError("SwiftSyntax toolchain provenance is missing or invalid") from error
+        rows["toolchain"] = [
+            (
+                provenance.compiler,
+                provenance.compiler_version,
+                provenance.sdk,
+                provenance.host_libraries,
+                provenance.helper_identity,
+                provenance.helper_source_sha256,
+            )
+        ]
+        return {name: (columns, rows[name]) for name, columns in TABLES.items()}
+
+    @staticmethod
+    def _validate(rows: dict[str, list[Row]], files: list[str]) -> None:
+        if set(rows) != set(SYNTAX_TABLES):
+            raise MissionError("SwiftSyntax tables are missing or unexpected; coverage is unknown")
+        for table, columns in SYNTAX_TABLES.items():
+            if any(
+                len(row) != len(columns)
+                or any(
+                    not isinstance(value, str if kind == "VARCHAR" else int)
+                    for value, kind in zip(row, columns.values(), strict=False)
+                )
+                for row in rows[table]
+            ):
+                raise MissionError(f"SwiftSyntax emitted an invalid {table} row")
+        paths = [row[1] for row in rows["facts"]]
+        if len(paths) != len(files) or set(paths) != set(files):
+            raise MissionError("SwiftSyntax must cover every requested file exactly once")
+        gaps: dict[str, int] = {}
+        for fact_id, path, language, line, column, count, message in rows["facts"]:
+            if (
+                not isinstance(path, str)
+                or fact_id != f"swift:{path}"
+                or language != "swift" or line != 1 or column != 0
+                or not isinstance(count, int) or count < 0 or not isinstance(message, str)
+                or (count == 0) != (message == "")
+            ):
+                raise MissionError("SwiftSyntax emitted invalid file coverage metadata")
+            gaps[path] = count
+        for table in SYNTAX_TABLES.keys() - {"facts"}:
+            for fact_id, path, language, line, column, *_ in rows[table]:
+                if (
+                    not isinstance(path, str) or path not in gaps or gaps[path]
+                    or fact_id != f"swift:{path}"
+                    or language != "swift" or not isinstance(line, int) or line < 1
+                    or not isinstance(column, int) or column < 0
+                ):
+                    raise MissionError(f"SwiftSyntax emitted uncovered/partial syntax in {table}")
 
     @staticmethod
     def _helper(runner: Runner) -> Path:
@@ -108,15 +188,20 @@ class SwiftSource(Tool):
         sdk: tuple[str, ...] = ()
         if sys.platform == "darwin":
             selected_sdk = runner.run("/usr/bin/xcrun", ("--sdk", "macosx", "--show-sdk-path"))
-            if selected_sdk.returncode or selected_sdk.truncated:
+            if (
+                selected_sdk.returncode or selected_sdk.truncated
+                or not selected_sdk.stdout.strip()
+                or not Path(selected_sdk.stdout.strip()).is_dir()
+            ):
                 raise MissionError(f"Cannot resolve macOS SDK: {selected_sdk.stderr}")
-            sdk = ("-sdk", selected_sdk.stdout.strip())
+            sdk = ("-sdk", str(Path(selected_sdk.stdout.strip()).resolve()))
         version = runner.run(str(compiler), ("--version",))
-        if version.returncode or version.truncated:
+        if version.returncode or version.truncated or not version.stdout.strip():
             raise MissionError(f"Cannot identify Swift compiler: {version.stderr}")
         source = Path(__file__).with_name("swift_syntax.swift")
+        source_bytes = source.read_bytes()
         identity = (
-            source.read_bytes()
+            source_bytes
             + str(compiler.resolve()).encode()
             + version.stdout.encode()
             + str(sdk).encode()
@@ -128,11 +213,26 @@ class SwiftSource(Tool):
         digest = hashlib.sha256(identity).hexdigest()[:24]
         folder = Path.home() / ".cache/mainboard/analysis/swift" / digest
         helper = folder / "swift-syntax"
+        folder.mkdir(parents=True, exist_ok=True)
+        provenance = SwiftToolchain(
+            compiler=str(compiler.resolve()),
+            compiler_version=version.stdout.strip(),
+            sdk=sdk[1] if sdk else None,
+            host_libraries=str(host),
+            helper_identity=digest,
+            helper_source_sha256=hashlib.sha256(source_bytes).hexdigest(),
+        )
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=folder, suffix=".json", delete=False
+        ) as record:
+            record.write(provenance.model_dump_json())
+        os.replace(record.name, folder / "toolchain.json")
         if helper.is_file():
             return helper
-        folder.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=folder) as scratch:
             output = Path(scratch) / "swift-syntax"
+            source_copy = Path(scratch) / source.name
+            source_copy.write_bytes(source_bytes)
             built = runner.run(
                 str(compiler),
                 (
@@ -145,7 +245,7 @@ class SwiftSource(Tool):
                     "-Xlinker",
                     str(host),
                     *sdk,
-                    str(source),
+                    str(source_copy),
                     "-o",
                     str(output),
                 ),

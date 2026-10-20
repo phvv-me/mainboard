@@ -1,11 +1,15 @@
 """SwiftUI ownership and avoidable type erasure, grounded in syntax rather than source regexes."""
 
 from ...catalog import Example, Rule
+from .provenance import apple_review
 
 
 class PrivateViewState(Rule, id="SW-UI0001"):
     """SwiftUI-owned state exposed through a view's access level."""
 
+    provenance = apple_review(
+        "SwiftUICore.State/StateObject; direct SwiftUI View ownership syntax"
+    )
     query = "SELECT * FROM swift_source_states WHERE is_private = 0"
     message = (
         "`{name}` uses @{attribute}; keep SwiftUI-owned state private and pass Binding to "
@@ -34,6 +38,7 @@ class PrivateViewState(Rule, id="SW-UI0001"):
 class RedundantBodyErasure(Rule, id="SW-UI0002", applicability="review"):
     """A sole AnyView wrapper in an opaque SwiftUI body can hide its concrete type."""
 
+    provenance = apple_review("SwiftUICore.AnyView; single direct opaque-body syntax")
     query = "SELECT * FROM swift_source_erasures"
     message = (
         "`{view_name}.body` only wraps its result in AnyView; consider returning the concrete "

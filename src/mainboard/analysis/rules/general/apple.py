@@ -1,11 +1,15 @@
 """Apple implementation files to review during an explicitly chosen Swift migration."""
 
 from ...catalog import Example, Rule
+from ..swift.provenance import apple_review
 
 
 class ObjectiveCImplementation(Rule, id="ALL-MIG0001", applicability="review"):
     """An Objective-C or Objective-C++ implementation remains in the project."""
 
+    provenance = apple_review(
+        "Project .m/.mm suffix inventory only; no Objective-C AST or SDK resolution"
+    )
     query = "SELECT * FROM apple_source_facts"
     message = (
         "Objective-C implementation: review migrating one class/file at a time to Swift, "

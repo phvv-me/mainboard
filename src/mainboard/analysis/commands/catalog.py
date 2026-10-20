@@ -12,7 +12,7 @@ from cyclopts import Parameter
 from patos import FrozenModel
 
 from ...core.errors import MissionError
-from ..catalog import LANGUAGES, Rule
+from ..catalog import LANGUAGES, Rule, RuleProvenance
 from ..facts import Setting
 from ..lint import app, load_catalog
 from .report import Report
@@ -38,6 +38,7 @@ class RuleEntry(FrozenModel):
     settings: list[RuleSetting]
     guidance: str
     references: tuple[str, ...]
+    provenance: RuleProvenance | None = None
 
     @classmethod
     def of(cls, rule: type[Rule]) -> RuleEntry:
@@ -50,6 +51,7 @@ class RuleEntry(FrozenModel):
             examples=len(rule.examples),
             guidance=rule.guidance,
             references=rule.references,
+            provenance=rule.provenance,
             settings=[
                 RuleSetting(
                     name=name,
@@ -117,12 +119,17 @@ class Explanation(Report):
 
     def text(self) -> str:
         rule = self.rule
+        provenance = rule.provenance
         return "\n".join(
             line
             for line in (
                 f"{rule.id}: {rule.summary}",
                 f"language: {rule.language}; applicability: {rule.applicability}; fix: {rule.fix}",
                 rule.guidance,
+                f"reviewed {provenance.reviewed_on}: {provenance.method}" if provenance else "",
+                provenance.review_context if provenance else "",
+                "; ".join(provenance.inspected) if provenance else "",
+                provenance.limits if provenance else "",
                 *rule.references,
             )
             if line
