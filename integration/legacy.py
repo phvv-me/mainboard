@@ -45,8 +45,15 @@ class LegacyRuntime(FrozenModel):
     def run(self, program: str) -> subprocess.CompletedProcess[str]:
         """Run `program` with the legacy sources as the only import root, not the new tree's."""
         environment = {**os.environ, "PYTHONPATH": str(self.root / "src")}
+        current = (Path(__file__).resolve().parents[1] / "src").resolve()
+        # System site-packages contributes editable .pth paths after PYTHONPATH is applied.
+        bootstrap = (
+            "import sys, pathlib\n"
+            "sys.path[:] = [p for p in sys.path "
+            f"if pathlib.Path(p).resolve() != pathlib.Path({str(current)!r})]\n"
+        )
         return subprocess.run(
-            [str(self.interpreter), "-c", program],
+            [str(self.interpreter), "-c", bootstrap + f"exec({program!r})"],
             cwd=self.root,
             env=environment,
             capture_output=True,

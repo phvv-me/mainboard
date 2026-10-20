@@ -13,11 +13,10 @@ import time
 from pathlib import Path
 
 import duckdb
+import mainboard
 import pytest
 from cyclopts import App
 from guard import Guard
-
-import mainboard
 
 # Seconds of the budget that launching, preflight and cleanup keep for themselves.
 _RESERVE = 30
@@ -193,6 +192,8 @@ class Gate:
                 "check",
                 "--config",
                 config,
+                "--python-interpreter-path",
+                sys.executable,
                 "--min-severity",
                 "warn",
                 "--output-format",

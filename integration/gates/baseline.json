@@ -1,16 +1,25 @@
 {
   "revision": "c97cb81",
   "measured_at": "2026-10-10T09:25:54.260596+00:00",
-  "source": "Historical measurements.json; these are not M00 execution results",
+  "source": "Historical measurements.json; counts are historical, versions include the explicit rebaselines below and are not checker acceptance",
   "versions": {
     "mainboard": "0.5.4",
     "mcmr": "0.0.4",
     "ruff": "0.17.0",
-    "pyrefly": "1.4.0.dev3",
+    "pyrefly": "1.4.0",
     "ty": "0.0.85",
     "mypy": "2.4.0",
     "pytest": "9.1.1"
   },
+  "version_rebaselines": [
+    {
+      "tool": "pyrefly",
+      "previous": "1.4.0.dev3",
+      "current": "1.4.0",
+      "date": "2026-10-21",
+      "reason": "The locked workspace uses the stable release. Preserve historical diagnostic counts and measure the current checker separately; no tool installation, rule suppression or version guard relaxation."
+    }
+  ],
   "counts": {
     "passed": 379,
     "skipped": 5,

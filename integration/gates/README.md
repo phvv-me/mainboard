@@ -51,8 +51,8 @@ checkout's lock builds. A bare `pytest` is refused by `conftest.py`, with no fal
 - The checkout needs its history (`fetch-depth: 0`): the legacy-runtime witness extracts the
   c97cb81 archive with `git archive`.
 - A lane holds only its own tool to the recorded versions: pytest for `suite`, `target` and
-  `inspect`, the checker for a checker lane, nothing for `seed`. The lock supplies pytest but not
-  ty or mcmr, and its ruff, mypy and pyrefly are newer than the checker baseline below.
+  `inspect`, the checker for a checker lane, nothing for `seed`. The lock supplies pytest and
+  pyrefly; other checker versions must satisfy their own guards before a lane runs.
 - The worker starts in the gate's empty temporary root, not in the checkout. Test modules are
   imported there, so a constant computed at import (`Project().out_dir()` in
   `test_managed_python`) agrees with the same call inside a test, whether or not the checkout
@@ -126,10 +126,14 @@ verifies the temporary data directory and disabled TCP.
 ## Checker contract
 
 A lane refuses drift of its own tool against the recorded versions: pytest 9.1.1, Ruff 0.17.0,
-pyrefly 1.4.0.dev3, ty 0.0.85, mypy 2.4.0 and mcmr 0.0.4. Do not install or upgrade tools during
-gates. Ruff covers `src` and `integration`; the three type checkers retain the existing `src` scope
+pyrefly 1.4.0, ty 0.0.85, mypy 2.4.0 and mcmr 0.0.4. The pyrefly stable-release version rebaseline
+is recorded in `baseline.json`; its old diagnostic counts remain historical until remeasured.
+Do not install or upgrade tools during gates. Ruff covers `src` and `integration`; the three type
+checkers retain the existing `src` scope
 and explicit worktree config; pyrefly includes warnings. Deterministic MCMR covers the worktree with
-contextual/external lanes, writeback and repair disabled. Logs record exact argv and elapsed time.
+contextual/external lanes, writeback and repair disabled. Pyrefly and ty query the gate's actual
+interpreter, so a stale project-local `.venv` cannot replace the locked workspace's dependency
+metadata. Logs record exact argv and elapsed time.
 
 Historical debt is Ruff 0; pyrefly 4 errors and 49 warnings; ty 25 diagnostics; mypy 9 errors;
 MCMR 1908 findings and 1587 failures. Nonzero checker exits are preserved, not converted to success.
@@ -138,3 +142,34 @@ is acceptable. Fix baseline errors in changed source files; do not add ignores. 
 adds no MCMR finding beyond the baseline conftest's `MB` constant. A new skip must have an explicit
 obligation and owner; missing cases, unexpected skips, failures and incomplete timeout runs remain
 unaccepted. M33 must close the cumulative six flow families and nine incident witnesses.
+
+## October 21 validation checkpoint
+
+The full isolated run recorded in `/private/tmp/usagi-mainboard-final-suite` finished with
+**1060 passed, 1 failed, 11 skipped** and three warnings in 446 seconds. Its only failure was
+`test_the_legacy_runtime_imports_only_its_own_archive`: a workspace editable `.pth` file added the
+current source tree to the legacy interpreter's path after `PYTHONPATH`. The legacy helper now
+removes that resolved current-source path after interpreter site initialization and before the
+requested program; the immutable archive and dependency site-packages remain unchanged. This is
+a focused isolation repair, not a replacement legacy implementation.
+
+The subsequent bounded `target` run in `/private/tmp/usagi-mainboard-checkpoint-target` passed
+both that legacy-isolation witness and `test_a_subprocess_mb_runs_the_worktrees_source`
+(**2 passed**, no skips; native OS preflight exit 0). No full-suite rerun followed this repair.
+The earlier failing suite must therefore remain a failing receipt, not be relabeled green.
+
+The fixed pyrefly invocation explicitly uses the gate's managed Python interpreter rather than
+discovering a potentially stale project `.venv`. The read-only checker run in
+`/private/tmp/usagi-mainboard-checkpoint-typing` used Python **3.14.8**, pyrefly **1.4.0**, explicit
+package configuration and warning severity. It preserved exit **1**: **4 errors and 45 warnings**.
+All four errors concern TOML `Item` operations in unchanged `src/mainboard/deps/editing.py`:
+assignment at line 70, membership at line 94, assignment at line 97 and indexing at line 98.
+Warnings span existing package source and include missing stubs; the log also reports the
+deliberate `PYTHONPATH` environment. These are not accepted or suppressed, and the historical
+diagnostic counts in `baseline.json` were not replaced by this measurement.
+
+Root-managed Ruff **0.17.1**, with this package's explicit configuration, checked and verified
+formatting of `integration/legacy.py` and `integration/gates/runner.py` successfully after import
+ordering was fixed. This focused check was not the version-guarded Ruff lane, whose baseline
+remains 0.17.0. The focused pytest lane used its pinned **9.1.1**. No tool installation, dependency
+change or unrelated source repair was performed for this checkpoint.
