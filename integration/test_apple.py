@@ -7,19 +7,24 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
-from pydantic import JsonValue
-
 from mainboard.apple import Apple
 from mainboard.cli import build
 from mainboard.core.errors import MissionError
 from mainboard.core.tool import ToolOutput
 from mainboard.proc import Processes
+from pydantic import JsonValue
 
 
 class ResultTool:
-    def __init__(self, summary: dict[str, JsonValue], nodes: list[dict[str, JsonValue]]) -> None:
+    def __init__(
+        self,
+        summary: dict[str, JsonValue],
+        nodes: list[dict[str, JsonValue]],
+        build_summary: dict[str, JsonValue],
+    ) -> None:
         self.summary = summary
         self.nodes = nodes
+        self.build_summary = build_summary
         self.calls: list[tuple[str, ...]] = []
         self.failure: ToolOutput | None = None
 
@@ -28,13 +33,15 @@ class ResultTool:
         self.calls.append(args)
         if self.failure is not None:
             return self.failure
+        if args[:3] == ("xcresulttool", "get", "build-results"):
+            return ToolOutput(stdout=json.dumps(self.build_summary))
         assert args[:3] == ("xcresulttool", "get", "test-results")
         payload = self.summary if args[3] == "summary" else {"testNodes": self.nodes}
         return ToolOutput(stdout=json.dumps(payload))
 
 
 @pytest.fixture
-def result_tool() -> ResultTool:
+def result_tool(build_summary: dict[str, JsonValue]) -> ResultTool:
     return ResultTool(
         {
             "result": "Passed",
@@ -78,6 +85,7 @@ def result_tool() -> ResultTool:
                 ],
             }
         ],
+        build_summary,
     )
 
 
@@ -622,6 +630,13 @@ def test_execution_cli_uses_actual_test_verdict(
             ]
         )
     assert stopped.value.code == (native_code or (0 if passed else 1))
+    (retained_build,) = (tmp_path / "out").glob("*.build.json")
+    (retained_tests,) = (tmp_path / "out").glob("*.tests.json")
+    build_report = json.loads(retained_build.read_text())
+    test_report = json.loads(retained_tests.read_text())
+    assert build_report["bundle"] == test_report["bundle"]
+    assert build_report["summary"] == result_tool.build_summary
+    assert test_report["successful"] is passed
 
 
 def test_process_timeout_runs_package_commands_in_the_requested_directory(tmp_path: Path) -> None:
