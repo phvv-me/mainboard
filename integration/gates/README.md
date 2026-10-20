@@ -274,3 +274,27 @@ IntEnum members retain integer equality and hashing. The audit is recorded in
 `/private/tmp/usagi-cupti-contract-audit.json`; it checks published metadata, not real CUDA
 execution. This Mac has no installed CUDA/CUPTI binding, and the synthetic record tests do not
 establish hardware compatibility.
+
+## Native Swift Testing skip diagnostics — October 21
+
+An actual Xcode 27 result with 95 passing functions and one intentional protocol-mode skip
+contains a `Skip Message` child without a verdict. The diagnostic whitelist now accepts that
+exact node type alongside failure/warning messages. Ordinary nodes still require verdicts;
+all-skipped/empty results still fail the positive-passing-case rule. Timeless skip diagnostics
+do not enter the slowest-test ranking. The real result is re-read successfully without
+rerunning its app or altering the native evidence.
+
+The final isolated Apple/bundle/CLI scope passes **323 cases**. The complete isolated suite
+passes **1151 cases, 11 declared skips, three existing warnings** (439.23 seconds), exit zero.
+Skips retain the Linux TCP, offline solver, setsid and unconfigured-fleet prerequisites.
+Configured managed pyrefly has **zero diagnostics**, with the same two existing suppressions;
+explicit-config scoped Ruff/format pass. No ignore, severity or verdict requirement changes.
+
+Receipts are `/private/tmp/usagi-mainboard-native-skip-suite-final/suite.json` SHA
+`f29e3e9624bd9d15acd76826aa21876f5bd68340ea21d682c42e734ad20a6174`, outcomes SHA
+`91a66e49a57fa6912a0778929c0ddacc27b276c107098a6d97ba29fd29146675`, and
+`/private/tmp/usagi-mainboard-native-skip-typing-final/pyrefly.json` SHA
+`c303a8c3394a343266424ebd99f235bfe2dab6b0d8168eb281db99acb3721622`.
+The first focused test incorrectly expected an untimed skipped case in the timing ranking;
+its failed receipt remains separate. The prematurely started full run was explicitly stopped
+before fixing that test and is not a pass. The final runs above use the corrected expectation.

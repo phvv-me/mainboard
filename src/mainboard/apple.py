@@ -51,7 +51,7 @@ class DiagnosticNode(FrozenModel):
     model_config = ConfigDict(extra="allow", strict=True)
 
     name: str
-    kind: Literal["Failure Message", "Runtime Warning"] = Field(alias="nodeType")
+    kind: Literal["Failure Message", "Runtime Warning", "Skip Message"] = Field(alias="nodeType")
 
 
 class TestNode(FrozenModel):

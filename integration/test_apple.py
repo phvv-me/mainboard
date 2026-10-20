@@ -495,6 +495,28 @@ def test_passing_case_retains_runtime_warning_without_treating_it_as_a_test(
     assert summary["runtimeWarnings"] == result_tool.summary["runtimeWarnings"]
 
 
+def test_declared_skip_message_is_diagnostic_and_retains_the_skip_verdict(
+    result_tool: ResultTool,
+    bundle: Path,
+) -> None:
+    message = "Test skipped: Requires two independent fixture test hosts"
+    result_tool.summary.update(totalTestCount=3, skippedTests=1)
+    result_tool.nodes.append(
+        {
+            "name": "restart",
+            "nodeType": "Test Case",
+            "result": "Skipped",
+            "children": [{"name": message, "nodeType": "Skip Message"}],
+        }
+    )
+    report = Apple(result_tool).results(bundle)
+    assert report.summary.successful and report.summary.skipped == 1
+    assert [(case.name, case.result) for case in report.slowest] == [
+        ("landscape", "Passed"),
+        ("parameterized", "Passed"),
+    ]
+
+
 @pytest.mark.parametrize("kind", ["Test Case", "Test Suite", "Arguments", "Unknown Node"])
 def test_non_diagnostic_nodes_still_require_verdicts(
     result_tool: ResultTool,
