@@ -74,7 +74,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from .apple import BuildReport, TestReport
-
     from .batch.estimate import JobEstimate
     from .batch.runner import Batch
     from .batch.watch import BatchStatus
@@ -2165,6 +2164,45 @@ def build(root: Path | None = None) -> App:
         Args:
         """
         output.print_rows(Apple().simulators(), title="Apple simulators")
+
+    @apple.command(name="bundle")
+    def apple_bundle(
+        path: Path,
+        *,
+        forbid_symbol: tuple[str, ...] = (),
+        forbid_resource: tuple[str, ...] = (),
+        expect_info: tuple[str, ...] = (),
+        require_info: tuple[str, ...] = (),
+        expect_name: tuple[str, ...] = (),
+        output: Output = _COMPACT,
+    ) -> int:
+        """Inspect a built app's metadata, resources and every packaged Mach-O architecture.
+
+        No app code is executed. nm/otool inspect all architectures and their complete
+        output stays in the report. Missing/truncated native evidence fails. Inspection
+        is bounded to 10,000 entries, 128 Mach-O files and 16 slices per fat header.
+        Internal symlinks are deduplicated;
+        links escaping the bundle fail. This does not prove source provenance, optimized-out
+        static dependencies, signing, installation or rendering.
+
+        Args:
+            path: a built app bundle, including its embedded products.
+            forbid_symbol: repeatable case-insensitive regex over nm/otool stdout and stderr.
+            forbid_resource: repeatable relative glob; ** also matches zero directories.
+            expect_info: repeatable dotted Info.plist KEY=VALUE string expectations.
+            require_info: repeatable dotted Info.plist keys requiring nonempty text.
+            expect_name: repeatable LOCALE=VALUE display names in InfoPlist.strings.
+        """
+        report = Apple().bundle(
+            path,
+            forbid_symbol=forbid_symbol,
+            forbid_resource=forbid_resource,
+            expect_info=expect_info,
+            require_info=require_info,
+            expect_name=expect_name,
+        )
+        output.print_record(report.document(), title="Apple bundle")
+        return 0 if report.successful else 1
 
     @apple.command(name="font-previews")
     def apple_font_previews(

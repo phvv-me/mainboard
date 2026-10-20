@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from patos import FrozenModel
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
+from .apple_bundle import AppleBundle, BundleReport
 from .core.errors import MissionError
 from .core.tool import Runner, ToolRunner
 from .engines.compile.generated import GeneratedFiles
@@ -217,6 +218,25 @@ class Apple:
             "swift_path": self._run("--find", "swift").strip(),
             "xcresulttool_path": self._run("--find", "xcresulttool").strip(),
         }
+
+    def bundle(
+        self,
+        path: Path,
+        *,
+        forbid_symbol: tuple[str, ...] = (),
+        forbid_resource: tuple[str, ...] = (),
+        expect_info: tuple[str, ...] = (),
+        require_info: tuple[str, ...] = (),
+        expect_name: tuple[str, ...] = (),
+    ) -> BundleReport:
+        return AppleBundle(self.runner).inspect(
+            path,
+            forbid_symbol=forbid_symbol,
+            forbid_resource=forbid_resource,
+            expect_info=expect_info,
+            require_info=require_info,
+            expect_name=expect_name,
+        )
 
     def simulators(self) -> list[dict[str, str]]:
         """List available devices without booting, creating or erasing a simulator."""

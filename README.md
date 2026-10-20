@@ -1014,6 +1014,25 @@ under `--results` and reports the exact face, source and pixel dimensions.
 mainboard apple font-previews Resources/Fonts --text '日本語の見本' --json
 ```
 
+`apple bundle` inspects a built app without running it. It hashes the main Info.plist,
+requested localized display names and every recognized Mach-O file, retaining complete
+`nm -arch all -u` and `otool -arch all -L` output. Repeatable policies stay with the app:
+case-insensitive symbol/library regexes, relative resource globs, exact string values at
+dotted Info.plist keys, required nonempty text and localized display names. Policy failures
+return a report with violations and exit 1; missing, truncated or unreadable evidence fails.
+Internal links are deduplicated, escaping links fail, and traversal is bounded to 10,000
+entries, 128 binaries and 16 fat-header slices. Native calls use the existing bounded runner.
+
+```sh
+mainboard proc timeout 120 mainboard apple bundle build/Example.app \
+  --forbid-symbol 'RetiredLibrary|RetiredClass' --forbid-resource '**/*.xctest' \
+  --expect-info CFBundleDisplayName=Example --require-info NSMicrophoneUsageDescription \
+  --expect-name en=Example --json > build/Bundle.json
+```
+
+The report describes the supplied product. It does not establish the build's source inputs,
+optimized-out static dependency provenance, signing, installation or resource rendering.
+
 `apple results` uses the installed `xcresulttool get test-results` interface for both
 Swift Testing and XCTest. It reports the exact bundle, Xcode's summary (including
 failures, skips, expected failures, devices and warnings), and the ten slowest test
