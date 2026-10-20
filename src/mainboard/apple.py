@@ -239,7 +239,8 @@ class Apple:
         """Build/test a workspace, project or Swift package with the selected Xcode.
 
         Keep native stdout and exit status, use committed package versions, and stop the
-        entire process tree on timeout. Result bundles must be fresh, never overwritten.
+        entire process tree on timeout. Suppress Xcode's automatic script environment dumps.
+        Result bundles must be fresh, never overwritten.
         """
         project = project.expanduser().resolve()
         if timeout <= 0 or not scheme.strip():
@@ -265,6 +266,7 @@ class Apple:
             "-scheme",
             scheme,
             "-onlyUsePackageVersionsFromResolvedFile",
+            "-hideShellScriptEnvironment",
         ]
         if action != "resolve":
             if bundle is None:

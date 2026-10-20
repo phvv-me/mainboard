@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pydantic import JsonValue
@@ -505,8 +506,12 @@ def test_non_diagnostic_nodes_still_require_verdicts(
 
 
 @pytest.mark.parametrize("kind", ["xcworkspace", "xcodeproj", "package"])
+@pytest.mark.parametrize("action", ["build", "test", "build-for-testing", "resolve"])
 def test_execution_uses_literal_native_arguments_and_package_working_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    action: Literal["build", "test", "build-for-testing", "resolve"],
 ) -> None:
     project = tmp_path / ("Package" if kind == "package" else f"App '$literal.{kind}")
     project.mkdir()
@@ -523,7 +528,7 @@ def test_execution_uses_literal_native_arguments_and_package_working_directory(
     code = Apple().execute(
         project,
         scheme="An app",
-        action="test",
+        action=action,
         destination="platform=macOS",
         derived_data=tmp_path / "build",
         bundle=bundle,
@@ -535,10 +540,21 @@ def test_execution_uses_literal_native_arguments_and_package_working_directory(
     assert code == 65 and len(calls) == 1
     seconds, command, cwd = calls[0]
     assert seconds == 123 and cwd == (project if kind == "package" else project.parent)
-    assert command[:3] == ["/usr/bin/xcrun", "xcodebuild", "test"]
+    assert command[:3] == [
+        "/usr/bin/xcrun",
+        "xcodebuild",
+        "-resolvePackageDependencies" if action == "resolve" else action,
+    ]
     assert "-onlyUsePackageVersionsFromResolvedFile" in command
-    assert command[command.index("-resultBundlePath") + 1] == str(bundle)
-    assert command[command.index("-parallel-testing-enabled") + 1] == "NO"
+    assert command.count("-hideShellScriptEnvironment") == 1
+    if action != "resolve":
+        assert command[command.index("-resultBundlePath") + 1] == str(bundle)
+    else:
+        assert "-resultBundlePath" not in command
+    if action == "test":
+        assert command[command.index("-parallel-testing-enabled") + 1] == "NO"
+    else:
+        assert "-parallel-testing-enabled" not in command
     assert command[-3:] == [
         "-only-testing:UITests/Flow/testA",
         "-skip-testing:UITests/Flow/testB",
@@ -549,7 +565,8 @@ def test_execution_uses_literal_native_arguments_and_package_working_directory(
             "-workspace" if kind == "xcworkspace" else "-project",
             str(project),
         ]
-    assert bundle.parent.is_dir() and not bundle.exists()
+    assert bundle.parent.is_dir() == (action != "resolve")
+    assert not bundle.exists()
 
 
 def test_execution_refuses_old_evidence_and_invalid_inputs(tmp_path: Path) -> None:
@@ -696,6 +713,7 @@ def test_url_host_uses_exact_destination_and_temporary_literal_descriptor(
         data = json.loads(descriptor.read_text(encoding="utf-8"))
         assert data["device"] == "chosen" and data["routes"] == ["fixture:///reviews"]
         assert data["command"][0:3] == ["/usr/bin/xcrun", "xcodebuild", "test"]
+        assert data["command"].count("-hideShellScriptEnvironment") == 1
         assert "-only-testing:Suite/Case" in data["command"]
         return 65
 
