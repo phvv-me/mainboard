@@ -592,6 +592,7 @@ python-version = "3.14"
 # `integration/` runs the real `mb` in throwaway workspaces and is what a bare `pytest` runs.
 addopts = "-q -ra --strict-markers --import-mode=importlib"
 testpaths = ["integration"]
+markers = ["swift_native: real SwiftSyntax source execution in the macOS/Xcode 27 lane"]
 strict_config = true
 strict_parametrization_ids = true
 strict_xfail = true

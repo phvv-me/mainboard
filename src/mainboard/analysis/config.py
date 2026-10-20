@@ -1,7 +1,8 @@
 """A project's per-rule configuration: paths a rule must not see and setting overrides.
 
-Read today from the analyzed project's `pyproject.toml` `[tool.mcmr.rules."ID"]` tables, which
-every existing project already carries, so a ported rule is judged under mcmr's policy.
+Native projects declare `[analysis.rules."ID"]` in their Mainboard manifest. Existing
+`pyproject.toml` `[tool.mcmr.rules."ID"]` tables remain supported; declaring the same rule in
+both places is refused so precedence never hides a policy.
 """
 
 import tomllib
@@ -12,6 +13,7 @@ from pathspec import PathSpec
 from patos import FrozenModel
 from pydantic import ConfigDict
 
+from ..core.project import Project
 from .facts import Setting
 
 
@@ -63,13 +65,25 @@ class ProjectConfig(FrozenModel):
 
     @classmethod
     def of(cls, root: Path) -> ProjectConfig:
-        """The configuration in `root/pyproject.toml`, empty when it declares none."""
+        """Per-owner native or legacy policy; a rule must have one unambiguous declaration."""
+        native = cls._read_rules(Project().manifest(root), ("analysis", "rules"))
+        legacy = cls._read_rules(root / "pyproject.toml", ("tool", "mcmr", "rules"))
+        if duplicated := sorted(native.keys() & legacy.keys()):
+            raise ValueError(
+                f"rule {duplicated[0]} is configured in both the Mainboard manifest and "
+                "pyproject.toml; keep one declaration"
+            )
+        return cls(rules=legacy | native)
+
+    @staticmethod
+    def _read_rules(path: Path, keys: tuple[str, ...]) -> dict[str, RuleConfig]:
         try:
-            declared = tomllib.loads((root / "pyproject.toml").read_text())
+            tables = tomllib.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            return cls()
-        tables = declared.get("tool", {}).get("mcmr", {}).get("rules", {})
-        return cls(rules={rule: RuleConfig.of(table) for rule, table in tables.items()})
+            return {}
+        for key in keys:
+            tables = tables.get(key, {})
+        return {rule: RuleConfig.of(table) for rule, table in tables.items()}
 
     def rule(self, rule: str) -> RuleConfig:
         return self.rules.get(rule, RuleConfig())

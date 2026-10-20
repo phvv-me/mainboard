@@ -1,0 +1,24 @@
+# Correctness only. The selected Swift toolchain's swift-format owns source layout.
+only_rules:
+  - compiler_protocol_init
+  - discarded_notification_center_observer
+  - duplicate_conditions
+  - duplicate_enum_cases
+  - duplicated_key_in_dictionary_literal
+  - dynamic_inline
+  - identical_operands
+  - invalid_swiftlint_command
+  - notification_center_detachment
+  - nsobject_prefer_isequal
+  - private_swiftui_state
+  - redundant_sendable
+  - unowned_variable_capture
+  - weak_delegate
+excluded:
+  - .build
+  - .mainboard
+  - build
+  - dist
+check_for_updates: false
+allow_zero_lintable_files: false
+reporter: xcode

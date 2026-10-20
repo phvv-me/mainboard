@@ -11,6 +11,7 @@ from typing import Annotated
 from cyclopts import Parameter
 from patos import FrozenModel
 
+from ...core.errors import MissionError
 from ..catalog import LANGUAGES, Rule
 from ..facts import Setting
 from ..lint import app, load_catalog
@@ -35,6 +36,8 @@ class RuleEntry(FrozenModel):
     fix: str
     examples: int
     settings: list[RuleSetting]
+    guidance: str
+    references: tuple[str, ...]
 
     @classmethod
     def of(cls, rule: type[Rule]) -> RuleEntry:
@@ -45,6 +48,8 @@ class RuleEntry(FrozenModel):
             applicability=rule.applicability,
             fix=rule.fixes(),
             examples=len(rule.examples),
+            guidance=rule.guidance,
+            references=rule.references,
             settings=[
                 RuleSetting(
                     name=name,
@@ -103,3 +108,41 @@ def catalog(
     load_catalog()
     chosen = [Rule.defined[id] for id in sorted(Rule.defined) if not rule or id in rule]
     print(Catalog(rules=[RuleEntry.of(entry) for entry in chosen]).render(as_json=as_json))
+
+
+class Explanation(Report):
+    """A rule's evidence, repair policy and official migration references, available offline."""
+
+    rule: RuleEntry
+
+    def text(self) -> str:
+        rule = self.rule
+        return "\n".join(
+            line
+            for line in (
+                f"{rule.id}: {rule.summary}",
+                f"language: {rule.language}; applicability: {rule.applicability}; fix: {rule.fix}",
+                rule.guidance,
+                *rule.references,
+            )
+            if line
+        )
+
+
+@app.command
+def explain(
+    rule: str,
+    *,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+) -> None:
+    """Explain RULE, its repair policy and remediation references without fetching documentation.
+
+    rule: the exact rule id from a finding or `mainboard analyze catalog`.
+    as_json: print structured guidance and reference URLs for an agent.
+    """
+    load_catalog()
+    try:
+        specification = Rule.defined[rule]
+    except KeyError:
+        raise MissionError(f"no rule {rule!r}; see `mainboard analyze catalog`") from None
+    print(Explanation(rule=RuleEntry.of(specification)).render(as_json=as_json))

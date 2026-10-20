@@ -93,7 +93,10 @@ class Lint:
         views = {view for query in wanted for view in query.views()}
         derived_queries = [query for name in self.families for query in self._sql_of(name)]
         self.core = Core.reading(views | {view for q in derived_queries for view in q.views()})
-        self.reads_trees = bool(self.core) or any(view.startswith("ast_") for view in views)
+        self.reads_trees = bool(self.core) or any(
+            view.startswith("ast_")
+            for view in views | {view for query in derived_queries for view in query.views()}
+        )
 
     def facts(self, root: Path) -> Facts:
         """The fact base of `root`, with every relation and empty view the rules need: the syntax
@@ -104,7 +107,8 @@ class Lint:
             self.current.close()
         db = self.current = Facts(root, self.budget)
         if derived or self.reads_trees:
-            self.ducks.register(db, root)
+            if self.reads_trees:
+                self.ducks.register(db, root)
             for family in derived:
                 family.provide(db, root)
             define(
@@ -551,9 +555,12 @@ def _example_path(language: str | None, text: str) -> str:
         return "pyproject.toml"
     if language in (None, "python"):
         return "test_module.py" if "def test_" in text else "module.py"
-    return {"rust": "lib.rs", "cuda": "kernel.cu", "typescript": "module.ts"}.get(
-        language, f"module.{language}"
-    )
+    return {
+        "rust": "lib.rs",
+        "cuda": "kernel.cu",
+        "typescript": "module.ts",
+        "swift": "View.swift",
+    }.get(language, f"module.{language}")
 
 
 from .commands import catalog as catalog  # noqa: E402

@@ -136,6 +136,9 @@ class Provisioner:
     def pixi_for(self, environment: str = "default") -> Pixi:
         return self._shard(environment).pixi
 
+    def stage_for(self, environment: str = "default") -> SecondStage:
+        return self._shard(environment).stage
+
     def compiler_for(self, environment: str = "default") -> Compiler:
         return self._shard(environment).compiler
 

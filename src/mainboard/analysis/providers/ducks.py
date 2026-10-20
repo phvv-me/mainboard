@@ -84,6 +84,7 @@ class Ducks(FrozenModel):
         "cpp": ("cpp", (".cpp", ".cc", ".cxx", ".c++", ".hh", ".hpp", ".hxx")),
         "c": ("c", (".c", ".h")),
         "rust": ("rust", (".rs",)),
+        "swift": ("swift", (".swift",)),
         "typescript": ("typescript", (".ts", ".tsx", ".mts", ".cts")),
         "javascript": ("javascript", (".js", ".jsx", ".mjs", ".cjs")),
         "go": ("go", (".go",)),

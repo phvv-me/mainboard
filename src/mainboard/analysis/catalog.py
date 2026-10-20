@@ -55,6 +55,7 @@ LANGUAGES = {
     "C": "c",
     "CPP": "cpp",
     "CU": "cuda",
+    "SW": "swift",
 }
 
 
@@ -200,6 +201,8 @@ class Rule(FrozenModel):
     fix: ClassVar[str | None] = None
     change: ClassVar[str | None] = None
     examples: ClassVar[tuple[Example, ...]] = ()
+    guidance: ClassVar[str] = ""
+    references: ClassVar[tuple[str, ...]] = ()
     defined: ClassVar[dict[str, type[Rule]]] = {}
 
     def __init_subclass__(cls, *, id: str = "", applicability: Applicability = "none") -> None:

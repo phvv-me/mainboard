@@ -22,7 +22,7 @@ import mainboard
 # Seconds of the budget that launching, preflight and cleanup keep for themselves.
 _RESERVE = 30
 _TOOLS = ["pytest", "ruff", "pyrefly", "ty", "mypy", "mcmr"]
-_INHERITED = ["PATH", "LANG", "SYSTEMROOT", "DYLD_FALLBACK_LIBRARY_PATH"]
+_INHERITED = ["PATH", "LANG", "SYSTEMROOT", "DYLD_FALLBACK_LIBRARY_PATH", "DEVELOPER_DIR"]
 _HOMES = {
     "HOME": "home",
     "TMPDIR": "tmp",
@@ -379,6 +379,11 @@ class Gate:
         darwin = sys.platform == "darwin"
         cache = self.root / ("home/Library/Caches/mb/duckdb" if darwin else "cache/mb/duckdb")
         shutil.copytree(_SEED, cache, dirs_exist_ok=True)
+        # The AST provider uses DuckDB's standard extension tree, not the lake's custom cache.
+        # Copy installed code only; no user database, profile or configuration enters the worker.
+        extensions = Path.home() / ".duckdb/extensions"
+        if extensions.is_dir():
+            shutil.copytree(extensions, self.root / "home/.duckdb/extensions", dirs_exist_ok=True)
 
     def _verify(self, versions: dict[str, str]) -> None:
         """Refuse a worktree other than this one and a lane tool that drifted from the baseline."""

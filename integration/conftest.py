@@ -59,6 +59,10 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
             "integration/gates/test_harness.py::test_postgres_is_a_temporary_catalog",
         }
     )
+    if sys.platform != "darwin":
+        known_skips.update(
+            item.nodeid for item in session.items if item.get_closest_marker("swift_native")
+        )
     unexpected = [
         node
         for node, report in _OUTCOMES.items()
@@ -106,6 +110,12 @@ def pytest_collection_modifyitems(items: Sequence[pytest.Item]) -> None:
         "test_upgrade_leaves_a_member_named_by_version": "M00-SOLVER/M16",
     }
     for item in items:
+        if sys.platform != "darwin" and item.get_closest_marker("swift_native"):
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="M00-SWIFT27: native SwiftSyntax cases run in the macOS/Xcode 27 lane"
+                )
+            )
         if reason := external.get(item.name):
             item.add_marker(pytest.mark.skip(reason=f"{reason}: needs an offline native fixture"))
         if item.path.name == "test_remote.py":

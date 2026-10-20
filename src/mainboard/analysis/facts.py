@@ -276,6 +276,9 @@ class Facts:
     SUFFIXES: ClassVar[dict[str, tuple[str, ...]]] = {
         "python": (".py", ".pyi"),
         "rust": (".rs",),
+        "swift": (".swift",),
+        "objective_c": (".m",),
+        "objective_cpp": (".mm",),
         "typescript": (".ts", ".tsx", ".mts", ".cts"),
         "c": (".c", ".h"),
         "cpp": (".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h"),

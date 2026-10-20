@@ -16,7 +16,7 @@ from ...core.errors import MissionError
 from ...log import logger
 from ..catalog import Rule
 from ..fixing import Fixpoint
-from ..lint import Lint, app, load_catalog
+from ..lint import Lint, _select, app, load_catalog
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable
@@ -76,12 +76,15 @@ class Pass(Lint):
         return [f"{path}:{line}:{column}: {text}" for path, line, column, text in found]
 
 
-def _selected(skip: Collection[str]) -> list[type[Rule]]:
+def _selected(skip: Collection[str], rule: tuple[str, ...] = ()) -> list[type[Rule]]:
     load_catalog()
     unknown = sorted(set(skip) - set(Rule.defined))
     if unknown:
         raise MissionError(f"no rule {unknown[0]!r} to skip; see `mainboard analyze catalog`")
-    return [rule for name, rule in Rule.defined.items() if name not in skip]
+    unknown = sorted(set(rule) - set(Rule.defined))
+    if unknown:
+        raise MissionError(f"no rule {unknown[0]!r} to select; see `mainboard analyze catalog`")
+    return [entry for entry in _select(rule) if entry.id not in skip]
 
 
 def _named(root: Path, files: Collection[Path]) -> set[str]:
@@ -101,6 +104,7 @@ def gate(
     root: Path = Path(),
     fix: bool = False,
     skip: tuple[str, ...] = (),
+    rule: tuple[str, ...] = (),
     memory: str = "2GB",
 ) -> int:
     """Report the findings in FILES, repairing their safe ones first with `--fix`.
@@ -117,11 +121,12 @@ def gate(
             the step inside each owner).
         fix: apply the engine's safe fixes to FILES; a review fix is never applied.
         skip: rule ids left out of the pass.
+        rule: only these rule ids; the whole catalog when empty.
         memory: a DuckDB memory limit such as `4GB`.
     """
     root = root.resolve()
     names = _named(root, files)
-    with Pass(root, _selected(skip), names, memory=memory, fixing=fix) as lint:
+    with Pass(root, _selected(skip, rule), names, memory=memory, fixing=fix) as lint:
         db = lint.facts(root)
         if fix and any(lint.repairs(db, _SAFE).values()):
             db = lint.repair(root)

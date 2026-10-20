@@ -1032,6 +1032,51 @@ changed-file scan covers the workspace's owned repositories; an unregistered nes
 fork needs explicit paths. Lint's existing batching, exclusions, timeouts and reports
 apply. Keep formatting out of build phases.
 
+Swift-specific analysis uses the selected toolchain's SwiftSyntax/SwiftParser host libraries.
+Its bundled helper compiles offline and is cached by source, compiler and SDK identity.
+Missing libraries, malformed source, incomplete output and tool errors fail explicitly.
+The rules use syntax evidence, including inactive conditional branches; compiler builds
+still decide names, types, actor isolation and availability.
+
+```sh
+mainboard analyze catalog --rule SW-UI0001 --json
+mainboard analyze explain SW-MIG0004 --json
+mainboard analyze gate --rule SW-UI0001 --rule SW-PARSE0001 Sources/Screen.swift
+mainboard analyze check . --rule SW-MIG0001 --rule SW-MIG0002 --rule SW-MIG0003 --rule SW-MIG0004
+```
+
+`gate` fails for findings in its named files. `check` is an inventory: it prints findings
+without treating the number as a verdict. `explain` is offline guidance with official
+documentation URLs and the rule's repair policy. UIKit/AppKit, representables, Objective-C
+exposure, Objective-C implementation files and SQL imports are migration signals, not
+automatic proof a framework bridge is removable. Review-only rules offer no blind rewrite.
+Native owners can declare per-rule policy in `[analysis.rules."RULE-ID"]`; the existing
+`pyproject.toml` policy remains supported, and conflicting declarations are refused.
+
+Use one formatter and complementary correctness checks. SwiftLint is a community tool;
+its style choices are not Apple's language standard. SwiftLint also loads SourceKit at
+startup, so select a compatible Xcode even for rules implemented using SwiftSyntax.
+Keep its release URL, version, archive SHA-256 and executable member in the manifest:
+
+```toml
+[on.osx.binary.dev]
+swiftlint = { version = "0.65.1", url = "https://github.com/realm/SwiftLint/releases/download/0.65.1/portable_swiftlint.zip", sha256 = "c1e429b0599cf1b516f369a2d9ec04eaf0e436f3c12b637df8851fa52ff694d0", member = "swiftlint" }
+
+[lint.tools.swiftlint]
+check = "{root}/.mainboard/envs/default/binary/bin/swiftlint lint --strict --quiet --no-cache --force-exclude -- {files}"
+files = ["*.swift"]
+exclude = ["**/Pods/**", "**/Generated/**", "**/.build/**"]
+```
+
+Run `mainboard binary sync` explicitly for setup. It installs only the platform-declared
+tools in the generated environment, without solving or reinstalling other ecosystems.
+It validates HTTPS coordinates, bounds transfers, checks the archive hash and extracts
+only the named regular member. Lint invokes the private executable directly and does not
+download it or fall back to a global copy. Keep SwiftLint read-only; swift-format owns
+layout. Official references: [swift-format](https://github.com/swiftlang/swift-format),
+[SwiftLint](https://github.com/realm/SwiftLint), and
+[SwiftUI model ownership](https://developer.apple.com/documentation/swiftui/managing-model-data-in-your-app).
+
 Mainboard orchestrates the native dependency tools: `Package.swift` and
 `Package.resolved` remain SwiftPM's dependency declarations and resolution evidence;
 `Podfile.lock` remains authoritative until a project's CocoaPods migration completes.

@@ -40,6 +40,8 @@ from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
 from .dispatch.spool import Spool
 from .durable import schedule
+from .engines.compile.ecosystems import Binary
+from .engines.compile.generated import GeneratedFiles
 from .engines.compile.policy import LockPolicy
 from .engines.compile.provisioner import Provisioner
 from .events import Events
@@ -2111,6 +2113,32 @@ def build(root: Path | None = None) -> App:
         Args:
         """
         return _sectioned(Agents.at(workspace_root()).update(), output, title="agents update")
+
+    binary = App(name="binary", help="Install manifest-pinned executable ZIP dependencies.")
+    app.command(binary)
+
+    @binary.command(name="sync")
+    def binary_sync(*, env: str = "default", output: Output = _COMPACT) -> None:
+        """Install declared binary tools without solving or reinstalling other ecosystems.
+
+        The active platform's [binary.deps] and [binary.dev] ZIP coordinates require an
+        HTTPS URL, exact archive SHA-256 and named executable member. No install runs from
+        lint; a missing executable is a failed check until this explicit setup succeeds.
+
+        Args:
+            env: the environment whose tool directory is installed.
+        """
+        root = workspace_root()
+        provisioner = Provisioner(root, load(project.manifest(root)))
+        stage = provisioner.stage_for(env)
+        with GeneratedFiles(directory=provisioner.out).locked():
+            for ecosystem in stage.ecosystems(env):
+                if isinstance(ecosystem, Binary):
+                    ecosystem.sync()
+                    output.print_record(
+                        {name: spec.version for name, spec in ecosystem.deps.items()},
+                        title="Binary tools",
+                    )
 
     apple = App(
         name="apple", help="Inspect Xcode, simulators, build diagnostics and test results."
