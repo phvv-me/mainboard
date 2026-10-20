@@ -56,6 +56,15 @@ def listed(root: Path) -> list[str]:
     """The project's files git does not ignore, submodules' files included, relative to `root`;
     every file under a root outside git (a scratch mirror). Files the workspace's `[lint]` table
     excludes (references, venue style bundles, datasets) and vendored ones are left out."""
+    present = project_files(root)
+    skipped = vendored(root, present)
+    excluded = lint_excludes(root)
+    return [name for name in present if name not in skipped and not excluded(name)]
+
+
+def project_files(root: Path) -> list[str]:
+    """The same source listing before lint/vendor exclusions, for inventories that account for
+    excluded code too. Ignored untracked/build files are not part of the git listing."""
     # The user's global excludes file is left out, so every machine lists the same files.
     git = ["git", "-C", str(root), "-c", "core.excludesFile=/dev/null", "ls-files", "-z"]
     try:
@@ -73,14 +82,11 @@ def listed(root: Path) -> list[str]:
                 name for name in folders if name not in {".git", "__pycache__", ".mainboard"}
             ]
             names += [os.path.relpath(os.path.join(folder, name), root) for name in files]
-    present = [
+    return [
         name
         for name in dict.fromkeys(names)
         if name and os.path.lexists(root / name) and not (root / name).is_dir()
     ]
-    skipped = vendored(root, present)
-    excluded = lint_excludes(root)
-    return [name for name in present if name not in skipped and not excluded(name)]
 
 
 @cache
@@ -110,10 +116,15 @@ def vendored(root: Path, paths: Iterable[str]) -> set[str]:
     """The `paths` (files or folders, relative to `root`) that git marks `linguist-vendored`, the
     standard mark for third-party code: analysis neither reads nor reports them. Outside git,
     none."""
+    return marked(root, paths, "linguist-vendored")
+
+
+def marked(root: Path, paths: Iterable[str], attribute: str) -> set[str]:
+    """The paths git positively marks with ATTRIBUTE; none outside git."""
     if not (paths := list(paths)):
         return set()
     run = subprocess.run(
-        ["git", "-C", str(root), "check-attr", "-z", "--stdin", "linguist-vendored"],
+        ["git", "-C", str(root), "check-attr", "-z", "--stdin", attribute],
         input="".join(f"{path}\0" for path in paths).encode(),
         capture_output=True,
         check=False,

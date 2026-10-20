@@ -1063,6 +1063,21 @@ populated-store upgrades are proved; never automatically rewrite their stored fo
 Native owners can declare per-rule policy in `[analysis.rules."RULE-ID"]`; the existing
 `pyproject.toml` policy remains supported, and conflicting declarations are refused.
 
+`mainboard analyze swift-inventory . --json` accounts for each Swift/Objective-C
+implementation file, with physical/nonblank lines, content hashes, category totals,
+source imports, placed conditional-compilation expressions and the existing migration
+signals with offline guidance. The API is `SwiftSourceInventory(Scope.of(path)).read()`
+in `mainboard.analysis.commands.swift_inventory`. It reuses the analysis file listing
+and selected-toolchain parser. Ignored build outputs stay out; tracked generated,
+vendored and lint-excluded files remain visible in size totals. Syntax stays within
+the existing analysis lint scope, including generated files that scope keeps. Missing
+toolchain/parser coverage refuses or reports gaps; excluded and Objective-C files
+are explicitly unparsed. Boundary evidence uses catalog defaults, even when a project
+suppresses a particular review rule. The command reports data, not a lint verdict.
+Categories are attributed or inferred from named path conventions, not compiled target
+membership. Nonblank lines include comments. Imports are not resolved dependencies,
+and a small file or empty boundary list is not evidence that deletion is safe.
+
 Use one formatter and complementary correctness checks. SwiftLint is a community tool;
 its style choices are not Apple's language standard. SwiftLint also loads SourceKit at
 startup, so select a compatible Xcode even for rules implemented using SwiftSyntax.

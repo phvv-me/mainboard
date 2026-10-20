@@ -26,6 +26,7 @@ PLACE = {
 TABLES = {
     "facts": PLACE | {"parser_gaps": "BIGINT", "parser_message": "VARCHAR"},
     "imports": PLACE | {"name": "VARCHAR"},
+    "conditions": PLACE | {"condition": "VARCHAR"},
     "conformances": PLACE
     | {
         "owner_id": "BIGINT",

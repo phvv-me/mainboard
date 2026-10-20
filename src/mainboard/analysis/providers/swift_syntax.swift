@@ -144,6 +144,12 @@ final class FactsVisitor: SyntaxVisitor {
     append("imports", node, [node.path.map { $0.name.text }.joined(separator: ".")])
     return .skipChildren
   }
+  override func visit(_ node: IfConfigClauseSyntax) -> SyntaxVisitorContinueKind {
+    if let condition = node.condition {
+      append("conditions", node, [condition.trimmedDescription])
+    }
+    return .visitChildren
+  }
   override func visit(_ node: StructDeclSyntax) -> SyntaxVisitorContinueKind {
     record(node, node.name.text, "struct", node.inheritanceClause)
     return .visitChildren

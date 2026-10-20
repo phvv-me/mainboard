@@ -569,6 +569,7 @@ from .commands import evidence as evidence  # noqa: E402
 from .commands import impact as impact  # noqa: E402
 from .commands import matrix as matrix  # noqa: E402
 from .commands import prose as prose  # noqa: E402
+from .commands import swift_inventory as swift_inventory  # noqa: E402
 from .commands import uses as uses  # noqa: E402
 
 if __name__ == "__main__":
