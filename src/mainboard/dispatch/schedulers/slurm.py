@@ -222,4 +222,4 @@ class Slurm:
 
     def __cluster_command(self, remote: Machine, command: list[str]) -> str:
         """Run a built `squeue`/`sacct`/`sinfo` argv under a login shell, returning its stdout."""
-        return str(remote["bash"][["-lc", shlex.join(command)]](retcode=None))
+        return remote["bash"][["-lc", shlex.join(command)]](retcode=None)

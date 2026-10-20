@@ -56,7 +56,7 @@ class PixiEngine(Tool):
         """
         for candidate in ("pixi", str(self.binary_path())):
             try:
-                return str(local[candidate]["--version"]()).split()[-1]
+                return local[candidate]["--version"]().split()[-1]
             except CommandNotFound, MissionError, OSError:
                 continue
         return ""

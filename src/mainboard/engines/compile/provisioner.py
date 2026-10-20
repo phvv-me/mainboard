@@ -326,7 +326,7 @@ class Provisioner:
         `pixi run` then puts the prefix's own directories ahead of them.
         """
         installed = [str(directory) for directory in self.binaries(env)]
-        with local.env(PATH=os.pathsep.join([*installed, str(local.env["PATH"])])):
+        with local.env(PATH=os.pathsep.join([*installed, local.env["PATH"]])):
             yield
 
     def provision(

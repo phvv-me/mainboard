@@ -9,7 +9,6 @@ from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, NoReturn, cast
 
-from plumbum import ProcessExecutionError
 from plumbum import local as localhost
 
 from . import upkeep
@@ -136,7 +135,7 @@ class Job:
         """
         try:
             return self.logs()
-        except (HostUnreachable, MissionError, OSError, ProcessExecutionError) as quiet:
+        except (HostUnreachable, MissionError, OSError) as quiet:
             logger.warning("no transcript for {}: {}", self.handle.id, quiet)
             return ""
 

@@ -109,7 +109,7 @@ def holder(pid: int, used_bytes: int) -> Holder:
                 command=" ".join(process.cmdline())[:80],
                 used_bytes=used_bytes,
             )
-    except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess:
+    except psutil.NoSuchProcess, psutil.AccessDenied:
         return Holder(pid=pid, used_bytes=used_bytes)
 
 

@@ -397,7 +397,7 @@ class Dataset:
         next clean one still finds the lane owed: scratch work costs the claim nothing.
         """
         names = self.runs
-        pinned = (f"{_named(name)} = {quoted(str(value))}" for name, value in cell.filters.items())
+        pinned = (f"{_named(name)} = {quoted(value)}" for name, value in cell.filters.items())
         wanted = " AND ".join([f"{_LANE} = {quoted(lane)}", self.admissible, *pinned])
         found = (
             self._read()

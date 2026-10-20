@@ -61,13 +61,14 @@ def canonical(value: Value) -> str:
     displayed = normalized(value)
     if displayed is None:
         return "NULL"
-    text = (
-        json.dumps(displayed, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        if isinstance(displayed, list | dict)
-        else format(displayed, ".12g")
-        if isinstance(displayed, float)
-        else str(displayed)
-    )
+    if isinstance(displayed, str):
+        text = displayed
+    elif isinstance(displayed, int):
+        text = str(displayed)
+    elif isinstance(displayed, list | dict):
+        text = json.dumps(displayed, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    else:
+        text = format(displayed, ".12g")
     return (
         json.dumps(text, ensure_ascii=False)
         if text == "NULL" or text.startswith('"') or any(c in text for c in "\t\n\r")

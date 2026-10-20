@@ -55,7 +55,7 @@ class Tool:
                 continue
             out.append(f"--{key.replace('_', '-')}")
             if value is not True:
-                out.append(str(value))
+                out.append(value)
         return out
 
     def available(self) -> bool:

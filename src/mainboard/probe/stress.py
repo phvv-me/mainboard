@@ -227,7 +227,7 @@ class Stress:
         n = self.n // 2 if precision == Precision.FP64 else self.n
         try:
             seconds = self._timed(self.kernels.gemm(precision, n))
-        except (RuntimeError, NotImplementedError, AttributeError, KeyError) as error:
+        except (RuntimeError, AttributeError, KeyError) as error:
             return Rate(precision=precision, n=n, supported=False, note=str(error).splitlines()[0])
         return Rate(precision=precision, n=n, seconds=seconds, tflops=2 * n**3 / seconds / 1e12)
 

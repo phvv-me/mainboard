@@ -105,7 +105,7 @@ def _on_buffer_completed(activities: Sequence[RawActivity]) -> None:
         complete = False
         try:
             for act in activities:
-                kind = int(act.kind)
+                kind = act.kind
                 if kind == _CONCURRENT_KERNEL:
                     target.append(KernelTrace.from_activity(act))
                 elif kind == _MEMCPY:
@@ -329,8 +329,8 @@ class CuptiCollector(TraceCollector):
             return
         api = _cupti()
         api.activity_register_callbacks(_on_buffer_requested, _on_buffer_completed)
-        _domain[int(api.ActivityKind.RUNTIME)] = api.CallbackDomain.RUNTIME_API
-        _domain[int(api.ActivityKind.DRIVER)] = api.CallbackDomain.DRIVER_API
+        _domain[api.ActivityKind.RUNTIME] = api.CallbackDomain.RUNTIME_API
+        _domain[api.ActivityKind.DRIVER] = api.CallbackDomain.DRIVER_API
         _registered = True
 
     @staticmethod
@@ -482,7 +482,7 @@ class NvtxTracer(Tracer):
         return NvtxTracer._supported() if cupti is not None else Activity(0)
 
     def timestamp(self) -> int:
-        return int(cupti.get_timestamp()) if cupti is not None else super().timestamp()
+        return cupti.get_timestamp() if cupti is not None else super().timestamp()
 
     @staticmethod
     def _supported() -> Activity:

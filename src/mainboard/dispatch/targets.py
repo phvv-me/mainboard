@@ -139,7 +139,7 @@ def ssh_hosts(config_path: Path = _SSH_CONFIG) -> list[str]:
 
 def home_of(remote: Machine) -> str:
     """The login home of a POSIX host already connected, for a rental that no setup probed."""
-    return str(remote["bash"][["-lc", 'printf %s "$HOME"']]()).strip()
+    return remote["bash"][["-lc", 'printf %s "$HOME"']]().strip()
 
 
 def placed(root: str, *, home: str) -> str:

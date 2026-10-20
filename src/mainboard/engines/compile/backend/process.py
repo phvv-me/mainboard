@@ -27,7 +27,7 @@ class Process:
         On `timeout` plumbum kills the child and raises `ProcessTimedOut`, also a finding.
         """
         returncode, stdout, stderr = command.run(retcode=None, timeout=timeout)
-        return CommandResult(int(returncode), str(stdout), str(stderr))
+        return CommandResult(returncode, stdout, stderr)
 
     @staticmethod
     def handover(command: BaseCommand) -> int:

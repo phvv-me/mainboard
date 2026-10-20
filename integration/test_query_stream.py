@@ -12,13 +12,12 @@ from unittest.mock import Mock
 
 import duckdb
 import pytest
-from PIL import Image
-
 from mainboard.core.errors import MissionError
 from mainboard.render.query import Query, canonical, execution_timeout
 from mainboard.results import Results
 from mainboard.state import schema
 from mainboard.state.lake import Lake
+from PIL import Image
 
 from .conftest import _in_process
 
@@ -27,6 +26,27 @@ def _footer(text: str) -> tuple[int, str, int]:
     match = re.search(r"(\d+) rows.*sha256=([0-9a-f]{64}).*snapshot_id=(\d+)", text)
     assert match is not None, text
     return int(match[1]), match[2], int(match[3])
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "NULL"),
+        ("NULL", '"NULL"'),
+        ("", ""),
+        (False, "False"),
+        (True, "True"),
+        (0, "0"),
+        (-123, "-123"),
+        (9007199254740993, "9007199254740993"),
+        (1.23456789012345, "1.23456789012"),
+        (float("inf"), "Infinity"),
+        ([True, 1, None], "[true,1,null]"),
+        ({"b": 2, "a": 1}, '{"a":1,"b":2}'),
+    ],
+)
+def test_canonical_cells_preserve_scalar_and_nested_text(value, expected: str) -> None:
+    assert canonical(value) == expected
 
 
 def test_query_keeps_empty_columns_and_distinguishes_null_text(mb) -> None:

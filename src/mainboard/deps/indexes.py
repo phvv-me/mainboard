@@ -72,7 +72,7 @@ class Conda(Index):
         channels = [flag for channel in self.sources for flag in ("--channel", channel)]
         command = PixiEngine().command["search", "--json", *channels, name]
         found = cast("dict[str, list[dict[str, str]]]", json.loads(Process.output(command, name)))
-        versions = [str(record["version"]) for records in found.values() for record in records]
+        versions = [record["version"] for records in found.values() for record in records]
         return _newest(versions, name=name, where="the declared conda channels")
 
 
@@ -115,7 +115,7 @@ class Go(Index):
     def latest(self, name: str) -> str:
         """The proxy's `latest`, without its `v` prefix."""
         found = cast("dict[str, str]", _fetched(f"{_GOPROXY}/{name}/@latest", accept=_JSON))
-        return _newest([str(found.get("Version", "")).lstrip("v")], name=name, where=_GOPROXY)
+        return _newest([found.get("Version", "").lstrip("v")], name=name, where=_GOPROXY)
 
     def pin(self, version: str) -> str:
         """The exact version, since `go install` never resolves a range."""

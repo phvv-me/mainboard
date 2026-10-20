@@ -216,7 +216,7 @@ class Holds:
         with connection(name, SshTransport()) as remote:
             retcode, _, err = (remote["bash"]["-c", handoff()] << f"{_IDLE}\n").run(retcode=None)
         if retcode:
-            raise MissionError(f"could not park {name}: {str(err).strip()[-400:]}")
+            raise MissionError(f"could not park {name}: {err.strip()[-400:]}")
 
     def _end(self, alias: str, *, handle: str, provider: str) -> None:
         """Cancel the rental through the ordinary settle path, then forget its alias.

@@ -190,7 +190,7 @@ class NvidiaGPU(GPU):
         """The maximum SM clock NVML reports, in kHz; 0 when NVML cannot say."""
         with suppress(*self.apis.nvml_errors):
             nvml = self.apis.nvml
-            return int(nvml.device_get_max_clock_info(self.handle, nvml.ClockType.CLOCK_SM)) * 1000
+            return nvml.device_get_max_clock_info(self.handle, nvml.ClockType.CLOCK_SM) * 1000
         return 0
 
     @cached_property

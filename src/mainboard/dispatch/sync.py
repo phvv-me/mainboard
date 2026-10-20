@@ -58,7 +58,7 @@ def compiled(lines: Sequence[str]) -> list[tuple[str, bool]]:
     # pyrefly: ignore  reason=pathspec from_lines stub over-narrows to AnyStr since=2026-08-16
     spec = pathspec.GitIgnoreSpec.from_lines(lines)
     return [
-        (pattern.regex.pattern, bool(pattern.include))
+        (pattern.regex.pattern, pattern.include)
         for pattern in spec.patterns
         if pattern.include is not None and pattern.regex is not None
     ]

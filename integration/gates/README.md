@@ -19,6 +19,19 @@ sh integration/gates/run.sh target --budget 90 integration/test_dead_host.py
 sh integration/gates/run.sh mcmr
 ```
 
+On macOS, the native Swift cases need Xcode's SwiftParser host libraries; Command Line Tools
+alone are insufficient. Select Xcode for the invocation rather than changing global
+`xcode-select` preferences. From the monorepo root:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer mainboard run --as-is \
+  sh packages/mainboard/integration/gates/run.sh suite --report /tmp/m07-gate --budget 900
+```
+
+The launcher preserves `DEVELOPER_DIR` in its otherwise isolated worker environment. Check
+available disk space before a full lane: temporary databases, copied extensions and Swift
+compiler caches need writable capacity, independently of the report folder's size.
+
 Later packages use the same commands from their integrated worktree. A package adds its golden,
 fault and recovery witnesses to the existing fixtures and passes them as `target` node ids; `suite`
 includes every cumulative witness. The launcher runs an environment's own interpreter beneath
@@ -194,3 +207,70 @@ Managed pyrefly `/private/tmp/usagi-mainboard-manifest-typing` reports **0 error
 preserving exit **1** because warnings are enabled. Remaining warnings are not suppressed or
 accepted as a clean full typing gate. Explicit-config Ruff and formatting pass for both changed
 files. Historical receipts and baseline counts above remain unchanged.
+
+### Warning cleanup and final validation attempts
+
+The next change removes 40 source warnings across 24 production files: redundant conversions
+of already typed values and exception subclasses already caught by their parent. SQL cell
+formatting retains explicit integer/Boolean handling before float formatting; removing its
+old conversion without that distinction would change runtime behavior. Twelve literal-output
+cases now cover null/text, Booleans, integers beyond exact Double precision, floats and nested
+values. No new casts, ignores, checker overrides or dependency declarations were added to this
+package.
+
+`/private/tmp/usagi-mainboard-typing-cleanup-target` passes **117 tests**, with no failures,
+skips or warnings, using pytest **9.1.1** and native OS isolation. It covers query rendering,
+CUPTI synthetic records, dead hosts, cloud catalog imports and managed Python execution in
+82.54 seconds. The intermediate checker receipt `/private/tmp/usagi-mainboard-typing-cleanup`
+retains **0 errors, 5 missing-stub warnings**, exit **1**.
+
+After the root workspace declared and synchronized `types-pyyaml` **6.0.12.20260906** and
+`types-seaborn` **0.13.2.20261006** (with `pandas-stubs` **3.0.5.260914**), the managed pyrefly
+**1.4.0** lane `/private/tmp/usagi-mainboard-final-typing-clean` passes with **0 diagnostics**,
+exit **0**. It retains explicit package configuration, Python **3.14.8**, `--min-severity warn`
+and the two existing configured suppressions. The deliberate `PYTHONPATH` notice is not a
+source diagnostic. Explicit-config Ruff **0.17.1** check and format check pass for all 25
+changed Python files; this does not replace the separately version-guarded Ruff lane.
+
+The first final full-suite attempt, `/private/tmp/usagi-mainboard-final-typed-suite`, exits
+**1** with **965 passed, 114 failed, 11 skipped, 3 warnings** in 363.191 worker seconds. Every
+one of its 114 JUnit failures identifies missing SwiftParser under the globally selected
+Command Line Tools path. The invocation omitted `DEVELOPER_DIR`; no source fallback or global
+toolchain preference was changed. This remains a failed receipt.
+
+The explicit-Xcode retry, `/private/tmp/usagi-mainboard-final-typed-xcode-suite`, also exits
+**1** and is **incomplete**: the disk filled, pytest teardown raised `OSError(28)`, and the gate
+could not save JUnit or its final JSON receipt. Only partial progress and the disk-full
+traceback remain. Per-test outcomes cannot be reconstructed or attributed from that output.
+The launcher removed its temporary root; no parent build or unrelated cache was removed.
+At that checkpoint, a new full-suite pass was required after restoring capacity. Neither
+failed attempt supersedes the earlier 1067-pass receipt or establishes acceptance for this
+source change.
+
+After capacity was restored, `/private/tmp/usagi-mainboard-typed-capacity-rerun` passes the
+complete isolated suite with **1079 passed, 11 skipped, 3 warnings**, exit **0**. The invocation
+explicitly selects Xcode with `DEVELOPER_DIR`, uses pytest **9.1.1** and retains the 900-second
+bound. Native isolation preflight exits **0**; pytest reports 468.80 seconds, the worker
+469.999 seconds and the complete gate 470.46 seconds. Sampled free space stayed between
+18 and 19 GiB. The JUnit and JSON receipts are both complete.
+
+The 11 unchanged skips comprise three isolated Linux TCP cases, four offline solver fixtures,
+two `setsid` cases and two explicitly unconfigured real-fleet cases. The three existing
+warnings are an invalid escape sequence and two Pathspec deprecations. They remain visible;
+this Mac result does not establish Linux, real-fleet or CUDA hardware acceptance.
+
+The 25-file source snapshot remained unchanged throughout all three full-suite attempts. Its
+per-file hashes are in `/private/tmp/usagi-mainboard-typing-source.json`, whose SHA-256 is
+`47854dd8b96851a4f667e8c3d84ebff6a5e7b70ae93b995f0116bd9b04d3298c`.
+Historical receipts and `baseline.json` remain unchanged; no installation ran during a gate.
+
+The CUDA conversion cleanup follows the exact locked `cupti-python` **13.2.0** package's
+published contract: `cupti/cupti.pyi` declares `ActivityKind(enum.IntEnum)` at line 873,
+`ActivityKernel11.kind: int` at 830, `ActivityMemcpy6.copy_kind: int` at 1049, its `kind: int`
+at 1058, and `get_timestamp() -> int` at 101. The lock's [published Linux aarch64 wheel](https://files.pythonhosted.org/packages/07/4a/95ffcb57f8131030e7f175b611df2997fc9755c541229996f1adda1adff5/cupti_python-13.2.0-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl)
+was read without installation or execution and verified against SHA-256
+`cd04be232ad46d603dbd4c654b7347ddb5c06c38bc8160345ad6d54c6c08a729`.
+IntEnum members retain integer equality and hashing. The audit is recorded in
+`/private/tmp/usagi-cupti-contract-audit.json`; it checks published metadata, not real CUDA
+execution. This Mac has no installed CUDA/CUPTI binding, and the synthetic record tests do not
+establish hardware compatibility.

@@ -144,7 +144,7 @@ class MemcpyTrace(FrozenModel):
     def from_activity(cls, act: MemcpyActivity) -> MemcpyTrace:
         """Build from a CUPTI MEMCPY activity (snake_case attributes)."""
         return cls(
-            kind=memcpy_kind(int(act.copy_kind)),
+            kind=memcpy_kind(act.copy_kind),
             start_ns=act.start,
             end_ns=act.end,
             bytes_moved=getattr(act, "bytes", 0),

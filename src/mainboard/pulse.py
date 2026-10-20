@@ -152,7 +152,7 @@ class Probe:
                 outputs = {record: logged(remote, root, record) for record in records}
                 on_host = any(record.kind in _ON_HOST for record in records)
                 busiest = utilization(remote) if on_host else None
-        except HostUnreachable, MissionError, OSError, ProcessExecutionError:
+        except HostUnreachable, MissionError, OSError:
             return {}
         return {
             record: Reading(output=output, gpu_pct=busiest) for record, output in outputs.items()
@@ -183,5 +183,5 @@ def utilization(remote: Machine) -> int | None:
     that host's profile puts it.
     """
     status, said, _ = remote["bash"][["-lc", shlex.join(_UTILIZATION)]].run(retcode=None)
-    readings = [int(word) for word in str(said).split() if word.isdigit()]
+    readings = [int(word) for word in said.split() if word.isdigit()]
     return max(readings) if status == 0 and readings else None

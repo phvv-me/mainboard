@@ -57,7 +57,7 @@ class Beacon:
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
         del session
         if not self.nested:
-            say(SESSION, str(int(exitstatus)))
+            say(SESSION, str(exitstatus))
 
 
 class Runner:

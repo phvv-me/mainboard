@@ -223,7 +223,7 @@ class Landing:
         if retcode:
             raise MissionError(
                 f"the pinned tree on the rental cannot run a command: "
-                f"{failure_reason(str(err), int(retcode))}"
+                f"{failure_reason(err, retcode)}"
             )
 
     def script(self, shipment: Shipment, *, root: str, listing: str) -> str:
@@ -268,4 +268,4 @@ class Landing:
         line = wrap(self.plan, pinned, command=f"sh {shlex.quote(script)}", activate=False)
         retcode, _, err = (remote["bash"]["-c", handoff()] << f"{line}\n").run(retcode=None)
         if retcode:
-            raise MissionError(f"could not start the job on the rental: {str(err).strip()[-400:]}")
+            raise MissionError(f"could not start the job on the rental: {err.strip()[-400:]}")

@@ -955,9 +955,7 @@ class Dispatcher:
             ["-lc", guarded(wrap(plan, root, command=command, activate=False), plan)]
         ].run(retcode=None)
         if retcode:
-            raise SystemExit(
-                f"could not build {plan.env} on {plan.host}: {failure_reason(str(err))}"
-            )
+            raise SystemExit(f"could not build {plan.env} on {plan.host}: {failure_reason(err)}")
         told = f"built {plan.env} on {plan.host} for {pinned}"
         logger.info(told)
         (watch or announce)(told)

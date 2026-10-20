@@ -47,13 +47,13 @@ def recorded_extensions(name: str, *, prefix: Path) -> tuple[Path, ...]:
             for site in site_packages(prefix)
             for dist in distributions(path=[str(site)])
         ),
-        key=lambda pair: str(pair[0].name or ""),
+        key=lambda pair: pair[0].name or "",
     )
     for dist, site in found:
         if name in _import_roots(dist):
             return _recorded(dist, site, _EXTENSION_SUFFIXES)
     for dist, site in found:
-        if str(dist.name or "").casefold() == name.casefold():
+        if (dist.name or "").casefold() == name.casefold():
             return _recorded(dist, site, _EXTENSION_SUFFIXES)
     return ()
 

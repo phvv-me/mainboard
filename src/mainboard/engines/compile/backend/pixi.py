@@ -86,7 +86,7 @@ class Pixi(Tool):
         """Prepend the environment's `bin`, once installed, to PATH for the block."""
         binaries = self.env_prefix(env) / "bin"
         leading = [str(binaries)] if binaries.is_dir() else []
-        with local.env(PATH=os.pathsep.join([*leading, str(local.env["PATH"])])):
+        with local.env(PATH=os.pathsep.join([*leading, local.env["PATH"]])):
             yield
 
     def env_prefix(self, env: str) -> Path:
@@ -163,7 +163,7 @@ class Pixi(Tool):
         if not result.succeeded:
             return {}
         packages = cast("list[dict[str, str]]", json.loads(result.stdout))
-        return {str(package["name"]): str(package["version"]) for package in packages}
+        return {package["name"]: package["version"] for package in packages}
 
     def ready(self, env: str) -> bool:
         """Whether pixi finished installing `env`: its fingerprint, not a mere prefix, exists."""

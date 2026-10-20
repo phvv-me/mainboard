@@ -58,11 +58,11 @@ def from_gpuhunt(rows: Iterable[CatalogRow]) -> list[Offer]:
     """gpuhunt catalog rows as `Offer`s, tagged imported and named as this workspace names them."""
     return [
         Offer(
-            provider=catalog_provider(str(row.provider)),
-            gpu=str(row.gpu_name),
-            gpu_count=int(row.gpu_count),
-            spot=bool(row.spot),
-            region=str(row.location or ""),
+            provider=catalog_provider(row.provider),
+            gpu=row.gpu_name,
+            gpu_count=row.gpu_count,
+            spot=row.spot,
+            region=row.location or "",
             rate_usd_hr=float(price),
             source="imported:gpuhunt",
         )
