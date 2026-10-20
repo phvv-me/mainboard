@@ -9,7 +9,6 @@ table-style requirement's other fields.
 from pathlib import Path
 
 import pytest
-
 from mainboard.core.errors import MissionError
 from mainboard.deps.editing import ManifestText
 from mainboard.engines.compile.policy import LockPolicy
@@ -93,6 +92,22 @@ def test_raising_a_table_requirement_keeps_its_other_fields() -> None:
     assert 'index = "https://example.invalid"' in manifest.text()
     assert manifest.versioned(("python", "deps"), "torch")
     assert not manifest.versioned(("python", "deps"), "local")
+
+
+@pytest.mark.parametrize(
+    "declaration", ['python = "scalar"', 'python = ["array"]', "python = { deps = {} }"]
+)
+@pytest.mark.parametrize("create", [False, True])
+def test_an_invalid_requirement_parent_is_refused_without_mutation(
+    declaration: str, create: bool
+) -> None:
+    manifest = ManifestText(declaration + "\n")
+    before = manifest.text()
+
+    with pytest.raises(MissionError, match=r"\[python\] is not a table of requirements"):
+        manifest.table(("python", "deps"), create=create)
+
+    assert manifest.text() == before
 
 
 @pytest.mark.parametrize(

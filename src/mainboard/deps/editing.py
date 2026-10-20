@@ -65,9 +65,10 @@ class ManifestText:
         """
         table = self.table(path, create=True)
         if name in table:
-            width = len(table[name].as_string())
-            if isinstance(table[name], dict):
-                table[name]["version"] = spec
+            declared = table[name]
+            width = len(declared.as_string())
+            if isinstance(declared, dict):
+                declared["version"] = spec
             else:
                 table[name] = spec
             # tomlkit keeps the whitespace before a comment, which moves it by the value's growth.
@@ -89,13 +90,16 @@ class ManifestText:
 
     def table(self, path: tuple[str, ...], *, create: bool = False) -> tomlkit.items.Table:
         """The table at `path`, created on request as one `[rust.deps]` heading, not a nest."""
-        table = self.document
+        table: tomlkit.TOMLDocument | tomlkit.items.Table = self.document
         for at, key in enumerate(path):
             if key not in table:
                 if not create:
                     raise MissionError(f"[{'.'.join(path[: at + 1])}] is not in this manifest")
                 table[key] = tomlkit.table(is_super_table=at < len(path) - 1)
-            table = table[key]
+            nested = table[key]
+            if not isinstance(nested, tomlkit.items.Table):
+                raise MissionError(f"[{'.'.join(path[: at + 1])}] is not a table of requirements")
+            table = nested
         if not isinstance(table, tomlkit.items.Table):
             raise MissionError(f"[{'.'.join(path)}] is not a table of requirements")
         return table

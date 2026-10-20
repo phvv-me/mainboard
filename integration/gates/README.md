@@ -173,3 +173,24 @@ formatting of `integration/legacy.py` and `integration/gates/runner.py` successf
 ordering was fixed. This focused check was not the version-guarded Ruff lane, whose baseline
 remains 0.17.0. The focused pytest lane used its pinned **9.1.1**. No tool installation, dependency
 change or unrelated source repair was performed for this checkpoint.
+
+### Requirement typing and full-suite follow-up
+
+The subsequent requirement-editor fix narrows each nested TOML table before traversal and keeps
+the checked requirement value in one local before updating its version. It removes all four
+`deps/editing.py` checker errors without a cast, ignore or weaker checker setting. Scalars,
+arrays and inline-table parents now return a consistent `MissionError` without mutation; six
+parameter cases cover both lookup and creation modes. The existing comment alignment and
+table-extra-field assertions remain.
+
+`/private/tmp/usagi-mainboard-manifest-typing-target` reports **11 passed, 4 expected solver skips**.
+The new complete isolated run, `/private/tmp/usagi-mainboard-corrected-suite`, exits 0 with
+**1067 passed, 11 skipped, 3 warnings** in 496.10 seconds. It includes the previously failing
+legacy-isolation case and all six new malformed-parent cases. The skips still require Linux TCP,
+offline solver fixtures, setsid or an explicitly configured real remote workspace; none is new.
+The three warnings retain the existing invalid escape and Pathspec deprecations.
+
+Managed pyrefly `/private/tmp/usagi-mainboard-manifest-typing` reports **0 errors, 45 warnings**,
+preserving exit **1** because warnings are enabled. Remaining warnings are not suppressed or
+accepted as a clean full typing gate. Explicit-config Ruff and formatting pass for both changed
+files. Historical receipts and baseline counts above remain unchanged.
