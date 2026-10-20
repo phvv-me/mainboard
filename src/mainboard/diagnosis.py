@@ -41,6 +41,13 @@ def cause(log: str) -> str:
     return ""
 
 
+def tail(board: Board, record: RunRecord, last: int) -> list[str]:
+    """The last `last` printed lines of the run's captured output, empty when none was kept."""
+    stream, _ = streamed(record.name or "", handle=record.handle)
+    kept = Captured(board.dispatcher.cache.session).transcript(stream, record.handle, last=last)
+    return printed(kept or "").splitlines()
+
+
 def reason(board: Board, record: RunRecord) -> str:
     """Why `record` failed, from the output the sweep brought home, empty for a run that did not.
 

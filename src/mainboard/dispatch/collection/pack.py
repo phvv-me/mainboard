@@ -225,7 +225,13 @@ def _paths(base: Path, relative: str) -> Iterator[tuple[Path, os.stat_result]]:
     so every regular file found lies inside too, and any link refuses the collection.
     """
     selected = base.joinpath(*PurePosixPath(relative).parts)
-    if not selected.resolve(strict=True).is_relative_to(base):
+    try:
+        resolved = selected.resolve(strict=True)
+    except FileNotFoundError:
+        # A job that declared a results path and never wrote it left nothing to collect: an empty
+        # selection, not a failed transfer that every later pass would retry for ever.
+        return
+    if not resolved.is_relative_to(base):
         raise ValueError("collection path escapes the remote workspace")
     for path, stat in _entries(selected):
         if _is_excluded(path):

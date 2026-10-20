@@ -172,8 +172,15 @@ def test_collection_keeps_transfers_in_the_lake_never_the_tree(
     assert EvidenceTree(workspace).read(workspace / copy, indexed[table])
     assert list(staging.iterdir()) == [live]
     noise = f"{NODE}/evidence/noise.bin"
-    with pytest.raises(ValueError, match="the lake's copy kept"):
-        collector.merge(_transfer(tmp_path / "c.zip", {noise: b"other bytes"}, {}), path=NODE)
+    kept = {row.path: row.sha256 for row in lake.indexed(NODE)}
+    other = hashlib.sha256(b"other bytes").hexdigest()
+    merged = collector.merge(
+        _transfer(tmp_path / "c.zip", {noise: b"other bytes", new + "3": b"more"}, {}), path=NODE
+    )
+    after = {row.path: row.sha256 for row in lake.indexed(NODE)}
+    aside = f"{NODE}/.conflicts/{other[:8]}/evidence/noise.bin"
+    assert merged == 2 and after[noise] == kept[noise] and after[aside] == other
+    assert after[new + "3"] == hashlib.sha256(b"more").hexdigest()
     with pytest.raises(MissionError, match="keeps no object"):
         collector.merge(_transfer(tmp_path / "m.zip", {}, {new + "2": "0" * 64}), path=NODE)
 

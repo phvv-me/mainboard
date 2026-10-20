@@ -29,6 +29,7 @@ from .dispatch.state import DownHost, Failed, Finished, Held, MonitorReport, Res
 from .dispatch.state.captured import Captured
 from .dispatch.state.monitor import SettlementBusy
 from .dispatch.vocabulary import JobState
+from .events import Events
 from .log import logger
 from .tracking import is_batched, streamed
 
@@ -160,6 +161,11 @@ class Sweep:
         self.states.update({record: found[record.handle] for record in pending})
 
 
+class Unverifiable(MissionError):
+    """A finished run whose evidence can never be verified: the host holds nothing more to wait
+    for, so the run settles with its evidence marked unverified instead of pending."""
+
+
 class Monitor:
     """The durable pass over every dispatched job still owed an outcome.
 
@@ -281,13 +287,22 @@ class Monitor:
         )
         claimed = verdict == vocabulary.OK
         if native and claimed and job.handle.fetch_path and not receipts and not covered:
-            raise MissionError("native trial has no captured receipt; evidence is unverified")
+            raise Unverifiable("native trial has no captured receipt; evidence is unverified")
         if not receipts:
             return
         if pulled is not None:
-            Artifacts.verify(
-                receipts, directory=self.board.dispatcher.local(pulled), boundary=self.board.root
-            )
+            try:
+                Artifacts.verify(
+                    receipts,
+                    directory=self.board.dispatcher.local(pulled),
+                    boundary=self.board.root,
+                )
+            except (MissionError, FileNotFoundError) as fault:
+                if not str(fault).startswith("no lake around"):
+                    raise
+                raise Unverifiable(
+                    f"receipts reference artifacts the host no longer holds ({fault})"
+                ) from fault
         elif any(isinstance(value, dict) for value in artifacts):
             raise MissionError("receipt references artifacts but no fetch was declared")
 
@@ -432,7 +447,9 @@ class Monitor:
         """
         try:
             with _bounded_pass() as deadline:
-                return self._claimed(scope, deadline=deadline)
+                report = self._claimed(scope, deadline=deadline)
+            Events(self.board.root).record(self.board, report)
+            return report
         finally:
             self.streams.clear()
 
@@ -524,6 +541,7 @@ class Monitor:
             )
             harvested: tuple[str, ...] = ()
             pulled = None
+            unverified = ""
             try:
                 if copied:
                     kept = self.captured.transcript(stream, record.handle)
@@ -548,6 +566,8 @@ class Monitor:
                     covered=covered_in(transcript),
                     verdict=state.verdict,
                 )
+            except Unverifiable as fault:
+                unverified = str(fault)
             except (MissionError, OSError, ValueError) as fault:
                 detail = f"settlement pending; remote evidence retained: {fault}"
                 self.evidence(record, harvested, status="pending", detail=detail)
@@ -560,7 +580,10 @@ class Monitor:
                 self.evidence(record, harvested, status="copied", detail=detail)
                 failed.append(_failed(record, detail))
                 continue
-            self.evidence(record, harvested, status="verified")
+            if unverified:
+                self.evidence(record, harvested, status="unverified", detail=unverified)
+            else:
+                self.evidence(record, harvested, status="verified")
             if state.verdict == vocabulary.OK:
                 finished.append(
                     Finished(handle=record.handle, target=record.target, pulled_path=pulled)

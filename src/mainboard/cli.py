@@ -31,6 +31,7 @@ from .core.project import Project
 from .core.section import Section, Verdict, failed
 from .core.shell import become
 from .delimiter import Delimiter
+from .digest import Digester
 from .dispatch import vocabulary
 from .dispatch.collection.collector import Collector
 from .dispatch.collection.pack import link
@@ -41,6 +42,7 @@ from .dispatch.spool import Spool
 from .durable import schedule
 from .engines.compile.policy import LockPolicy
 from .engines.compile.provisioner import Provisioner
+from .events import Events
 from .help import Help
 from .holds import Holds
 from .jobs import lanes as lanes_module
@@ -763,6 +765,63 @@ def build(root: Path | None = None) -> App:
             json: print the listing and the sweep as JSON, what those runners read.
         """
         jobs(output=Output(json_=json))
+
+    @job.command
+    def digest(
+        *,
+        node: str = "",
+        project: str = "",
+        limit: int = 400,
+        tail: int = 12,
+        output: Output = _COMPACT,
+    ) -> int:
+        """Fold one experiment's runs: counts by state, each failure with its log tail, live runs.
+
+        Settles first, as `list` does, and appends what that pass moved to the event stream, so
+        one call says whether a wave is healthy without a `show` per handle. Exits 1 when any
+        run in scope failed, so a script can branch on it.
+
+        Args:
+            node: the ledger slug the runs serve (a batch spec's `node`); every run when empty.
+            project: only the runs dispatched from this project.
+            limit: how many settled runs to read behind the live ones.
+            tail: how many closing lines of each failed run's log to print.
+        """
+        with progress("folding the runs"):
+            folded = Digester(board("local")).taken(
+                node=node, project=project, limit=limit, tail_lines=tail
+            )
+        if output.json_:
+            print(dumps(folded.model_dump(), default=str))
+            return int(bool(folded.failed))
+        print(folded.headline())
+        for failure in folded.failed:
+            print(f"\nFAILED {failure.handle} {failure.name} on {failure.host}: {failure.cause}")
+            print("\n".join(f"  | {line}" for line in failure.tail))
+        if folded.running:
+            output.print_rows(
+                [row.model_dump() for row in folded.running], title="running", columns=_JOB_COLUMNS
+            )
+        if folded.note:
+            print(folded.note, file=sys.stderr)
+        return int(bool(folded.failed))
+
+    @job.command
+    def events(*, since: int = 0) -> None:
+        """Print the job events after byte offset `since`, one JSON line each; the next offset is
+        on stderr.
+
+        The stream is what every settling pass appended: a job that settled ok or failed, a
+        dispatch a quota held, one that finally got through. A follower keeps the offset and
+        reads each change once.
+
+        Args:
+            since: the byte offset the last call printed on stderr, 0 for the whole stream.
+        """
+        fresh, cursor = Events(workspace_root()).since(since)
+        for event in fresh:
+            print(event.model_dump_json())
+        print(f"offset {cursor}", file=sys.stderr)
 
     @app.command
     def add(

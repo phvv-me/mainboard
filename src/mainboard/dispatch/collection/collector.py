@@ -17,6 +17,7 @@ import psutil
 from filelock import FileLock
 
 from ...core.project import Project
+from ...log import logger
 from ...state.evidence import Evidence
 from ...state.lake import Lake
 from ..state.digests import KeptDigests
@@ -84,7 +85,14 @@ class Collector:
                     for source in staged.rglob("*")
                     if source.is_file()
                 }
-                self._preflight(files, held, kept=self._kept(scope))
+                held = self._divert(
+                    files, held, scope=scope, staged=staged, kept=self._kept(scope)
+                )
+                files = {
+                    source.relative_to(staged).as_posix(): source
+                    for source in staged.rglob("*")
+                    if source.is_file()
+                }
                 kept = self.evidence.ingest([staged], staged=staged).indexed if files else 0
                 return kept + self.evidence.adopt(held)
 
@@ -167,23 +175,51 @@ class Collector:
                 raise ValueError(f"unexpected collection entry: {name}")
         return held
 
-    def _preflight(
-        self, files: Mapping[str, Path], held: Mapping[str, str], *, kept: Mapping[str, str]
-    ) -> None:
-        """Refuse a transfer changing the bytes the center holds at any path.
+    def _divert(
+        self,
+        files: Mapping[str, Path],
+        held: Mapping[str, str],
+        *,
+        scope: PurePosixPath,
+        staged: Path,
+        kept: Mapping[str, str],
+    ) -> dict[str, str]:
+        """Keep every path the center already holds as it is, and keep what differs beside it.
 
-        The tree's copy is compared first, else the lake's; a byte-identical copy is no conflict.
+        The same path with other bytes (a second registration writing the same file names) used to
+        refuse the whole transfer, which left every other file of the run, its receipts included,
+        on the host and the job blocked. The center's copy still wins its path, the tree's first,
+        else the lake's, and a byte-identical copy is no conflict. A divergent file that was sent
+        moves in staging to `<scope>/.conflicts/<sha8>/<its path under scope>` and is kept there; a
+        divergent file the host left unsent (the lake holds its bytes elsewhere) is not adopted at
+        this path. Answers the paths still to adopt, and warns with how many diverged.
         """
+        diverged = 0
+        remaining = dict(held)
         for relative in [*files, *held]:
             target = self.root / relative
             if not target.resolve().is_relative_to(self.root):
                 raise ValueError(f"collection destination escapes workspace: {target}")
             expected = _sha256(target) if target.is_file() else kept.get(relative)
-            if expected is not None and expected != (
-                held.get(relative) or _sha256(files[relative])
-            ):
-                where = "local copy preserved" if target.is_file() else "the lake's copy kept"
-                raise ValueError(f"conflicting collected evidence, {where}: {target}")
+            offered = held.get(relative) or _sha256(files[relative])
+            if expected is None or expected == offered:
+                continue
+            diverged += 1
+            if relative in files:
+                inside = PurePosixPath(relative).relative_to(scope)
+                aside = staged / scope / ".conflicts" / offered[:8] / inside
+                aside.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(files[relative], aside)
+            remaining.pop(relative, None)
+        if diverged:
+            logger.warning(
+                "{} path(s) under {} hold other bytes here than on the host: the center's copy "
+                "kept its path, the host's is under {}/.conflicts/<sha8>/",
+                diverged,
+                scope,
+                scope,
+            )
+        return remaining
 
     @contextmanager
     def _staging(self) -> Generator[Path]:

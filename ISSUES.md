@@ -954,3 +954,20 @@ What was missing was the check that would have named this before a kernel failed
 
 Done with the upgrade: the cuDNN versioned links are the runtime step `CudnnSublibraries` (553e99a), and the duplicate block in the
 root `scripts/activate.sh` (and its `unset` names) is removed, uncommitted in the monorepo.
+
+## 2026-10-20: settlement and collection
+
+Fixed, uncommitted: (1) a collection whose staged file had other bytes than the center's copy at the same path (a second
+registration writing the same file names) refused the whole transfer, blocking every other file and the job; `Collector._divert`
+now keeps the center's copy at its path, keeps the divergent bytes under `<scope>/.conflicts/<sha8>/`, ingests the rest and warns.
+(2) A native test run that claimed success with a fetch path and left no receipt (a development job outside the trials harness)
+stayed `settlement pending` for the cache's lifetime and was re-captured every pass (102 jobs made a `job list` take five minutes);
+it now settles with evidence `unverified` (`Unverifiable`). A full `job list` went from 5 minutes to 25 seconds.
+(3) `job digest` and `job events` (`digest.py`, `events.py`); `Monitor.once` appends every moved job to `.mainboard/events/jobs.jsonl`.
+
+(4) A fetch path the job never wrote (`zz_cvpr_routes`, `heterogeneous_pipeline/*-v26`) made `pack.py` raise
+`FileNotFoundError`, so those runs stayed pending; it is an empty selection now, and a run whose receipts name artifacts the host no
+longer holds settles unverified. The steady-state `job list` over 2,385 runs takes 2 seconds.
+
+Open: `Unverifiable`, the empty selection and the events stream have no tests; `Collector._divert` is covered by
+`integration/test_evidence.py::test_collection_keeps_transfers_in_the_lake_never_the_tree`.
