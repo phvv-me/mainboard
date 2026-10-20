@@ -970,6 +970,16 @@ Native output streams to the terminal and a fresh `.xcresult` is retained under
 arguments, with no shell. CocoaPods restoration and SwiftPM command-line unit tests
 remain native commands bounded by `mainboard proc timeout`.
 
+Every execution with a result bundle also retains its readable build diagnostics as
+`<bundle-name>.build.json`; test actions retain `<bundle-name>.tests.json` when those
+results exist. Failed native execution still attempts both applicable reports. Missing,
+malformed or unfinished evidence stays an explicit error; there is no fallback to an
+older passing bundle. Native nonzero exit codes are preserved, and a zero native exit
+still requires successful report verdicts. Sidecars use the same JSON shape as
+`apple diagnostics/results --json`, publish atomically under the results-directory
+lock and never replace an existing report. They describe the bundle; they do not
+prove which working-tree bytes Xcode read or establish a clean/full rebuild.
+
 ```sh
 mainboard apple execute App/Example.xcworkspace --scheme Example --action test \
   --destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
@@ -981,6 +991,18 @@ mainboard apple results path/to/Test.xcresult --json
 mainboard apple results path/to/DerivedData/Logs/Test --json
 mainboard lint --check --only swift-format path/to/Changed.swift
 ```
+
+Use `mainboard analyze swift-compare before.json after.json --json` to compare two
+saved `swift-inventory --json` observations for the same repository-relative scope.
+This works without invoking Xcode or rereading source. It retains artifact SHA256s,
+parser/toolchain identity and changed rule IDs, per-category totals, byte changes,
+added/removed files and separate reclassifications. Source paths must be unique and
+contained by the scope, hashes/counts valid and totals consistent with file records.
+Repeated hashes must retain identical byte/line counts, and parser coverage must
+agree with status, gaps and toolchain presence.
+Absolute checkout roots may differ across machines. Equal bytes at different paths
+are reported as addition/removal; the command does not infer semantic renames,
+authenticate supplied reports or turn line/boundary reductions into feature acceptance.
 
 `apple font-previews` renders transparent PNGs with Core Text and ImageIO without
 launching a developer app, installing fonts or requiring a simulator. Pass font files

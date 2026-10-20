@@ -13,6 +13,7 @@ from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
 from .core.errors import MissionError
 from .core.tool import Runner, ToolRunner
+from .engines.compile.generated import GeneratedFiles
 from .proc import Processes
 
 if TYPE_CHECKING:
@@ -197,6 +198,17 @@ class Apple:
 
     def __init__(self, runner: Runner | None = None) -> None:
         self.runner = runner if runner is not None else ToolRunner(timeout=30)
+
+    @staticmethod
+    def retain(report: BuildReport | TestReport) -> Path:
+        """Keep an atomic JSON sidecar beside its exact bundle; never replace old evidence."""
+        suffix = ".tests.json" if isinstance(report, TestReport) else ".build.json"
+        target = report.bundle.with_suffix(suffix)
+        with GeneratedFiles(directory=target.parent).locked() as writer:
+            if target.exists() or target.is_symlink():
+                raise MissionError(f"refusing to overwrite Apple evidence at {target}")
+            writer.write(target, json.dumps(report.document(), indent=2) + "\n")
+        return target
 
     def toolchain(self) -> dict[str, str]:
         return {

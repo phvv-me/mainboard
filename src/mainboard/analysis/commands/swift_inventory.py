@@ -1,13 +1,15 @@
 """Account for Apple source size and placed migration evidence without deciding deletability."""
 
 import hashlib
+from collections import Counter
 from datetime import UTC, datetime
 from enum import StrEnum, auto
 from pathlib import Path, PurePosixPath
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from cyclopts import Parameter
 from patos import FrozenModel
+from pydantic import ValidationError
 
 from ...core.errors import MissionError
 from ..facts import Budget, Facts, lint_excludes, marked, project_files, vendored
@@ -33,6 +35,9 @@ from ..rules.swift.ui import PrivateViewState, RedundantBodyErasure
 from .catalog import RuleEntry
 from .report import Report
 from .scope import Scope
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _LANGUAGES = {".swift": "swift", ".m": "objective_c", ".mm": "objective_cpp"}
 _RULES = (
@@ -137,6 +142,24 @@ class SwiftInventory(Report):
         "headers/build graphs are not read.",
     )
 
+    @staticmethod
+    def totals_for(files: Sequence[AppleSourceFile]) -> list[SourceTotal]:
+        return [
+            SourceTotal(
+                language=language,
+                kind=kind,
+                files=len(group),
+                physical_lines=sum(file.physical_lines for file in group),
+                nonblank_lines=sum(file.nonblank_lines for file in group),
+                lint_files=sum(file.lint_scope for file in group),
+                parsed_files=sum(file.parsed for file in group),
+            )
+            for language, kind in sorted({(file.language, file.kind) for file in files})
+            if (
+                group := [file for file in files if (file.language, file.kind) == (language, kind)]
+            )
+        ]
+
     def text(self) -> str:
         lines = [
             f"{len(self.files)} Apple source files under {self.scope} ({self.root})",
@@ -231,7 +254,8 @@ class SwiftSourceInventory:
             for name in names:
                 if (
                     Path(name).suffix.lower() == ".swift"
-                    and name not in vendor and not excluded(name)
+                    and name not in vendor
+                    and not excluded(name)
                 ):
                     if (root / name).is_symlink():
                         raise MissionError(f"Swift inventory refuses a symbolic link: {name}")
@@ -260,24 +284,6 @@ class SwiftSourceInventory:
                 )
             if hashlib.sha256((root / name).read_bytes()).hexdigest() != file.sha256:
                 raise MissionError(f"source changed during inventory: {name}; rerun when stable")
-        totals = [
-            SourceTotal(
-                language=language,
-                kind=kind,
-                files=len(group),
-                physical_lines=sum(file.physical_lines for file in group),
-                nonblank_lines=sum(file.nonblank_lines for file in group),
-                lint_files=sum(file.lint_scope for file in group),
-                parsed_files=sum(file.parsed for file in group),
-            )
-            for language, kind in sorted({(file.language, file.kind) for file in files.values()})
-            if (
-                group := [
-                    file for file in files.values()
-                    if (file.language, file.kind) == (language, kind)
-                ]
-            )
-        ]
         return SwiftInventory(
             root=root,
             scope=self.scope.prefix or ".",
@@ -285,7 +291,7 @@ class SwiftSourceInventory:
             toolchain=toolchain,
             context_issues=context_issues,
             files=list(files.values()),
-            totals=totals,
+            totals=SwiftInventory.totals_for(list(files.values())),
             rules=[RuleEntry.of(rule) for rule in (*_RULES, ObjectiveCImplementation)],
         )
 
@@ -300,10 +306,14 @@ class SwiftSourceInventory:
             return SourceKind.generated, "git linguist-generated attribute"
         if "generated" in parts or leaf.endswith((".pb.swift", "+generated.swift")):
             return SourceKind.generated, "Generated path or generated filename convention"
-        if (
-            parts & {"tests", "test", "uitests", "apptests", "appstorescreenshots", "testsupport"}
-            or leaf.endswith("tests.swift")
-        ):
+        if parts & {
+            "tests",
+            "test",
+            "uitests",
+            "apptests",
+            "appstorescreenshots",
+            "testsupport",
+        } or leaf.endswith("tests.swift"):
             return SourceKind.test, "test directory or Tests.swift filename convention"
         if leaf == "package.swift" or parts & {"tools", "scripts", "generators", "plugins"}:
             return SourceKind.tooling, "package manifest or tooling directory convention"
@@ -326,7 +336,8 @@ class SwiftSourceInventory:
                         "syntax_status": SyntaxStatus.parse_error if gaps else SyntaxStatus.parsed,
                         "syntax_reason": (
                             "SwiftParser diagnostics prevent reliable style/migration evidence"
-                            if gaps else None
+                            if gaps
+                            else None
                         ),
                     }
                 )
@@ -370,7 +381,10 @@ class SwiftSourceInventory:
                         sorted(
                             file.boundaries,
                             key=lambda hit: (
-                                hit.span.start_line, hit.span.start_column, hit.rule, hit.message
+                                hit.span.start_line,
+                                hit.span.start_column,
+                                hit.rule,
+                                hit.message,
                             ),
                         )
                     ),
@@ -400,3 +414,204 @@ def swift_inventory(
     """
     report = SwiftSourceInventory(Scope.of(path)).read(memory=memory)
     print(report.render(as_json=as_json))
+
+
+class SourceChange(FrozenModel):
+    before: AppleSourceFile
+    after: AppleSourceFile
+
+
+class SwiftComparison(Report):
+    baseline: Path
+    current: Path
+    baseline_sha256: str
+    current_sha256: str
+    scope: str
+    baseline_toolchain: SwiftToolchain | None
+    current_toolchain: SwiftToolchain | None
+    totals_before: list[SourceTotal]
+    totals_after: list[SourceTotal]
+    added: tuple[AppleSourceFile, ...]
+    removed: tuple[AppleSourceFile, ...]
+    modified: tuple[SourceChange, ...]
+    reclassified: tuple[SourceChange, ...]
+    unchanged_sources: int
+    boundary_counts_before: dict[str, int]
+    boundary_counts_after: dict[str, int]
+    context_issues_before: int
+    context_issues_after: int
+    changed_rules: tuple[str, ...]
+    notes: tuple[str, ...] = (
+        "Compares saved observations; it neither reads current source nor authenticates reports.",
+        "Source equality uses path and SHA256, not parser findings or target membership.",
+        "Reclassification is reported separately and may change category totals without deletion.",
+        "Identical content at a new path is added/removed; no semantic rename is inferred.",
+        "LOC/boundary changes do not prove feature parity, safe deletion or passing builds/tests.",
+    )
+
+    @classmethod
+    def of(cls, baseline: Path, current: Path) -> SwiftComparison:
+        old, old_digest = cls._read(baseline)
+        new, new_digest = cls._read(current)
+        if old.scope != new.scope:
+            raise MissionError(
+                f"cannot compare different inventory scopes: {old.scope}, {new.scope}"
+            )
+        measurements: dict[str, tuple[int, int, int]] = {}
+        for file in (*old.files, *new.files):
+            counts = (file.byte_count, file.physical_lines, file.nonblank_lines)
+            if measurements.setdefault(file.sha256, counts) != counts:
+                raise MissionError(
+                    f"contradictory counts for source SHA256 {file.sha256}: {file.path}"
+                )
+        before = {file.path: file for file in old.files}
+        after = {file.path: file for file in new.files}
+        common = sorted(before.keys() & after.keys())
+        old_rules = {rule.id: rule for rule in old.rules}
+        new_rules = {rule.id: rule for rule in new.rules}
+        return cls(
+            baseline=baseline.resolve(),
+            current=current.resolve(),
+            baseline_sha256=old_digest,
+            current_sha256=new_digest,
+            scope=old.scope,
+            baseline_toolchain=old.toolchain,
+            current_toolchain=new.toolchain,
+            totals_before=old.totals,
+            totals_after=new.totals,
+            added=tuple(after[name] for name in sorted(after.keys() - before.keys())),
+            removed=tuple(before[name] for name in sorted(before.keys() - after.keys())),
+            modified=tuple(
+                SourceChange(before=before[name], after=after[name])
+                for name in common
+                if before[name].sha256 != after[name].sha256
+            ),
+            reclassified=tuple(
+                SourceChange(before=before[name], after=after[name])
+                for name in common
+                if (before[name].language, before[name].kind)
+                != (after[name].language, after[name].kind)
+            ),
+            unchanged_sources=sum(before[name].sha256 == after[name].sha256 for name in common),
+            boundary_counts_before=dict(
+                sorted(Counter(hit.rule for file in old.files for hit in file.boundaries).items())
+            ),
+            boundary_counts_after=dict(
+                sorted(Counter(hit.rule for file in new.files for hit in file.boundaries).items())
+            ),
+            context_issues_before=len(old.context_issues),
+            context_issues_after=len(new.context_issues),
+            changed_rules=tuple(
+                name
+                for name in sorted(old_rules.keys() | new_rules.keys())
+                if old_rules.get(name) != new_rules.get(name)
+            ),
+        )
+
+    @staticmethod
+    def _read(path: Path) -> tuple[SwiftInventory, str]:
+        try:
+            data = path.read_bytes()
+            report = SwiftInventory.model_validate_json(data, strict=True)
+        except (OSError, ValidationError) as fault:
+            raise MissionError(f"invalid Swift inventory {path}: {fault}") from fault
+        names = [file.path for file in report.files]
+        scope = PurePosixPath(report.scope)
+        if (
+            not report.scope
+            or scope.as_posix() != report.scope
+            or scope.is_absolute()
+            or ".." in scope.parts
+        ):
+            raise MissionError(f"invalid inventory scope in {path}")
+        if len(names) != len(set(names)) or len(report.rules) != len(
+            {rule.id for rule in report.rules}
+        ):
+            raise MissionError(f"duplicate source paths or rules in {path}")
+        for file in report.files:
+            name = PurePosixPath(file.path)
+            if (
+                not name.parts
+                or name.is_absolute()
+                or ".." in name.parts
+                or name.as_posix() != file.path
+                or not name.is_relative_to(scope)
+            ):
+                raise MissionError(
+                    f"source escapes or aliases inventory scope in {path}: {file.path}"
+                )
+            if len(file.sha256) != 64 or set(file.sha256) - set("0123456789abcdef"):
+                raise MissionError(f"invalid source SHA256 in {path}: {file.path}")
+            if file.language not in _LANGUAGES.values():
+                raise MissionError(f"unsupported source language in {path}: {file.language}")
+            expected = SyntaxStatus.not_swift
+            if file.language == "swift":
+                expected = SyntaxStatus.excluded
+                if file.lint_scope:
+                    if (
+                        file.parser_gaps is None
+                        or file.parser_gaps < 0
+                        or report.toolchain is None
+                    ):
+                        raise MissionError(f"incomplete parser coverage in {path}: {file.path}")
+                    expected = (
+                        SyntaxStatus.parse_error if file.parser_gaps else SyntaxStatus.parsed
+                    )
+            if (
+                file.syntax_status != expected
+                or file.parsed != (expected == SyntaxStatus.parsed)
+                or (
+                    expected in (SyntaxStatus.not_swift, SyntaxStatus.excluded)
+                    and file.parser_gaps is not None
+                )
+            ):
+                raise MissionError(f"contradictory parser coverage in {path}: {file.path}")
+            if (
+                min(file.byte_count, file.physical_lines, file.nonblank_lines) < 0
+                or file.nonblank_lines > file.physical_lines
+            ):
+                raise MissionError(f"invalid source counts in {path}: {file.path}")
+        if report.totals != SwiftInventory.totals_for(report.files):
+            raise MissionError(f"inventory totals disagree with source records in {path}")
+        return report, hashlib.sha256(data).hexdigest()
+
+    def text(self) -> str:
+        lines = [
+            f"Swift source observations: {self.baseline} -> {self.current}",
+            f"{len(self.added)} added, {len(self.removed)} removed, {len(self.modified)} modified, "
+            f"{len(self.reclassified)} reclassified; {self.unchanged_sources} same-path byte matches",
+        ]
+        before = {(total.language, total.kind): total for total in self.totals_before}
+        after = {(total.language, total.kind): total for total in self.totals_after}
+        for key in sorted(before.keys() | after.keys()):
+            old = before[key].physical_lines if key in before else 0
+            new = after[key].physical_lines if key in after else 0
+            lines.append(f"{key[0]}\t{key[1]}\t{old} -> {new} physical lines ({new - old:+d})")
+        lines.extend(f"added\t{file.path}" for file in self.added)
+        lines.extend(f"removed\t{file.path}" for file in self.removed)
+        lines.extend(f"modified\t{change.after.path}" for change in self.modified)
+        lines.extend(
+            f"reclassified\t{change.after.path}: {change.before.kind} -> {change.after.kind}"
+            for change in self.reclassified
+        )
+        if self.baseline_toolchain != self.current_toolchain or self.changed_rules:
+            lines.append(
+                "Parser/toolchain or rule definitions changed; review evidence provenance."
+            )
+        return "\n".join([*lines, *self.notes])
+
+
+@app.command
+def swift_compare(
+    baseline: Path,
+    current: Path,
+    *,
+    as_json: Annotated[bool, Parameter(name="--json")] = False,
+) -> None:
+    """Compare two saved Swift inventories without Xcode, source edits or test execution.
+
+    baseline: the earlier `swift-inventory --json` artifact.
+    current: the later artifact for the same repository-relative scope.
+    as_json: retain per-file changes, artifact hashes, category totals and parser provenance.
+    """
+    print(SwiftComparison.of(baseline, current).render(as_json=as_json))

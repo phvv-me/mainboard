@@ -73,6 +73,8 @@ from .vigil import STALL_SECONDS
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
+    from .apple import BuildReport, TestReport
+
     from .batch.estimate import JobEstimate
     from .batch.runner import Batch
     from .batch.watch import BatchStatus
@@ -2215,7 +2217,8 @@ def build(root: Path | None = None) -> App:
     ) -> int:
         """Run Xcode on a project/workspace/package; retain fresh evidence and its verdict.
 
-        Native tool output is streamed to this terminal. No shell, signing changes,
+        Native tool output is streamed; typed JSON sidecars retain readable results even
+        when native execution fails. No shell, signing changes,
         simulator erasure or global Xcode selection is performed. Committed Swift
         package versions are required. Tests must report actual passing cases.
 
@@ -2251,15 +2254,26 @@ def build(root: Path | None = None) -> App:
             timeout=timeout,
             url_test=url_test,
         )
-        if code or bundle is None:
+        if bundle is None:
             return code
+        successful = True
+        readers: list[tuple[str, Callable[[Path], BuildReport | TestReport]]] = [
+            ("build", apple_tools.diagnostics)
+        ]
         if action == "test":
-            test_report = apple_tools.results(bundle)
-            _COMPACT.print_record(test_report.document(), title="Apple tests")
-            return 0 if test_report.summary.successful else 1
-        build_report = apple_tools.diagnostics(bundle)
-        _COMPACT.print_record(build_report.document(), title="Apple build")
-        return 0 if build_report.summary.successful else 1
+            readers.append(("tests", apple_tools.results))
+        for kind, read in readers:
+            try:
+                report = read(bundle)
+                retained = apple_tools.retain(report)
+            except (MissionError, OSError) as fault:
+                print(f"Apple {kind} evidence unavailable: {fault}", file=sys.stderr)
+                successful = False
+            else:
+                _COMPACT.print_record({"report": str(retained)}, title=f"Apple {kind} evidence")
+                _COMPACT.print_record(report.document(), title=f"Apple {kind}")
+                successful &= report.summary.successful
+        return code or (0 if successful else 1)
 
     @apple.command(name="diagnostics")
     def apple_diagnostics(path: Path, *, output: Output = _COMPACT) -> int:
