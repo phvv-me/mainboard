@@ -232,6 +232,31 @@ final class FactsVisitor: SyntaxVisitor {
         ownerID, ownerName, name, enclosing?.id ?? -1, enclosing?.name ?? "", enclosing?.kind ?? "",
         isStatic, shadowed(name),
       ])
+    if declaration?.is(VariableDeclSyntax.self) == true,
+      case .argumentList(let arguments) = node.arguments
+    {
+      for argument in arguments where argument.label == nil {
+        let member: MemberAccessExprSyntax?
+        if let call = argument.expression.as(FunctionCallExprSyntax.self) {
+          member = call.calledExpression.as(MemberAccessExprSyntax.self)
+          guard member?.declName.baseName.text == "transformable",
+            call.arguments.count == 1, call.arguments.first?.label?.text == "by"
+          else { continue }
+        } else {
+          member = argument.expression.as(MemberAccessExprSyntax.self)
+          guard member?.declName.baseName.text == "codable" else { continue }
+        }
+        guard let member else { continue }
+        let receiver = member.base?.trimmedDescription ?? ""
+        append(
+          "attribute_options", member,
+          [
+            ownerID, ownerName, enclosing?.id ?? -1, enclosing?.name ?? "",
+            enclosing?.kind ?? "", isStatic, name, shadowed(name),
+            member.declName.baseName.text, receiver, receiver.isEmpty ? 0 : shadowed(receiver),
+          ])
+      }
+    }
     return .visitChildren
   }
   override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {

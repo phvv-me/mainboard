@@ -1050,6 +1050,16 @@ without treating the number as a verdict. `explain` is offline guidance with off
 documentation URLs and the rule's repair policy. UIKit/AppKit, representables, Objective-C
 exposure, Objective-C implementation files and SQL imports are migration signals, not
 automatic proof a framework bridge is removable. Review-only rules offer no blind rewrite.
+Persistence reviews extend this inventory: `SW-MIG0006` locates direct `.codable` and
+`.transformable(by:)` options on SwiftData `@Model` instance properties; `SW-MIG0007`
+locates directly named `ModelContainer`/`ModelContext` construction, including explicit
+`.init`; and `SW-MIG0008` locates a finite set of direct SQLite execution/preparation calls
+under a SQLite3 import. They require framework imports and exclude known project shadows.
+They do not infer type ownership, query needs, store identity, competing writers, SQL
+read/write mode or whether a migration/test boundary is unnecessary. Aliases, computed
+options, macro expansions and wrapper/factory calls need compiler/caller review. Keep
+justified encoded recovery envelopes and read-only importers until equivalent behavior and
+populated-store upgrades are proved; never automatically rewrite their stored formats.
 Native owners can declare per-rule policy in `[analysis.rules."RULE-ID"]`; the existing
 `pyproject.toml` policy remains supported, and conflicting declarations are refused.
 
