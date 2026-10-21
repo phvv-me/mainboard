@@ -1091,6 +1091,12 @@ without treating the number as a verdict. `explain` is offline guidance with off
 documentation URLs and the rule's repair policy. UIKit/AppKit, representables, Objective-C
 exposure, Objective-C implementation files and SQL imports are migration signals, not
 automatic proof a framework bridge is removable. Review-only rules offer no blind rewrite.
+
+General onboarding guidance recognizes exact `mainboard run` task names, including
+the `--locked`, `--frozen`, `--no-install` and `--as-is` flags before the task. Naming
+`setup-extra` does not document `setup`; unknown flags are not inferred as valid syntax.
+The readiness score still requires repository-owned unattended tasks and their guidance.
+
 Persistence reviews extend this inventory: `SW-MIG0006` locates direct `.codable` and
 `.transformable(by:)` options on SwiftData `@Model` instance properties; `SW-MIG0007`
 locates directly named `ModelContainer`/`ModelContext` construction, including explicit

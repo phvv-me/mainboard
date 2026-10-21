@@ -168,7 +168,10 @@ class AutomationTask(Family):
             FROM automation_task_facts f
             JOIN (SELECT s.*, row_number() OVER (ORDER BY s.capability) - 1 AS ordinal,
                          (SELECT count(*) FROM guides g
-                          WHERE contains(g.content, 'mainboard run ' || s.capability)
+                          WHERE list_contains(regexp_extract_all(g.content,
+                            '(?:^|[^[:alnum:]_-])mainboard[[:blank:]]+run[[:blank:]]+'
+                            || '(?:--(?:locked|frozen|no-install|as-is)[[:blank:]]+)*'
+                            || '([^[:space:]`]+)', 1), s.capability)
                              OR (s.capability = 'setup'
                                  AND contains(g.content, 'mainboard install')))
                            AS guidance_locations_length
