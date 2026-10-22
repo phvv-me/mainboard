@@ -2,7 +2,9 @@
 
 import json
 import plistlib
+import subprocess
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -178,3 +180,36 @@ def test_launch_rejects_invalid_toolchain_path(built_app: Path) -> None:
     tools.simctl = Path("simctl")
     with pytest.raises(MissionError, match="invalid selected simctl path"):
         Apple(tools).launch(built_app, simulator="one")
+
+
+@pytest.mark.parametrize("failed_stage", ["inventory", "lookup"])
+def test_launch_metadata_processes_share_deadline(
+    built_app: Path, monkeypatch: pytest.MonkeyPatch, failed_stage: str
+) -> None:
+    clock = [0.0]
+    limits: list[float] = []
+    tools = LaunchTools(built_app.parent)
+
+    def run(
+        command: tuple[str, ...],
+        *,
+        cwd: Path | None,
+        stdout: BinaryIO,
+        stderr: BinaryIO,
+        timeout: float,
+        check: bool,
+    ) -> subprocess.CompletedProcess[bytes]:
+        limits.append(timeout)
+        if failed_stage == "inventory" or command[1:] == ("--find", "simctl"):
+            raise subprocess.TimeoutExpired(command, timeout)
+        assert command[1:] == ("simctl", "list", "devices", "available", "--json")
+        stdout.write(json.dumps({"devices": tools.devices}).encode())
+        clock[0] = 2.0
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("mainboard.apple.monotonic", lambda: clock[0])
+    monkeypatch.setattr("mainboard.core.tool.monotonic", lambda: clock[0])
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(MissionError, match="exit 124"):
+        Apple().launch(built_app, simulator="one", timeout=3)
+    assert limits == ([3.0] if failed_stage == "inventory" else [3.0, 1.0])

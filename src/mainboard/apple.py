@@ -274,8 +274,9 @@ class Apple:
     ) -> dict[str, str]:
         """Install a built app and open it in one explicitly selected simulator.
 
-        The shared deadline bounds boot readiness, installation, launch and opening the
-        selected Xcode's Device Hub. Never build, select an arbitrary device or erase data.
+        The shared deadline bounds native discovery, boot readiness, installation, launch
+        and opening the selected Xcode's Device Hub. Never build, select an arbitrary
+        device or erase data.
         """
         started = monotonic()
         path = path.expanduser().resolve()
@@ -290,9 +291,20 @@ class Apple:
         identifier = info.get("CFBundleIdentifier") if isinstance(info, dict) else None
         if not isinstance(identifier, str) or not identifier.strip():
             raise MissionError("app Info.plist needs a nonempty CFBundleIdentifier")
+        inspector = (
+            Apple(
+                ToolRunner(
+                    timeout=self.runner.timeout,
+                    max_bytes=self.runner.max_bytes,
+                    deadline=started + timeout,
+                )
+            )
+            if isinstance(self.runner, ToolRunner)
+            else self
+        )
         devices = [
             device
-            for device in self.simulators()
+            for device in inspector.simulators()
             if simulator in (device["name"], device["udid"])
             and (not os_version or device["runtime"].endswith("-" + os_version.replace(".", "-")))
         ]
@@ -302,7 +314,7 @@ class Apple:
                 "use apple simulators and specify an exact UDID or --os-version"
             )
         device = devices[0]
-        simctl = Path(self._run("--find", "simctl").strip())
+        simctl = Path(inspector._run("--find", "simctl").strip())
         if not simctl.is_absolute() or len(simctl.parents) < 4:
             raise MissionError(f"invalid selected simctl path: {simctl}")
         viewer = simctl.parents[3] / "Applications/DeviceHub.app"

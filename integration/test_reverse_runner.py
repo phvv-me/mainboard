@@ -39,3 +39,12 @@ def test_runner_bounds_retained_output_and_preserves_timeout_evidence(
     )
     assert found.stdout == "1234" and found.stderr == "erro"
     assert found.truncated and found.returncode == (124 if timeout else 0)
+
+
+def test_runner_refuses_expired_deadline_before_starting_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mainboard.core.tool.monotonic", lambda: 10.0)
+    found = ToolRunner(deadline=9.0).run("must-not-execute", ())
+    assert found.returncode == 124 and found.truncated
+    assert found.stderr == "tool deadline exhausted"

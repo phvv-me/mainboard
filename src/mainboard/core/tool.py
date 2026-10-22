@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryFile
+from time import monotonic
 from typing import Protocol
 
 from patos import FrozenModel
@@ -20,13 +21,21 @@ class Runner(Protocol):
 class ToolRunner:
     """Bound execution and retained output; never invoke a shell or run the artifact."""
 
-    def __init__(self, *, timeout: float = 120, max_bytes: int = 32 << 20) -> None:
+    def __init__(
+        self, *, timeout: float = 120, max_bytes: int = 32 << 20, deadline: float | None = None
+    ) -> None:
         if timeout <= 0 or max_bytes <= 0:
             raise ValueError("tool timeout and output limit must be positive")
         self.timeout = timeout
         self.max_bytes = max_bytes
+        self.deadline = deadline
 
     def run(self, tool: str, args: tuple[str, ...], *, cwd: Path | None = None) -> ToolOutput:
+        limit = self.timeout
+        if self.deadline is not None:
+            limit = min(limit, self.deadline - monotonic())
+        if limit <= 0:
+            return ToolOutput(stderr="tool deadline exhausted", returncode=124, truncated=True)
         with TemporaryFile() as stdout, TemporaryFile() as stderr:
             timed_out = False
             try:
@@ -35,7 +44,7 @@ class ToolRunner:
                     cwd=cwd,
                     stdout=stdout,
                     stderr=stderr,
-                    timeout=self.timeout,
+                    timeout=limit,
                     check=False,
                 )
             except subprocess.TimeoutExpired:
