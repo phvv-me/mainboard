@@ -6,7 +6,7 @@ import struct
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from patos import FrozenModel
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
@@ -82,11 +82,17 @@ class TestReport(FrozenModel):
     bundle: Path
     summary: Summary
     slowest: list[TestNode]
+    missing_selectors: list[str] = Field(default_factory=list)
+
+    @property
+    def successful(self) -> bool:
+        return self.summary.successful and not self.missing_selectors
 
     def document(self) -> dict[str, Node]:
         return {
             "bundle": str(self.bundle),
-            "successful": self.summary.successful,
+            "successful": self.successful,
+            "missing_selectors": tuple(self.missing_selectors),
             "summary": self.summary.model_dump(mode="json", by_alias=True),
             "slowest": [
                 node.model_dump(mode="json", exclude={"children", "kind"}) for node in self.slowest
@@ -124,6 +130,10 @@ class BuildSummary(FrozenModel):
 class BuildReport(FrozenModel):
     bundle: Path
     summary: BuildSummary
+
+    @property
+    def successful(self) -> bool:
+        return self.summary.successful
 
     def document(self) -> dict[str, Node]:
         return {
@@ -431,7 +441,13 @@ class Apple:
                 raise MissionError(f"invalid font preview image: {item.image}")
         return [item.document() for item in report.images]
 
-    def results(self, path: Path) -> TestReport:
+    def results(
+        self,
+        path: Path,
+        *,
+        only_testing: tuple[str, ...] = (),
+        skip_testing: tuple[str, ...] = (),
+    ) -> TestReport:
         """Read an exact bundle, or the newest direct child of a Logs/Test directory.
 
         Never fall back to an older successful bundle when the newest one is incomplete.
@@ -447,11 +463,37 @@ class Apple:
             raise MissionError(
                 f"invalid xcresulttool test evidence for {bundle}: {fault}"
             ) from fault
-        cases = (case for node in tree.nodes for case in node.cases() if case.seconds is not None)
+        cases = [case for node in tree.nodes for case in node.cases()]
+        identifiers = [
+            unquote(urlsplit(case.identifier).path).strip("/").removesuffix("()")
+            for case in cases
+            if case.identifier
+        ]
+        missing = []
+        for selector in only_testing:
+            normalized = selector.strip("/").removesuffix("()")
+            if len(normalized.split("/")) < 3 or any(char in normalized for char in "*?["):
+                continue
+            if any(
+                normalized == skip.strip("/").removesuffix("()")
+                or normalized.startswith(skip.strip("/").removesuffix("()") + "/")
+                for skip in skip_testing
+            ):
+                continue
+            if not any(
+                identifier == normalized or identifier.endswith("/" + normalized)
+                for identifier in identifiers
+            ):
+                missing.append(selector)
         return TestReport(
             bundle=bundle,
             summary=summary,
-            slowest=sorted(cases, key=lambda case: case.seconds or 0, reverse=True)[:10],
+            missing_selectors=missing,
+            slowest=sorted(
+                (case for case in cases if case.seconds is not None),
+                key=lambda case: case.seconds or 0,
+                reverse=True,
+            )[:10],
         )
 
     def diagnostics(self, path: Path) -> BuildReport:

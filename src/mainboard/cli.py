@@ -2299,7 +2299,14 @@ def build(root: Path | None = None) -> App:
             ("build", apple_tools.diagnostics)
         ]
         if action == "test":
-            readers.append(("tests", apple_tools.results))
+            readers.append(
+                (
+                    "tests",
+                    lambda path: apple_tools.results(
+                        path, only_testing=only_testing, skip_testing=skip_testing
+                    ),
+                )
+            )
         for kind, read in readers:
             try:
                 report = read(bundle)
@@ -2310,7 +2317,7 @@ def build(root: Path | None = None) -> App:
             else:
                 _COMPACT.print_record({"report": str(retained)}, title=f"Apple {kind} evidence")
                 _COMPACT.print_record(report.document(), title=f"Apple {kind}")
-                successful &= report.summary.successful
+                successful &= report.successful
         return code or (0 if successful else 1)
 
     @apple.command(name="diagnostics")

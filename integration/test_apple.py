@@ -661,6 +661,97 @@ def test_execution_cli_uses_actual_test_verdict(
     assert test_report["successful"] is passed
 
 
+@pytest.mark.parametrize("skip", [(), ("Tests/Suite/missing()",), ("Tests/Suite",)])
+def test_exact_selectors_use_all_cases_and_preserve_native_verdict(
+    result_tool: ResultTool, bundle: Path, skip: tuple[str, ...]
+) -> None:
+    result_tool.nodes = [
+        {
+            "name": f"slow{index}",
+            "nodeType": "Test Case",
+            "result": "Passed",
+            "durationInSeconds": 100,
+        }
+        for index in range(11)
+    ] + [
+        {
+            "name": name,
+            "nodeType": "Test Case",
+            "result": "Skipped",
+            "nodeIdentifierURL": f"test://com.apple.xcode/App/Tests/Suite/{name}",
+        }
+        for name in ("short", "parameterized%28_%3A%29")
+    ]
+    report = Apple(result_tool).results(
+        bundle,
+        only_testing=(
+            "Tests/Suite/short()",
+            "Tests/Suite/parameterized(_:)",
+            "Tests/Suite/missing",
+            "Tests/Wrong/short",
+            "Tests/Suite",
+        ),
+        skip_testing=skip,
+    )
+    expected = ["Tests/Wrong/short"] if skip else ["Tests/Suite/missing", "Tests/Wrong/short"]
+    assert report.missing_selectors == expected
+    assert report.summary.successful and not report.successful
+    assert report.document()["summary"] == result_tool.summary
+    assert len(report.slowest) == 10
+
+
+def test_execution_cli_fails_when_xcode_ignores_requested_methods(
+    result_tool: ResultTool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "App.xcodeproj"
+    project.mkdir()
+    result_tool.nodes = [
+        {
+            "name": "existing",
+            "nodeType": "Test Case",
+            "result": "Passed",
+            "nodeIdentifierURL": "test://com.apple.xcode/App/Tests/Suite/existing",
+        }
+    ]
+    result_tool.summary.update(totalTestCount=1, passedTests=1)
+    apple = Apple(result_tool)
+
+    def execute(*_args: Path, **kwargs: str | Path | None | tuple[str, ...] | float) -> int:
+        result = kwargs["bundle"]
+        assert isinstance(result, Path)
+        result.mkdir(parents=True)
+        return 0
+
+    monkeypatch.setattr(apple, "execute", execute)
+    monkeypatch.setattr("mainboard.cli.Apple", lambda: apple)
+    with pytest.raises(SystemExit) as stopped:
+        build()(
+            [
+                "apple",
+                "execute",
+                str(project),
+                "--scheme",
+                "App",
+                "--action",
+                "test",
+                "--results",
+                str(tmp_path / "out"),
+                "--only-testing",
+                "Tests/Suite/existing",
+                "--only-testing",
+                "Tests/Wrong/existing",
+                "--only-testing",
+                "Tests/Suite/missing",
+            ]
+        )
+    assert stopped.value.code == 1
+    (receipt,) = (tmp_path / "out").glob("*.tests.json")
+    report = json.loads(receipt.read_text())
+    assert report["summary"]["result"] == "Passed"
+    assert report["successful"] is False
+    assert report["missing_selectors"] == ["Tests/Wrong/existing", "Tests/Suite/missing"]
+
+
 def test_process_timeout_runs_package_commands_in_the_requested_directory(tmp_path: Path) -> None:
     code = Processes().timeout(
         10,
