@@ -1176,6 +1176,24 @@ This command follows the same Xcode selection and bounded runner as `toolchain`.
 If the system selects Command Line Tools, use a declared task with `DEVELOPER_DIR`
 pointing at the intended Xcode; do not change global `xcode-select` as a workaround.
 
+Use `mainboard apple launch path/to/Example.app --simulator 'iPhone 18 Pro'
+--os-version 27.0` to install a previously built simulator app and show its device.
+An exact available UDID also works. Names matching multiple devices are refused;
+there is no implicit first/booted-device choice. The command waits for boot readiness,
+installs and launches the bundle identifier from `Info.plist`, then opens that exact device in the selected Xcode 27 Device Hub through its
+`devices://device/open?id=<udid>` URL. `--timeout` (180 seconds by default) bounds the sequence;
+native failures stop subsequent steps and identify the failing stage. No build,
+fixture data, device creation or erasure is hidden in launch. Declare a task dependency
+on the intended build, including the signing and entitlements the app needs. A successful
+process launch does not prove the app's internal startup or account services succeeded.
+
+Device Hub replaces Simulator in [Xcode 27](https://developer.apple.com/documentation/xcode/device-hub).
+Its [device-focus URL](https://expo.dev/blog/xcode-27-device-hub-expo-device-hub)
+selects the requested screen even when the viewer is already running. Launch requires
+Device Hub in the selected Xcode bundle and refuses a missing viewer before changing
+the simulator; it does not fall back to a different installed Xcode.
+
+
 For ordinary Xcode builds/tests, pass `-onlyUsePackageVersionsFromResolvedFile`.
 Give dependency restoration its own bounded task using `xcodebuild
 -resolvePackageDependencies -onlyUsePackageVersionsFromResolvedFile`; existing

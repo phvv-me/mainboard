@@ -2,11 +2,13 @@
 
 import json
 import math
+import plistlib
 import struct
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 from typing import TYPE_CHECKING, Literal
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from patos import FrozenModel
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
@@ -261,6 +263,75 @@ class Apple:
             for device in sorted(devices, key=lambda item: (item.name, item.udid))
             if device.available
         ]
+
+    def launch(
+        self,
+        path: Path,
+        *,
+        simulator: str,
+        os_version: str = "",
+        timeout: float = 180,
+    ) -> dict[str, str]:
+        """Install a built app and open it in one explicitly selected simulator.
+
+        The shared deadline bounds boot readiness, installation, launch and opening the
+        selected Xcode's Device Hub. Never build, select an arbitrary device or erase data.
+        """
+        started = monotonic()
+        path = path.expanduser().resolve()
+        if not math.isfinite(timeout) or timeout <= 0 or not simulator.strip():
+            raise MissionError("Apple launch needs an explicit simulator and a positive timeout")
+        if path.suffix != ".app" or not path.is_dir():
+            raise MissionError(f"expected a built simulator .app directory: {path}")
+        try:
+            info = plistlib.loads((path / "Info.plist").read_bytes())
+        except (OSError, ValueError, plistlib.InvalidFileException) as fault:
+            raise MissionError(f"cannot read app Info.plist: {fault}") from fault
+        identifier = info.get("CFBundleIdentifier") if isinstance(info, dict) else None
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise MissionError("app Info.plist needs a nonempty CFBundleIdentifier")
+        devices = [
+            device
+            for device in self.simulators()
+            if simulator in (device["name"], device["udid"])
+            and (not os_version or device["runtime"].endswith("-" + os_version.replace(".", "-")))
+        ]
+        if len(devices) != 1:
+            raise MissionError(
+                f"simulator {simulator!r} matched {len(devices)} available devices; "
+                "use apple simulators and specify an exact UDID or --os-version"
+            )
+        device = devices[0]
+        simctl = Path(self._run("--find", "simctl").strip())
+        if not simctl.is_absolute() or len(simctl.parents) < 4:
+            raise MissionError(f"invalid selected simctl path: {simctl}")
+        viewer = simctl.parents[3] / "Applications/DeviceHub.app"
+        if not viewer.is_dir():
+            raise MissionError(f"Apple launch requires Xcode 27 Device Hub at {viewer}")
+        commands = [
+            ("boot readiness", ["/usr/bin/xcrun", "simctl", "bootstatus", device["udid"], "-b"]),
+            ("installation", ["/usr/bin/xcrun", "simctl", "install", device["udid"], str(path)]),
+            ("launch", ["/usr/bin/xcrun", "simctl", "launch", device["udid"], identifier]),
+            (
+                "Device Hub window",
+                [
+                    "/usr/bin/open",
+                    "-a",
+                    str(viewer),
+                    "devices://device/open?id=" + quote(device["udid"], safe=""),
+                ],
+            ),
+        ]
+        for stage, command in commands:
+            remaining = timeout - (monotonic() - started)
+            if remaining <= 0:
+                raise MissionError(f"Apple launch timed out before {stage}")
+            code = Processes().timeout(remaining, command)
+            if code:
+                raise MissionError(
+                    f"Apple launch failed during {stage} (exit {code}); see native output above"
+                )
+        return {**device, "bundle_identifier": identifier, "app": str(path)}
 
     def execute(
         self,

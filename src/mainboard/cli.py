@@ -2165,6 +2165,28 @@ def build(root: Path | None = None) -> App:
         """
         output.print_rows(Apple().simulators(), title="Apple simulators")
 
+    @apple.command(name="launch")
+    def apple_launch(
+        path: Path,
+        *,
+        simulator: str,
+        os_version: str = "",
+        timeout: float = 180,
+        output: Output = _COMPACT,
+    ) -> None:
+        """Install a built app and show its selected simulator in Xcode 27 Device Hub.
+
+        Uses Device Hub from the selected Xcode. No hidden build, device creation or data erasure.
+        Simulator is an exact available name or UDID; OS version can disambiguate names.
+        Timeout bounds the complete boot/install/launch/window sequence in seconds.
+
+        Args:
+        """
+        output.print_record(
+            Apple().launch(path, simulator=simulator, os_version=os_version, timeout=timeout),
+            title="Launched app",
+        )
+
     @apple.command(name="bundle")
     def apple_bundle(
         path: Path,
