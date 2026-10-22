@@ -331,7 +331,13 @@ class Apple:
                 raise MissionError(
                     f"Apple launch failed during {stage} (exit {code}); see native output above"
                 )
-        return {**device, "bundle_identifier": identifier, "app": str(path)}
+        return {
+            "simulator": device["name"],
+            "udid": device["udid"],
+            "runtime": device["runtime"],
+            "bundle_identifier": identifier,
+            "app": str(path),
+        }
 
     def execute(
         self,
