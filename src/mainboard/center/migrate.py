@@ -151,7 +151,7 @@ class Migration:
             self.destination,
             facts.uv,
             self.transport,
-            python=Lockfile(self.board.root).python_minor(facts.pixi_platform),
+            python=Lockfile(self.board.root).python_request(facts.pixi_platform),
         )
         where = carrier.call("where", {"root": self.root or _CHECKOUT}, Destination)
         system = carrier.call("census", {"root": where.root}, System)

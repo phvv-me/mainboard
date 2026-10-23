@@ -23,19 +23,18 @@
 # Opening never migrates a catalog: an older one keeps working at its spec until `upgrade` is
 # asked for, since a migration is a one-way step every other reader must be ready for.
 #
-# EXTENSIONS. ducklake and sqlite load from a directory this tool owns under the user's cache,
-# never the workspace and never DuckDB's default shared with every other program. Loading comes
-# first and installing only when loading fails, so a machine with no network still opens a lake
-# once the extensions are there.
+# EXTENSIONS. ducklake and sqlite load from this tool's own extension folder (`database.load`),
+# so a machine with no network still opens a lake once they are there.
 #
 # SERVED. `serving` opens DuckDB on the lake itself and serves it over Quack, DuckDB's own
 # client-server protocol, on localhost only; another machine reaches it through an ssh tunnel.
 # With `MB_LAKE=quack:host:port` (and `MB_LAKE_TOKEN`) set, every attach here is that served
 # lake instead of the workspace's files, under the same `lake` alias, so every query and append
-# runs unchanged. Learned against DuckDB 2.0.0.dev2609250715: a Quack client resolves names in
-# the server's default database only (hence DuckDB opened on the lake, not attached to memory);
-# bound parameters are dropped on the way to the server (hence `inlined`); a table macro's
-# `query()` runs a statement twice (duckdb-quack#282), so writes go through tables only; and
+# runs unchanged. Learned against DuckDB 2.0: a Quack client resolves names in the server's
+# default database only (hence DuckDB opened on the lake, not attached to memory); bound
+# parameters are dropped on the way to the server (duckdb-quack#323, still so at 2.0.0, hence
+# `inlined`); a remote `query()` runs a statement twice (duckdb-quack#282), so writes go
+# through tables only; and
 # both ends must run the same DuckDB release. Maintenance stays with the machine holding the
 # files.
 
@@ -46,7 +45,6 @@ import os
 import secrets
 import sqlite3
 import struct
-import sys
 import tempfile
 import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
@@ -84,7 +82,7 @@ from ..manifest.loading import composition
 from ..manifest.schema.workspace import Header
 from ..runtime.tree import FileBudget
 from . import schema
-from .database import connect, quoted
+from .database import connect, extension_home, first_line, load, quoted
 from .schema import ALIAS, DIALECT, TABLES, VERSION, VIEWS, ddl, kind
 
 # The DuckDB extensions an attach needs, and the ones reaching or serving a lake over Quack.
@@ -153,24 +151,6 @@ _ANSWER_SECONDS = 10.0
 # into the database, at byte 96. Both are native-endian 32-bit integers.
 _MAX_FRAME = 16
 _BACKFILL = 96
-
-
-def cache_home(
-    platform: str = sys.platform,
-    environ: Mapping[str, str] = os.environ,
-    home: Path | None = None,
-) -> Path:
-    """The user's cache directory on `platform`: `~/Library/Caches` on macOS, else
-    `XDG_CACHE_HOME` or `~/.cache`."""
-    base = home or Path.home()
-    if platform == "darwin":
-        return base / "Library" / "Caches"
-    return Path(environ.get("XDG_CACHE_HOME") or base / ".cache")
-
-
-def _extensions() -> Path:
-    """Where this tool keeps DuckDB's extensions: its own folder under the user's cache."""
-    return cache_home() / Project().name / "duckdb"
 
 
 def _literal(value: object) -> str:
@@ -347,15 +327,13 @@ class Lake(FrozenModel):
     root: the workspace root; the lock and token paths derive from it.
     home: where the catalog and data live, the workspace's `[workspace] lake` (see `at`).
     extensions: where DuckDB's extensions are loaded from and installed to.
-    repository: an extension repository URL or directory, DuckDB's core repository when empty.
     served: the `quack:host:port` a lake is served at, attached instead of the workspace's own
         files when set; `MB_LAKE` by default, its token `MB_LAKE_TOKEN`.
     """
 
     root: Path
     home: Path
-    extensions: Path = Field(default_factory=_extensions)
-    repository: str = ""
+    extensions: Path = Field(default_factory=extension_home)
     served: str = Field(default_factory=lambda: Project().variable("LAKE").read())
 
     @classmethod
@@ -667,8 +645,8 @@ class Lake(FrozenModel):
                         for path in pair
                         if path and not Path(path).is_file()
                     )
-        except duckdb.Error as fault:
-            findings.append(Finding(kind="catalog", detail=str(fault).splitlines()[0]))
+        except (duckdb.Error, MissionError) as fault:
+            findings.append(Finding(kind="catalog", detail=first_line(fault)))
         return Health(findings=tuple(findings))
 
     def _wal(self) -> Iterator[Finding]:
@@ -745,7 +723,16 @@ class Lake(FrozenModel):
             options.append("AUTOMATIC_MIGRATION true")
         options.append("META_JOURNAL_MODE 'WAL'" if write else "READ_ONLY")
         target = quoted(f"ducklake:sqlite:{self.catalog.as_posix()}")
-        connection.execute(f"ATTACH {target} AS {ALIAS} ({', '.join(options)})")
+        try:
+            connection.execute(f"ATTACH {target} AS {ALIAS} ({', '.join(options)})")
+        except duckdb.InvalidInputException as fault:
+            if "catalog version mismatch" not in str(fault):
+                raise
+            said = first_line(fault).split(": ", 1)[-1].split(" To automatically", 1)[0]
+            raise MissionError(
+                f"{said} Run `mb lake upgrade` on the machine holding the lake, after which "
+                "older DuckDB releases cannot open it."
+            ) from fault
 
     def _answering(self) -> None:
         """Raise MissionError unless a read of the lake's home returns, once per home and process.
@@ -823,7 +810,7 @@ class Lake(FrozenModel):
                 served.execute(f"CALL quack_stop({quoted(uri)})")
             except duckdb.Error as fault:
                 raise MissionError(
-                    f"could not serve the lake at {uri}: {_first(fault)}"
+                    f"could not serve the lake at {uri}: {first_line(fault)}"
                 ) from fault
 
     def _kept_token(self) -> str:
@@ -857,7 +844,7 @@ class Lake(FrozenModel):
         try:
             connection.execute(f"ATTACH {quoted(self.served)} AS {ALIAS}{options}")
         except duckdb.Error as fault:
-            said = _first(fault)
+            said = first_line(fault)
             if "deserialize" in said.lower():
                 said = (
                     f"it answers in a protocol DuckDB {duckdb.__version__} here cannot read; "
@@ -876,29 +863,7 @@ class Lake(FrozenModel):
             )
 
     def _load(self, connection: duckdb.DuckDBPyConnection, names: Sequence[str]) -> None:
-        """Load the extensions from this tool's directory, installing only what fails to load.
-
-        Raises MissionError naming the directory when an extension is neither there nor
-        installable, as on a machine that never went online.
-        """
-        connection.execute(f"SET extension_directory = {quoted(self.extensions.as_posix())}")
-        for name in names:
-            try:
-                connection.load_extension(name)
-            except duckdb.IOException:
-                try:
-                    connection.install_extension(name, repository_url=self.repository or None)
-                    connection.load_extension(name)
-                except duckdb.Error as fault:
-                    raise MissionError(
-                        f"DuckDB extension {name} is not in {self.extensions} and could not be "
-                        f"installed: {str(fault).splitlines()[0]}"
-                    ) from fault
-
-
-def _first(fault: BaseException) -> str:
-    """The first line of what `fault` says."""
-    return (str(fault).splitlines() or [""])[0]
+        load(connection, names, self.extensions)
 
 
 def locked(fault: BaseException) -> bool:

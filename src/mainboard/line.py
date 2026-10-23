@@ -26,6 +26,7 @@ from .dispatch.spool import Beat, LineSpec, Remote, spool_path
 from .dispatch.vocabulary import Resources
 from .dispatch.wrapping import connection
 from .holds import duration_seconds
+from .runtime import job as runtime_job
 from .runtime.job import walltime_seconds
 
 if TYPE_CHECKING:
@@ -100,10 +101,11 @@ class Line:
         seconds = duration_seconds(duration)
         ceilings = [walltime_seconds(w) for w in (policy.max_walltime, walltime) if w]
         length = min(seconds, *ceilings)
-        admit(plan.profile, queue=queue, walltime=_hms(length), mem_gb=policy.mem_ceiling_gb)
+        allocation = runtime_job.walltime(length)
+        admit(plan.profile, queue=queue, walltime=allocation, mem_gb=policy.mem_ceiling_gb)
         spec = LineSpec(
             queue=queue,
-            walltime=_hms(length),
+            walltime=allocation,
             mem_gb=policy.mem_ceiling_gb,
             account=plan.profile.account,
             deadline=time.time() + seconds,
@@ -243,11 +245,6 @@ class Line:
             remote, f"tmux capture-pane -p -t {self.session} 2>&1 | grep -v '^$' | tail -8"
         )[1]
         return said.strip() or "(nothing)"
-
-
-def _hms(seconds: float) -> str:
-    """`seconds` as the `HH:MM:SS` a walltime is written in."""
-    return time.strftime("%H:%M:%S", time.gmtime(seconds))
 
 
 def keeper_script(

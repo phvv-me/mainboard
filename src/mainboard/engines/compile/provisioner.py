@@ -342,7 +342,7 @@ class Provisioner:
 
         The whole run holds the lock so no agent rewrites the manifest mid-solve; the second
         stage runs last since its managers are conda packages pixi just installed, and re-solves
-        its own locks only when the pixi lock moved.
+        its own locks when the pixi lock moved or the policy lets this install solve.
 
         update: take the newest releases the manifest allows first (`pixi update`), only these
             packages when any are named.
@@ -359,4 +359,8 @@ class Provisioner:
                 # and the host that runs it installs the second stage and its activation.
                 return
             shard.compiler.install()
-            shard.stage.install(env, resolve=moved)
+            # Solved whenever this policy may solve, not only when the pixi lock moved in this
+            # call: an `upgrade --no-install` moved it and raised `package.json` earlier, and the
+            # frozen pnpm install that followed refused the stale lock (2026-10-23). A manager
+            # resolving a lock that already matches changes nothing.
+            shard.stage.install(env, resolve=moved or policy is LockPolicy.UPDATE)

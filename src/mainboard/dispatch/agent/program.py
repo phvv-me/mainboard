@@ -879,7 +879,21 @@ class Sealed:
         if self.pins and not os.path.exists(native(snap, self.staging)):
             _relink(native(root, self.staging), native(snap, self.staging))
         for need in self.needs:
-            _relink(native(root, need), native(snap, need))
+            _relink(native(root, need), self.__placed(snap, need=need))
+
+    @staticmethod
+    def __placed(snap: str, *, need: str) -> str:
+        """Where `need` lands in the tree.
+
+        A parent reached through a link is refused, since placing the need there would replace the
+        mirror's own file.
+        """
+        placed = native(snap, need)
+        os.makedirs(os.path.dirname(placed), exist_ok=True)
+        inside = os.path.normpath(native(os.path.realpath(snap), os.path.dirname(need) or "."))
+        if os.path.realpath(os.path.dirname(placed)) != inside:
+            raise Refusal(f"the need {need} sits under a path already linked to the mirror")
+        return placed
 
     def __rows(self, frozen: str) -> Iterator[tuple[str, str]]:
         """Each listed path and blob, the listing's own digest and every path checked first."""

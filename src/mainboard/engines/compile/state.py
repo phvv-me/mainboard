@@ -3,6 +3,7 @@ import tomllib
 from typing import TYPE_CHECKING, Self
 
 from patos import FrozenModel
+from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -28,6 +29,10 @@ class SyncState(FrozenModel):
         without it a content address would move with the root.
     runtime_from: the path-normalized second-stage digest, joining the generated files and
         ordered host modules in the immutable-prefix identity.
+    moved: the requirements whose ecosystem (conda or PyPI) changed since the last solve, which
+        the next one re-resolves: pixi takes a conda build as satisfying the PyPI requirement
+        of its name and a minimal solve keeps it, so a library moved to `[python.deps]` stayed
+        on conda (2026-10-23).
     """
 
     environment: str = ""
@@ -36,6 +41,7 @@ class SyncState(FrozenModel):
     solved_by: str = ""
     compiled_at: str = ""
     runtime_from: str = ""
+    moved: tuple[str, ...] = ()
 
     @staticmethod
     def path(out: Path) -> Path:
@@ -48,7 +54,12 @@ class SyncState(FrozenModel):
             data = tomllib.loads(cls.path(out).read_text(encoding="utf-8"))
         except FileNotFoundError, tomllib.TOMLDecodeError:
             return cls()
-        return cls(**{name: str(data.get(name, "")) for name in cls.model_fields})
+        try:
+            return cls.model_validate(
+                {name: data[name] for name in data if name in cls.model_fields}
+            )
+        except ValidationError:
+            return cls()
 
     def render(self) -> str:
         """The TOML text of this fixed tiny schema, rendered by hand."""

@@ -2,10 +2,14 @@ from collections.abc import Sequence
 
 import tomlkit
 import tomlkit.items
+from tomlkit.container import OutOfOrderTableProxy
 
 from ..core.errors import MissionError
 
 _ASSIGN = len("= ")
+# The keys naming where a requirement comes from instead of an index, which pins it there whatever
+# version it also states (a binary's `url` and `sha256` beside its `version`).
+_SOURCES = {"path", "git", "url"}
 
 
 class ManifestText:
@@ -31,11 +35,14 @@ class ManifestText:
     def versioned(self, path: tuple[str, ...], name: str) -> bool:
         """Whether `name` in the table at `path` names a version to raise: a bare requirement
         or a table carrying one, not a path, git or url source, nor a workspace member the
-        manifest declares only through `[workspace] members`."""
+        manifest declares only through `[workspace] members`, nor an exact pin, which states the
+        one release it must be (a registered estimator kept byte-stable) rather than a range."""
         if not self.declares(path, name):
             return False
         declared = self.table(path)[name]
-        return isinstance(declared, str) or (isinstance(declared, dict) and "version" in declared)
+        if isinstance(declared, dict) and not _SOURCES & declared.keys():
+            declared = declared.get("version")
+        return isinstance(declared, str) and not _exact(declared)
 
     def declares(self, path: Sequence[str], name: str) -> bool:
         """Whether the table at `path` exists and carries `name`."""
@@ -89,15 +96,21 @@ class ManifestText:
         body.extend(reversed(trailing))
 
     def table(self, path: tuple[str, ...], *, create: bool = False) -> tomlkit.items.Table:
-        """The table at `path`, created on request as one `[rust.deps]` heading, not a nest."""
-        table: tomlkit.TOMLDocument | tomlkit.items.Table = self.document
+        """The table at `path`, created on request as one `[rust.deps]` heading, not a nest.
+
+        A level whose sub-tables are not contiguous in the file (`[on.linux.deps]`, then
+        `[on.unix.python.dev]`, then `[on.linux.python.dev]`) reads as tomlkit's
+        `OutOfOrderTableProxy`, which is walked through like a table; the requirements' own
+        table at the end is always a real one.
+        """
+        table: tomlkit.TOMLDocument | tomlkit.items.Table | OutOfOrderTableProxy = self.document
         for at, key in enumerate(path):
             if key not in table:
                 if not create:
                     raise MissionError(f"[{'.'.join(path[: at + 1])}] is not in this manifest")
                 table[key] = tomlkit.table(is_super_table=at < len(path) - 1)
             nested = table[key]
-            if not isinstance(nested, tomlkit.items.Table):
+            if not isinstance(nested, tomlkit.items.Table | OutOfOrderTableProxy):
                 raise MissionError(f"[{'.'.join(path[: at + 1])}] is not a table of requirements")
             table = nested
         if not isinstance(table, tomlkit.items.Table):
@@ -114,3 +127,10 @@ class ManifestText:
             (len(str(key)) + len(key.sep) for key, _ in table.value.body if key is not None),
             default=0,
         )
+
+
+def _exact(constraint: str) -> bool:
+    """Whether `constraint` is one `==` clause naming a single release (`==1.9.0`), the one
+    spelling every ecosystem reads as exact; a bare `0.3.13` is a caret range to cargo."""
+    clauses = [clause.strip() for clause in constraint.split(",") if clause.strip()]
+    return len(clauses) == 1 and clauses[0].startswith("==") and "*" not in clauses[0]

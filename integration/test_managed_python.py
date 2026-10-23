@@ -68,6 +68,10 @@ environments:
       linux-64-system:
       - conda: https://example.invalid/linux-64/python-3.14.8-build_cp314.conda
       - conda: https://example.invalid/linux-64/python_abi-3.14-8_cp314.conda
+      - pypi: https://files.pythonhosted.org/packages/aa/bb/duckdb-2.0.0-cp312-abi3-manylinux_2_27_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/cc/dd/pytz-2026.1.tar.gz
+      - pypi: https://pypi.nvidia.com/cuda-bindings/cuda_bindings-13.3.1-cp314-cp314-manylinux_2_28_x86_64.whl
+      - pypi: ./packages/patos
       linux-aarch64:
       - conda: https://example.invalid/linux-aarch64/python-3.15.1-build_cp315.tar.bz2
       osx-arm64:
@@ -236,7 +240,9 @@ def test_dispatch_starts_every_remote_python_through_the_launcher(
         board.dispatcher.agent(_PLAN).ask(_survey(_ROOT))
     with pytest.raises(HostUnreachable):
         board.dispatcher.fetch_path(_HOST, root=_ROOT, path="results")
-    launcher = Dialect().python(environment_prefix(_ROOT, "default"), host=_HOST, python="3.14")
+    launcher = Dialect().python(
+        environment_prefix(_ROOT, "default"), host=_HOST, python=">=3.14.0,<3.15"
+    )
     assert sent == [f'{launcher} -c "{runner.BOOTSTRAP}"', f"{launcher} -"]
     assert not any(_SYSTEM.search(command) for command in sent)
 
@@ -251,7 +257,7 @@ def test_collection_from_an_unrecorded_rental_uses_its_platform(
     with pytest.raises(HostUnreachable):
         board.dispatcher.fetch_path("rental", root=_ROOT, path="results")
     assert len(sent) == 1
-    assert '--managed-python "3.15"' in sent[0]
+    assert '--managed-python ">=3.15.0,<3.16"' in sent[0]
 
 
 class _Recorded(HostShell):
@@ -261,25 +267,50 @@ class _Recorded(HostShell):
         super().__init__(local, _PLAN, _ROOT)
         self.absent = absent
         self.commands: list[str] = []
+        self.written: dict[str, str] = {}
 
     def execute(self, line: str) -> tuple[int, str, str]:
         command = line.removeprefix(self.stage("", activate=False))
         self.commands.append(command)
         return int(command in self.absent), "", ""
 
+    def write(self, path: str, text: str) -> None:
+        self.written[path] = text
+
+
+class _Onboarded(_Recorded):
+    """A recorded host answering the pixi version and the facts probe as a set-up host does."""
+
+    def execute(self, line: str) -> tuple[int, str, str]:
+        code, out, err = super().execute(line)
+        if line.endswith("pixi --version"):
+            out = f"pixi {PIXI_VERSION}"
+        if line.endswith(onboard.facts_command()):
+            out = HostFacts().model_dump_json()
+        return code, out, err
+
 
 def test_onboarding_puts_uv_and_its_cpython_there_first_or_refuses(locked: Path) -> None:
     shell = _Recorded("command -v uv")
     Bootstrap(shell, workspace=locked).python()
     curl, installer = Dialect.uv_bootstrap
-    wanted = "3.14"
     assert shell.commands == [
         f"mkdir -p {_ROOT}",
         "command -v uv",
         curl,
         installer,
-        f"uv python install --no-bin {wanted}",
+        "uv python install --upgrade --no-bin '>=3.14.0,<3.15'",
     ]
+    copied = _Recorded("uv self update --quiet")
+    Bootstrap(copied, workspace=locked).python()
+    assert copied.commands == [
+        f"mkdir -p {_ROOT}",
+        "command -v uv",
+        "uv self update --quiet",
+        curl,
+        installer,
+        "uv python install --upgrade --no-bin '>=3.14.0,<3.15'",
+    ], "a uv its installer did not place, too old to know a final release, is replaced"
     with pytest.raises(MissionError, match="neither uv nor curl"):
         Bootstrap(_Recorded("command -v uv", "command -v curl"), workspace=locked).python()
 
@@ -295,6 +326,13 @@ def test_the_tool_installs_through_uv_alone(source: str) -> None:
         for command in installs
     )
     assert not any(_SYSTEM.search(command) for command in commands)
+
+
+def test_the_lock_names_its_pypi_releases_and_its_conda_packages(locked: Path) -> None:
+    lock = Lockfile(locked)
+    assert lock.pins("linux-64") == {"duckdb": "2.0.0", "pytz": "2026.1"}
+    assert lock.pins("osx-arm64") == {}
+    assert lock.conda_names() == {"python": "python", "python-abi": "python_abi"}
 
 
 @pytest.mark.parametrize("existing", [False, True], ids=["fresh", "reuse"])
@@ -313,9 +351,9 @@ def test_bootstrap_uses_the_solved_minor(
         home / ".local/bin/uv",
         """echo "$@" >> "$HOME/asked"
 case "$1 $2" in
+  "self update") ;;
   "python install")
-    wanted="$4"
-    [ "$wanted" != '>=3.14' ] || wanted=3.15
+    case "$5" in '>=3.14.0,<3.15') wanted=3.14 ;; *) wanted=3.15 ;; esac
     if [ ! -f "$HOME/installed-python" ]; then
       echo "$wanted" > "$HOME/installed-python"
       echo downloaded >> "$HOME/downloads"
@@ -323,7 +361,7 @@ case "$1 $2" in
     ;;
   "tool install")
     while [ "$1" != --python ]; do shift; done
-    [ "$2" = 3.14 ] || { echo 'error: no cp315 wheel' >&2; exit 1; }
+    [ "$2" = '>=3.14.0,<3.15' ] || { echo 'error: no cp315 wheel' >&2; exit 1; }
     ;;
   *) exit 2 ;;
 esac""",
@@ -332,9 +370,12 @@ esac""",
     bootstrap.python()
     assert bootstrap.tool().winner == ("uv" if vendored else "uv-index")
     commands = (home / "asked").read_text(encoding="utf-8").splitlines()
-    assert commands[0] == "python install --no-bin 3.14"
-    assert "--python 3.14" in commands[1]
-    assert ("--editable" in commands[1]) == vendored
+    assert commands[:2] == [
+        "self update --quiet",
+        "python install --upgrade --no-bin >=3.14.0,<3.15",
+    ]
+    assert "--python >=3.14.0,<3.15" in commands[2]
+    assert ("--editable" in commands[2]) == vendored
     assert installed.read_text(encoding="utf-8") == "3.14\n"
     assert (home / "downloads").exists() is not existing
 
@@ -372,40 +413,66 @@ esac""",
     assert (home / "reinstalled").exists() is not matching
 
 
-def test_setup_and_sync_follow_a_changed_python_pin(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class SetupShell(_Recorded):
-        def execute(self, line: str) -> tuple[int, str, str]:
-            code, out, err = super().execute(line)
-            if line.endswith("pixi --version"):
-                out = f"pixi {PIXI_VERSION}"
-            if line.endswith(onboard.facts_command()):
-                out = HostFacts().model_dump_json()
-            return code, out, err
-
-    shell = SetupShell()
+@pytest.fixture
+def onboarding(board: Board, monkeypatch: pytest.MonkeyPatch) -> tuple[Onboarding, _Onboarded]:
+    """An onboarding of the fake host whose every command lands on a recorded shell."""
+    shell = _Onboarded()
     monkeypatch.setattr(onboard, "open_shell", lambda *args, **kwargs: shell)
     monkeypatch.setattr(
         onboard, "probe_capabilities", lambda host: Facts(name=host, platform="Linux x86_64")
     )
     monkeypatch.setattr(board.dispatcher, "mirror", lambda *args, **kwargs: [])
-    onboarding = Onboarding(board.dispatcher, _PLAN, watch=lambda text: None)
-    setup = onboarding.run()
-    assert "uv python install --no-bin 3.14" in shell.commands
-    assert any("uv tool install" in line and "--python 3.14" in line for line in shell.commands)
+    return Onboarding(board.dispatcher, _PLAN, watch=lambda text: None), shell
+
+
+def test_the_tool_holds_the_locks_pypi_releases_and_the_lake_follows_its_duckdb(
+    board: Board, onboarding: tuple[Onboarding, _Onboarded]
+) -> None:
+    onboarder, shell = onboarding
+    setup = onboarder.run()
+    [(constraints, pinned)] = shell.written.items()
+    assert pinned == "duckdb==2.0.0\npytz==2026.1\n"
+    assert any(f"--constraints {constraints}" in line for line in shell.commands)
+    assert "mainboard lake upgrade" in shell.commands
+    lock = Lockfile(board.root)
+    lock.path.write_text(
+        lock.path.read_text(encoding="utf-8").replace("duckdb-2.0.0", "duckdb-2.0.1"),
+        encoding="utf-8",
+    )
+    catalog = f"{_ROOT}/{Project().out_dir(board.root)}/lake.sqlite"
     shell.commands.clear()
-    assert onboarding.run(sync_only=True).requires == setup.requires
-    assert "uv python install --no-bin 3.14" in shell.commands
+    shell.absent = (Dialect().is_file(catalog),)
+    assert onboarder.run(sync_only=True).requires != setup.requires
+    assert shell.written[constraints] == "duckdb==2.0.1\npytz==2026.1\n"
+    assert any(f"--constraints {constraints}" in line for line in shell.commands)
+    assert "mainboard lake upgrade" not in shell.commands
+
+
+def test_setup_and_sync_follow_a_changed_python_pin(
+    board: Board, onboarding: tuple[Onboarding, _Onboarded]
+) -> None:
+    onboarder, shell = onboarding
+    setup = onboarder.run()
+    assert "uv python install --upgrade --no-bin '>=3.14.0,<3.15'" in shell.commands
+    assert any(
+        "uv tool install" in line and "--python '>=3.14.0,<3.15'" in line
+        for line in shell.commands
+    )
+    shell.commands.clear()
+    assert onboarder.run(sync_only=True).requires == setup.requires
+    assert "uv python install --upgrade --no-bin '>=3.14.0,<3.15'" in shell.commands
     assert not any("uv tool install" in line for line in shell.commands)
     lock = Lockfile(board.root)
     lock.path.write_text(
         lock.path.read_text(encoding="utf-8").replace("3.14.8", "3.15.0"), encoding="utf-8"
     )
     shell.commands.clear()
-    assert onboarding.run(sync_only=True).requires != setup.requires
-    assert "uv python install --no-bin 3.15" in shell.commands
-    assert any("uv tool install" in line and "--python 3.15" in line for line in shell.commands)
+    assert onboarder.run(sync_only=True).requires != setup.requires
+    assert "uv python install --upgrade --no-bin '>=3.15.0,<3.16'" in shell.commands
+    assert any(
+        "uv tool install" in line and "--python '>=3.15.0,<3.16'" in line
+        for line in shell.commands
+    )
 
 
 def test_a_rental_uses_its_probed_platform_pin(
@@ -438,8 +505,11 @@ def test_a_rental_uses_its_probed_platform_pin(
     with pytest.raises(MissionError, match="environment reached"):
         job.equip(rental, shipment=shipment)
     assert job.plan.profile.platform == "linux-aarch64"
-    assert "uv python install --no-bin 3.15" in shell.commands
-    assert any("uv tool install" in line and "--python 3.15" in line for line in shell.commands)
+    assert "uv python install --upgrade --no-bin '>=3.15.0,<3.16'" in shell.commands
+    assert any(
+        "uv tool install" in line and "--python '>=3.15.0,<3.16'" in line
+        for line in shell.commands
+    )
 
 
 @pytest.mark.parametrize("step", ["python", "tool"])
@@ -465,19 +535,19 @@ def test_workspace_python_follows_the_default_platform_pin(locked: Path) -> None
     generated = Project().out(locked) / "envs/default/pixi.lock"
     generated.parent.mkdir(parents=True)
     generated.write_text(_LOCK.replace("3.14.8", "3.18.0"), encoding="utf-8")
-    assert lock.python_minor("linux-64") == "3.14"  # Committed beats a stale generated copy.
-    assert lock.python_minor("linux-aarch64") == "3.15"
-    assert lock.python_minor("osx-arm64") == "3.16"
+    assert lock.python_request("linux-64") == ">=3.14.0,<3.15"  # Committed beats a stale copy.
+    assert lock.python_request("linux-aarch64") == ">=3.15.0,<3.16"
+    assert lock.python_request("osx-arm64") == ">=3.16.0rc1,<3.17"  # a solved candidate admits one
     with pytest.raises(MissionError, match="lock default"):
-        lock.python_minor("win-64")
+        lock.python_request("win-64")
     # The job environment does not choose the tool's interpreter.
     shell = _Recorded()
     shell.plan = _PLAN.model_copy(update={"env": "training"})
-    assert Bootstrap(shell, workspace=locked).python_minor == "3.14"
-    carrier = Carrier(_HOST, "uv", python=lock.python_minor("linux-aarch64"))
-    assert "--python 3.15 " in carrier.argv[-1]
+    assert Bootstrap(shell, workspace=locked).python_request == ">=3.14.0,<3.15"
+    carrier = Carrier(_HOST, "uv", python=lock.python_request("linux-aarch64"))
+    assert "--python '>=3.15." in carrier.argv[-1]
     lock.path.unlink()
-    assert lock.python_minor("linux-64") == "3.18"  # Legacy generated-only workspaces.
+    assert lock.python_request("linux-64") == ">=3.18.0,<3.19"  # Legacy generated-only workspaces.
     generated.unlink()
     with pytest.raises(MissionError, match="lock default"):
         Bootstrap(shell, workspace=locked)

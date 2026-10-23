@@ -85,3 +85,52 @@ class LocalCollectionRepresentationCandidate(Rule, id="PY-COLL0003", applicabili
             ),
         ),
     )
+
+
+class ImmutableCollectionConstructor(Rule, id="PY-COLL0004", applicability="review"):
+    """Calls of the builtin `tuple` or `frozenset`, the place a concrete immutable container enters
+    project code: lists and sets are the representation unless immutability is a proven contract
+    (a dictionary key, a stable public boundary, another API's demand)."""
+
+    query = """
+        SELECT c.node_path AS path, c.node_start_line AS start_line,
+               c.node_start_column AS start_column, c.node_end_line AS end_line,
+               c.node_end_column AS end_column, c.call_id,
+               replace(c.qualified_name, 'builtins.', '') AS constructor
+        FROM call_calls c
+        WHERE c.qualified_name IN ('builtins.tuple', 'builtins.frozenset') AND NOT c.is_shadowed
+          AND NOT EXISTS (SELECT 1 FROM call_keywords k WHERE k.call_id = c.call_id)
+    """
+    message = "`{constructor}(...)` builds an immutable collection where a list or set would do"
+    # An empty call or one over a bracketed literal becomes the literal itself: `tuple()` `[]`,
+    # `tuple([a, b])` and `tuple((a, b))` `[a, b]`, `frozenset()` `set()`, `frozenset({a})`
+    # `{a}`. A call over anything else (an iterator, a name) changes what it accepts and stays
+    # report-only. Review: hashability and the declared return type may rely on the old one.
+    fix = r"""
+        WITH arguments AS (
+          SELECT f.finding_key, f.path, f.start_line, f.start_column, f.end_line, f.end_column,
+                 f.constructor, count(e.call_id) AS given, min(e.text) AS argument
+          FROM finding f
+          LEFT JOIN call_expressions e ON e.call_id = f.call_id AND e.root_relation = 'argument'
+           AND e.depth = 0
+          GROUP BY ALL
+        ), rewritten AS (
+          SELECT *, CASE
+            WHEN given = 0 THEN CASE constructor WHEN 'tuple' THEN '[]' ELSE 'set()' END
+            WHEN given > 1 THEN NULL
+            WHEN constructor = 'tuple' AND regexp_matches(argument, '(?s)^\[.*\]$') THEN argument
+            WHEN constructor = 'tuple' AND regexp_matches(argument, '(?s)^\(.*,.*\)$')
+              THEN '[' || substr(argument, 2, length(argument) - 2) || ']'
+            WHEN constructor = 'frozenset' AND regexp_matches(argument, '(?s)^\{.+\}$') THEN argument
+          END AS text
+          FROM arguments
+        )
+        SELECT finding_key, path, start_line, start_column, end_line, end_column, text
+        FROM rewritten WHERE text IS NOT NULL
+    """
+    examples = (
+        Example(
+            bad='def names():\n    return tuple(["a", "b"])\n',
+            good='def names():\n    return ["a", "b"]\n',
+        ),
+    )

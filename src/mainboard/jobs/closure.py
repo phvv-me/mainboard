@@ -232,7 +232,8 @@ class Closure(FrozenModel):
         files.add(Project().manifest(root).name)
         if config:
             files.add(config)
-        wanted, pinned = split(dict.fromkeys([*declared.needs, *needs]))
+        spelled, pinned = split(dict.fromkeys([*declared.needs, *needs]))
+        wanted = cls.__outermost(spelled)
         cls.__admissible(wanted, files)
         # A need is data the mirror carries to the host, so one only the lake still keeps comes
         # back into the tree before the sync.
@@ -324,6 +325,20 @@ class Closure(FrozenModel):
                 if (root / candidate).is_file() and carries(root / candidate):
                     return candidate.as_posix()
         return ""
+
+    @staticmethod
+    def __outermost(needs: Sequence[str]) -> tuple[str, ...]:
+        """Each need in its normal spelling, less those under another need.
+
+        The host links each need back to the mirror, so one beneath a linked need would be placed
+        through that link, over the mirror's own file.
+        """
+        spelled = tuple(dict.fromkeys(PurePosixPath(need).as_posix() for need in needs))
+        return tuple(
+            need
+            for need in spelled
+            if not any(parent.as_posix() in spelled for parent in PurePosixPath(need).parents)
+        )
 
     @staticmethod
     def __admissible(needs: Sequence[str], files: set[str]) -> None:
@@ -430,11 +445,26 @@ def _dynamic(call: ast.Call) -> str:
 
 
 def _defined(root: Path) -> set[str]:
-    """The top-level names importable from `root`: its packages and its bare modules."""
+    """The top-level names importable from `root`.
+
+    Those are its packages, namespace portions included, and its bare modules. A portion is a
+    directory without an initializer holding a module or a package, so code in one is guarded as
+    a regular package's is.
+    """
     try:
         entries = list(root.iterdir())
     except OSError:
         return set()
-    return {entry.name for entry in entries if (entry / "__init__.py").is_file()} | {
-        entry.stem for entry in entries if entry.suffix == ".py" and entry.is_file()
-    }
+    return {
+        entry.name
+        for entry in entries
+        if entry.name.isidentifier()
+        and entry.is_dir()
+        and (
+            (entry / "__init__.py").is_file()
+            or any(
+                child.suffix == ".py" or (child / "__init__.py").is_file()
+                for child in entry.iterdir()
+            )
+        )
+    } | {entry.stem for entry in entries if entry.suffix == ".py" and entry.is_file()}

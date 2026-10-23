@@ -31,7 +31,11 @@ class Commit:
     Without paths each repository commits what is already staged, a parent its whole index.
     Either way a parent stages the pointer of a submodule that committed in this run, which is the
     bookkeeping this verb exists for, and never another one. `everything` is the deliberate
-    sweep: every change in every owned repository, under one message.
+    sweep: every change in every owned repository.
+
+    Each message is `TEXT`, the default, or `REPO=TEXT` for the owned repository at path `REPO`,
+    so one run lands a different commit in each repository. A parent that only records pointers
+    and has no message of its own says which submodules moved.
 
     A named path that must not enter a commit (a `never-commit` pattern, a file over the size
     ceiling Git LFS does not carry, a link checked out as a file, a nested repository
@@ -41,20 +45,36 @@ class Commit:
     """
 
     def __init__(
-        self, tree: Tree, message: str, paths: Sequence[Path] = (), *, everything: bool = False
+        self,
+        tree: Tree,
+        messages: Sequence[str],
+        paths: Sequence[Path] = (),
+        *,
+        everything: bool = False,
     ) -> None:
         self.tree = tree
-        self.message = message
+        self.default, self.messages = _addressed(tree, messages)
         self.everything = everything
         self.named = _routed(tree, paths)
         self.committed: set[str] = set()
 
     def run(self) -> list[Step]:
-        """Commit bottom-up, refusing up front when there is nothing to commit anywhere or no
-        message to commit it with: git refuses an empty message only after the paths are staged,
-        and the next commit would carry them under its own."""
-        if not self.message.strip():
-            raise MissionError("a commit needs a message; nothing was staged")
+        """Commit bottom-up, each repository under its message.
+
+        Nothing is staged when there is nothing to commit anywhere or a repository to commit has
+        no message: git refuses an empty message only after the paths are staged, and the next
+        commit would carry them under its own.
+        """
+        unsaid = (
+            sorted(set(self.named) - set(self.messages))
+            if self.named and not self.everything
+            else ["every repository"]
+        )
+        if not self.default and unsaid:
+            raise MissionError(
+                f"a commit needs a message, and none was given for {', '.join(unsaid)}; pass "
+                "-m TEXT for all of them or -m REPO=TEXT for each. Nothing was staged"
+            )
         if not (self.everything or self.named or self._staged()):
             name = Project().name
             raise MissionError(
@@ -122,11 +142,19 @@ class Commit:
                 "nothing changed there" if specs else "nothing staged"
             )
             return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
-        committed = repo.git.run("commit", "-q", "-m", self.message, *only, stdin="\0".join(specs))
+        message = self._message(repo)
+        committed = repo.git.run("commit", "-q", "-m", message, *only, stdin="\0".join(specs))
         if not committed.succeeded:
             return Step(repo=repo.name, outcome=Outcome.FAILED, detail=said(committed))
         done = [f"{repo.short('HEAD')} on {repo.branch()}", *notes]
         return Step(repo=repo.name, outcome=Outcome.DONE, detail="; ".join(filter(None, done)))
+
+    def _message(self, repo: Repo) -> str:
+        """`repo`'s own message, else the default, else what a pointer-only commit records."""
+        moved = ", ".join(self._pointers(repo))
+        return (
+            self.messages.get(repo.name) or self.default or f"Record {moved} at their new commits"
+        )
 
     def _pointers(self, repo: Repo) -> list[str]:
         """The submodules of `repo` that committed in this run, as the paths of their pointers."""
@@ -244,6 +272,29 @@ class Intake:
         """
         stat = (self.repo.path / path).lstat()
         return 0 if S_ISDIR(stat.st_mode) else stat.st_size
+
+
+def _addressed(tree: Tree, messages: Sequence[str]) -> tuple[str, dict[str, str]]:
+    """The default message and each repository's own, keyed by repository name.
+
+    `REPO=TEXT` addresses the owned repository whose path `REPO` resolves to from the current
+    directory, as a named path does; any other message is the default, of which there is one.
+    """
+    owned = {repo.path: repo.name for repo in tree.owned()}
+    defaults: list[str] = []
+    addressed: dict[str, str] = {}
+    for message in messages:
+        where, _, said = message.partition("=")
+        name = owned.get(Path(os.path.abspath(where.strip()))) if said.strip() else None
+        if name is None:
+            defaults.append(message)
+        elif addressed.setdefault(name, said.strip()) != said.strip():
+            raise MissionError(f"two messages name {name}; give each repository one")
+    if len(defaults) > 1:
+        raise MissionError(
+            "only one message may go without a repository; address the others as REPO=TEXT"
+        )
+    return (defaults[0].strip() if defaults else ""), addressed
 
 
 def _routed(tree: Tree, paths: Sequence[Path]) -> dict[str, list[str]]:

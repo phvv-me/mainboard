@@ -8,9 +8,12 @@ import hashlib
 import shlex
 import shutil
 from importlib.metadata import requires
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from packaging.requirements import Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 from patos import FrozenModel, Resolution, Strategy, StrategyError
 from plumbum import local
@@ -29,6 +32,7 @@ from ..engines.compile.lockfile import Lockfile
 from ..engines.compile.policy import LockPolicy
 from ..log import logger
 from ..probe.snapshot import HostFacts
+from ..state.lake import Lake
 from .schedulers.pueue import Pueue
 from .schedulers.registry import pick
 from .shared import Watcher, announce
@@ -37,7 +41,6 @@ from .targets import Facts, probe_capabilities, resolve, rooted
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from ..context.plan import ExecutionPlan
     from .dispatcher import Dispatcher
@@ -85,9 +88,10 @@ class HostSetup(FrozenModel):
     digest: the manifest digest this host was last provisioned from, empty for a host onboarded
         before this field existed; `doctor` compares it with the manifest to spot drift.
     dotfiles: set up with `--dotfiles`, which every later sync keeps.
-    requires: the digest of the tool's declared requirements and solved Python minor as installed
-        there; a sync changing either reinstalls it, since an editable install follows the
-        mirrored source but never gains a dependency the source added. Empty for an older setup.
+    requires: the digest of the tool's declared requirements, the lock's releases of them and
+        the solved Python minor as installed there (`Bootstrap.requirements`); a sync changing
+        any reinstalls it, since an editable install follows the mirrored source but never gains
+        a dependency the source added or moves one the lock moved. Empty for an older setup.
     """
 
     host: str
@@ -204,6 +208,7 @@ def installers(
     vendored: bool = True,
     floor: str = "",
     extras: Sequence[str] = (),
+    constraints: str = "",
 ) -> Strategy[Installer]:
     """The ordered install routes for `shell`'s host, best first.
 
@@ -220,6 +225,7 @@ def installers(
     vendored: whether that source is actually on the machine.
     floor: the version the workspace declares for the tool, read from its own manifest.
     extras: the tool's optional extras to install with it, what a center carries for `plot`.
+    constraints: a file on the host pinning the tool's dependencies, none when empty.
     """
     strategy: Strategy[Installer] = Strategy(f"{_TOOL} installer")
     wanted_extras = f"[{','.join(extras)}]" if extras else ""
@@ -228,6 +234,8 @@ def installers(
     install = (
         f"uv tool install --force --reinstall --managed-python --python {shlex.quote(python)}"
     )
+    if constraints:
+        install += f" --constraints {shlex.quote(constraints)}"
     if vendored:
         editable = f"{install} --editable {shlex.quote(f'{source}{wanted_extras}')}"
         strategy.register("uv", Installer(shell, probe=has_uv, command=editable))
@@ -264,7 +272,11 @@ class Bootstrap:
         extras: Sequence[str] = (),
     ) -> None:
         self.shell = shell
-        self.python_minor = Lockfile(workspace).python_minor(shell.plan.profile.platform)
+        lockfile = Lockfile(workspace)
+        self.python_request = lockfile.python_request(shell.plan.profile.platform)
+        self.pins = lockfile.pins(shell.plan.profile.platform)
+        self.out = Path(shell.root) / Project().out_dir(workspace)
+        self.constraints = (self.out / "run" / "tool-constraints.txt").as_posix()
         self.policy = policy
         self.floor = floor
         self.extras = tuple(extras)
@@ -273,6 +285,16 @@ class Bootstrap:
     def env(self) -> str:
         """The environment being provisioned, the plan's own."""
         return self.shell.plan.env
+
+    @property
+    def requirements(self) -> str:
+        """A digest of what the tool installs at: its interpreter, its declared dependencies
+        and the lock's releases of those, so a sync reinstalls it when any of them moved."""
+        declared = requires(_TOOL) or []
+        direct = {canonicalize_name(Requirement(line).name) for line in declared}
+        held = [f"{name}=={pin}" for name, pin in sorted(self.pins.items()) if name in direct]
+        text = "\n".join([self.python_request, *sorted(declared), *held])
+        return hashlib.sha256(text.encode()).hexdigest()[:16]
 
     def python(self) -> None:
         """Put uv and the uv-managed CPython the tool runs on onto the machine, first of all.
@@ -285,15 +307,22 @@ class Bootstrap:
         """
         shell = self.shell
         shell.place()
+        probe, fetch = shell.dialect.uv_bootstrap
         if not shell.ok(shell.dialect.has("uv")):
-            probe, fetch = shell.dialect.uv_bootstrap
             if not shell.ok(probe):
                 raise MissionError(
                     f"{shell.plan.host!r} has neither uv nor curl to fetch it, and {_TOOL} runs "
                     "on no other Python there; install uv on it, then set it up again"
                 )
             shell.run(fetch)
-        shell.run(f"uv python install --no-bin {shlex.quote(self.python_minor)}")
+        # A uv older than a Python release knows only that release's candidates (miyabi-g's
+        # 0.8.11 offered 3.14.0rc2). One its installer placed updates itself; one copied in
+        # refuses, and the installer replaces it.
+        elif not shell.ok("uv self update --quiet") and shell.ok(probe):
+            shell.run(fetch)
+        # `--upgrade`: a request an older patch satisfies would otherwise keep it, and the tool's
+        # venv follows uv's minor link to whatever patch is newest.
+        shell.run(f"uv python install --upgrade --no-bin {shlex.quote(self.python_request)}")
 
     def tool(self) -> Resolution[Installer]:
         """Install the tool through the first route the machine supports, keeping the rejections.
@@ -303,14 +332,24 @@ class Bootstrap:
         all refused and the refusal blamed the host's tooling (miyabi-g, 2026-09-05). So a
         machine no route reaches fails here, before anything assumes the tool, and the refusal
         leads with which family was tried and why, the rejection log behind it.
+
+        The tool's dependencies are held to the shipped lock's releases (`Lockfile.pins`), so
+        the tool never re-solves to a release its jobs do not run: an open `duckdb>=2.0.0` takes
+        whatever DuckDB is newest the day a host is set up, and a DuckLake catalog or a Quack
+        peer refuses a DuckDB other than the one that wrote it (2026-10-22).
         """
         vendored = self.shell.ok(self.shell.dialect.is_directory(_SOURCE))
+        self.shell.write(
+            self.constraints,
+            "".join(f"{name}=={pin}\n" for name, pin in sorted(self.pins.items())),
+        )
         routes = installers(
             self.shell,
-            python=self.python_minor,
+            python=self.python_request,
             vendored=vendored,
             floor=self.floor,
             extras=self.extras,
+            constraints=self.constraints,
         )
         try:
             resolution = routes.cascade()
@@ -343,6 +382,15 @@ class Bootstrap:
                 f"{host!r} has no {self.shell.proof} after installing {self.env!r}; "
                 "the environment was not provisioned"
             )
+
+    def lake(self) -> None:
+        """Bring the host's staging lake, when it has one, to the DuckLake spec the DuckDB just
+        installed there writes. Every reader there runs that DuckDB now, the one condition a
+        one-way migration waits for, and until it moves an older catalog refuses every attach
+        (DuckDB 2.0.0 refused 1.1-dev1, 2026-10-22)."""
+        catalog = Lake(root=Path(self.shell.root), home=self.out).catalog
+        if self.shell.ok(self.shell.dialect.is_file(catalog.as_posix())):
+            self.shell.run(f"{_TOOL} lake upgrade")
 
 
 def read_facts(text: str) -> HostFacts:
@@ -570,6 +618,8 @@ class Onboarding:
             pixi = self.align_pixi(shell, host=host)
             self.watch(self._installing(host))
             bootstrap.environment()
+            self.watch(f"checking {host}'s lake against its DuckDB")
+            bootstrap.lake()
             self.watch(f"checking the queue on {host}")
             self.verify_queue(shell, host=host)
             self.apply_dotfiles(shell, host=host)
@@ -590,7 +640,7 @@ class Onboarding:
                 hardware=hardware,
                 digest=self.digest,
                 dotfiles=bool(self.dotfiles),
-                requires=_requirements(bootstrap.python_minor),
+                requires=bootstrap.requirements,
             )
         recorded = self.dispatcher.cache.save_host(setup)
         logger.info("onboarded {} at {} through {}", host, root, recorded.installer)
@@ -617,13 +667,27 @@ class Onboarding:
         """The plan with every gap its profile left open filled from what the probe found."""
         return self.plan.model_copy(update={"profile": resolve(self.plan.profile, facts)})
 
+    @staticmethod
+    def _measured(hardware: HostFacts | None, shell: HostShell) -> HostFacts | None:
+        """`hardware` with the free space at its workspace root read again (`df -Pk`).
+
+        That is the figure a sync's disk row reports, which the setup's census had frozen at
+        67 GB on a disk down to 30.
+        """
+        if hardware is None or not hardware.system.root:
+            return hardware
+        said = shell.run(f"df -Pk {shlex.quote(hardware.system.root)}").split()
+        system = hardware.system.model_copy(update={"free_bytes": int(said[-3]) * 1024})
+        return hardware.model_copy(update={"system": system})
+
     def _mirror(self, host: str, root: str) -> None:
         """Mirror the workspace, the compiled artifact riding along, to `host:root`."""
         self.watch(f"mirroring the workspace to {host}:{root}")
         self.dispatcher.mirror(self.plan, root, required=[self.artifact] if self.artifact else [])
 
     def _sync(self, host: str) -> HostSetup:
-        """Re-mirror and re-provision `host`, its bootstrap and hardware probe skipped.
+        """Re-mirror and re-provision `host`, its bootstrap and hardware probe skipped; only the
+        free disk is measured again, since a sync is what fills it.
 
         The fast path back to a host whose manifest moved since setup: the hardware is not probed
         again, uv's CPython is only confirmed, and the tool is reinstalled only when its declared
@@ -648,7 +712,7 @@ class Onboarding:
             bootstrap.python()
             self._mirror(host, root)
             tool: dict[str, str | tuple[tuple[str, str], ...]] = {}
-            if recorded.requires != (requirements := _requirements(bootstrap.python_minor)):
+            if recorded.requires != (requirements := bootstrap.requirements):
                 self.watch(f"reinstalling {_TOOL} on {host}, its requirements moved")
                 winner = bootstrap.tool()
                 tool = {
@@ -660,10 +724,13 @@ class Onboarding:
             pixi = self.align_pixi(shell, host=host)
             self.watch(self._installing(host))
             bootstrap.environment()
+            self.watch(f"checking {host}'s lake against its DuckDB")
+            bootstrap.lake()
             # A daemon that died or a host cleaned since setup would refuse every submit.
             self.verify_queue(shell, host=host)
             self.apply_dotfiles(shell, host=host)
             activate = shell.proof
+            hardware = self._measured(recorded.hardware, shell)
         fresh = self.dispatcher.cache.host(host)
         updated = self.dispatcher.cache.save_host(
             fresh.model_copy(
@@ -673,15 +740,10 @@ class Onboarding:
                     "activate": activate,
                     "pixi": pixi,
                     "digest": self.digest or fresh.digest,
+                    "hardware": hardware,
                     **tool,
                 }
             )
         )
         logger.info("synced {} at {}", host, root)
         return updated
-
-
-def _requirements(python: str) -> str:
-    """The tool's dependencies and interpreter, so a moved lock minor also reinstalls it."""
-    declared = "\n".join([python, *sorted(requires(_TOOL) or ())])
-    return hashlib.sha256(declared.encode()).hexdigest()[:16]

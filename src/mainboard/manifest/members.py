@@ -361,31 +361,32 @@ class Composition:
         }
 
     def _environments(self, pins: Mapping[str, Json]) -> dict[str, Env]:
-        """The root's named environments and every member's, a name declared twice refused.
+        """The root's named environments and every member's; one declared by several joins them.
 
-        An environment that starts from nothing (`no-default`) leaves the default feature out,
-        and the member pins with it, so each gets them again: a member it names, or one its
-        closure reaches (cutoken needs mainboard), comes from the workspace, never an index.
+        A member's environment of a name the root (or an earlier member) declares contributes
+        to it, as its `[deps]` contribute to `default`: llm-head's `serving` adds its serving
+        extra and task to the root's, the root's settings and bounds winning (`Env.merged`).
+
+        An environment the root declares that starts from nothing (`no-default`) leaves the
+        default feature out, and the member pins with it, so each gets them again: a member it
+        names, or one its closure reaches (cutoken needs mainboard), comes from the workspace,
+        never an index.
 
         pins: the member overrides the top level carries.
         """
-        environments = {
-            name: self._alone(env, pins) if env.no_default else env
-            for name, env in self.manifest.envs.items()
-        }
-        owners = dict.fromkeys(environments, "the root")
+        environments = dict(self.manifest.envs)
         for member, manifest in self._declared():
             for name, env in manifest.envs.items():
-                if name in owners:
-                    raise MissionError(
-                        f"{member.path} declares environment {name!r}, which {owners[name]} "
-                        "declares too; rename one of them"
-                    )
-                owners[name] = member.path
                 moved = _moved(member, env.tasks, siblings=manifest.tasks | env.tasks)
                 tasks = _namespaced({member.name: moved}, root={})
-                environments[name] = env.model_copy(update={"tasks": tasks})
-        return environments
+                joined = env.model_copy(update={"tasks": tasks})
+                environments[name] = (
+                    environments[name].merged(joined) if name in environments else joined
+                )
+        return {
+            name: self._alone(env, pins) if env.no_default and name in self.manifest.envs else env
+            for name, env in environments.items()
+        }
 
     def _alone(self, env: Env, pins: Mapping[str, Json]) -> Env:
         """`env` with its member requirements sourced and every member pinned to its directory."""

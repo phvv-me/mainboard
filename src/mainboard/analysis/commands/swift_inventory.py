@@ -256,9 +256,8 @@ class SwiftSourceInventory:
                     Path(name).suffix.lower() == ".swift"
                     and name not in vendor
                     and not excluded(name)
-                ):
-                    if (root / name).is_symlink():
-                        raise MissionError(f"Swift inventory refuses a symbolic link: {name}")
+                ) and (root / name).is_symlink():
+                    raise MissionError(f"Swift inventory refuses a symbolic link: {name}")
             budget = Budget(memory=memory)
             facts = Facts(root, budget)
             try:
@@ -578,8 +577,9 @@ class SwiftComparison(Report):
     def text(self) -> str:
         lines = [
             f"Swift source observations: {self.baseline} -> {self.current}",
-            f"{len(self.added)} added, {len(self.removed)} removed, {len(self.modified)} modified, "
-            f"{len(self.reclassified)} reclassified; {self.unchanged_sources} same-path byte matches",
+            f"{len(self.added)} added, {len(self.removed)} removed, "
+            f"{len(self.modified)} modified, {len(self.reclassified)} reclassified; "
+            f"{self.unchanged_sources} same-path byte matches",
         ]
         before = {(total.language, total.kind): total for total in self.totals_before}
         after = {(total.language, total.kind): total for total in self.totals_after}

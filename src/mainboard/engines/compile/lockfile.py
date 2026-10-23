@@ -11,9 +11,18 @@
 import json
 import re
 import tomllib
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import yaml
+from packaging.utils import (
+    InvalidSdistFilename,
+    InvalidWheelFilename,
+    canonicalize_name,
+    parse_sdist_filename,
+    parse_wheel_filename,
+)
 from patos import FrozenModel
 
 from ...core import MissionError, Project
@@ -45,7 +54,11 @@ _UNCARRIABLE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 # Conda encodes name, version and build in the artifact's filename, even when the lock omits
 # those fields from its package records. Match Python itself, never python_abi or libpython.
-_PYTHON = re.compile(r"/python-(\d+\.\d+)\.[^-]+-[^/]+\.(?:conda|tar\.bz2)$")
+_PYTHON = re.compile(r"/python-(\d+)\.(\d+)\.([^-]+)-[^/]+\.(?:conda|tar\.bz2)$")
+# Where PyPI serves its files.
+_PYPI_FILES = "files.pythonhosted.org"
+# A conda artifact's filename: its name, then its version and build, which hold no dash.
+_CONDA_FILE = re.compile(r"^(.+)-[^-]+-[^-]+\.(?:conda|tar\.bz2)$")
 
 
 class Solved(FrozenModel):
@@ -128,35 +141,75 @@ class Lockfile:
         """`environment`'s committed solve, None when the file holds none."""
         return self.environments().get(environment)
 
-    def python_minor(self, platform: str) -> str:
-        """The default environment's solved Python minor on the destination platform.
+    def python_request(self, platform: str) -> str:
+        """The interpreter uv runs the tool on, as a request: a final release of the default
+        environment's solved Python minor (`>=3.14.0,<3.15`), or the candidate it solved.
 
-        The committed solve wins over its generated copy. Never ask uv to choose from the
-        tool's open-ended Requires-Python: a fresh host could then get an unsolved minor.
+        The committed solve wins over its generated copy. Never ask uv to choose from the tool's
+        open-ended Requires-Python, which could pick an unsolved minor, nor for a bare minor,
+        which a release candidate already installed satisfies: miyabi-g's tool ran on 3.14.0rc2,
+        which the pydantic the lock moved to cannot run on (2026-10-23). Nor for the solved
+        patch, which conda-forge publishes before uv's builds have it (3.14.9).
         """
-        solved = self.get("default")
-        path = self.path
-        if solved is not None:
-            text = solved.lock
-        else:
-            path = Project().out(self.path.parent) / "envs/default/pixi.lock"
-            try:
-                text = path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                text = ""
-        minors = {
-            matched[1]
+        path, text = self._default()
+        solved = {
+            matched.groups()
             for location in packages(text, environment="default").get(platform, [])
             if (matched := _PYTHON.search(location))
         }
-        if len(minors) != 1:
+        if len(solved) != 1:
             raise MissionError(
-                f"{path} must pin one Python minor for default on "
+                f"{path} must pin one Python for default on "
                 f"{platform or '(unknown platform)'!r}; "
-                f"found {', '.join(sorted(minors)) or 'none'}. "
+                f"found {', '.join(sorted('.'.join(found) for found in solved)) or 'none'}. "
                 f"Run `{Project().name} lock default` for that platform before setting up a host."
             )
-        return minors.pop()
+        major, minor, patch = solved.pop()
+        floor = "0" if patch.isdigit() else patch
+        return f">={major}.{minor}.{floor},<{major}.{int(minor) + 1}"
+
+    def pins(self, platform: str) -> dict[str, str]:
+        """The release of each package the default environment takes from PyPI on `platform`,
+        by name: what a host's tool, installed from PyPI alone, is constrained to, so the tool a
+        host runs its commands with holds the very releases its jobs do (one DuckDB on both
+        sides of a lake). Workspace members and other indexes' files are left free."""
+        found: dict[str, str] = {}
+        for location in packages(self._default()[1], environment="default").get(platform, []):
+            url = urlsplit(location)
+            if url.hostname != _PYPI_FILES:
+                continue
+            name = PurePosixPath(url.path).name
+            try:
+                package, version, *_ = parse_wheel_filename(name)
+            except InvalidWheelFilename:
+                try:
+                    package, version = parse_sdist_filename(name)
+                except InvalidSdistFilename:
+                    continue
+            found[package] = str(version)
+        return found
+
+    def conda_names(self) -> dict[str, str]:
+        """Every package some environment takes from a conda channel, by its canonical name, as
+        the channel spells it (`huggingface_hub` for `huggingface-hub`)."""
+        return {
+            canonicalize_name(found[1]): found[1]
+            for solved in self.environments().values()
+            for locations in packages(solved.lock).values()
+            for location in locations
+            if (found := _CONDA_FILE.match(PurePosixPath(urlsplit(location).path).name))
+        }
+
+    def _default(self) -> tuple[Path, str]:
+        """The default environment's lock text and where it was read: the committed solve, else
+        its generated copy, else nothing."""
+        if (solved := self.get("default")) is not None:
+            return self.path, solved.lock
+        path = Project().out(self.path.parent) / "envs/default/pixi.lock"
+        try:
+            return path, path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return path, ""
 
     def put(self, files: Writer, environment: str, solved: Solved) -> None:
         """Record `environment`'s solve atomically, every other section kept as it reads.

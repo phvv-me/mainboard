@@ -308,7 +308,7 @@ def owing(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Board:
             name="run-7",
         )
     )
-    monkeypatch.setattr(Monitor, "capture", lambda self, record, run: ())
+    monkeypatch.setattr(Monitor, "capture", lambda self, record, run, required=True: ())
     monkeypatch.setattr(Monitor, "pull", lambda self, run: None)
     monkeypatch.setattr(Monitor, "verify", lambda self, *args, **kwargs: None)
     return board

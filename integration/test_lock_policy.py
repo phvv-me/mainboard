@@ -9,9 +9,16 @@ table-style requirement's other fields.
 from pathlib import Path
 
 import pytest
+
+from mainboard.board import Board
 from mainboard.core.errors import MissionError
+from mainboard.deps import indexes
+from mainboard.deps.curator import Change, Dependencies
 from mainboard.deps.editing import ManifestText
+from mainboard.deps.indexes import Index
+from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.policy import LockPolicy
+from mainboard.engines.compile.state import SyncState
 
 _MANIFEST = '[workspace]\nname = "it"\n\n[deps]\npython = ">=3.14"\n'
 
@@ -84,6 +91,8 @@ def test_raising_a_table_requirement_keeps_its_other_fields() -> None:
     manifest = ManifestText(
         '[python.deps]\ntorch = { version = "==2.14.0", index = "https://example.invalid" }\n'
         'local = { path = "packages/local", editable = true }\n'
+        'lint = { version = "0.65.1", url = "https://example.invalid/lint.zip", sha256 = "00" }\n'
+        'stable = "==1.9.0"  # byte-stable\n'
     )
 
     manifest.put(("python", "deps"), "torch", spec=">=2.15")
@@ -92,6 +101,20 @@ def test_raising_a_table_requirement_keeps_its_other_fields() -> None:
     assert 'index = "https://example.invalid"' in manifest.text()
     assert manifest.versioned(("python", "deps"), "torch")
     assert not manifest.versioned(("python", "deps"), "local")
+    assert not manifest.versioned(("python", "deps"), "lint")
+    assert not manifest.versioned(("python", "deps"), "stable")
+
+
+def test_a_requirement_under_a_table_split_across_the_file_is_raised() -> None:
+    manifest = ManifestText(
+        '[on.linux.deps]\ncuda = ">=13.0"\n\n[on.unix.deps]\ngit = ">=2"\n\n'
+        '[on.linux.python.deps]\ntorch = ">=2.14, <3"  # why\n'
+    )
+
+    manifest.put(("on", "linux", "python", "deps"), "torch", spec=">=2.15, <3")
+
+    assert manifest.constraint(("on", "linux", "python", "deps"), "torch") == ">=2.15, <3"
+    assert manifest.text().index("[on.unix.deps]") < manifest.text().index("torch")
 
 
 @pytest.mark.parametrize(
@@ -127,3 +150,61 @@ torch  = { version = "==2.14" }  # why pinned
     numpy, torch = manifest.text().splitlines()[1:]
     assert numpy.startswith("numpy  = ") and numpy.index("#") == comment_at
     assert torch.index("#") == 33
+
+
+def test_raising_takes_the_newest_final_release_not_yanked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listing = {
+        "versions": ["2.4.0", "2.5.0", "2.6.0rc1"],
+        "files": [
+            {"filename": "tool-2.4.0.tar.gz", "yanked": False},
+            {"filename": "tool-2.5.0-py3-none-any.whl", "yanked": "accidental breaking change"},
+            {"filename": "tool-2.5.0.tar.gz", "yanked": True},
+            {"filename": "tool-2.6.0rc1.tar.gz", "yanked": False},
+        ],
+    }
+    monkeypatch.setattr(indexes, "_fetched", lambda url, *, accept: listing)
+
+    assert Index.of("python").latest("tool") == "2.4.0"
+    assert Index.of("python").pin("2.4.0") == ">=2.4.0, <3"
+    assert Index.of("python").pin("20260107") == ">=20260107"
+    assert Index.of("rust").pin("0.3.14") == "0.3.14"
+
+
+def test_a_requirement_changing_ecosystem_is_kept_until_a_solve_frees_it(tmp_path: Path) -> None:
+    before = (
+        '[dependencies]\npandas = "*"\nnumpy = "*"\n\n'
+        '[feature.gpu.target.linux-64.pypi-dependencies]\nPython_Docx = "*"\n'
+    )
+    after = (
+        '[dependencies]\nnumpy = "*"\npython-docx = "*"\n\n'
+        '[pypi-dependencies]\npandas = "*"\nhttpx = "*"\n'
+    )
+
+    moved = Compiler._moved(before, after, pending=("filelock",))
+
+    assert moved == ("filelock", "pandas", "python-docx")
+    SyncState.path(tmp_path).write_text(SyncState(moved=moved).render(), encoding="utf-8")
+    assert SyncState.load(tmp_path).moved == moved
+
+
+def test_any_failed_edit_puts_back_the_manifest_and_the_lock_it_had_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path
+    (workspace / "mb.toml").write_text(_MANIFEST, encoding="utf-8")
+    board = Board(workspace)
+    lock = board.project.lock(workspace)
+
+    def resolved(self: Dependencies, *_: object, **__: object) -> list[Change]:
+        lock.write_text("version: 6\n", encoding="utf-8")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Dependencies, "resolved", resolved)
+
+    with pytest.raises(OSError, match="No space left"):
+        Dependencies(board).add("six>=1.15", ecosystem="python")
+
+    assert (workspace / "mb.toml").read_text(encoding="utf-8") == _MANIFEST
+    assert not lock.exists()

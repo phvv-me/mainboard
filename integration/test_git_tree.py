@@ -250,3 +250,44 @@ def test_commit_without_paths_takes_the_parents_index_with_the_pointer(mb, track
     taken = git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split()
     assert sorted(taken) == ["library", "staged.txt"]
     assert not git(tracked, "diff", "--cached", "--name-only").stdout
+
+
+def subject(repo: Path) -> str:
+    """The subject line of `repo`'s HEAD commit."""
+    return git(repo, "log", "-1", "--format=%s").stdout.strip()
+
+
+def test_commit_lands_each_repositorys_own_message_in_one_run(mb, tracked: Path) -> None:
+    library = owned_submodule(tracked)
+    (tracked / "root.txt").write_text("root\n", encoding="utf-8", newline="\n")
+
+    ran = steps(
+        mb(
+            "git", "commit", "-m", "library=Add the change", "-m", "Note the change",
+            "library/change.txt", "root.txt", "--json",
+        )
+    )  # fmt: skip
+
+    assert ran["library"]["outcome"] == "done" and ran["."]["outcome"] == "done", ran
+    assert (subject(library), subject(tracked)) == ("Add the change", "Note the change")
+    taken = git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert sorted(taken) == ["library", "root.txt"]
+
+
+def test_a_parent_recording_only_pointers_says_which_moved(mb, tracked: Path) -> None:
+    owned_submodule(tracked)
+
+    ran = steps(mb("git", "commit", "-m", "library=Add the change", "library", "--json"))
+
+    assert ran["."]["outcome"] == "done", ran
+    assert subject(tracked) == "Record library at their new commits"
+
+
+def test_a_repository_without_a_message_refuses_before_staging(mb, tracked: Path) -> None:
+    owned_submodule(tracked)
+    (tracked / "root.txt").write_text("root\n", encoding="utf-8", newline="\n")
+
+    refused = mb("git", "commit", "-m", "library=Add the change", "library", "root.txt")
+
+    assert refused.code != 0 and "none was given for ." in refused.said
+    assert "?? root.txt" in git(tracked, "status", "--porcelain").stdout

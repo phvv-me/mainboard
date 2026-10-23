@@ -526,3 +526,104 @@ class OverridingMethodRenamesAParameter(Rule, id="ALL-OVER0002", applicability="
         if not renamed or None in renamed:
             return None
         return [edit for edits_ in renamed if edits_ for edit in edits_]
+
+
+class OverridingMethodWithdrawsADefault(Rule, id="ALL-OVER0003"):
+    """Overrides that state the base's parameters under the same names and order but make a
+    parameter the base let callers omit required: a call written against the base works
+    everywhere except where the subclass is the object behind the reference."""
+
+    query = """
+        WITH sides AS (
+          SELECT fact_id, method, inherited, declared,
+                 list(name ORDER BY kind, position) FILTER (WHERE side = 'inherited') AS base,
+                 list(name ORDER BY kind, position) FILTER (WHERE side = 'declared') AS own
+          FROM overrides_numbered() GROUP BY ALL
+        ), withdrawn AS (
+          SELECT i.fact_id, i.method, i.declared,
+                 string_agg(i.name, '`, `' ORDER BY i.kind, i.position) AS parameters
+          FROM overrides_numbered() i
+          JOIN overrides_numbered() d ON d.fact_id = i.fact_id AND d.inherited = i.inherited
+            AND d.declared = i.declared AND d.side = 'declared' AND d.kind = i.kind
+            AND d.position = i.position AND d.name = i.name
+          WHERE i.side = 'inherited' AND i.has_default AND NOT d.has_default
+          GROUP BY ALL
+        )
+        SELECT f.path, x.line AS start_line, 0 AS start_column, f.fact_id, w.method, w.parameters
+        FROM withdrawn w
+        JOIN sides s USING (fact_id, method, declared)
+        JOIN override_facts f USING (fact_id)
+        JOIN override_declared x ON x.record_id = w.declared
+        WHERE s.base = s.own
+    """
+    message = "`{method}` makes `{parameters}` required where its base gives a default"
+    examples = (
+        Example(
+            bad=(
+                "class Sender:\n    def send(self, payload, timeout=30):\n        return payload\n"
+                "\n\nclass Fast(Sender):\n    def send(self, payload, timeout):\n"
+                "        return payload\n"
+            ),
+            good=(
+                "class Sender:\n    def send(self, payload, timeout=30):\n        return payload\n"
+                "\n\nclass Fast(Sender):\n    def send(self, payload, timeout=30):\n"
+                "        return payload\n"
+            ),
+        ),
+    )
+
+
+class FinalMemberOverridden(Rule, id="ALL-OVER0008"):
+    """Members a base sealed with `@final` that a subclass overrides anyway: whatever the sealed
+    member guaranteed, the base still assumes and the subclass no longer provides."""
+
+    query = """
+        SELECT f.path, x.line AS start_line, 0 AS start_column, f.fact_id, p.name
+        FROM overrides_pairs() p
+        JOIN override_facts f USING (fact_id)
+        JOIN override_declared x ON x.record_id = p.declared_record_id
+        WHERE p.inherited_is_final
+    """
+    message = "`{name}` overrides a member its base sealed with `@final`"
+    examples = (
+        Example(
+            bad=(
+                "from typing import final\n\n\nclass Account:\n    @final\n"
+                "    def balance(self):\n        return 0\n\n\nclass Savings(Account):\n"
+                "    def balance(self):\n        return 1\n"
+            ),
+            good=(
+                "from typing import final\n\n\nclass Account:\n    @final\n"
+                "    def balance(self):\n        return 0\n\n\nclass Savings(Account):\n"
+                "    def interest(self):\n        return 1\n"
+            ),
+        ),
+    )
+
+
+class FinalClassSubclassed(Rule, id="ALL-OVER0009"):
+    """Classes that directly inherit from a class its author sealed with `@final`. Only the direct
+    base is judged: a seal further up belongs to whoever inherited it first."""
+
+    query = r"""
+        SELECT c.path, c.start_line, c.start_column, c.name, b.name AS base
+        FROM override_edges e
+        JOIN class_classes c ON c.class_id = e.child
+        JOIN class_classes b ON b.class_id = e.parent
+        WHERE EXISTS (SELECT 1 FROM class_class_decorators d
+                      WHERE d.class_id = e.parent
+                        AND regexp_replace(d.value, '^@?(.*\.)?', '') = 'final')
+    """
+    message = "`{name}` subclasses `{base}`, which its author sealed with `@final`"
+    examples = (
+        Example(
+            bad=(
+                "from typing import final\n\n\n@final\nclass Money:\n    pass\n\n\n"
+                "class Cents(Money):\n    pass\n"
+            ),
+            good=(
+                "from typing import final\n\n\n@final\nclass Money:\n    pass\n\n\n"
+                "class Cents:\n    money: Money\n"
+            ),
+        ),
+    )

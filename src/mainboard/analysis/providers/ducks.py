@@ -7,27 +7,15 @@ the fact base: a run's own (in the run's budget folder) or a persistent one a co
 `cache`. A file another process holds attached cannot be shared, so the run keeps the tables in
 its own fact base instead.
 
-Parsing runs in this process when the engine's DuckDB loads `sitting_duck` (decided once, by
-`in_process`) and otherwise through a DuckDB 1.5 command-line binary (`DuckCli`, fetched with the
-extension on first use), which writes the nodes to a Parquet file this process inserts.
-
-The extension is not in the community repository for DuckDB 2.0.0-alpha43385 (the engine's wheel
-2.0.0.dev2609250715, commit ca15f79c32); its first signed build arrives with 2.0 GA. Until then
-v1.16.0 is built from source against that exact DuckDB (scratchpad `sd116/build`, output
-`sd116/out43385/sitting_duck.duckdb_extension`) and installed unsigned at
-`~/.duckdb/extensions/v2.0.0-alpha43385/osx_arm64/sitting_duck.duckdb_extension`, where DuckDB
-looks; `Budget.connect` allows unsigned extensions. After GA, `INSTALL sitting_duck FROM
-community` fills the same kind of folder for v2.0.0.
+The extension is the community repository's signed build, installed on first use into this
+tool's extension folder beside the lake's (`state.database.load`).
 """
 
 import ast
 import hashlib
-import os
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs git and the pinned DuckDB CLI with fixed argv since=2026-10-13
 import tempfile
 from collections import Counter
 from contextlib import closing
-from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, ClassVar
 
@@ -36,24 +24,11 @@ from patos import FrozenModel
 from pydantic import Field
 
 from ...log import logger
-from ..facts import UNSIGNED, Budget, listed
-from .duckdb_cli import DuckCli
+from ...state.database import quoted
+from ..facts import Budget, listed
 
 if TYPE_CHECKING:
     from ..facts import Facts
-
-
-@cache
-def in_process() -> bool:
-    """Whether this process's DuckDB loads `sitting_duck`, tried once: where it does not (another
-    machine, a job host), the command-line binary parses."""
-    try:
-        with closing(duckdb.connect(config=UNSIGNED)) as db:
-            db.execute("LOAD sitting_duck")
-    except duckdb.Error as error:
-        logger.info("sitting_duck does not load here, parsing through the CLI: {}", error)
-        return False
-    return True
 
 
 class Source(FrozenModel):
@@ -65,9 +40,8 @@ class Source(FrozenModel):
 
 
 class Ducks(FrozenModel):
-    """Syntax trees from `sitting_duck`, through a DuckDB that has the extension."""
+    """Syntax trees from `sitting_duck`."""
 
-    cli: DuckCli = Field(default_factory=DuckCli)
     budget: Budget = Field(default_factory=Budget)
     cache: Path = Field(default_factory=lambda data: data["budget"].folder / "ast.duckdb")
     # The cache serves this project alone, so `register` drops the trees of contents it lacks.
@@ -124,7 +98,7 @@ class Ducks(FrozenModel):
                 SELECT file_path, count(*) FILTER (type = 'ERROR' OR (children_count = 0
                         AND start_line = end_line AND start_column = end_column)) AS errors
                 FROM ({self._read(scratch)}) GROUP BY ALL"""
-            return Counter({named[file]: errors for file, errors in self._rows(counted, scratch)})
+            return Counter({named[file]: errors for file, errors in self._rows(counted)})
 
     def sources(self, root: Path) -> list[Source]:
         """The project's files git does not ignore, in a language we parse or list, with their
@@ -230,7 +204,7 @@ class Ducks(FrozenModel):
         tables in `db` itself under the same name. Whether the file is attached."""
         self.cache.parent.mkdir(parents=True, exist_ok=True)
         try:
-            db.execute(f"ATTACH {_quoted(str(self.cache))} AS astcache")
+            db.execute(f"ATTACH {quoted(str(self.cache))} AS astcache")
             attached = True
         except duckdb.Error as error:
             logger.info("{} is in use, parsing into this run's own tables: {}", self.cache, error)
@@ -243,7 +217,7 @@ class Ducks(FrozenModel):
         """`read_ast` over each grammar folder of `scratch`, one row per node."""
         extra = "".join(f", {option}" for option in options)
         return " UNION ALL ".join(
-            f"""SELECT * FROM read_ast({_quoted(str(folder / "*"))}, '{folder.name}',
+            f"""SELECT * FROM read_ast({quoted(str(folder / "*"))}, '{folder.name}',
                  source := 'full', peek := 'none', ignore_errors := true{extra})"""
             for folder in Path(scratch).iterdir()
             if folder.is_dir()
@@ -251,8 +225,8 @@ class Ducks(FrozenModel):
 
     def _nodes(self, db: duckdb.DuckDBPyConnection, scratch: str) -> str:
         """A `SELECT` of the nodes of the files linked in `scratch`, with the blob and language
-        their links name: the parse itself in `db`, or a read of what the command line wrote."""
-        select = f"""
+        their links name."""
+        return f"""
             SELECT unnest(regexp_extract(file_path, '([0-9a-f]{{40}})\\.(\\w+)\\.\\w+$',
                                          ['blob', 'language'])),
                    * EXCLUDE (file_path, language, semantic_type),
@@ -260,40 +234,11 @@ class Ducks(FrozenModel):
                    get_kind(semantic_type) AS kind,
                    get_super_kind(semantic_type) AS super_kind
             FROM ({self._read(scratch, "prune := ['punctuation']")})"""
-        if in_process():
-            db.execute("LOAD sitting_duck")
-            return select
-        batch = _quoted(str(Path(scratch) / "nodes.parquet"))
-        self._cli(f"COPY ({select}) TO {batch} (FORMAT parquet);", scratch)
-        return f"SELECT * FROM read_parquet({batch})"
 
-    def _rows(self, select: str, scratch: str) -> list[tuple[str, int]]:
-        """The (file, count) rows of `select`, parsed in this process or in the command line."""
-        if in_process():
-            with closing(self.budget.connect()) as db:
-                db.execute("LOAD sitting_duck")
-                return db.execute(select).fetchall()
-        out = Path(scratch) / "rows.csv"
-        self._cli(f"COPY ({select}) TO {_quoted(str(out))} (HEADER false);", scratch)
-        return [
-            (file, int(count))
-            for file, count in (line.rsplit(",", 1) for line in out.read_text().splitlines())
-        ]
-
-    def _cli(self, script: str, scratch: str) -> None:
-        """Run `script` in the DuckDB command line under the budget, from `scratch`, so nothing
-        it writes lands in the caller's working directory."""
-        subprocess.run(
-            [str(self.cli.ready())],
-            input=(
-                f"{self.budget.script()}LOAD sitting_duck;\nSET threads = {os.cpu_count()};\n"
-                f"SET preserve_insertion_order = false;\n{script}"
-            ),
-            text=True,
-            capture_output=True,
-            check=True,
-            cwd=scratch,
-        )
+    def _rows(self, select: str) -> list[tuple[str, int]]:
+        """The (file, count) rows of `select`, parsed under the budget."""
+        with closing(self.budget.connect()) as db:
+            return db.execute(select).fetchall()
 
     def _report_gaps(self, facts: Facts, root: Path) -> None:
         """Warn about Python files Python itself accepts but whose syntax tree has errors:
@@ -316,7 +261,3 @@ def _parses(file: Path) -> bool:
     except SyntaxError, ValueError:
         return False
     return True
-
-
-def _quoted(text: str) -> str:
-    return "'" + text.replace("'", "''") + "'"

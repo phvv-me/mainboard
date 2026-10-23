@@ -20,8 +20,8 @@
 # damaged object is not held, and staging it again replaces what the lake kept of it, inside the
 # staging transaction. Each chunk's MD5 lands in `checksums` in the same insert, computed by DuckDB
 # from the very bytes whose SHA-256 was just verified. MD5 because a checksum must be one every
-# DuckDB build computes: the `hashfuncs` community extension (xxh3) has no build for the DuckDB
-# 2.0 development release this tool runs, and DuckDB's own `hash` may change between releases. A
+# DuckDB build computes: the `hashfuncs` community extension (xxh3) has no build for DuckDB 2.0.0,
+# and DuckDB's own `hash` may change between releases. A
 # chunk kept before checksums existed leans on the whole digest alone, and nothing here records a
 # checksum for it: reading never writes.
 

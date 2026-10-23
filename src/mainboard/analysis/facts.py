@@ -1,10 +1,9 @@
 """The fact base rules query: one DuckDB database holding every fact family as plainly named views,
 and each language's narrowing of them.
 
-A family arrives as Arrow relations: its identity relation first (one row per fact), a generic
-`records` relation whose `relation` column names each nested record path, and any specialized
-ones. Every relation becomes a view `<family>_<relation>` in snake case, without the `Fact`
-suffix and with dots as underscores: `symbol_facts`, `symbol_symbols`,
+A family arrives as SQL relations over what the database already reads (`adopt`), its identity
+relation first (one row per fact). Every relation becomes a view `<family>_<relation>` in snake
+case, without the `Fact` suffix and with dots as underscores: `symbol_facts`, `symbol_symbols`,
 `symbol_symbols_reference_references`, `syntax_nodes`. Every language present gets a schema of
 the same views narrowed to its facts, so a cursor whose `search_path` is `python, main` reads only
 Python facts with the same SQL. Shared helpers are table macros, which resolve view names in the
@@ -35,18 +34,15 @@ from sqlglot import exp
 from ..core.errors import NoWorkspace
 from ..core.project import Project
 from ..manifest.loading import load
+from ..state import database
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
-
-    import pyarrow as pa
 
     from .catalog import Function
 
 
 ANALYSIS_TOOL = "mb"
-
-UNSIGNED: dict[str, str | bool | int | float | list[str]] = {"allow_unsigned_extensions": "true"}
 
 # Sequences and mappings, which accept a `list[str]` where a list of settings is read.
 type Setting = str | int | float | bool | None | Sequence[Setting] | Mapping[str, Setting]
@@ -137,6 +133,10 @@ def marked(root: Path, paths: Iterable[str], attribute: str) -> set[str]:
         for path, value in zip(fields[0::3], fields[2::3], strict=False)
         if value not in ("unspecified", "unset", "false")
     }
+
+
+# The DuckDB extension that parses source into the syntax trees every fact base reads.
+EXTENSION = "sitting_duck"
 
 
 class SqlNames:
@@ -245,21 +245,17 @@ class Budget(FrozenModel):
     def connect(self, file: Path | None = None) -> duckdb.DuckDBPyConnection:
         """A fact base in `file` (in memory for None): its tables stay compressed on disk and
         leave memory without spilling (an in-memory base of 4.7 GB is a 1 GB file), at about 5% of
-        the speed. Unsigned extensions load, which a self-built `sitting_duck` is until the
-        community repository ships it for this DuckDB; this is the one flag `connect` can take."""
+        the speed."""
         if file:
             file.parent.mkdir(parents=True, exist_ok=True)
-        db = duckdb.connect(str(file or ":memory:"), config=UNSIGNED)
+        db = duckdb.connect(str(file or ":memory:"))
         for statement in self._statements(memory_limit=self.memory, threads=self.threads):
             db.execute(statement)
+        # Loaded with every base: a macro binds the functions it calls when it is created, and
+        # `tree_clean` calls `parse_ast_list` even where no tree is parsed (`rules fix` reading
+        # a cached base failed to define it, 2026-10-23).
+        database.load(db, [EXTENSION])
         return db
-
-    def script(self) -> str:
-        """SET statements for the sitting_duck parse in the DuckDB command line."""
-        return "".join(
-            f"{statement};\n"
-            for statement in self._statements(memory_limit="1GB", max_temp_directory_size="1GB")
-        )
 
     def _statements(self, **settings: str | int) -> list[str]:
         """`settings` with this run's spill folder (created: DuckDB makes only its last
@@ -313,30 +309,6 @@ class Facts:
         self.db.close()
         for file in (self.file, self.file.with_suffix(".duckdb.wal")):
             file.unlink(missing_ok=True)
-
-    def register(self, family: str, relations: Mapping[str, pa.Table]) -> None:
-        """Store one family's Arrow relations as tables and name each through a view."""
-        tables = {}
-        for name, arrow in relations.items():
-            self.db.register(
-                "arrival",
-                arrow.rename_columns([column.replace(".", "_") for column in arrow.column_names]),
-            )
-            self.db.execute(f'CREATE TABLE "{family}/{name}" AS SELECT * FROM arrival')
-            self.db.unregister("arrival")
-            tables[name] = f'"{family}/{name}"'
-        if "records" in tables:
-            for (path,) in self.db.execute(
-                f"SELECT DISTINCT relation FROM {tables['records']}"
-            ).fetchall():
-                self.db.execute(
-                    f'CREATE TABLE "{family}/{path}" AS SELECT * EXCLUDE (relation) '
-                    f"FROM {tables['records']} WHERE relation = '{path}'"
-                )
-                tables[path] = f'"{family}/{path}"'
-        for relation, table in tables.items():
-            self._view(family, relation, table)
-        self._identify(family, tables)
 
     def adopt(self, family: str, relations: Mapping[str, str], *, empty: bool = False) -> None:
         """Store one family whose relations are SQL over what the database already reads

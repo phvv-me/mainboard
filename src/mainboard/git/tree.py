@@ -51,11 +51,11 @@ class Tree:
         return Pull(self).run()
 
     def commit(
-        self, message: str, paths: Sequence[Path] = (), *, everything: bool = False
+        self, messages: Sequence[str], paths: Sequence[Path] = (), *, everything: bool = False
     ) -> list[Step]:
         """Commit the named paths (each repository's index when none), submodules before the
-        pointers to them; `everything` sweeps every change instead."""
-        return Commit(self, message, paths, everything=everything).run()
+        pointers to them; `everything` sweeps every change instead. See `Commit` for messages."""
+        return Commit(self, messages, paths, everything=everything).run()
 
     def push(self) -> list[Step]:
         """Push every owned repository, submodules before the parents that point at them."""

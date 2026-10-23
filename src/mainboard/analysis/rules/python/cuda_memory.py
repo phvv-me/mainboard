@@ -124,3 +124,52 @@ class HotAllocation(Rule, id="PY-CUDA0005", applicability="review"):
             good="import cupy as cp\n\n\nclass Buffer:\n    def __init__(self):\n        self.held = cp.empty(0)\n\n    def take(self, size):\n        if self.held.shape[0] < size:\n            self.held = cp.empty(max(size, 2 * self.held.shape[0]))\n        return self.held[:size]\n",
         ),
     )
+
+
+class ParameterShapedKernelArray(Rule, id="PY-CUDA0020"):
+    """A `cuda.local.array` or `cuda.shared.array` whose shape reads a parameter of the kernel or
+    device function around it (mcmr's PY-NUMB0004): these arrays need a compile-time constant
+    shape, which a launch-time argument cannot be. A record method's `self` is left alone, since
+    its `Constant[...]` fields are compile-time literals the facts cannot tell apart."""
+
+    query = r"""
+        WITH allocations AS (
+          SELECT c.fact_id, c.path, c.start_line, c.start_column, c.end_line, c.end_column,
+                 c.scope_id, c.arguments_id, d.qualname
+          FROM cuda_calls() c
+          JOIN cuda_device_code() d ON d.fact_id = c.fact_id AND d.function_id = c.scope_id
+          WHERE regexp_matches(c.qualified_name, '\.(local|shared)\.array$')
+        ), shapes AS (
+          SELECT a.*, s.node_id AS shape_id, s.descendant_count AS shape_size
+          FROM allocations a
+          JOIN cuda_nodes() s ON s.fact_id = a.fact_id AND s.parent_id = a.arguments_id
+            AND s.type <> 'keyword_argument'
+            AND s.semantic_type NOT IN ('PARSER_DELIMITER', 'METADATA_COMMENT')
+          QUALIFY row_number() OVER (PARTITION BY a.fact_id, a.arguments_id
+                                     ORDER BY s.sibling_index) = 1
+        )
+        SELECT DISTINCT s.path, s.start_line, s.start_column, s.end_line, s.end_column,
+               s.qualname, p.name AS parameter
+        FROM shapes s
+        JOIN cuda_nodes() i ON i.fact_id = s.fact_id AND i.type = 'identifier'
+          AND i.node_id BETWEEN s.shape_id AND s.shape_id + s.shape_size
+        JOIN core_file f ON f.fact_id = s.fact_id
+        JOIN core_param p ON p.file_id = f.file_id AND p.def_id = s.scope_id AND p.name = i.name
+        WHERE p.name <> 'self'
+    """
+    message = (
+        "`{qualname}` shapes a kernel array by its parameter `{parameter}`, which is not a "
+        "compile-time constant"
+    )
+    examples = (
+        Example(
+            bad=(
+                "from numba import cuda\n\n\n@cuda.jit\ndef reduce(values, width):\n"
+                "    scratch = cuda.local.array(width, values.dtype)\n    scratch[0] = values[0]\n"
+            ),
+            good=(
+                "from numba import cuda\n\nWIDTH = 32\n\n\n@cuda.jit\ndef reduce(values):\n"
+                "    scratch = cuda.local.array(WIDTH, values.dtype)\n    scratch[0] = values[0]\n"
+            ),
+        ),
+    )

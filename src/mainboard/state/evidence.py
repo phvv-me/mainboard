@@ -525,6 +525,17 @@ class Evidence:
         found = self.session.run(lambda connection: self.blobs.read(connection, {sha256}))
         return found.get(sha256)
 
+    def recalled(self, sizes: Mapping[str, int]) -> Iterator[tuple[str, bytes]]:
+        """Each object among `sizes` (digest to size) this lake holds intact, verified, read in
+        windows of at most `_WINDOW_BYTES`, one scan of `blobs` each. A digest says nothing about
+        which data file holds it, so `recall` scans every file's digests per object: settling a
+        receipt that pins hundreds of artifacts outlived the settler's deadline on every pass
+        (2026-10-22)."""
+        if not self.lake.exists():
+            return
+        for window in _windows(sorted(sizes), sizes.__getitem__, _WINDOW_BYTES):
+            yield from self.session.run(partial(self.blobs.read, digests=window)).items()
+
     def replicate(self, replica: Replica) -> int:
         """Copy every indexed object `replica` lacks into it, then the whole index; how many
         objects were copied.
@@ -792,6 +803,15 @@ class EvidenceTree:
             if data is not None:
                 return data
         raise FileNotFoundError(f"no lake around {self.base} holds {sha256}")
+
+    def recalled(self, sizes: Mapping[str, int]) -> Iterator[tuple[str, bytes]]:
+        """Each object among `sizes` (digest to size) from the first lake holding it intact, a
+        window at a time (`Evidence.recalled`); one no lake holds is not yielded."""
+        wanted = dict(sizes)
+        for evidence in self.keepers:
+            for digest, data in evidence.recalled(dict(wanted)):
+                del wanted[digest]
+                yield digest, data
 
     def _indexed(self) -> Iterator[tuple[Evidence, str, Located]]:
         """Each indexed file under `base`, with its keeper and its path relative to `base`."""

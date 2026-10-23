@@ -1,5 +1,5 @@
-"""A no-default environment carries its own PyPI dependency-overrides, and `update` installs with
-editable sources.
+"""A no-default environment carries its own PyPI dependency-overrides, joins a member's environment
+of its name, keeps the workspace's system floors, and `update` installs with editable sources.
 
 Two fixes exercised here: `[envs.<name>.python.dependency-overrides]` reaches that environment's
 feature (previously only the root override reached `default`), and `Pixi.update` drops pixi's
@@ -12,7 +12,11 @@ from pathlib import Path
 import pytest
 
 from mainboard.engines.compile.backend.pixi import Pixi
-from mainboard.engines.compile.pixi_manifest import PixiManifest, pypi_options
+from mainboard.engines.compile.pixi_manifest import (
+    PixiManifest,
+    pypi_options,
+    selected_manifest,
+)
 from mainboard.manifest import Manifest
 from mainboard.manifest.members import Composition
 
@@ -24,9 +28,16 @@ def _workspace_with_lean_env(root: Path) -> Manifest:
         '[project]\nname = "pkg"\nversion = "0.0.0"\nrequires-python = ">=3.14"\n',
         encoding="utf-8",
     )
-    (root / "pkg" / "mainboard.toml").write_text('[workspace]\nname = "pkg"\n', encoding="utf-8")
+    (root / "pkg" / "mainboard.toml").write_text(
+        '[workspace]\nname = "pkg"\n\n'
+        '[envs.x]\nplatforms = ["osx-arm64"]\n\n'
+        '[envs.x.python.deps]\nhttpx = ">=0.28"\n\n'
+        '[envs.x.tasks]\nserve = "python -m pkg"\n',
+        encoding="utf-8",
+    )
     (root / "mainboard.toml").write_text(
         '[workspace]\nname = "it"\nmembers = ["pkg"]\n\n'
+        '[system]\nlibc = "2.34"\n\n'
         '[deps]\npython = ">=3.14"\n\n'
         '[python.deps]\npkg = { path = "pkg", editable = true }\n\n'
         '[envs.x]\nno-default = true\nplatforms = ["linux-64"]\n\n'
@@ -52,6 +63,20 @@ def test_no_default_env_override_reaches_its_feature(tmp_path: Path) -> None:
     assert "path" in override["pkg"], (
         "the member path-pin must still be unioned under the override"
     )
+
+
+def test_member_env_joins_the_root_env_of_its_name(tmp_path: Path) -> None:
+    x = Composition(tmp_path, _workspace_with_lean_env(tmp_path)).composed().envs["x"]
+
+    assert x.no_default and x.platforms == ["linux-64"], "the root's settings win"
+    assert {"pkg", "httpx"} <= x.model_dump(mode="python")["python"]["deps"].keys()
+    assert "pkg:serve" in x.tasks, "a member's task keeps its member's namespace"
+
+
+def test_lean_env_keeps_the_workspace_system_floors(tmp_path: Path) -> None:
+    composed = Composition(tmp_path, _workspace_with_lean_env(tmp_path)).composed()
+
+    assert selected_manifest(composed, "x").system == {"libc": "2.34"}
 
 
 class _Ran:

@@ -28,6 +28,7 @@ from ..agents.harness import claude_key
 from ..core.project import Project
 from ..core.section import Section, Verdict
 from ..engines.compile.provisioner import Provisioner
+from ..state.lake import Lake
 
 if TYPE_CHECKING:
     from ..manifest.schema.root import Manifest
@@ -51,9 +52,9 @@ _MACHINE_LOCAL = (
 )
 
 # The SQLite stores shipped as a consistent snapshot rather than as the bytes a writer may be
-# halfway through: the state lake's catalog (its Parquet files are immutable and ship as they are)
-# and an unimported registry here, Codex's memories under home.
-_SNAPSHOTS = ("lake.sqlite", "dispatch/db.sqlite")
+# halfway through: an unimported registry and a workspace lake's catalog here (its Parquet files
+# are immutable and ship as they are), Codex's memories under home.
+_REGISTRY = "dispatch/db.sqlite"
 
 # Each agent's per-user state under home: what is copied as is, and what is a credential.
 _CLAUDE = ("settings.json", "CLAUDE.md", "keybindings.json", "agents", "skills", "commands")
@@ -306,40 +307,54 @@ class Carried:
         return [line.strip() for line in text.splitlines() if line.strip()]
 
     def workspace(self) -> list[Parcel]:
-        """The `.env`, the state directory's lake, and every environment's lock."""
-        out = Project().out(self.root)
-        parcels = (
-            [self._root(self.root / ".env", secret=True)] if (self.root / ".env").is_file() else []
-        )
-        parcels += [
-            self._root(path)
-            for path in sorted(out.rglob("*"))
-            if path.is_file()
-            and not path.is_symlink()
-            and (relative := path.relative_to(out).as_posix()) not in _SNAPSHOTS
-            and not any(fnmatch(relative, rule) for rule in _MACHINE_LOCAL)
-        ]
-        parcels += [
-            Parcel(
-                anchor="root",
-                path=database.relative_to(self.root).as_posix(),
-                data=snapshot(database),
-            )
-            for database in (out / name for name in _SNAPSHOTS)
-            if database.is_file()
-        ]
+        """The `.env`, the generated state (see `_state`), and every environment's lock."""
+        env = self.root / ".env"
         provisioner = Provisioner(self.root, self.manifest)
         artifacts = dict.fromkeys(
             relative
             for environment in ("default", *self.manifest.envs)
             for relative in provisioner.artifact_for(environment)
         )
-        parcels += [
-            self._root(self.root / relative)
-            for relative in artifacts
-            if (self.root / relative).is_file()
+        return [
+            *([self._root(env, secret=True)] if env.is_file() else []),
+            *self._state(),
+            *(
+                self._root(self.root / relative)
+                for relative in artifacts
+                if (self.root / relative).is_file()
+            ),
         ]
-        return parcels
+
+    def _state(self) -> list[Parcel]:
+        """The state directory and a lake kept inside the workspace, SQLite stores as snapshots.
+
+        A lake the manifest keeps outside the workspace is not copied: `left` names it, and the
+        destination's `doctor --center` fails until that machine reaches it.
+        """
+        out = Project().out(self.root)
+        lake = Lake.at(self.root)
+        inside = lake.home.is_relative_to(self.root)
+        stores = {out / _REGISTRY, *([lake.catalog] if inside else [])}
+        files = [
+            self._root(path)
+            for path in sorted({*out.rglob("*"), *(lake.data.rglob("*") if inside else ())})
+            if path.is_file()
+            and not path.is_symlink()
+            and path not in stores
+            and not (
+                path.is_relative_to(out)
+                and any(fnmatch(path.relative_to(out).as_posix(), rule) for rule in _MACHINE_LOCAL)
+            )
+        ]
+        return files + [
+            Parcel(
+                anchor="root",
+                path=database.relative_to(self.root).as_posix(),
+                data=snapshot(database),
+            )
+            for database in sorted(stores)
+            if database.is_file()
+        ]
 
     def agents(self) -> list[Parcel]:
         """Claude Code, Codex and opencode per-user state, re-keyed to the new workspace path."""
@@ -417,6 +432,16 @@ class Carried:
                 fix="sign in to ChatGPT desktop on the destination",
             ),
         ]
+        lake = Lake.at(self.root)
+        if not lake.home.is_relative_to(self.root):
+            notes.append(
+                Section(
+                    section="left: lake",
+                    verdict=Verdict.WARN,
+                    detail=f"the lake at {lake.home} lives outside the workspace and is not copied",
+                    fix=f"mount or copy {lake.home} on the destination, at the path the manifest names",
+                )
+            )
         if not (self.home / ".claude" / ".credentials.json").is_file():
             notes.append(
                 Section(

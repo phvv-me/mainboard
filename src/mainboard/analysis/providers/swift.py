@@ -152,8 +152,12 @@ class SwiftSource(Tool):
             if (
                 not isinstance(path, str)
                 or fact_id != f"swift:{path}"
-                or language != "swift" or line != 1 or column != 0
-                or not isinstance(count, int) or count < 0 or not isinstance(message, str)
+                or language != "swift"
+                or line != 1
+                or column != 0
+                or not isinstance(count, int)
+                or count < 0
+                or not isinstance(message, str)
                 or (count == 0) != (message == "")
             ):
                 raise MissionError("SwiftSyntax emitted invalid file coverage metadata")
@@ -161,10 +165,15 @@ class SwiftSource(Tool):
         for table in SYNTAX_TABLES.keys() - {"facts"}:
             for fact_id, path, language, line, column, *_ in rows[table]:
                 if (
-                    not isinstance(path, str) or path not in gaps or gaps[path]
+                    not isinstance(path, str)
+                    or path not in gaps
+                    or gaps[path]
                     or fact_id != f"swift:{path}"
-                    or language != "swift" or not isinstance(line, int) or line < 1
-                    or not isinstance(column, int) or column < 0
+                    or language != "swift"
+                    or not isinstance(line, int)
+                    or line < 1
+                    or not isinstance(column, int)
+                    or column < 0
                 ):
                     raise MissionError(f"SwiftSyntax emitted uncovered/partial syntax in {table}")
 
@@ -189,7 +198,8 @@ class SwiftSource(Tool):
         if sys.platform == "darwin":
             selected_sdk = runner.run("/usr/bin/xcrun", ("--sdk", "macosx", "--show-sdk-path"))
             if (
-                selected_sdk.returncode or selected_sdk.truncated
+                selected_sdk.returncode
+                or selected_sdk.truncated
                 or not selected_sdk.stdout.strip()
                 or not Path(selected_sdk.stdout.strip()).is_dir()
             ):

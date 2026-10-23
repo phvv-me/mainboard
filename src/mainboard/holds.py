@@ -28,6 +28,7 @@ from .engines.compile.provisioner import Provisioner
 from .log import logger
 from .manifest.held import Held, Holdings
 from .manifest.schema.queue import Defaults
+from .runtime.job import walltime
 
 if TYPE_CHECKING:
     from .board import Board
@@ -98,7 +99,7 @@ class Holds:
         if name in self.board.manifest.hosts:
             raise MissionError(f"{name!r} already names a host; hold it under another --as")
         resources = rented.resources(
-            walltime=_walltime(seconds),
+            walltime=walltime(seconds),
             gpus=gpus,
             gpu_name=gpu_name,
             max_usd=max_usd,
@@ -177,7 +178,7 @@ class Holds:
             update={
                 "kind": "ssh",
                 "platform": _PLATFORM,
-                "defaults": Defaults(walltime=_walltime(seconds)),
+                "defaults": Defaults(walltime=walltime(seconds)),
                 "queues": {},
             }
         )
@@ -263,12 +264,6 @@ def duration_seconds(duration: str) -> int:
     if not (hours.isdigit() and minutes.isdigit() and rest.isdigit()):
         raise MissionError(f"a hold lasts `3h`, `90m`, `1h30m` or `HH:MM:SS`, not {duration!r}")
     return int(hours) * 3600 + int(minutes) * 60 + int(rest)
-
-
-def _walltime(seconds: int) -> str:
-    """`seconds` as the `HH:MM:SS` walltime a resource request carries."""
-    hours, rest = divmod(seconds, 3600)
-    return f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"
 
 
 def _slug(text: str) -> str:

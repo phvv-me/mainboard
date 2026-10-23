@@ -8,6 +8,7 @@ another error rather than as a forbidden write.
 import os
 import socket
 import subprocess
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -121,34 +122,7 @@ def test_postgres_is_a_temporary_catalog(postgres: str) -> None:
     assert done.stdout.endswith("\n\n")  # listen_addresses is empty: no TCP listener.
 
 
-def test_offline_ast_extensions_copy_without_user_config_or_source_mutation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from . import runner
-
-    home = tmp_path / "source-home"
-    extensions = home / ".duckdb/extensions/v-test/osx_arm64"
-    extensions.mkdir(parents=True)
-    parser = extensions / "sitting_duck.duckdb_extension"
-    parser.write_bytes(b"installed extension")
-    (home / ".duckdb/config").write_text("private user settings", encoding="utf-8")
-    lake = tmp_path / "lake-cache"
-    lake.mkdir()
-    (lake / "extension").write_bytes(b"lake extension")
-    monkeypatch.setattr(runner, "_SEED", lake)
-    monkeypatch.setattr(Path, "home", lambda: home)
-    worker = runner.Gate.__new__(runner.Gate)
-    worker.root = tmp_path / "worker"
-    worker._seed_extensions()
-    copied = worker.root / "home/.duckdb/extensions/v-test/osx_arm64/sitting_duck.duckdb_extension"
-    assert copied.read_bytes() == b"installed extension"
-    assert not (worker.root / "home/.duckdb/config").exists()
-    copied.write_bytes(b"worker modification")
-    assert parser.read_bytes() == b"installed extension"
-
-
-def test_absent_ast_cache_never_downloads_or_copies_user_settings(
+def test_seeded_extensions_copy_without_user_duckdb_or_source_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,11 +131,18 @@ def test_absent_ast_cache_never_downloads_or_copies_user_settings(
     home = tmp_path / "source-home"
     (home / ".duckdb").mkdir(parents=True)
     (home / ".duckdb/config").write_text("private user settings", encoding="utf-8")
-    lake = tmp_path / "lake-cache"
-    lake.mkdir()
-    monkeypatch.setattr(runner, "_SEED", lake)
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    parser = seed / "sitting_duck.duckdb_extension"
+    parser.write_bytes(b"installed extension")
+    monkeypatch.setattr(runner, "_SEED", seed)
     monkeypatch.setattr(Path, "home", lambda: home)
     worker = runner.Gate.__new__(runner.Gate)
     worker.root = tmp_path / "worker"
     worker._seed_extensions()
+    cache = "home/Library/Caches/mb/duckdb" if sys.platform == "darwin" else "cache/mb/duckdb"
+    copied = worker.root / cache / "sitting_duck.duckdb_extension"
+    assert copied.read_bytes() == b"installed extension"
     assert not (worker.root / "home/.duckdb").exists()
+    copied.write_bytes(b"worker modification")
+    assert parser.read_bytes() == b"installed extension"

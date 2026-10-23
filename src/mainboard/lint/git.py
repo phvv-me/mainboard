@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+from ..core.project import Project
+
 
 def git(repository: Path, *arguments: str, stdin: str = "") -> subprocess.CompletedProcess[bytes]:
     """One git command run in `repository`, bytes in and out so no locale reads a path.
@@ -34,3 +36,36 @@ def topmost(directory: Path) -> Path | None:
         if not (parent := printed(above.stdout).strip()):
             return found
         found = Path(parent)
+
+
+def nested_projects(root: Path) -> list[Path]:
+    """The projects nested in the workspace at `root`, each a directory with its own manifest.
+
+    These are what a monorepo keeps beside its members, each a workspace when cloned alone.
+
+    A tracked manifest counts (submodules' included; one deleted from the work tree is gone), and
+    so does a repository nested untracked and unignored (`apps/usagiunagi`, kept as its own
+    repository), with its own nested projects.
+    """
+    project = Project()
+    tracked = git(
+        root,
+        "ls-files",
+        "-z",
+        "--cached",
+        "--recurse-submodules",
+        "--",
+        *(f":(glob)**/{manifest}" for manifest in project.manifests),
+    )
+    found = {
+        (root / name).parent
+        for name in printed(tracked.stdout).split("\0")
+        if name and (root / name).is_file()
+    }
+    # Untracked files one by one, except a nested repository, which git names as `path/`.
+    loose = git(root, "ls-files", "-z", "--others", "--exclude-standard")
+    for name in printed(loose.stdout).split("\0"):
+        home = root / name
+        if name.endswith("/") and (home / ".git").exists() and project.manifest(home).is_file():
+            found |= {home, *nested_projects(home)}
+    return sorted(found - {root})

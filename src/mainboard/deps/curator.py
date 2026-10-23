@@ -1,10 +1,12 @@
 from contextlib import contextmanager
+from functools import cached_property
 from typing import TYPE_CHECKING
 
 from packaging.utils import canonicalize_name
 from patos import FrozenModel
 
 from ..core.errors import MissionError
+from ..engines.compile.lockfile import Lockfile
 from ..engines.compile.provisioner import Provisioner
 from ..manifest.loading import composition
 from .editing import ManifestText
@@ -107,10 +109,23 @@ class Dependencies:
         return found[0]
 
     def pinned(self, name: str, slot: Slot) -> str:
-        """The requirement naming what `slot`'s ecosystem publishes as the newest `name`."""
-        index = Index.of(slot.ecosystem)
-        index.sources = self.registries(slot.ecosystem)
+        """The requirement naming what `slot`'s ecosystem publishes as the newest `name`.
+
+        A Python requirement for a package the lock takes from a conda channel follows the
+        channels instead: pixi installs the conda build and holds the PyPI requirement to it, so
+        PyPI's newer `filelock` 4.2.4 over conda-forge's 4.2.0 made the solve unsatisfiable
+        (2026-10-23).
+        """
+        ecosystem = slot.ecosystem
+        if ecosystem == "python" and (held := self._conda_names.get(canonicalize_name(name))):
+            ecosystem, name = "conda", held
+        index = Index.of(ecosystem)
+        index.sources = self.registries(ecosystem)
         return index.pin(index.latest(name))
+
+    @cached_property
+    def _conda_names(self) -> dict[str, str]:
+        return Lockfile(self.board.root).conda_names()
 
     def registries(self, ecosystem: str) -> tuple[str, ...]:
         """The conda channels, or a non-PyPI Python index, the manifest resolves from."""
@@ -202,17 +217,23 @@ class Dependencies:
         env: str,
         install: bool,
         frozen: bool = False,
+        update: Sequence[str] | None = None,
     ) -> list[Change]:
         """Write the edited manifest, reload it (failing fast on a bad edit), then re-lock,
         unless `frozen` leaves the lock for a later solve.
 
         A bad edit or a failed solve or install puts the manifest and lock back as they were, as
         pixi does, so no `run` is left re-locking against a manifest that cannot solve.
+
+        update: the packages the re-lock frees from their locked versions, every one when empty
+            (`resolved`); none when None, the old lock's pins kept wherever they still satisfy.
         """
         with self._kept(self.path, self.board.project.lock(self.board.root)):
             self.path.write_text(manifest.text(), encoding="utf-8", newline="\n")
             reloaded = self._reloaded()
-            moved = [] if frozen else self.resolved(reloaded, env=env, install=install)
+            moved = (
+                [] if frozen else self.resolved(reloaded, env=env, update=update, install=install)
+            )
         return [*changes, *moved]
 
     def slot(self, *, ecosystem: str, env: str, dev: bool) -> Slot:
@@ -247,7 +268,8 @@ class Dependencies:
         frozen: bool = False,
     ) -> list[Change]:
         """Raise requirements to the newest releases their ecosystems publish, then re-lock, as
-        `pixi upgrade` does: the named ones, or every declared one but `exclude` when none is.
+        `pixi upgrade` does: the named ones, or every declared one but `exclude` and the
+        manifest's `[holds]` when none is (a held one is raised only by naming it).
 
         A requirement with no version to raise (a path, git or url source, or a workspace member
         named by version) is left as written, and one written as a table keeps every field but
@@ -266,7 +288,7 @@ class Dependencies:
                     ecosystem=ecosystem, env=env, dev=dev
                 ).items()
                 for name in declared_names
-                if name not in exclude
+                if name not in exclude and not self._held(name, slot)
             ]
         manifest = ManifestText(self.path.read_text(encoding="utf-8"))
         # A member installs from its own directory wherever it is named, so no index speaks for it.
@@ -282,19 +304,40 @@ class Dependencies:
             if after != before:
                 manifest.put(slot.path, name, spec=after)
                 changes.append(Change(name=name, where=slot.table, before=before, after=after))
-        return self.settled(manifest, changes, env=env, install=install, frozen=frozen)
+        # Freed as `pixi upgrade` frees them: a raised requirement locked where an older pin
+        # still satisfies its other half (a conda build under a PyPI requirement) cannot solve.
+        return self.settled(
+            manifest, changes, env=env, install=install, frozen=frozen, update=tuple(names)
+        )
+
+    def _held(self, name: str, slot: Slot) -> bool:
+        """Whether a hold keeps `name` as written in `slot`.
+
+        That is the root's `[holds]`, or its environment's when `slot` is one of its tables.
+        """
+        manifest = self.board.manifest
+        holds = manifest.holds
+        if slot.path[0] == "envs" and (env := manifest.envs.get(slot.path[1])) is not None:
+            holds = holds | env.holds
+        return canonicalize_name(name) in {canonicalize_name(held) for held in holds}
 
     @contextmanager
     def _kept(self, *paths: Path) -> Generator[None]:
-        """Put `paths` back as they were, and the manifest read again, when the block fails."""
-        kept = {path: path.read_bytes() for path in paths if path.is_file()}
+        """Put `paths` back as they were, absent ones removed, when the block fails in any way,
+        and read the manifest again."""
+        kept = {path: path.read_bytes() if path.is_file() else None for path in paths}
+        finished = False
         try:
             yield
-        except MissionError, KeyboardInterrupt:
-            for path, written in kept.items():
-                path.write_bytes(written)
-            self._reloaded()
-            raise
+            finished = True
+        finally:
+            if not finished:
+                for path, written in kept.items():
+                    if written is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_bytes(written)
+                self._reloaded()
 
     def _reloaded(self) -> Manifest:
         """The manifest read again from its file, everything the board derived from it dropped."""

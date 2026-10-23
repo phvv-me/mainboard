@@ -35,11 +35,28 @@ class UnreferencedPublicDeclaration(Rule, id="ALL-REAC0001", applicability="revi
     """Public module-level classes and functions no reference in the repository reaches. A module
     that a configuration file names (a `[project.scripts]` or plugin entry) is loaded by a
     framework that calls its functions by name, and so is an `on_<event>` function of a `hooks/`
-    folder (MkDocs reads those from `mkdocs.yml`), so none is dead."""
+    folder (MkDocs reads those from `mkdocs.yml`), so none is dead. Neither is a class some
+    ancestor's `__init_subclass__` registers on definition (a rule, a relation, a plugin): the
+    hook is its reference, and deleting it would delete the registry's entries (505 of mainboard's
+    own 539 findings were rules, 2026-10-23)."""
 
     query = r"""
-        SELECT * FROM reach_confined() r
+        WITH RECURSIVE hooked AS (
+          SELECT class_id FROM class_methods
+          WHERE name IN ('__init_subclass__', '__pydantic_init_subclass__')
+          UNION
+          SELECT e.child FROM override_edges e JOIN hooked h ON e.parent = h.class_id
+        )
+        SELECT r.* FROM reach_confined() r
         WHERE kind IN ('class', 'function') AND own = 0
+          -- Called by name (`carrier.call("where", ...)`, a dispatch key, an `__all__` entry),
+          -- which is why the fix keeps it too.
+          AND NOT EXISTS (SELECT 1 FROM reach_quoted_words() w
+                          WHERE w.word = regexp_extract(r.qualname, '[^.]+$'))
+          AND NOT (kind = 'class' AND EXISTS (
+            SELECT 1 FROM hooked h JOIN class_classes c USING (class_id)
+            WHERE c.path = r.path AND c.scope = 'module'
+              AND c.name = regexp_extract(r.qualname, '[^.]+$')))
           AND NOT (starts_with(regexp_extract(qualname, '[^.]+$'), 'on_')
                    AND list_contains(string_split(r.path, '/'), 'hooks'))
           AND NOT EXISTS (

@@ -10,10 +10,12 @@
 # own under the step's deadline, run by the host's login bash.
 
 import os
+import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
 from enum import StrEnum, auto
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -24,12 +26,12 @@ from ..core.project import Project
 from ..dispatch.shells import Dialect
 from ..dispatch.targets import rooted
 from ..dispatch.transport import HostUnreachable, SshTransport
+from ..engines.compile.backend import PixiEngine
 from ..lint.process import MISSING, TIMED_OUT, Invocation
 from .definition import Family, family_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
-    from pathlib import Path
 
     from ..context.plan import ExecutionPlan
     from .definition import Step
@@ -43,6 +45,12 @@ SHIP = "ship"
 # The variable `uv run` leaves pointing at the environment it ran from. A step names its own
 # project's environment through uv, so an inherited one would only draw a mismatch warning.
 _INHERITED_VENV = "VIRTUAL_ENV"
+# A pixi-global tool's launcher (`uv`, `cargo`) exports its own environment here to everything it
+# starts, a toolchain prefix with no Python, which ty takes for the step's interpreter
+# (2026-10-23). An inherited one is dropped; cargo sets its own as it starts, so PyO3's build is
+# told the step's interpreter outright (`_PYO3_PYTHON`), which it reads before this.
+_CONDA_PREFIX = "CONDA_PREFIX"
+_PYO3_PYTHON = "PYO3_PYTHON"
 
 
 class Verdict(StrEnum):
@@ -149,7 +157,13 @@ class LocalLeg(Leg):
         self.root = root
 
     def _step(self, step: Step) -> Result:
-        environment = {key: value for key, value in os.environ.items() if key != _INHERITED_VENV}
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key != _INHERITED_VENV and not (key == _CONDA_PREFIX and _global_tool(value))
+        }
+        if interpreter := shutil.which("python", path=environment.get("PATH")):
+            environment.setdefault(_PYO3_PYTHON, interpreter)
         outcome = Invocation(
             step=step.name,
             owner=".",
@@ -233,3 +247,8 @@ class RemoteLeg(Leg):
             return self.result(step.name, verdict, started=started, output=str(error))
         output = out + err
         return self.result(step.name, Verdict.of(code), started=started, output=output)
+
+
+def _global_tool(prefix: str) -> bool:
+    """Whether `prefix` is one of pixi's global environments, a tool's own, never a step's."""
+    return Path(prefix).is_relative_to(PixiEngine.home() / "envs")

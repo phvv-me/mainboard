@@ -1,4 +1,5 @@
 import os
+import shlex
 import sys
 import time
 from contextlib import suppress
@@ -19,6 +20,7 @@ from rich.console import Console
 from . import staleness, upkeep
 from .agents import Agents
 from .apple import Apple
+from .apps import Apps, PlacedApp
 from .batch.spec import BatchSpec, Selection
 from .board import Board
 from .center.migrate import Migration
@@ -50,10 +52,11 @@ from .holds import Holds
 from .jobs import lanes as lanes_module
 from .line import Line
 from .lint import Inventory, Linter
-from .lint.git import topmost
+from .lint.git import nested_projects, topmost
 from .listing import Listing
 from .log import configure
 from .manifest.loading import composition, load, load_plot_config
+from .manifest.schema.app import Suite
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
 from .probe.reverse.service import DeviceProbe
@@ -204,7 +207,9 @@ _SPEC_ONLY = Declared()
 
 
 class LaneResources(TypedDict):
-    """What each job of a test lane asks of its host, handed to `Board.submit` by keyword."""
+    """What each job of a test lane asks of its host and brings home, handed to `Board.submit`
+    by keyword: everything a single submit takes but the command and its name, which a lane
+    dropped silently (B14)."""
 
     queue: str
     walltime: str
@@ -214,6 +219,10 @@ class LaneResources(TypedDict):
     max_usd: float
     spot: bool
     arch: str
+    fetch: str | None
+    needs: tuple[str, ...]
+    env: str
+    container: str
 
 
 def build(root: Path | None = None) -> App:
@@ -251,7 +260,8 @@ def build(root: Path | None = None) -> App:
     app.command(self_)
     app.command(probe)
     # Imported on first use: the engine brings DuckDB and the whole rule catalog.
-    app.command("mainboard.analysis.cli:analyze", name="analyze")
+    app.command("mainboard.analysis.cli:rules", name="rules")
+    app.command("mainboard.analysis.cli:analyze", name="analyze", show=False)
 
     def workspace_root() -> Path:
         return root or project.find_root(Path.cwd())
@@ -479,6 +489,10 @@ def build(root: Path | None = None) -> App:
                     "max_usd": max_usd,
                     "spot": spot,
                     "arch": arch,
+                    "fetch": fetch or None,
+                    "needs": needs,
+                    "env": env,
+                    "container": container,
                 },
                 node=node,
                 estimate=estimate,
@@ -600,7 +614,8 @@ def build(root: Path | None = None) -> App:
         code = 0
         for host in hosts:
             for chosen in groups:
-                line = [target, "--", *fresh, *chosen.ids, "--", *pytest_args]
+                # The target's own tokens: joined whole, it reached the host as one (B43).
+                line = [*shlex.split(target), "--", *fresh, *chosen.ids, "--", *pytest_args]
                 if host == "local":
                     ran = board("local").run(line)
                     code = code or ran
@@ -618,10 +633,13 @@ def build(root: Path | None = None) -> App:
         _COMPACT.print_rows(
             [{"host": h, "group": g, "handle": i} for h, g, i in dispatched], title="dispatched"
         )
-        for host, _, identity in dispatched if wait else ():
-            if not identity.startswith("local exit"):
-                code = code or show(identity, on=host, wait=True, quiet=True)
-        return code
+        # Every handle is waited on, a failure among them or not (B39).
+        waited = [
+            show(identity, on=host, wait=True, quiet=True)
+            for host, _, identity in (dispatched if wait else ())
+            if not identity.startswith("local exit")
+        ]
+        return code or next((status for status in waited if status), 0)
 
     @job.command
     def show(
@@ -2342,6 +2360,83 @@ def build(root: Path | None = None) -> App:
                 successful &= report.successful
         return code or (0 if successful else 1)
 
+    applications = App(
+        name="app",
+        help="Build and test the apps a manifest declares (`[apps.<name>]`), from anywhere.",
+    )
+    app.command(applications)
+
+    @applications.command(name="list")
+    def app_list(*, output: Output = _COMPACT) -> None:
+        """Every app in the workspace and its nested projects, with its devices and suites."""
+        root = workspace_root()
+        output.print_rows(
+            [
+                {
+                    "app": name,
+                    "home": str(placed.home.relative_to(root)),
+                    "devices": " ".join(placed.spec.devices),
+                    "suites": " ".join(placed.spec.suites),
+                }
+                for name, placed in Apps.at(root).found.items()
+            ],
+            title="apps",
+            columns=("app", "home", "devices", "suites"),
+        )
+
+    def app_run(placed: PlacedApp, suite: Suite, device: str) -> int:
+        """Run `suite` of `placed` on each chosen device through `apple execute`.
+
+        The worst device's verdict is the run's.
+        """
+        placed.enter(suite)
+        return max(
+            apple_execute(
+                placed.project(suite),
+                scheme=suite.scheme or placed.spec.scheme,
+                action=suite.action,
+                destination=placed.destination(chosen),
+                configuration=suite.configuration,
+                derived_data=placed.derived_data(suite, chosen),
+                results=placed.home / ".build" / "Results",
+                only_testing=tuple(suite.only),
+                skip_testing=tuple(suite.skip),
+                setting=placed.settings(suite, chosen),
+                timeout=suite.timeout,
+                url_test=placed.home / suite.url_test if suite.url_test else None,
+            )
+            for chosen in placed.devices(suite, device)
+        )
+
+    @applications.command(name="test")
+    def app_test(name: str, suite: str = "", *, device: str = "") -> int:
+        """Run an app's suite, or its scheme's whole test action when none is named.
+
+        Args:
+            name: the app, as `app list` shows it.
+            suite: one of its `[apps.<name>.suites]`.
+            device: one of its devices, `all` for every one; the suite's when omitted.
+        """
+        placed = Apps.at(workspace_root()).named(name)
+        return app_run(placed, placed.suite(suite), device)
+
+    @applications.command(name="build")
+    def app_build(
+        name: str, *, device: str = "", configuration: str = "Debug", timeout: float = 900
+    ) -> int:
+        """Build an app's scheme for a device, and retain the build's diagnostics.
+
+        Args:
+            name: the app, as `app list` shows it.
+            device: one of its devices, `all` for every one; its first when omitted.
+            configuration: Debug or Release.
+            timeout: hard limit in seconds per device.
+        """
+        placed = Apps.at(workspace_root()).named(name)
+        return app_run(
+            placed, Suite(action="build", configuration=configuration, timeout=timeout), device
+        )
+
     @apple.command(name="diagnostics")
     def apple_diagnostics(path: Path, *, output: Output = _COMPACT) -> int:
         """Read compiler errors, warnings, source locations and the build action's status.
@@ -2585,12 +2680,26 @@ def build(root: Path | None = None) -> App:
         return 1
 
     @lake.command(name="upgrade")
-    def lake_upgrade() -> None:
-        """Migrate the lake's catalog to the newest DuckLake spec this DuckDB writes.
+    def lake_upgrade(*, output: Output = _COMPACT) -> None:
+        """Migrate the catalog of this workspace's lake, and of each project in it keeping one
+        of its own (`research/cuda-tokenization/.mb`), to the newest DuckLake spec this DuckDB
+        writes, since a reader of this workspace reads those too.
 
         One way: run it once every machine reading the lake runs a release that reads that spec.
         """
-        print(Lake.at(workspace_root()).upgrade())
+        root = workspace_root()
+        project = Project()
+        homes = [root] + [
+            home
+            for home in nested_projects(root)
+            if any((home / state).is_dir() for state in project.out_dirs)
+        ]
+        rows = [
+            {"lake": str(lake.catalog), "spec": lake.upgrade()}
+            for lake in map(Lake.at, homes)
+            if lake.exists()
+        ]
+        output.print_rows(rows, title="lake upgrade", columns=("lake", "spec"))
 
     @lake.command
     def serve(*, port: int = PORT, token: str = "", timeout: float = 10) -> None:
@@ -2695,11 +2804,15 @@ def build(root: Path | None = None) -> App:
     @git.command(name="commit")
     def git_commit(
         *paths: Path,
-        message: Annotated[str, Parameter(name=["--message", "-m"])],
+        message: Annotated[list[str], Parameter(name=["--message", "-m"])],
         everything: Annotated[bool, Parameter(name=["--all", "-a"], negative="")] = False,
         output: Output = _COMPACT,
     ) -> int:
         """Commit the named paths, or what each owned repository has staged, submodules first.
+
+        One run can land a different commit in each repository: `-m REPO=TEXT` is the message
+        of the owned repository at path `REPO`, and a bare `-m TEXT` is everyone else's. A
+        parent that only records pointers needs none and says which submodules moved.
 
         A path goes to the deepest owned repository holding it and is committed alone, as `git
         commit <path>` would: whatever else sits in that index stays there for whoever staged
@@ -2718,7 +2831,7 @@ def build(root: Path | None = None) -> App:
 
         Args:
             paths: files or directories to commit, relative to the working directory.
-            message: the commit message, the same for every repository committed.
+            message: `TEXT` for every repository, or `REPO=TEXT` for one, repeated as needed.
             everything: commit every change in every owned repository.
         """
         with progress("committing the repository tree"):
@@ -3211,6 +3324,7 @@ def main() -> None:
     for stream in (sys.stdout, sys.stderr):
         if isinstance(stream, TextIOWrapper):
             stream.reconfigure(errors="replace")
+    Apple.select_xcode()
     if not Project().variable("LOG_FORMAT").read() and sys.argv[1:2] != ["execute"]:
         configure(output="line")
     app = build()

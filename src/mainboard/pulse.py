@@ -138,7 +138,7 @@ class Probe:
                 hosts.setdefault(record.target, []).append(record)
                 continue
             output = self.board.job(record.handle, host=record.target).transcript()
-            readings[record] = Reading(output=output)
+            readings[record] = Reading(output=output or "")
         for target, owned in hosts.items():
             readings.update(self.hosted(target, owned))
         return readings
@@ -160,8 +160,9 @@ class Probe:
 
 
 def _key(record: RunRecord) -> str:
-    """The name a run's output is remembered under, its host and handle."""
-    return f"{record.target}/{record.handle}"
+    """The name a run's output is remembered under: its host, handle and submission, since a
+    scheduler reuses handles and a new attempt inherited the last one's silence (B11)."""
+    return f"{record.target}/{record.handle}/{record.submitted_at}"
 
 
 def logged(remote: Machine, root: str, record: RunRecord) -> str:

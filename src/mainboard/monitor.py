@@ -210,16 +210,24 @@ class Monitor:
         }
         return {target: why for target, (_, why) in self.silent.items()}
 
-    def capture(self, record: RunRecord, job: Run) -> tuple[str, ...]:
+    def capture(self, record: RunRecord, job: Run, *, required: bool = True) -> tuple[str, ...]:
         """Save the native log and deduplicated receipts before a rental can be destroyed.
 
         A retry can read the saved log after the provider disappears. Files are flushed before
         the delivery checkpoint is published; receipt references are verified separately.
+
+        required: a log that could not be read keeps the run pending (B03); a cancel, which
+            settles the run whatever its host says, takes what was saved instead.
         """
         stream, name = streamed(record.name or "", handle=record.handle)
         transcript = job.transcript()
         if not transcript:
-            return receipts_in(self.captured.transcript(stream, record.handle) or "")
+            saved = self.captured.transcript(stream, record.handle)
+            if required and transcript is None and saved is None:
+                # Settled now, the run would be released with a log nobody read (B03); pending,
+                # it is asked again next pass, and its release deadline still bounds the rental.
+                raise MissionError("the run's log could not be read; kept for the next pass")
+            return receipts_in(saved or "")
         harvested = receipts_in(transcript)
         self.captured.keep_transcript(stream, record.handle, transcript)
         self.captured.keep_receipts(stream, harvested)

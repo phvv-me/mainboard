@@ -2,17 +2,21 @@
 
 import json
 import os
+import plistlib
 import sys
 from pathlib import Path
 from typing import Literal
 
 import pytest
+from plumbum import local
+from pydantic import JsonValue
+
+from mainboard import apple
 from mainboard.apple import Apple
 from mainboard.cli import build
 from mainboard.core.errors import MissionError
 from mainboard.core.tool import ToolOutput
 from mainboard.proc import Processes
-from pydantic import JsonValue
 
 
 class ResultTool:
@@ -869,3 +873,41 @@ def test_url_host_uses_exact_destination_and_temporary_literal_descriptor(
             bundle=tmp_path / "other.xcresult",
             url_test=configuration,
         )
+
+
+@pytest.mark.parametrize(
+    ("selected", "preset", "chosen"),
+    [
+        ("/Library/Developer/CommandLineTools", None, "Xcode-beta.app"),
+        ("/Applications/Xcode.app/Contents/Developer", None, None),
+        ("/Library/Developer/CommandLineTools", "/elsewhere", "/elsewhere"),
+    ],
+)
+def test_select_xcode_replaces_only_the_command_line_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selected: str,
+    preset: str | None,
+    chosen: str | None,
+) -> None:
+    for name, version in (("Xcode.app", "26.4"), ("Xcode-beta.app", "27.0")):
+        (tmp_path / name / "Contents").mkdir(parents=True)
+        with (tmp_path / name / "Contents" / "Info.plist").open("wb") as info:
+            plistlib.dump({"CFBundleShortVersionString": version}, info)
+    (tmp_path / "link").symlink_to(selected)
+    monkeypatch.setattr(apple, "_APPLICATIONS", tmp_path)
+    monkeypatch.setattr(apple, "_XCODE_SELECT", str(tmp_path / "link"))
+    monkeypatch.setattr(apple.sys, "platform", "darwin")
+    monkeypatch.delenv("DEVELOPER_DIR", raising=False)
+    # plumbum's copy of the environment, which the selection also sets, is restored afterwards.
+    monkeypatch.setitem(local.env, "DEVELOPER_DIR", "")
+    monkeypatch.delitem(local.env, "DEVELOPER_DIR")
+    if preset:
+        monkeypatch.setenv("DEVELOPER_DIR", preset)
+
+    Apple.select_xcode()
+
+    expected = (
+        chosen if chosen in (None, preset) else str(tmp_path / chosen / "Contents" / "Developer")
+    )
+    assert os.environ.get("DEVELOPER_DIR") == expected

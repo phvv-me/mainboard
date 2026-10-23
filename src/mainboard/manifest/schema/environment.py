@@ -1,3 +1,5 @@
+from typing import Self
+
 from pydantic import ConfigDict, Field
 
 from ...core.base import kebab
@@ -8,7 +10,11 @@ type Task = str | dict[str, str | list[str] | dict[str, str]]
 
 
 class Env(Scope):
-    """A named environment: its own deps, overlays, tasks, and solve surface."""
+    """A named environment: its own deps, overlays, tasks, and solve surface.
+
+    holds: the requirements of this environment `upgrade` leaves as written, each with the reason
+        (`torch` beside a vLLM that pins it exactly), as the root's `[holds]` does everywhere.
+    """
 
     channels: list[str] = []
     on: dict[str, PlatformScope] = {}
@@ -22,3 +28,28 @@ class Env(Scope):
     # (with the manifest and lock) instead of its sync include: a rented machine running cutok
     # needs cutok's sources and the workspace packages it imports, not every project's.
     sources: list[str] = []
+    holds: dict[str, str] = {}
+
+    def merged(self, over: Self) -> Self:
+        """This environment layered over `over`, another manifest's of the same name: requirements,
+        overlays, tasks, channels and sources joined, this one's settings and bounds winning where
+        both set them, so a project's contribution never loosens what the root declares."""
+        merged = super().merged(over)
+        on = {
+            platform: self.on[platform].merged(over.on[platform])
+            if platform in self.on and platform in over.on
+            else self.on.get(platform) or over.on[platform]
+            for platform in self.on.keys() | over.on.keys()
+        }
+        return merged.model_copy(
+            update={
+                "channels": list(dict.fromkeys([*self.channels, *over.channels])),
+                "on": on,
+                "tasks": over.tasks | self.tasks,
+                "no_default": self.no_default or over.no_default,
+                "platforms": self.platforms or over.platforms,
+                "system": over.system | self.system,
+                "sources": list(dict.fromkeys([*self.sources, *over.sources])),
+                "holds": over.holds | self.holds,
+            }
+        )

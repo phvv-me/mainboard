@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from itertools import chain
 from typing import TYPE_CHECKING
 
+from ..core.errors import MissionError
 from ..state.evidence import EvidenceTree
 from ..state.lake import quoted
 from ..state.relations import Relations, records
@@ -282,7 +283,9 @@ class Dataset:
                 f"AS _latest FROM receipts WHERE {self.admissible}) WHERE _latest = 1 "
                 f"ORDER BY {grouped}"
             )
-        return read.query("receipts", query)
+        if (passed := read.query("receipts", query)) is None:
+            raise MissionError("DuckDB ran the receipts' SELECT as a statement that writes")
+        return passed
 
     def rows(self, run: str = "") -> list[dict[str, JsonValue]]:
         """One run's receipts, the newest run when empty, as plain records with JSON decoded."""

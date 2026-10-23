@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -22,6 +23,33 @@ def test_a_fresh_lake_is_whole_and_compacts(mb) -> None:
     assert mb("lake", "check").code == 0
     ran = mb("lake", "compact")
     assert ran.code == 0 and "compacted" in ran.out
+
+
+def test_upgrade_reaches_the_lake_of_every_project_in_the_workspace(mb, workspace: Path) -> None:
+    nested = workspace / "research" / "lab"
+    nested.mkdir(parents=True)
+    (nested / "mb.toml").write_text('[workspace]\nname = "lab"\n', encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+    subprocess.run(["git", "-C", str(workspace), "add", "mb.toml", "research"], check=True)
+    lakes = [Lake.at(workspace), Lake.at(nested)]
+    for lake in lakes:
+        lake.create()
+    ran = mb("lake", "upgrade", "--json")
+    assert ran.code == 0, ran.said
+    assert {row["lake"] for row in json.loads(ran.out)} == {str(lake.catalog) for lake in lakes}
+
+
+def test_a_catalog_at_an_older_spec_names_the_upgrade(mb, workspace: Path) -> None:
+    lake = Lake.at(workspace)
+    lake.create()
+    with sqlite3.connect(lake.catalog) as catalog:
+        catalog.execute("UPDATE ducklake_metadata SET value = '1.1-dev1' WHERE key = 'version'")
+    catalog.close()
+    ran = mb("lake", "check", "--json")
+    assert ran.code == 1
+    [finding] = json.loads(ran.out)
+    assert finding["kind"] == "catalog" and "`mb lake upgrade`" in finding["detail"]
+    assert "AUTOMATIC_MIGRATION" not in finding["detail"]
 
 
 @pytest.fixture

@@ -13,7 +13,7 @@ import pytest
 
 from mainboard import upkeep
 from mainboard.cli import build
-from mainboard.core.errors import MissionError
+from mainboard.core import MissionError
 from mainboard.core.section import Section, Verdict
 from mainboard.delimiter import Delimiter
 from mainboard.results import Results
@@ -149,6 +149,9 @@ def test_a_bounded_command_keeps_its_own_options_and_delimiter(mb) -> None:
         ("run x.py::t -- --collect-only", "run -- x.py::t -- --collect-only"),
         # The verb's own options after the target, ended by the caller: left to the parser.
         ("job submit x.py::t --on gold -- --fresh a", "job submit x.py::t --on gold -- --fresh a"),
+        ("run x.py --env lab -- -k y", "run x.py --env lab -- -k y"),
+        # A program's own help, before its own `--`, is the program's.
+        ("run tool --help -- x", "run -- tool --help -- x"),
     ],
 )
 def test_the_delimiter_goes_where_the_command_starts(typed: str, placed: str) -> None:

@@ -310,6 +310,10 @@ def selected_manifest(manifest: Manifest, environment: str) -> Manifest:
     `default` is root plus dev, a named environment root plus itself, a `no-default` one itself
     alone; unrelated environments never enter the shard. Non-compile tables are dropped, since a
     host naming a removed environment would fail referential validation.
+
+    A `no-default` environment still solves against the workspace's `[system]` floors, which
+    describe the machines rather than the dependencies, unless it declares its own: cleared,
+    a lean environment solved for glibc 2.28 and refused pynvvideocodec's 2.34 wheel (2026-10-23).
     """
     selected = manifest.environment(environment)
     body = manifest.model_dump(mode="python", round_trip=True)
@@ -321,7 +325,6 @@ def selected_manifest(manifest: Manifest, environment: str) -> Manifest:
     if selected.no_default:
         body["deps"] = {}
         body["on"] = {}
-        body["system"] = {}
         for toolchain in manifest.toolchains():
             body.pop(toolchain, None)
     return type(manifest).model_validate(body)

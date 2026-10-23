@@ -77,11 +77,14 @@ class Compiler:
         """
         if update is not None:
             self.pixi.update(self.environment, update)
-            self.__commit(files)
+            self.__commit(files, freed=not update)
             return True
         if policy is LockPolicy.UPDATE and not self.fresh():
-            self.pixi.solve()
-            self.__commit(files)
+            if moved := SyncState.load(self.out).moved:
+                self.pixi.update(self.environment, moved)
+            else:
+                self.pixi.solve()
+            self.__commit(files, freed=True)
             return True
         if policy is LockPolicy.LOCKED:
             self.vouch()
@@ -93,8 +96,10 @@ class Compiler:
         """Install this shard from its lock, which `locked` has already brought up to policy."""
         self.pixi.install(self.environment)
 
-    def __commit(self, files: Writer) -> None:
+    def __commit(self, files: Writer, *, freed: bool) -> None:
         """Record the shard's freshly solved lock in the workspace's committed lock.
+
+        freed: the solve re-resolved every requirement that changed ecosystem.
 
         The commit names the digest solved from and the pixi that wrote the lock, in the committed
         lock and in the state beside the shard's copy, so a host that never solved installs any
@@ -115,7 +120,7 @@ class Compiler:
                 + "; ".join(mixed)
                 + ". Pin it to its source in that environment (a `no-default` one included)."
             )
-        self.__bless(files, solved)
+        self.__bless(files, solved, freed=freed)
 
     def materialize(self, files: Writer) -> Solved | None:
         """Bring the shard's lock and blessing in line with the committed lock, returning it.
@@ -309,6 +314,11 @@ class Compiler:
             generated_dir=self.generated_dir,
         ).to_toml()
         state = SyncState.load(self.out)
+        moved = state.moved
+        if self.pixi.manifest.exists():
+            moved = self._moved(
+                self.pixi.manifest.read_text(encoding="utf-8"), compiled, pending=moved
+            )
         self.out.mkdir(parents=True, exist_ok=True)
         self._write_generated_files(files, compiled=compiled)
         # Last, so a crash above leaves the workspace stale. `solved_from` is carried through:
@@ -321,6 +331,7 @@ class Compiler:
                     "compiled_from": source_digest,
                     "compiled_at": str(self.root),
                     "runtime_from": self.stage.digest(),
+                    "moved": moved,
                 }
             ),
         )
@@ -360,11 +371,30 @@ class Compiler:
             files.remove(self.out / _UNSET_SH_FILE)
         self.stage.generate(files, self.environment)
 
-    def __bless(self, files: Writer, solved: Solved) -> None:
-        """Record `solved`'s digest and pixi in the shard's state, the rest carried through."""
+    def __bless(self, files: Writer, solved: Solved, *, freed: bool = False) -> None:
+        """Record `solved`'s digest and pixi in the shard's state, the rest carried through.
+
+        freed: the solve re-resolved every requirement that changed ecosystem, so none is owed.
+        """
         state = SyncState.load(self.out)
-        update = {"solved_from": solved.solved_from, "solved_by": solved.solved_by}
+        moved = () if freed else state.moved
+        update = {"solved_from": solved.solved_from, "solved_by": solved.solved_by, "moved": moved}
         self.__persist_state(files, state.model_copy(update=update))
+
+    @staticmethod
+    def _moved(before: str, after: str, *, pending: Sequence[str]) -> tuple[str, ...]:
+        """The requirements a compile owes a solve that frees them.
+
+        These are `pending` and those the compiled manifest `after` takes from another
+        ecosystem than `before` did, conda to PyPI or back.
+        """
+        old, new = tomllib.loads(before), tomllib.loads(after)
+        changed = (
+            _requirements(old, "dependencies") - _requirements(new, "dependencies")
+        ) & _requirements(new, "pypi-dependencies") | (
+            _requirements(old, "pypi-dependencies") - _requirements(new, "pypi-dependencies")
+        ) & _requirements(new, "dependencies")
+        return tuple(sorted({*pending, *changed}))
 
     def __persist_state(self, files: Writer, state: SyncState) -> None:
         files.write(SyncState.path(self.out), state.render())
@@ -381,12 +411,30 @@ def _tables(parent: Toml | None) -> list[dict[str, Toml]]:
     return [table for table in parent.values() if isinstance(table, dict)]
 
 
+def _scopes(document: dict[str, Toml]) -> list[dict[str, Toml]]:
+    """The root of a compiled manifest, every feature, and each of their targets."""
+    return [
+        scope
+        for table in (document, *_tables(document.get("feature")))
+        for scope in (table, *_tables(table.get("target")))
+    ]
+
+
+def _requirements(document: dict[str, Toml], key: str) -> set[str]:
+    """The names a compiled manifest requires under `key`, anywhere, as the indexes normalize
+    them."""
+    return {
+        name.lower().replace("_", "-")
+        for scope in _scopes(document)
+        if isinstance(declared := scope.get(key), dict)
+        for name in declared
+    }
+
+
 def _stripped(document: dict[str, Toml], key: str) -> dict[str, Toml]:
     """`document` with `key` popped from the root, every feature, and their targets."""
-    for table in (document, *_tables(document.get("feature"))):
-        table.pop(key, None)
-        for target in _tables(table.get("target")):
-            target.pop(key, None)
+    for scope in _scopes(document):
+        scope.pop(key, None)
     return document
 
 

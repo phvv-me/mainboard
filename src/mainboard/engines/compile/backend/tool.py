@@ -51,10 +51,10 @@ class Tool:
         """
         out: list[str] = []
         for key, value in options.items():
-            if value in (None, False, ""):
+            if not value:
                 continue
             out.append(f"--{key.replace('_', '-')}")
-            if value is not True:
+            if isinstance(value, str):
                 out.append(value)
         return out
 

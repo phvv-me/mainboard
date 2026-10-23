@@ -13,10 +13,12 @@ import time
 from pathlib import Path
 
 import duckdb
-import mainboard
 import pytest
 from cyclopts import App
 from guard import Guard
+
+import mainboard
+from mainboard.state.database import load
 
 # Seconds of the budget that launching, preflight and cleanup keep for themselves.
 _RESERVE = 30
@@ -38,8 +40,8 @@ _POSTGRES = ["postgres", "pg_ctl", "initdb", "psql"]
 # run it, else the checker the lane is named after, and none for `seed`.
 _TESTERS = {"suite", "target", "inspect"}
 # The DuckDB extensions `mainboard.state.lake` loads to attach a lake and to serve or reach one
-# over Quack, and the user cache every sandbox copies them from.
-_EXTENSIONS = ("ducklake", "sqlite", "httpfs", "quack")
+# over Quack, the syntax trees' `sitting_duck`, and the user cache every sandbox copies them from.
+_EXTENSIONS = ("ducklake", "sqlite", "httpfs", "quack", "sitting_duck")
 _SEED = Path.home() / ("Library/Caches" if sys.platform == "darwin" else ".cache") / "mb/duckdb"
 # What the inspect lane runs in this process, where every child process is refused.
 _HARNESS = "integration/gates/test_harness.py"
@@ -289,10 +291,7 @@ class Gate:
 
         A machine that never ran the tool needs it once; installing what is there changes nothing.
         """
-        connection = duckdb.connect()
-        connection.execute(f"SET extension_directory = '{_SEED.as_posix()}'")
-        for name in _EXTENSIONS:
-            connection.install_extension(name)
+        load(duckdb.connect(), _EXTENSIONS, _SEED)
         self.result["seed"] = {"directory": str(_SEED), "extensions": _EXTENSIONS}
         return 0
 
@@ -380,11 +379,6 @@ class Gate:
         darwin = sys.platform == "darwin"
         cache = self.root / ("home/Library/Caches/mb/duckdb" if darwin else "cache/mb/duckdb")
         shutil.copytree(_SEED, cache, dirs_exist_ok=True)
-        # The AST provider uses DuckDB's standard extension tree, not the lake's custom cache.
-        # Copy installed code only; no user database, profile or configuration enters the worker.
-        extensions = Path.home() / ".duckdb/extensions"
-        if extensions.is_dir():
-            shutil.copytree(extensions, self.root / "home/.duckdb/extensions", dirs_exist_ok=True)
 
     def _verify(self, versions: dict[str, str]) -> None:
         """Refuse a worktree other than this one and a lane tool that drifted from the baseline."""

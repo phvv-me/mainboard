@@ -244,7 +244,7 @@ class Verdicts:
         monitor = self.board.monitor()
         receipts: tuple[str, ...] = ()
         try:
-            receipts = monitor.capture(record, run)
+            receipts = monitor.capture(record, run, required=False)
             monitor.verify(record, run, monitor.pull(run), receipts)
         except (MissionError, OSError, ValueError) as fault:
             monitor.evidence(record, receipts, status="unverified", detail=f"cancelled: {fault}")
@@ -324,7 +324,7 @@ class Verdicts:
         stored = self.kept.transcript(stream, record.handle)
         if stored is not None:
             return stored
-        return self.board.job(record.handle, host=record.target).transcript()
+        return self.board.job(record.handle, host=record.target).transcript() or ""
 
     def handled(self, handle: str, *, host: str = "") -> StreamVerdict:
         """The settled truth of one dispatched run, its registry row under its receipts."""

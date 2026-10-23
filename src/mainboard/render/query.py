@@ -253,6 +253,30 @@ class Query:
         ResultHash(self.columns)  # Reject ambiguous names before any row is displayed.
         self.timeout = timeout
         self.explain = explain
+        self.expired = False
+
+    @classmethod
+    def started(
+        cls,
+        connection: duckdb.DuckDBPyConnection,
+        text: str,
+        snapshot_id: int,
+        *,
+        timeout: float = 10,
+        explain: bool = False,
+    ) -> Query:
+        """`text` run on `connection`. A blocking pipeline (an aggregate) runs inside `execute`
+        and can time out there, before any row: the query then holds the statement's bound
+        columns and renders as timed out, the same as one that timed out between rows."""
+        try:
+            return cls(connection.execute(text), snapshot_id, timeout=timeout, explain=explain)
+        except duckdb.Error as fault:
+            if not execution_timeout(fault):
+                raise
+        query = cls(connection, snapshot_id, timeout=timeout, explain=explain)
+        query.columns = tuple(connection.sql(text).columns)
+        query.expired = True
+        return query
 
     @property
     def header(self) -> str:
@@ -270,13 +294,13 @@ class Query:
             stream.write(f"ok\n{stamp.footer}; displayed=0; omitted=0\n")
             return stamp
         window = _Window(max_rows, max_bytes)
-        complete = True
-        timed_out = False
+        complete = not self.expired
+        timed_out = self.expired
         uncapped = max_rows <= 0 and max_bytes <= 0
         first = True
         if uncapped and mode != "human":
             sys.stdout.write("[" if mode == "json" else self.header + "\n")
-        while True:
+        while not timed_out:
             try:
                 batch = self.cursor.fetchmany(_CHUNK)
             except duckdb.Error as fault:

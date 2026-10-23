@@ -15,7 +15,7 @@ from .core.errors import MissionError
 from .dispatch.transport import terminate_process_tree
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
 # GNU `timeout`'s status for a command it had to stop, so scripts branching on it still work.
 TIMED_OUT = 124
@@ -82,7 +82,14 @@ class Processes:
                 gone.append(pid)
         return gone
 
-    def timeout(self, seconds: float, command: Sequence[str], *, cwd: Path | None = None) -> int:
+    def timeout(
+        self,
+        seconds: float,
+        command: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> int:
         """Run `command` with this terminal's stdio, stopping its whole tree after `seconds`.
 
         Answers the command's own exit status, or `TIMED_OUT` when it had to be stopped. The
@@ -92,7 +99,7 @@ class Processes:
         if not command:
             raise MissionError("proc timeout needs a command to run")
         try:
-            process = subprocess.Popen(list(command), cwd=cwd)  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the caller's own argv, run without a shell since=2026-09-25
+            process = subprocess.Popen(list(command), cwd=cwd, env=env)  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the caller's own argv, run without a shell since=2026-09-25
         except OSError as fault:
             raise MissionError(f"cannot start {command[0]}: {fault}") from fault
         try:

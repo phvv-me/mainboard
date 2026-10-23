@@ -122,13 +122,20 @@ class EmptyDeclarativeModel(Rule, id="PY-MODE0006"):
     """Declarative models that own no field. A class body that assigns a call to a lowercase name
     declares its fields in a column DSL (`name = sql.PK(str)`, and so do the classes derived from
     it), a model naming a `metaclass` is the base that DSL's models derive from, and a registry
-    implementation (`name = "leech"`) is keyed, not a record."""
+    implementation (`name = "leech"`) is keyed, not a record; so is a class an `__init_subclass__`
+    hook of its own or of an ancestor registers on definition (a rule, a relation), keyed by
+    the class itself."""
 
     query = r"""
         SELECT * FROM class_classes c
         WHERE is_declarative_model AND field_count = 0 AND NOT has_inherited_fields
           AND NOT is_protocol
           AND NOT has_explicit_registry_name
+          AND NOT EXISTS (SELECT 1 FROM class_methods m
+                          WHERE m.name IN ('__init_subclass__', '__pydantic_init_subclass__')
+                            AND (m.class_id = c.class_id
+                                 OR m.class_id IN (SELECT ancestor FROM class_lineage l
+                                                   WHERE l.class_id = c.class_id)))
           AND NOT EXISTS (SELECT 1 FROM class_defs d
                           JOIN class_body_assigns a ON a.fact_id = d.fact_id
                             AND a.class_node = d.class_node

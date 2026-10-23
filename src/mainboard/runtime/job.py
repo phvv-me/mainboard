@@ -163,3 +163,10 @@ def walltime_seconds(walltime: str) -> int:
     """A `HH:MM:SS` walltime as whole seconds."""
     hours, minutes, seconds = (int(part) for part in walltime.split(":"))
     return hours * 3600 + minutes * 60 + seconds
+
+
+def walltime(seconds: float) -> str:
+    """Whole `seconds` as the `HH:MM:SS` a walltime is written in, hours past 24 included: a
+    clock format wrapped a 25-hour allocation to one hour (B28)."""
+    hours, rest = divmod(int(seconds), 3600)
+    return f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"

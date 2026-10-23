@@ -12,12 +12,13 @@ from unittest.mock import Mock
 
 import duckdb
 import pytest
-from mainboard.core.errors import MissionError
+from PIL import Image
+
+from mainboard.core import MissionError
 from mainboard.render.query import Query, canonical, execution_timeout
 from mainboard.results import Results
 from mainboard.state import schema
-from mainboard.state.lake import Lake
-from PIL import Image
+from mainboard.state import Lake
 
 from .conftest import _in_process
 
@@ -597,3 +598,9 @@ def test_lake_table_functions_bind_after_attach(workspace: Path) -> None:
     for sql in ("SELECT * FROM lake.current_snapshot()", "SELECT * FROM lake.snapshots()"):
         with Results(workspace).stream(sql) as query:
             assert query.cursor.fetchmany(1)
+
+
+def test_the_jobs_view_names_a_jobs_host_as_job_list_does(workspace) -> None:
+    columns = Results(workspace).query("SELECT * FROM jobs").columns
+
+    assert columns[0] == "host" and "server" not in columns

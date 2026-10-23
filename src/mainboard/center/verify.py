@@ -22,6 +22,7 @@ from ..core.section import Section, Verdict, staged
 from ..engines.compile.provisioner import Provisioner
 from ..fitness import Fitness, Role
 from ..probe.system import System
+from ..state.lake import Lake
 from ..workstation import Readiness, Workstation
 from .exposure import Exposure, Spawn, executables
 from .portable import Portability
@@ -104,6 +105,7 @@ class Verification:
             *self.board.doctor().sections(),
             self.plan(),
             self.smoke(),
+            self.lake(),
             self.lint(),
             *self.tree(),
             *agents.sections(),
@@ -163,6 +165,32 @@ class Verification:
         where = f"on {found['device']} (CUDA {found['cuda']})" if found["available"] else "on CPU"
         return Section(
             section="smoke", verdict=Verdict.PASS, detail=f"torch {found['torch']} {where}"
+        )
+
+    def lake(self) -> Section:
+        """Whether this center reaches the lake its manifest names.
+
+        A lake inside the workspace that has no catalog yet is one the first ingest creates; one
+        outside it is a mount or a copy the machine is missing.
+        """
+        lake = Lake.at(self.board.root)
+        if lake.exists():
+            return Section(
+                section="lake",
+                verdict=Verdict.PASS,
+                detail=f"catalog at {lake.served or lake.catalog}",
+            )
+        if lake.home.is_relative_to(self.board.root):
+            return Section(
+                section="lake",
+                verdict=Verdict.PASS,
+                detail=f"no lake yet; the first ingest creates it at {lake.home}",
+            )
+        return Section(
+            section="lake",
+            verdict=Verdict.FAIL,
+            detail=f"the manifest keeps the lake at {lake.home}, and {lake.catalog} is not here",
+            fix=f"mount or copy the lake to {lake.home}, then mainboard lake check",
         )
 
     def lint(self) -> Section:

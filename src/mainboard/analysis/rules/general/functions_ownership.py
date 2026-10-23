@@ -42,6 +42,17 @@ class FunctionsDeleteEnd(Function):
     expression = f"coalesce({_next_code('lines', 'last_line')}, last_line + 1)"
 
 
+class FunctionsMemberStart(Function):
+    """The first line deleting a class member that starts at `first_line` of a file's `lines`
+    removes: the blank lines before it go with it, so the blank lines after it still part its
+    class from what follows (delete through `last_line`)."""
+
+    lines: list[str]
+    first_line: int
+
+    expression = f"coalesce({_previous_code('lines', 'first_line')}, 0) + 1"
+
+
 _ATOMIC = (
     r"""^(-?[0-9][0-9_.]*|[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*"""
     r"""|"[^"\\]*"|''[^''\\]*'')$"""

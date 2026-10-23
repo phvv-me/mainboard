@@ -96,8 +96,8 @@ class AppleBundle:
             if self._value(info, key) != value:
                 violations.append(f"Info.plist {key} does not equal {value!r}")
         for key in require_info:
-            value = self._value(info, key)
-            if not isinstance(value, str) or not value.strip():
+            found = self._value(info, key)
+            if not isinstance(found, str) or not found.strip():
                 violations.append(f"Info.plist {key} is not nonempty text")
         resources = contents / "Resources" if contents != bundle else bundle
         localized: dict[str, str] = {}

@@ -48,6 +48,30 @@ class Facts(FrozenModel):
     claims: dict[str, Claim]
     queued: set[str]
 
+    def admit(self, resources: Resources) -> None:
+        """Refuse a job no allocation of a live line could run to its end."""
+        if self.line is None or self.stopped:
+            raise MissionError(
+                f"no line is held on this host; open one with `{Project().name} host hold "
+                "<host> --for 2h`. It takes the user's one interactive slot, so a shell on the "
+                "host is refused while it is held"
+            )
+        line, walltime = self.line, resources.walltime or ""
+        ends = datetime.fromtimestamp(line.deadline, UTC).isoformat(timespec="minutes")
+        needs = walltime_seconds(walltime) + line.grace
+        if self.now + needs > line.deadline:
+            raise MissionError(f"the held line ends {ends}, before a {walltime} job could finish")
+        if needs > walltime_seconds(line.walltime):
+            raise MissionError(
+                f"each allocation of the held line lasts {line.walltime}, too short for a "
+                f"{walltime} job and its {line.grace} s to start and stop"
+            )
+        if (resources.mem_gb or 0) > line.mem_gb:
+            raise MissionError(
+                f"each allocation of the held line has {line.mem_gb} GB, less than the "
+                f"{resources.mem_gb} GB this job asks for"
+            )
+
 
 class Held(Pbs):
     """Jobs for the line `host hold` keeps, routed by a queue declaring `scheduler = "held"`."""
@@ -92,17 +116,8 @@ class Held(Pbs):
         label: the creation intent the dispatch registry already holds for it.
         """
         spool = Remote(spool_path(root))
-        facts = self._facts(remote, spool, [])
         walltime = resources.walltime or ""
-        if facts.line is None or facts.stopped:
-            raise MissionError(
-                f"no line is held on this host; open one with `{Project().name} host hold "
-                "<host> --for 2h`. It takes the user's one interactive slot, so a shell on the "
-                "host is refused while it is held"
-            )
-        ends = datetime.fromtimestamp(facts.line.deadline, UTC).isoformat(timespec="minutes")
-        if facts.now + walltime_seconds(walltime) + facts.line.grace > facts.line.deadline:
-            raise MissionError(f"the held line ends {ends}, before a {walltime} job could finish")
+        self._facts(remote, spool, []).admit(resources)
         entry = Submission(
             handle=new_handle(),
             label=label,

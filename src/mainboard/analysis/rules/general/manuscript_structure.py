@@ -36,3 +36,20 @@ class FloatWithoutATextReference(Rule, id="ALL-MANU0006"):
                                                 WHERE r.fact_id = f.fact_id AND r.target = f.label)
     """
     message = "`{kind}` `{label}` is never referenced"
+
+
+class NumberedStatementNothingRefersTo(Rule, id="ALL-MANU0005"):
+    """Labelled statements no cross reference in the manuscript names. A measurement rather than
+    a defect: a statement can be worth numbering for the reader's navigation alone, so a project
+    states its own ceiling; kinds in `ignored_kinds` are illustrative and left alone."""
+
+    ignored_kinds: Sequence[str] = ("example", "remark")
+
+    query = """
+        SELECT path, line AS start_line, 0 AS start_column, kind, label
+        FROM manuscript_statements s
+        WHERE length(label) > 0 AND NOT list_contains($ignored_kinds::VARCHAR[], kind)
+          AND NOT EXISTS (SELECT 1 FROM manuscript_references r
+                          WHERE r.fact_id = s.fact_id AND r.target = s.label)
+    """
+    message = "`{kind}` `{label}` is numbered but nothing refers to it"

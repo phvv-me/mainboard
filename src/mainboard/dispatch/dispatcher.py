@@ -253,7 +253,7 @@ class Dispatcher:
         python = Dialect().python(
             environment_prefix(root, profile.env),
             host=host,
-            python=Lockfile(self.root).python_minor(profile.platform),
+            python=Lockfile(self.root).python_request(profile.platform),
         )
         try:
             published = Collector(self.root, ssh).pull(
@@ -392,7 +392,7 @@ class Dispatcher:
         python = Dialect().python(
             plan.prefix(plan.profile.root),
             host=plan.host,
-            python=Lockfile(self.root).python_minor(plan.profile.platform),
+            python=Lockfile(self.root).python_request(plan.profile.platform),
         )
         return Agent(SshLink(plan.host, policy), python=python, patience=policy.deadline)
 

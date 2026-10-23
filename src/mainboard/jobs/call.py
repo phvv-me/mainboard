@@ -21,8 +21,8 @@
 
 import importlib
 import os
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs this same runner per cell from typed tokens, never a shell string since=2026-09-12
 import sys
+import sysconfig
 from importlib.abc import MetaPathFinder
 from importlib.machinery import ModuleSpec, PathFinder
 from pathlib import Path
@@ -33,6 +33,7 @@ from cyclopts import App
 
 from ..dispatch.evidence import RECEIPTS_VAR
 from ..dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
+from ..proc import TIMED_OUT, Processes
 from . import beacon
 from .pins import staging
 from .target import SEPARATOR, TEST_PREFIX, dotted, home_of
@@ -42,6 +43,12 @@ if TYPE_CHECKING:
 
 # What separates the target from the arguments handed to it.
 DELIMITER = "--"
+
+# Where the environment's installed distributions live, never first-party code.
+_INSTALLED = tuple(
+    Path(path)
+    for path in dict.fromkeys(sysconfig.get_paths()[key] for key in ("purelib", "platlib"))
+)
 
 
 class Guard(MetaPathFinder):
@@ -102,13 +109,17 @@ class Guard(MetaPathFinder):
         return top in self.names and top not in self.deferred
 
     def holds(self, spec: ModuleSpec) -> bool:
-        """Whether the closure ships the file `spec` was found at; a portion with none passes."""
+        """Whether the closure ships the file `spec` was found at.
+
+        A portion with no file passes, and so does an installed distribution's file, the other
+        portions of a namespace the workspace shares with one.
+        """
         if spec.origin is None:
             return True
-        try:
-            return Path(spec.origin).relative_to(self.root).as_posix() in self.shipped
-        except ValueError:
-            return False
+        origin = Path(spec.origin)
+        if origin.is_relative_to(self.root):
+            return origin.relative_to(self.root).as_posix() in self.shipped
+        return any(origin.is_relative_to(path) for path in _INSTALLED)
 
     def judged(self, fullname: str, spec: ModuleSpec) -> ModuleSpec:
         """The rewrite hook's `spec` when the closure lets `fullname` import it, else a refusal."""
@@ -202,15 +213,13 @@ class Fresh:
             cell = f"{spelling}[{identity}]"
             print(f"mainboard: fresh process for {cell}", flush=True)
             command = [sys.executable, "-m", __spec__.name, cell, DELIMITER, *self.args]
-            try:
-                completed = subprocess.run(command, check=False, timeout=self.timeout, env=nested)
-            except subprocess.TimeoutExpired:
+            code = Processes().timeout(self.timeout, command, env=nested)
+            if code == TIMED_OUT:
                 print(f"mainboard: {cell} exceeded {self.timeout:g} s and was killed", flush=True)
                 if dispatched:
                     beacon.say(beacon.CELL, f"failed {cell}")
-                return 124
-            if completed.returncode:
-                return completed.returncode
+            if code:
+                return code
         return 0
 
 

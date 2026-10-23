@@ -6,10 +6,16 @@
 # Settings are applied with SET after connecting, since DuckDB refuses a session option (the
 # progress bar) in the startup config; what a call site requires at startup (where extensions
 # load from) it passes as `config`. An unknown name is DuckDB's own error, never skipped.
+#
+# Extensions load from a folder this tool owns under the user's cache, never the workspace and
+# never DuckDB's default shared with every other program. Loading comes first and installing only
+# when loading fails, so a machine with no network still works once the extensions are there.
 
 import os
-from collections.abc import Mapping
+import sys
+from collections.abc import Iterable, Mapping
 from functools import cache
+from pathlib import Path
 
 import duckdb
 
@@ -27,11 +33,63 @@ DEFAULTS: dict[str, Setting] = {"timezone": "UTC", "enable_progress_bar": False}
 # per core on the GH200 (2026-10-10). `_unpinned` releases the instance the import opened.
 STARTUP: dict[str, Setting] = {"pin_threads": "off"}
 PREFIX = "MB_DUCKDB_"
+# The repository an extension installs from when it is not one of DuckDB's core extensions.
+COMMUNITY = {"sitting_duck"}
 
 
 def quoted(text: str) -> str:
     """`text` as a SQL string literal."""
     return "'" + text.replace("'", "''") + "'"
+
+
+def cache_home(
+    platform: str = sys.platform,
+    environ: Mapping[str, str] = os.environ,
+    home: Path | None = None,
+) -> Path:
+    """The user's cache directory on `platform`: `~/Library/Caches` on macOS, else
+    `XDG_CACHE_HOME` or `~/.cache`."""
+    base = home or Path.home()
+    if platform == "darwin":
+        return base / "Library" / "Caches"
+    return Path(environ.get("XDG_CACHE_HOME") or base / ".cache")
+
+
+def extension_home() -> Path:
+    """Where this tool keeps DuckDB's extensions: its own folder under the user's cache."""
+    return cache_home() / Project().name / "duckdb"
+
+
+def load(
+    connection: duckdb.DuckDBPyConnection, names: Iterable[str], folder: Path | None = None
+) -> None:
+    """Load extensions `names` from `folder` (`extension_home()` by default), installing only
+    what fails to load.
+
+    Raises MissionError naming the folder when an extension is neither there nor installable, as
+    on a machine that never went online.
+    """
+    folder = folder or extension_home()
+    connection.execute(f"SET extension_directory = {quoted(folder.as_posix())}")
+    for name in names:
+        try:
+            connection.load_extension(name)
+        except duckdb.IOException:
+            try:
+                connection.install_extension(
+                    name, repository="community" if name in COMMUNITY else None
+                )
+                connection.load_extension(name)
+            except duckdb.Error as fault:
+                raise MissionError(
+                    f"DuckDB extension {name} is not in {folder} and could not be installed: "
+                    f"{first_line(fault)}"
+                ) from fault
+
+
+def first_line(fault: BaseException) -> str:
+    """The first line of what `fault` says."""
+    return (str(fault).splitlines() or [""])[0]
 
 
 def connect(

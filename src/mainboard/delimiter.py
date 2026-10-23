@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 
     from cyclopts import App
 
+# What joins a job target's file and the name inside it, `file.py::name`.
+_SEPARATOR = "::"
+
 # What ends this tool's options by hand, and what the placement inserts.
 DELIMITER = "--"
 
@@ -123,11 +126,14 @@ def _option(token: str) -> bool:
 def _delimits_itself(command: Sequence[str], widths: Mapping[str, int]) -> bool:
     """Whether a `--` further on in `command` is this verb's own: `target --on host -- args`.
 
-    Only when the tokens before it hold options of this verb and no other. Otherwise the `--`
-    belongs to the command being handed on, which keeps it with its own flags: `proc timeout 900
-    mb job submit --on gold -- python train.py` once died on `--on`, read as this tool's.
+    Only when the command is a job target (`file.py` or `file.py::name`) and the tokens before
+    the `--` hold options of this verb and no other. Otherwise the `--` belongs to the command
+    being handed on, which keeps it with its own flags: `proc timeout 900 mb job submit --on gold
+    -- python train.py` once died on `--on`, read as this tool's, and `run tool --help -- x`
+    showed this tool's help instead of the tool's.
     """
-    if DELIMITER not in command:
+    target = command[0].partition(_SEPARATOR)[0]
+    if DELIMITER not in command or not target.endswith(".py"):
         return False
     own = command[: command.index(DELIMITER)]
     options = [token.partition("=")[0] for token in own if _option(token)]

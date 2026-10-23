@@ -992,7 +992,7 @@ mainboard apple results path/to/DerivedData/Logs/Test --json
 mainboard lint --check --only swift-format path/to/Changed.swift
 ```
 
-Use `mainboard analyze swift-compare before.json after.json --json` to compare two
+Use `mainboard rules swift-compare before.json after.json --json` to compare two
 saved `swift-inventory --json` observations for the same repository-relative scope.
 This works without invoking Xcode or rereading source. It retains artifact SHA256s,
 parser/toolchain identity and changed rule IDs, per-category totals, byte changes,
@@ -1080,10 +1080,10 @@ The rules use syntax evidence, including inactive conditional branches; compiler
 still decide names, types, actor isolation and availability.
 
 ```sh
-mainboard analyze catalog --rule SW-UI0001 --json
-mainboard analyze explain SW-MIG0004 --json
-mainboard analyze gate --rule SW-UI0001 --rule SW-PARSE0001 Sources/Screen.swift
-mainboard analyze check . --rule SW-MIG0001 --rule SW-MIG0002 --rule SW-MIG0003 --rule SW-MIG0004
+mainboard rules catalog --rule SW-UI0001 --json
+mainboard rules explain SW-MIG0004 --json
+mainboard rules gate --rule SW-UI0001 --rule SW-PARSE0001 Sources/Screen.swift
+mainboard rules check . --rule SW-MIG0001 --rule SW-MIG0002 --rule SW-MIG0003 --rule SW-MIG0004
 ```
 
 `gate` fails for findings in its named files. `check` is an inventory: it prints findings
@@ -1110,7 +1110,7 @@ populated-store upgrades are proved; never automatically rewrite their stored fo
 Native owners can declare per-rule policy in `[analysis.rules."RULE-ID"]`; the existing
 `pyproject.toml` policy remains supported, and conflicting declarations are refused.
 
-`mainboard analyze swift-inventory . --json` accounts for each Swift/Objective-C
+`mainboard rules swift-inventory . --json` accounts for each Swift/Objective-C
 implementation file, with physical/nonblank lines, content hashes, category totals,
 source imports, placed conditional-compilation expressions and the existing migration
 signals with offline guidance. The API is `SwiftSourceInventory(Scope.of(path)).read()`

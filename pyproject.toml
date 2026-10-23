@@ -19,11 +19,9 @@ license = "Apache-2.0"
 authors = [{ name = "Pedro Valois" }]
 dependencies = [
     "cyclopts>=4.23",
-    # The state lake is a DuckLake at the ducklake extension's latest spec, which this engine
-    # (v2.0.0-alpha43385) writes and an older engine refuses. The pin is exact because a
-    # pre-release promises nothing between builds, and naming the pre-release outright is what
-    # lets uv select it with no prerelease setting.
-    "duckdb==2.0.0.dev2609250715",
+    # The state lake is a DuckLake at the ducklake extension's latest spec, which DuckDB 2.0
+    # writes and an older engine refuses.
+    "duckdb>=2.0.0",
     # The lake's tables, views and queries are SQLAlchemy Core, compiled to DuckDB's SQL by this
     # dialect (the maintained fork of duckdb_engine, released in step with DuckDB) and run on the
     # lake's own connections.

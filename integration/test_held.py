@@ -17,14 +17,14 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from plumbum import local
 
 from mainboard.core import MissionError
-from mainboard.dispatch import vocabulary
-from mainboard.dispatch.dispatcher import Dispatcher
+from mainboard.dispatch import Dispatcher, now, vocabulary
 from mainboard.dispatch.schedulers import Held, Pbs, kind_of, pick
 from mainboard.dispatch.schedulers import held as held_module
-from mainboard.dispatch.shared import now
 from mainboard.dispatch.spool import (
     Beat,
     Claim,
@@ -34,10 +34,11 @@ from mainboard.dispatch.spool import (
     Submission,
     spool_path,
 )
-from mainboard.dispatch.state.cache import Cache, RunRecord
+from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.line import Line, keeper_script
 from mainboard.manifest import HostProfile, QueuePolicy
+from mainboard.runtime.job import walltime, walltime_seconds
 from mainboard.serve import Server
 
 if TYPE_CHECKING:
@@ -254,6 +255,24 @@ def test_a_submission_needs_a_line_that_outlasts_it(
         held.enqueue(login, root, script="s", resources=Resources(walltime="00:05:00"), label="x")
 
 
+def test_a_submission_must_fit_one_allocation_of_the_line(
+    held: Held, spool: Spool, root: str
+) -> None:
+    line = spool.line().model_copy(update={"walltime": "00:30:00", "deadline": time.time() + 9000})
+    spool.replace(spool.path / "line.json", line.model_dump_json())
+
+    with pytest.raises(MissionError, match="each allocation of the held line lasts 00:30:00"):
+        held.enqueue(local, root, script="s", resources=Resources(walltime="00:29:00"), label="x")
+    with pytest.raises(MissionError, match="has 100 GB, less than the 200 GB"):
+        held.enqueue(
+            local,
+            root,
+            script="s",
+            resources=Resources(walltime="00:05:00", mem_gb=200),
+            label="x",
+        )
+
+
 def test_cancelling_an_unclaimed_job_fences_it_so_it_can_never_run(
     held: Held, spool: Spool, root: str, node: dict[str, str], tmp_path: Path
 ) -> None:
@@ -466,3 +485,8 @@ def test_only_a_declared_pbs_host_has_a_line() -> None:
     assert kept is not None and kept.host == "p"
     assert Line.of(cast("Board", board), "g") is None
     assert Line.of(cast("Board", board), "rented-4090") is None
+
+
+@given(st.integers(min_value=0, max_value=10 * 24 * 3600))
+def test_a_walltime_past_a_day_keeps_its_hours(seconds: int) -> None:
+    assert walltime_seconds(walltime(seconds)) == seconds

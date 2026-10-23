@@ -50,8 +50,8 @@ temporary basetemp. The worker and each test start in an empty directory, never 
 checkout's lock builds. A bare `pytest` is refused by `conftest.py`, with no fallback.
 
 - `seed` is the one lane that goes online. The sandbox has no network and downloads nothing, so
-  this installs the DuckDB extensions `Lake` loads into the user cache that every sandbox copies
-  from; what is already there is left alone. A `suite` without them stops with `M00-EXTENSIONS`.
+  this installs the DuckDB extensions `Lake` and the syntax trees load into the user cache that
+  every sandbox copies from; what is already there is left alone. A `suite` without them stops with `M00-EXTENSIONS`.
 - macOS needs nothing: Seatbelt ships with it.
 - Linux needs bubblewrap and, where AppArmor restricts unprivileged user namespaces (Ubuntu
   24.04's default), `kernel.apparmor_restrict_unprivileged_userns=0`; without that, bubblewrap

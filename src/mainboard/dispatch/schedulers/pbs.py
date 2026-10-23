@@ -131,8 +131,13 @@ def _instant(stamp: str) -> str:
         return stamp
 
 
-def build_qsub_flags(resources: Resources) -> list[str]:
-    """Render `resources` as `qsub` flags overriding the script's own `#PBS` header."""
+def build_qsub_flags(resources: Resources, *, scripted: bool = False) -> list[str]:
+    """Render `resources` as `qsub` flags overriding the script's own `#PBS` header.
+
+    scripted: the job script's header already selects the chunk, cards and memory included
+        (`JobSpec`), and a command-line `select` replaces that chunk whole, so its GPU request
+        was lost whenever memory was asked for (B17); only a scriptless `qsub -I` selects here.
+    """
     flags: list[str] = []
     if resources.queue is not None:
         flags += ["-q", resources.queue]
@@ -140,6 +145,8 @@ def build_qsub_flags(resources: Resources) -> list[str]:
         flags += ["-l", f"walltime={resources.walltime}"]
     if resources.account:
         flags += ["-W", f"group_list={resources.account}"]
+    if scripted:
+        return flags
     if resources.mem_gb is not None:
         flags += ["-l", f"select={resources.nodes}:mem={resources.mem_gb}gb"]
     elif resources.nodes > 1:
@@ -221,7 +228,8 @@ class Pbs:
         resources: Resources,
     ) -> str:
         del args  # PBS scripts are self-contained; qsub takes no free-form positional args.
-        command = within(root, shlex.join(["qsub", *build_qsub_flags(resources), script]))
+        flags = build_qsub_flags(resources, scripted=True)
+        command = within(root, shlex.join(["qsub", *flags, script]))
         retcode, out, err = remote["bash"][["-lc", command]].run(retcode=None)
         handle = out.strip().splitlines()[-1] if out.strip() else ""
         if not handle[:1].isdigit():

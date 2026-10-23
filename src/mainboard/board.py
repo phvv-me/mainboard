@@ -127,8 +127,9 @@ class Job:
         with connection(self.handle.host) as remote:
             return self.scheduler.logs(remote, self.handle.root, handle=self.handle.id)
 
-    def transcript(self) -> str:
-        """The tolerant twin of `logs`: empty when this backend keeps none or will not answer.
+    def transcript(self) -> str | None:
+        """The tolerant twin of `logs`: None when the host will not answer, which a settle tells
+        from an empty log, so it waits rather than records a log it never read.
 
         A settle wants the output if it can have it and must never fail the sweep over a host
         that went quiet between the probe and the read.
@@ -137,7 +138,7 @@ class Job:
             return self.logs()
         except (HostUnreachable, MissionError, OSError) as quiet:
             logger.warning("no transcript for {}: {}", self.handle.id, quiet)
-            return ""
+            return None
 
     def poll(self) -> JobState:
         """The job's state now, raising `HostUnreachable` when its host will not answer.
@@ -201,11 +202,12 @@ class ProviderJob:
         """The run's state now, as the provider reports it."""
         return self.backend.state(self.handle.id)
 
-    def transcript(self) -> str:
-        """The run's captured output, empty when this provider keeps none or will not answer.
+    def transcript(self) -> str | None:
+        """The run's captured output: empty when this provider keeps none, None when it keeps
+        one and would not hand it over.
 
         A rented machine's disk dies with the rental, so logs and artifacts must both be read
-        before release.
+        before release, and a log that failed to transfer is no empty log (B03).
         """
         if not isinstance(self.backend, LogSource):
             return ""
@@ -213,7 +215,7 @@ class ProviderJob:
             return self.backend.logs(self.handle.id)
         except (MissionError, OSError) as quiet:
             logger.warning("no transcript for {}: {}", self.handle.id, quiet)
-            return ""
+            return None
 
     def pull(self) -> None:
         """Bring the handle's recorded results path back, refusing when this provider cannot.

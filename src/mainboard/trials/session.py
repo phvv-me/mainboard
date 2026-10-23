@@ -117,7 +117,7 @@ class Session:
         Collection decides whether to call this, so a run touching no `gpu` lane is never blocked.
         """
         if self.card:
-            self.leased = CardLease.acquire(self.declared.universe.root)
+            self.leased = CardLease.acquire(self.card)
 
     @property
     def heading(self) -> str:

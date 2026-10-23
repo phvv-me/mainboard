@@ -83,9 +83,8 @@ class Results:
         ):
             digest = ResultHash(relations.connection.sql(text).columns)
             relation = self._kept(relations, text)
-            while batch := relation.fetchmany(256):
-                for row in batch:
-                    digest.add(tuple(canonical(value) for value in row))
+            for row in relation.iter_rows(256):
+                digest.add(tuple(canonical(value) for value in row))
             self.provenance.append(digest.stamp(snapshot))
             return relation.project("*")
 
@@ -117,7 +116,7 @@ class Results:
             ):
                 connection.execute(f"SET max_execution_time = {math.ceil(timeout * 1000)}")
                 explain = _tokens(text)[0] == "explain"
-                yield Query(connection.execute(text), snapshot, timeout=timeout, explain=explain)
+                yield Query.started(connection, text, snapshot, timeout=timeout, explain=explain)
         except duckdb.Error as fault:
             if execution_timeout(fault):
                 raise MissionError(f"query timed out (client limit {timeout:g}s)") from None
@@ -485,7 +484,7 @@ class Results:
         terminal = ", ".join(f"'{word}'" for word in sorted(vocabulary.TERMINAL))
         with ndjson(jobs) as staged:
             connection.execute(f"""
-                CREATE TABLE jobs AS SELECT row->>'target' AS server,
+                CREATE TABLE jobs AS SELECT row->>'target' AS host,
                     row->>'handle' AS handle, row->>'submitted_at' AS submitted_at,
                     row->>'state' AS backend_state, row->>'verdict' AS verdict,
                     row->>'evidence' AS evidence,

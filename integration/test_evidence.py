@@ -21,7 +21,7 @@ from mainboard.core import MissionError, Project
 from mainboard.dispatch.collection.collector import Collector
 from mainboard.dispatch.collection.pack import HELD, pack
 from mainboard.dispatch.provenance import SourceTree, listing
-from mainboard.monitor import Monitor
+from mainboard.monitor import Monitor, Unverifiable
 from mainboard.nodes import evidence_of
 from mainboard.state import DirectoryReplica, Evidence, EvidenceTree, Lake, schema
 from mainboard.state import blobs as blobs_module
@@ -211,6 +211,58 @@ def test_a_host_sends_only_what_the_lake_lacks(workspace, evidence, tmp_path, mo
         assert json.loads(archive.read(HELD)) == {again.relative_to(host).as_posix(): table.name}
     with packed({snapshot: ""}) as archive:
         assert archive.namelist() == [HELD]
+
+
+def test_a_results_path_never_written_packs_nothing(tmp_path, monkeypatch) -> None:
+    sink = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=sink))
+
+    pack(str(tmp_path), relative=NODE)
+
+    assert ZipFile(io.BytesIO(sink.getvalue())).namelist() == []
+
+
+@pytest.mark.parametrize(
+    ("covered", "verdict", "unverified"),
+    [
+        (False, "ok", True),
+        (True, "ok", False),
+        (False, "failed", False),
+    ],
+)
+def test_a_native_run_claiming_results_without_a_receipt_is_unverified(
+    covered: bool, verdict: str, unverified: bool
+) -> None:
+    monitor = Monitor.__new__(Monitor)
+    record = Mock(script="pytest tests/test_kernels.py::test_launch")
+    job = Mock(handle=Mock(fetch_path=NODE))
+
+    def verified() -> None:
+        monitor.verify(record, job, NODE, (), covered=covered, verdict=verdict)
+
+    if unverified:
+        with pytest.raises(Unverifiable, match="no captured receipt"):
+            verified()
+    else:
+        verified()
+
+
+@pytest.mark.parametrize("saved", [None, '{"artifacts": {}}'])
+def test_a_log_that_failed_to_transfer_is_no_empty_log(saved: str | None) -> None:
+    monitor = Monitor.__new__(Monitor)
+    monitor.captured = Mock(transcript=Mock(return_value=saved))
+    record = Mock(handle="7")
+    record.name = ""
+    unread = Mock(transcript=Mock(return_value=None))
+
+    if saved is None:
+        with pytest.raises(MissionError, match="could not be read"):
+            monitor.capture(record, unread)
+    else:
+        assert monitor.capture(record, unread) == monitor.capture(
+            record, Mock(transcript=Mock(return_value=""))
+        )
+    monitor.captured.keep_transcript.assert_not_called()
 
 
 def test_a_pass_collects_each_folder_once() -> None:

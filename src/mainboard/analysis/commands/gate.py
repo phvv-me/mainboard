@@ -80,10 +80,10 @@ def _selected(skip: Collection[str], rule: tuple[str, ...] = ()) -> list[type[Ru
     load_catalog()
     unknown = sorted(set(skip) - set(Rule.defined))
     if unknown:
-        raise MissionError(f"no rule {unknown[0]!r} to skip; see `mainboard analyze catalog`")
+        raise MissionError(f"no rule {unknown[0]!r} to skip; see `mainboard rules catalog`")
     unknown = sorted(set(rule) - set(Rule.defined))
     if unknown:
-        raise MissionError(f"no rule {unknown[0]!r} to select; see `mainboard analyze catalog`")
+        raise MissionError(f"no rule {unknown[0]!r} to select; see `mainboard rules catalog`")
     return [entry for entry in _select(rule) if entry.id not in skip]
 
 

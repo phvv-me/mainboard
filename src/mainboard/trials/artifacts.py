@@ -52,14 +52,25 @@ class Artifact(FrozenModel):
         Found on disk, else in a Parquet archive under `root`, else by digest in the lake of a
         workspace holding `root`, once the file has left the tree.
         """
+        try:
+            data = self.held(root)
+        except FileNotFoundError:
+            data = EvidenceTree(root).recall(self.sha256)
+        return self.checked(data)
+
+    def held(self, root: Path) -> bytes:
+        """The bytes under `root` itself, on disk else in a Parquet archive, unchecked.
+
+        Raises FileNotFoundError when the tree holds neither, the file having left for the lake.
+        """
         path = root / self.relative
         try:
-            data = path.read_bytes()
+            return path.read_bytes()
         except FileNotFoundError:
-            try:
-                data = ParquetArtifacts.read(path, boundary=root, digest=self.sha256)
-            except FileNotFoundError:
-                data = EvidenceTree(root).recall(self.sha256)
+            return ParquetArtifacts.read(path, boundary=root, digest=self.sha256)
+
+    def checked(self, data: bytes) -> bytes:
+        """`data`, raising ValueError unless it is this artifact's size and digest."""
         if len(data) != self.size or hashlib.sha256(data).hexdigest() != self.sha256:
             raise ValueError(f"artifact content changed: {self.path}")
         return data
@@ -123,7 +134,8 @@ class Artifacts:
             if isinstance(value, dict)
         }
         # A file the center did not need sent is indexed in its lake only; its bytes are one
-        # object there however many runs name it, so each digest is read back once.
+        # object there however many runs name it, so each digest is read back once, and all of
+        # a root's together (`EvidenceTree.recalled`).
         absent: dict[str, tuple[Artifact, Path]] = {}
         for reference in references:
             relative = reference.relative
@@ -136,8 +148,18 @@ class Artifacts:
                 reference.read(root)
             else:
                 absent[reference.sha256] = (reference, root)
+        recalled: dict[Path, dict[str, Artifact]] = {}
         for reference, root in absent.values():
-            reference.read(root)
+            try:
+                reference.checked(reference.held(root))
+            except FileNotFoundError:
+                recalled.setdefault(root, {})[reference.sha256] = reference
+        for root, wanted in recalled.items():
+            sizes = {digest: reference.size for digest, reference in wanted.items()}
+            for digest, data in EvidenceTree(root).recalled(sizes):
+                wanted.pop(digest).checked(data)
+            if wanted:
+                raise FileNotFoundError(f"no lake around {root} holds {next(iter(wanted))}")
 
     def write(
         self, data: bytes, *, media_type: str, schema_name: str = "", source: str = ""

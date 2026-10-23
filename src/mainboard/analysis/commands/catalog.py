@@ -144,12 +144,12 @@ def explain(
 ) -> None:
     """Explain RULE, its repair policy and remediation references without fetching documentation.
 
-    rule: the exact rule id from a finding or `mainboard analyze catalog`.
+    rule: the exact rule id from a finding or `mainboard rules catalog`.
     as_json: print structured guidance and reference URLs for an agent.
     """
     load_catalog()
     try:
         specification = Rule.defined[rule]
     except KeyError:
-        raise MissionError(f"no rule {rule!r}; see `mainboard analyze catalog`") from None
+        raise MissionError(f"no rule {rule!r}; see `mainboard rules catalog`") from None
     print(Explanation(rule=RuleEntry.of(specification)).render(as_json=as_json))

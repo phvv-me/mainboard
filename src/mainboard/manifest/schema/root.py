@@ -6,6 +6,7 @@ from pydantic import PrivateAttr, model_validator
 
 from ...core.errors import MissionError
 from .admission import Admission
+from .app import App
 from .ci import Ci
 from .container import Container
 from .environment import Env, Task
@@ -31,10 +32,12 @@ class Manifest(Scope):
     Beside it: `[vars]` feed interpolation, `[containers.*]` declare base images, `[hosts.*]`
     are execution profiles inheriting `[hosts.defaults]`, `[gates.*]` are what `doctor` asks,
     `[templates.*]` what `new` renders, `[tracking]` how often a job samples itself, `[papers.*]`
-    what `paper` builds, `[plots.*]` how charts look, `[admission.<card>]` how idle a card must
-    be before a trial, `[git]` whose repositories `git` may write and what never commits,
+    what `paper` builds, `[apps.*]` what `app` builds and tests, `[plots.*]` how charts look,
+    `[admission.<card>]` how idle a card must be before a trial, `[git]` whose repositories
+    `git` may write and what never commits,
     `[lint]` what `lint` runs and leaves alone, `[ci]` the hosts `ci --matrix` runs on,
-    `[duckdb]` the settings every DuckDB connection takes (`MB_DUCKDB_<NAME>` overrides one).
+    `[duckdb]` the settings every DuckDB connection takes (`MB_DUCKDB_<NAME>` overrides one),
+    `[holds]` the requirements `upgrade` leaves as written, each with the reason it is held.
 
     `[env]` sets a variable with a string and clears one with `false`, which an empty string
     (still defined for `${VAR:-default}` and `[ -n "$VAR" ]`) cannot do; `true` is refused.
@@ -47,12 +50,14 @@ class Manifest(Scope):
     uncompiled: ClassVar[frozenset[str]] = frozenset(
         {
             "admission",
+            "apps",
             "ci",
             "containers",
             "duckdb",
             "figures",
             "gates",
             "git",
+            "holds",
             "hosts",
             "lint",
             "papers",
@@ -78,6 +83,8 @@ class Manifest(Scope):
     hosts: dict[str, HostProfile] = {}
     admission: dict[str, Admission] = {}
     papers: dict[str, Paper] = {}
+    apps: dict[str, App] = {}
+    holds: dict[str, str] = {}
     plots: dict[str, PlotStyle] = {}
     duckdb: dict[str, str | int | float | bool] = {}
     figures: dict[str, FigureSpec] = {}

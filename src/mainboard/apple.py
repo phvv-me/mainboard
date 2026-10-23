@@ -2,8 +2,10 @@
 
 import json
 import math
+import os
 import plistlib
 import struct
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
@@ -11,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote, unquote, urlsplit
 
 from patos import FrozenModel
+from plumbum import local
 from pydantic import ConfigDict, Field, JsonValue, ValidationError
 
 from .apple_bundle import AppleBundle, BundleReport
@@ -23,6 +26,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from .render.values import Node
+
+# What `xcode-select -p` reads, without a process per command.
+_XCODE_SELECT = "/var/db/xcode_select_link"
+_COMMAND_LINE_TOOLS = "/Library/Developer/CommandLineTools"
+_APPLICATIONS = Path("/Applications")
 
 
 class Summary(FrozenModel):
@@ -222,6 +230,27 @@ class Apple:
                 raise MissionError(f"refusing to overwrite Apple evidence at {target}")
             writer.write(target, json.dumps(report.document(), indent=2) + "\n")
         return target
+
+    @staticmethod
+    def select_xcode() -> None:
+        """Point `DEVELOPER_DIR` at the newest installed Xcode.app, for this process and every
+        one it starts, when `xcode-select` chose the Command Line Tools: they lack the
+        SwiftParser host libraries the Swift rules read and `xcodebuild` itself, which made 444
+        commands in a week prefix `DEVELOPER_DIR` by hand (2026-10-23). A `DEVELOPER_DIR` the
+        caller set, another platform, or a choice of Xcode is left alone."""
+        if "DEVELOPER_DIR" in os.environ or sys.platform != "darwin":
+            return
+        try:
+            selected = os.readlink(_XCODE_SELECT)
+        except OSError:
+            return
+        if selected.startswith(_COMMAND_LINE_TOOLS) and (
+            installed := sorted(_APPLICATIONS.glob("Xcode*.app"), key=_bundle_version)
+        ):
+            # plumbum, which launches `mb run`'s commands, copied the environment at import.
+            os.environ["DEVELOPER_DIR"] = local.env["DEVELOPER_DIR"] = str(
+                installed[-1] / "Contents" / "Developer"
+            )
 
     def toolchain(self) -> dict[str, str]:
         return {
@@ -629,3 +658,13 @@ class Apple:
         if not candidates:
             raise MissionError(f"no .xcresult bundles directly inside {path}")
         return max(candidates, key=lambda item: (item.stat().st_mtime_ns, item.name))
+
+
+def _bundle_version(app: Path) -> tuple[int, ...]:
+    """An app's `CFBundleShortVersionString` as numbers (`27.0.1` is (27, 0, 1)); () unreadable."""
+    try:
+        with (app / "Contents" / "Info.plist").open("rb") as info:
+            version = str(plistlib.load(info).get("CFBundleShortVersionString", ""))
+    except OSError, plistlib.InvalidFileException:
+        return ()
+    return tuple(int(part) for part in version.split(".") if part.isdigit())

@@ -1,35 +1,34 @@
 # The card lease: a named refusal between sessions, the shape `Stage` gives claims.
 #
 # A consumer's `clean_card` checked `gpu_processes()` once at session open, so two sessions started
-# moments apart both read a free card and measured beside each other. A lease is a pid and a
-# timestamp in a file, not an OS lock: an `flock` releases when its holder dies but has no ttl, so
-# a live session that ran too long would hold it forever. The file's own text answers both
-# staleness questions, whether the pid lives and how long it has held, and a stale lease is
-# reclaimed by unlinking and retrying.
+# moments apart both read a free card and measured beside each other. A lease is a pid, a time and
+# a token in a file, not an OS lock: an `flock` releases when its holder dies but has no ttl, so a
+# live session that ran too long would hold it forever. The file's own text answers both staleness
+# questions, whether the pid lives and how long it has held.
+#
+# ONE LEASE PER PHYSICAL CARD, HOST-WIDE (owner decision Q05, 2026-10-10). It was a file under each
+# universe's root named by `CUDA_VISIBLE_DEVICES`, so two experiments, or the masks `0,1` and `1`,
+# never contended for the same card (B12). It is keyed by the card's UUID now, in the user's
+# cache, the host's name in the file so a cluster's shared home keeps each node's apart.
+#
+# EVERY STEP IS ATOMIC (B22). A lease is written whole under a private name and linked into place,
+# so no reader sees it empty and takes it for stale; a stale one is renamed aside, which only one
+# reclaimer can win; and a release removes the lease only while it is still this one's, so an
+# owner whose lease was reclaimed never deletes its successor's.
 
 import os
 import re
 import socket
 import time
+import uuid
 from pathlib import Path
 
 import psutil
 
+from ..state.database import cache_home
+
 # How long a lease may stand with a live pid behind it: the longest GPU campaign, and no more.
 DEFAULT_TTL_S = 24 * 3600.0
-
-# The lease file's prefix, a dotfile so it never mixes into a node listing. The full name carries
-# the host and `CUDA_VISIBLE_DEVICES`, since a cluster root is a shared filesystem: on 2026-08-31
-# nine PBS jobs on nine GH200 nodes shared one `/work` root, and one refused to start because
-# another node's pid happened to name a live process on its own node too.
-FILENAME = ".card.lock"
-
-
-def filename() -> str:
-    """The lease file for this host and its visible devices, `.card.lock.<host>[.<devices>]`."""
-    host = re.sub(r"[^A-Za-z0-9_.-]", "_", socket.gethostname())
-    devices = re.sub(r"[^A-Za-z0-9_-]", "-", os.environ.get("CUDA_VISIBLE_DEVICES", ""))
-    return f"{FILENAME}.{host}" + (f".{devices}" if devices else "")
 
 
 class Busy(RuntimeError):
@@ -48,53 +47,77 @@ class Busy(RuntimeError):
 
 
 class CardLease:
-    """One process's exclusive hold on a universe's card, released at the end of its session."""
+    """One process's exclusive hold on a card, released at the end of its session."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.token = uuid.uuid4().hex
 
     @classmethod
-    def acquire(cls, root: Path, *, ttl: float = DEFAULT_TTL_S) -> CardLease:
-        """Take the lease under `root`, reclaiming a stale one and refusing a live one.
+    def acquire(
+        cls, card: str, *, home: Path | None = None, ttl: float = DEFAULT_TTL_S
+    ) -> CardLease:
+        """Take `card`'s lease, reclaiming a stale one and refusing a live one.
 
-        Exclusive creation closes the race: two sessions opening in the same instant contend on
-        one `os.open` that can only succeed once.
-
+        card: the card's identity, its UUID, which no device mask renumbers.
+        home: the folder leases live in, the user's cache when None.
         ttl: how long a lease may stand before a live pid behind it no longer excuses it.
         """
-        path = root / filename()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        lease = cls(path)
-        if lease._write():
+        folder = home or cache_home() / "mb" / "leases"
+        folder.mkdir(parents=True, exist_ok=True)
+        lease = cls(folder / f"card.{_safe(socket.gethostname())}.{_safe(card)}")
+        if lease._placed():
             return lease
         holder = lease._holder()
         if holder is not None:
-            pid, opened = holder
+            pid, opened, _ = holder
             age = time.time() - opened
             if age <= ttl and psutil.pid_exists(pid):
-                raise Busy(path, pid, age)
-        path.unlink(missing_ok=True)
-        lease._write()
+                raise Busy(lease.path, pid, age)
+        stale = lease.path.with_name(f"{lease.path.name}.stale.{lease.token}")
+        try:
+            lease.path.rename(stale)
+        except FileNotFoundError:
+            pass
+        else:
+            stale.unlink(missing_ok=True)
+        if not lease._placed():
+            # Another session reclaimed it in between and holds it now.
+            pid, opened, _ = lease._holder() or (0, time.time(), "")
+            raise Busy(lease.path, pid, time.time() - opened)
         return lease
 
     def release(self) -> None:
-        """Give the lease back, tolerant of it already being gone."""
-        self.path.unlink(missing_ok=True)
+        """Give the lease back while it is still this one's; a reclaimed lease is left alone.
 
-    def _holder(self) -> tuple[int, float] | None:
-        """The pid and opening time the lease file names, None where it cannot be read."""
+        Only a lease past its ttl is reclaimed, so this one changes hands between the read and
+        the unlink only when its own live holder outran the ttl at that very moment.
+        """
+        if (held := self._holder()) is not None and held[2] == self.token:
+            self.path.unlink(missing_ok=True)
+
+    def _holder(self) -> tuple[int, float, str] | None:
+        """The pid, opening time and token the lease file names, None where it cannot be read."""
         try:
-            pid, opened = self.path.read_text(encoding="utf-8").split()
-            return int(pid), float(opened)
+            pid, opened, token = self.path.read_text(encoding="utf-8").split()
+            return int(pid), float(opened), token
         except OSError, ValueError:
             return None
 
-    def _write(self) -> bool:
-        """Create the lease file naming this process, refusing rather than overwriting one."""
+    def _placed(self) -> bool:
+        """Write the lease whole under a private name, then link it into place; False when a
+        lease already stands there."""
+        draft = self.path.with_name(f"{self.path.name}.draft.{self.token}")
+        draft.write_text(f"{os.getpid()} {time.time()} {self.token}", encoding="utf-8")
         try:
-            handle = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.link(draft, self.path)
         except FileExistsError:
             return False
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as opened:
-            opened.write(f"{os.getpid()} {time.time()}")
+        finally:
+            draft.unlink(missing_ok=True)
         return True
+
+
+def _safe(name: str) -> str:
+    """`name` as one filename component."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
