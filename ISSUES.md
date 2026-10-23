@@ -969,5 +969,148 @@ it now settles with evidence `unverified` (`Unverifiable`). A full `job list` we
 `FileNotFoundError`, so those runs stayed pending; it is an empty selection now, and a run whose receipts name artifacts the host no
 longer holds settles unverified. The steady-state `job list` over 2,385 runs takes 2 seconds.
 
-Open: `Unverifiable`, the empty selection and the events stream have no tests; `Collector._divert` is covered by
-`integration/test_evidence.py::test_collection_keeps_transfers_in_the_lake_never_the_tree`.
+Tested 2026-10-23: the empty selection (`test_evidence.py::test_a_results_path_never_written_packs_nothing`) and the
+events stream (`test_events.py`); `Collector._divert` by `test_evidence.py::test_collection_keeps_transfers_in_the_lake_never_the_tree`.
+`Unverifiable` by `test_evidence.py::test_a_native_run_claiming_results_without_a_receipt_is_unverified`.
+
+## 2026-10-22: DuckDB 2.0.0 stable
+
+Done, uncommitted: `duckdb>=2.0.0` replaces the `2.0.0.dev2609250715` pin. `sitting_duck` is the community repository's signed
+build, loaded in-process from the tool's extension folder through `state.database.load` (shared with the lake), so the unsigned
+self-built extension, `allow_unsigned_extensions` and the DuckDB 1.5.6 command-line fallback (`DuckCli`) are gone; the gate seeds
+`sitting_duck` with the lake's extensions. 2.0 removed `fetchone`/`fetchmany`/`execute` from relations (`results.py` hashes through
+`iter_rows`), and a blocking aggregate now times out inside `execute`, so `Query.started` renders it as a timed-out partial. The
+center's lake was migrated from DuckLake spec 1.1-dev1 to 1.1 (`mb lake upgrade`; catalog backup at
+`/Volumes/PORTABLE/mainboard-lake-backup-2026-10-22/`), and an attach of an older spec now names `mb lake upgrade`.
+
+Fleet, the same day, uncommitted:
+- A host's tool is installed with `--constraints` from the shipped lock's PyPI releases (`Lockfile.pins`), so the tool and the
+  jobs run one DuckDB; before, `uv tool install` re-solved on every host and would have taken a newer DuckDB than the lock.
+  The reinstall digest (`Bootstrap.requirements`) covers those releases, so a sync reinstalls the tool when the lock moves one.
+- Setup and sync end with `Bootstrap.lake`: a host's staging lake is brought to its new DuckDB's spec (`mb lake upgrade`)
+  once every reader there runs it.
+- gold, crimson, pedro-cvlab and purple synced: tool and environment on duckdb 2.0.0, lakes at 1.1, stale extension folders
+  removed. Job 423 on gold built the new lock's environment and parsed with the community `sitting_duck`.
+- The center's uv tool (`~/.local/bin/mainboard`, shadowed by the environment's on PATH) still had the dev build; reinstalled.
+- Settlement outlived its deadline on every pass since the morning: `Artifacts.verify` recalled each lake-only artifact
+  alone, a scan of every `blobs` file's digests per object (0.14 s each). `EvidenceTree.recalled` reads them in 1 GB windows:
+  1,991 objects in 3.6 s instead of 284 s. The settler completes again (19 s at rest).
+
+Open:
+1. **miyabi-g still runs the dev build**: its cutok batches (`gh200-refresh-20261022-d011da66`,
+   `cutok-current-serving-gh200-20261022-87f6cbd0`) owe outcomes, so `host sync miyabi-g` refuses until they settle. Then
+   `mainboard host sync miyabi-g` (tool, environment and lake in one step). Quack needs both ends on the same release.
+2. **Resolved 2026-10-23** (the workspace takes stable releases only). **`prerelease-mode = "allow"` admits DuckDB's nightlies.** The workspace caps `duckdb` at `<2.0.1` so `2.0.1.devN` stays out;
+   `mb upgrade` would write `>=2.0.0, <3` and let them back in. The same policy holds about 20 packages at pre-releases (grpcio rc,
+   sentry 3.0 alpha, opentelemetry betas, tornado rc). Decide whether the workspace moves to `if-necessary-or-explicit`.
+3. **Quack still drops bound parameters** at 2.0.0 (duckdb-quack#323), so `inlined` stays; #282 (remote `query()` runs twice) is open.
+4. **`hashfuncs` has no 2.0.0 build**, so blob checksums stay MD5.
+5. **Resolved 2026-10-23** (`Apple.select_xcode`). **Swift analysis fails under the Command Line Tools**: `xcode-select -p` is `/Library/Developer/CommandLineTools`, which has no
+   SwiftParser host libraries, so `mb lint` and 114 gate tests fail unless `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
+   (the gate passes it through). `sudo xcode-select -s /Applications/Xcode.app` fixes the machine.
+6. **Resolved 2026-10-23**: `comment_parses` is SQL (`tree_clean`, `python_source` over `parse_ast_list`); on the
+   workspace's 51,775 punctuated comment bodies it disagrees with `ast.parse` on 8 (3 of them `noqa` directives no probe
+   is asked about). No rule read `parses_as_source`, since ALL-COMM0002 had gone to Ruff's ERA001, which reads Python
+   only; ALL-COMM0002 is back for Rust, TypeScript, JavaScript, C, C++ and CUDA. **The comment probe was the analysis engine's last Python UDF over Arrow** (`CommentProbe._answer`). `sitting_duck`'s
+   `parse_ast_list` parses strings in SQL, so `comment_parses` could become a macro, once its missing-token count and Python's
+   `ast.parse` verdict are matched.
+
+## 2026-10-23: stable releases and a whole-workspace upgrade
+
+The workspace now takes stable releases: `prerelease-mode = "allow"` is gone (uv's default takes a pre-release only when a
+requirement names one), so the ~20 pre-releases it held (grpcio rc, cuda_tile rc, curl_cffi beta, bottleneck rc, ...)
+moved to finals, and duckdb's nightly ceiling is lifted. `mb upgrade` then ran over everything; fixed on the way, uncommitted:
+1. `ManifestText.table` refused a table split across the file (tomlkit's `OutOfOrderTableProxy`, `[on.linux.*]`).
+2. `versioned` raised a binary pinned by `url` and `sha256` beside its `version` (swiftlint), and an explicit `==` pin; both
+   are left as written now (`scikit-learn ==1.9.0` keeps the Ledoit-Wolf estimator byte-stable).
+3. A Python requirement for a package the lock takes from conda is raised to the channels' newest, by the channel's own
+   spelling (`filelock`, `huggingface_hub`), since pixi holds the PyPI requirement to the conda build.
+4. `upgrade` re-locked minimally, so a conda pin under a raised PyPI requirement could not move; it frees what it raises now,
+   everything when none is named, as `pixi upgrade` does.
+5. `Python.latest` took yanked releases (pytest-timeout 2.5.0); a version every file of which is yanked is skipped.
+6. `pin` capped a lone date stamp at the next day (`pdfminer.six >=20260107, <20260108`); a date gets a floor only.
+7. The Node lock was re-resolved only when the pixi lock moved in the same call (the 2026-10-17 item 2): an `install` under
+   the update policy now solves a stale second-stage lock.
+8. `mb lake upgrade` reaches every project in the workspace keeping its own lake; `research/reproducibility`'s was still at
+   1.1-dev1 and broke `mb query`. (`research/cuda-tokenization/.mb` is an orphan: that project has no manifest.)
+9. `mb ci` drops a `CONDA_PREFIX` naming a pixi-global tool's environment and names the step's `python` for PyO3; a
+   pixi-global `uv`/`cargo` launcher pointed ty and PyO3 at a toolchain with no Python.
+10. `Rust.pin` wrote a range, which a host's frozen `cargo install` refuses (every sync stopped on `[rust] has no frozen
+    installation contract`); a crate is raised to one exact release, as Go's is.
+11. `Nodejs.latest` took npm's `latest` tag hours after publishing, which a host's frozen pnpm refuses under its default
+    one-day `minimumReleaseAge`; it takes the newest release at least a day old.
+
+Fleet: gold, crimson, pedro-cvlab and purple synced onto the upgraded lock; job 424 on gold ran duckdb 2.0.0, pandas 3.1,
+vLLM 0.32 on torch 2.13+cu132 with CUDA. purple, a shared server, ran out of disk during its first sync (309 MB left on
+`/`, mostly the other user's 3.3 TB): uv's and pip's caches were cleared (27.5 GiB) and the sync finished with 30 GB free.
+Its rattler cache still holds 65 GB of ours. A sync reports the setup's cached disk figure (67 GB) instead of measuring.
+
+Held, each by a stated reason (`mb upgrade --exclude ...`):
+- python `<3.15`: no cp315 wheels for macOS torch 2.14, cupy-cuda13x, sentencepiece, xformers, conda-forge libsass.
+- numpy `<2.5`: numba-cuda 0.30.4 (release and main) overloads `np.row_stack` at import.
+- torch, torchvision, triton, transformers, fastapi, lark, setuptools, nvtx, nvidia-cutlass-dsl: vLLM 0.32 pins them.
+- fsspec (datasets 5.1 caps it), pillow (gradio 6.30), mpmath (sympy 1.14), z3-solver (tilelang 0.1.15),
+  huggingface-hub (the diffusers dev wheel), cupti-python (13.4 needs cupti 13.4, torch cu132 pins 13.2), sphinx
+  (zzzeeksphinx), gxx (nvcc 13.4 takes GCC below 16), python-dateutil `<3` (botocore, invisible to the conda solve).
+
+Then open, since addressed below: a persistent hold list in the manifest; `rls` alone cannot import
+`CreatePolicy` (it needs the SQLAlchemy fork the workspace supplies), before and after its lock upgrade; patos's lock was
+left alone while its copier update is in progress.
+
+Later the same day, after vLLM left `default` for its own `serving` environment (the vLLM holds above lifted:
+torch 2.14.1+cu132, triton 3.8.0, cutlass-dsl 4.8.1) and five libraries moved from `[deps]` to `[python.deps]`:
+12. A requirement moved from conda to PyPI stayed on its conda build: pixi takes a conda package as satisfying the
+    PyPI requirement of its name, and a minimal re-lock keeps it. Fixed: a compile records each requirement whose
+    ecosystem changed since the last solve (`SyncState.moved`), and the next solve frees exactly those.
+13. A member's environment named like the root's was refused; the two now join (`Env.merged`, the root's settings
+    winning), so llm-head contributes its serving extra and task to `serving`.
+14. `selected_manifest` cleared `[system]` for a `no-default` environment, so `serving` solved for glibc 2.28 and
+    refused pynvvideocodec's 2.34 wheel; lean environments keep the workspace's floors.
+15. `mb lint`'s `mb` step fails on the center with `Swift analysis requires SwiftParser host libraries at
+    /Library/Developer/CommandLineTools/...`: `xcode-select` points at the Command Line Tools. It passes with
+    `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`. Fixed: mainboard chooses the newest
+    Xcode.app itself when `xcode-select` names the Command Line Tools, for its own process and plumbum's
+    copy of the environment (which `mb run` launches through and had snapshotted at import).
+16. Hosts gold, crimson, pedro-cvlab and purple synced to this lock (job 425 on gold: torch 2.14.1+cu132 with CUDA).
+
+Fixed afterwards: `[holds]` (and `[envs.<name>.holds]`) record what `upgrade` leaves as written and why, so the 18
+`--exclude` flags are gone; a full `mb upgrade` with none completes, raising 14 requirements (the vLLM-era floors of torch,
+torchvision, triton, cutlass-dsl, z3, lark, fastapi took ordinary bounds) and holding 8 plus `serving`'s torch. Its first run
+proved the scoping: raising `serving`'s `torch = "*"` broke vLLM 0.32's exact pin, and the failed solve put the manifest
+and lock back. A sync measures the free disk again (`_measured`, one `df -Pk`) instead of reporting the setup's figure.
+
+Open: `rls` alone still cannot import `CreatePolicy`. A lone checkout must take the fork's `postgresql-row-security`
+branch (`[tool.uv.sources]`), but uv refuses that branch's `pyproject.toml`: SQLAlchemy's legacy pre-PEP-685 extras
+(`mssql_pymssql`, ...) normalize onto the current ones. Removing them from the fork needs a commit and push to
+`Pedrexus/sqlalchemy`, the owner's call; the published `rlsalchemy` needs the fork upstreamed regardless.
+
+Then miyabi-g, whose sync had waited on the cutok batches (all settled `ok`), failed three times, each a real fault:
+1. Its tool ran on CPython 3.14.0rc2, which `uv python install 3.14` keeps satisfying; the pydantic the lock moved to cannot
+   import there (`_eval_type() got an unexpected keyword argument 'prefer_fwd_module'`). The tool's interpreter is now the
+   request `Lockfile.python_request` (`>=3.14.0,<3.15`: a final release of the solved minor, or the candidate a lock itself
+   solved), and the reinstall digest carries it. Not the solved patch: conda-forge publishes 3.14.9 before uv's builds have it.
+2. Its uv (0.8.11, copied in rather than placed by Astral's installer) predates 3.14.0 and refuses `uv self update`; the
+   bootstrap updates uv each time and, when it refuses, runs the installer over it.
+3. The environment install held 12-14 GB on the login node and the guard stopped it. Not pixi's 50 concurrent downloads, as
+   first guessed (bounding them changed nothing; reverted): sampling the user's RSS showed `cargo` and a dozen `cc1plus`.
+   `mb upgrade` had raised `[on.linux.python.deps] z3-solver` from `>=4.13` to `>=5.1`, and PyPI's z3 5.x has no aarch64
+   wheel, so `default` locked its sdist and every aarch64 host compiled z3. z3 is conda-forge's on Linux now, as `repro`'s
+   already was; `serving` keeps vLLM's 4.15.4 wheels.
+Open: the lock holds five more PyPI sdists (pytest-clarity, peewee, baycomp, watchdog, nvtx 0.2.16). A lock check that names
+an sdist a host would compile needs to know pure Python from extensions, which the lock does not say.
+Fleet at the end of 2026-10-23: gold, crimson, pedro-cvlab, purple and miyabi-g all synced to the z3 lock. miyabi-g's tool runs on
+CPython 3.14.9 with uv 0.13.5, and its install peaked at 2.9 GB on the login node. A sync's disk row is measured now: purple shows
+29 GB, and miyabi-g shows the whole Lustre filesystem's free space (6.5 PB), which says nothing about the group's quota.
+Later on 2026-10-23:
+- Tool interpreter: the bootstrap runs `uv python install --upgrade` on the request, so a host takes each new 3.14 patch
+  (the tool's venv follows uv's minor link). miyabi-g's 3.14.0rc2 was uninstalled. Job 3680459 on a GH200 ran Python
+  3.14.9, torch 2.14.1+cu132 with CUDA, DuckDB 2.0.0.
+- Comment probe: exact agreement with `ast.parse` on all 51,780 punctuated Python comment bodies of the workspace, and with
+  the old file-based tree-sitter route on all 1,544 C-family ones. The last differences were tree-sitter accepting a
+  `list_pattern` target and a `constrained_type` outside a type parameter, rejecting a bracket that continues an expression
+  (`layer_past[0] [b, h]`), and having no slices in annotations (`python_annotated` reads the annotation as an expression).
+- `rules fix` crashed (`parse_ast_list does not exist`): a macro binds its functions when created, and a fact base built
+  without parsing never loaded sitting_duck. `Budget.connect` loads it for every base.
+- On mainboard's own code, ALL-REAC0001 called 505 registered rules dead, and its review fix would have deleted them; a class
+  an ancestor's `__init_subclass__` registers is reached through that hook now, and a name a string literal carries is
+  reached as the fix already assumed (539 -> 4 findings). PY-MODE0006 exempts hook-registered classes the same way (273 -> 0).
