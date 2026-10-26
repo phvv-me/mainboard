@@ -59,7 +59,7 @@ class Query:
             if not is_execution_timeout(fault):
                 raise
         query = cls(connection, snapshot_id, timeout=timeout, explain=explain)
-        query.columns = tuple(connection.sql(text).columns)
+        query.columns = query._bound(connection, text)
         query.expired = True
         return query
 
@@ -90,6 +90,18 @@ class Query:
         self.explain = explain
         self.expired = False
 
+    def _bound(self, connection: duckdb.DuckDBPyConnection, text: str) -> tuple[str, ...]:
+        """The columns `text` binds to after it timed out.
+
+        A Quack server that stops a query at its own limit aborts the transaction before any
+        column is known, and binding anew would run the whole query once more, so the timeout is
+        then the whole answer.
+        """
+        try:
+            return tuple(connection.sql(text).columns)
+        except duckdb.TransactionException:
+            raise self._expiry() from None
+
     def _consumed(self, digest: ResultHash, sink: Sink, *, mode: str | None) -> Ending:
         """Fetch every row chunk by chunk into `sink`, hashing each; how the scan ended."""
         if self.expired:
@@ -109,6 +121,12 @@ class Query:
         stream = sys.stderr if mode == "json" else sys.stdout
         stream.write(f"ok\n{stamp.footer}; displayed=0; omitted=0\n")
         return stamp
+
+    def _expiry(self) -> MissionError:
+        """The refusal of a query that outlived its limit."""
+        return MissionError(
+            f"query timed out (client limit {self.timeout:g}s; Quack uses its server limit)"
+        )
 
     def _fed(
         self, batch: Sequence[Sequence[Value]], digest: ResultHash, sink: Sink, *, mode: str | None
@@ -161,7 +179,5 @@ class Query:
         stamp = digest.stamp(self.snapshot_id, ending=ending)
         Query._footed(stamp, shown=sink.finished(stamp), mode=mode)
         if stamp.timed_out:
-            raise MissionError(
-                f"query timed out (client limit {self.timeout:g}s; Quack uses its server limit)"
-            )
+            raise self._expiry()
         return stamp

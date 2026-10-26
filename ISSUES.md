@@ -2207,8 +2207,14 @@ changed function compared old against new on probes, none left WRONG). Nothing i
   the link and the applications folder as parameters instead of patched module constants; and the
   Swift helper compile wrote the compiler's module cache outside the gate's sandbox, which only
   works where a cache already exists (113 tests on a fresh runner), so it builds with
-  `-module-cache-path` inside its scratch folder. `mb ci --matrix` could not run the Linux leg:
-  `pedro-cvlab` was unreachable and the table offers no other host.
+  `-module-cache-path` inside its scratch folder. The Linux-only test of a served query's time
+  limit failed with "Current transaction is aborted": on DuckDB 2.0 the Quack server's cap aborts
+  the client's pinned transaction, and `Query.started` then bound the columns again inside it
+  (and binding a pushed-down aggregate on Quack runs the whole query a second time). A timeout
+  whose rebind finds the transaction aborted is now the answer ("query timed out ..."), found and
+  checked on `gold` with `Matrix`/`RemoteLeg` driven by hand, since `mb ci --matrix` reads
+  `[ci] hosts = ["pedro-cvlab"]`, which was unreachable, and the gate's bubblewrap cannot run on
+  `gold` (no unprivileged network namespaces; needs the AppArmor sysctl, a root change).
 - Process (fixers over the test tree): each proven state is one full suite on the mirror (about 9
   minutes), and `mb refactor fix` bisects a failing state file by file, so four test-convention
   rules took 70 minutes; a first run with `timeout 3400` was killed in its last proof, wrote

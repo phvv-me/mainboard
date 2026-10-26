@@ -11,6 +11,7 @@ import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
+from mainboard import MissionError
 from mainboard.render import Stamp
 from mainboard.render.query import Query, is_execution_timeout
 from mainboard.render.query.sinks import Rendered, Window
@@ -170,3 +171,18 @@ def test_a_statement_without_result_columns_reports_success(
 )
 def test_forwarded_timeout_errors_are_recognized(fault: duckdb.Error, timed_out: bool) -> None:
     assert is_execution_timeout(fault) is timed_out
+
+
+def test_a_timeout_that_aborted_the_transaction_refuses_without_binding_the_query_again() -> None:
+    connection = Mock(spec=duckdb.DuckDBPyConnection, description=None)
+    connection.execute.side_effect = duckdb.InterruptException(
+        "Query exceeded maximum execution time"
+    )
+    connection.sql.side_effect = duckdb.TransactionException(
+        "Current transaction is aborted (please ROLLBACK)"
+    )
+
+    with pytest.raises(MissionError, match="query timed out"):
+        Query.started(connection, "SELECT 1", 0, timeout=0.02)
+
+    assert connection.sql.call_count == 1
