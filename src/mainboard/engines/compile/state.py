@@ -22,7 +22,7 @@ class SyncState(FrozenModel):
     solved_from: the resolution digest the lock was solved from, written only when a solve
         succeeds, so staleness compares against the lock rather than a flag to clear.
     solved_by: the pixi that wrote the lock, since each version writes it differently; the fleet
-        pins `backend.PIXI_VERSION`, so this names a lock that came from another pixi.
+        pins `backend.PixiEngine.VERSION`, so this names a lock that came from another pixi.
     compiled_at: the absolute workspace root the artifact was rendered for, the one
         machine-specific input (`{{ config_root }}` renders to it). Recorded rather than derived,
         since only the artifact knows which root its text spells wherever it was copied, and
@@ -43,10 +43,6 @@ class SyncState(FrozenModel):
     runtime_from: str = ""
     moved: tuple[str, ...] = ()
 
-    @staticmethod
-    def path(out: Path) -> Path:
-        return out / _FILENAME
-
     @classmethod
     def load(cls, out: Path) -> Self:
         """The state under `out`, empty (stale everywhere) when absent or unreadable."""
@@ -60,6 +56,10 @@ class SyncState(FrozenModel):
             )
         except ValidationError:
             return cls()
+
+    @staticmethod
+    def path(out: Path) -> Path:
+        return out / _FILENAME
 
     def render(self) -> str:
         """The TOML text of this fixed tiny schema, rendered by hand."""

@@ -7,6 +7,9 @@ host four days later. Consumers are read from the monorepo this package sits in,
 
 import ast
 import importlib
+import importlib.util
+import warnings
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -30,43 +33,64 @@ _BROKEN = {
 }
 
 
+def _imported(path: Path) -> list[tuple[str, str]]:
+    """Each (module, name) `path` imports from mainboard, none when it does not parse."""
+    with (
+        suppress(SyntaxError, ValueError),
+        warnings.catch_warnings(action="ignore", category=SyntaxWarning),
+    ):
+        return [
+            (node.module or "", alias.name)
+            for node in ast.walk(ast.parse(path.read_bytes()))
+            if isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith(("mainboard.", "mb."))
+            for alias in node.names
+        ]
+    return []
+
+
 def _consumers() -> dict[tuple[str, str], list[str]]:
     """Each (module, name) imported from mainboard outside it, with the files importing it."""
+    wheres = [
+        path.relative_to(_WORKSPACE)
+        for top in ("research", "packages", "life", "apps")
+        for path in (_WORKSPACE / top).rglob("*.py")
+    ]
     found: dict[tuple[str, str], list[str]] = {}
-    for top in ("research", "packages", "life", "apps"):
-        for path in (_WORKSPACE / top).rglob("*.py"):
-            parts = path.relative_to(_WORKSPACE).parts
-            if parts[:2] == ("packages", "mainboard") or any(skip in parts for skip in _SKIPPED):
-                continue
-            if path.relative_to(_WORKSPACE).as_posix() in _BROKEN:
-                continue
-            try:
-                tree = ast.parse(path.read_bytes())
-            except SyntaxError, ValueError:
-                continue
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                    ("mainboard.", "mb.")
-                ):
-                    for alias in node.names:
-                        where = path.relative_to(_WORKSPACE).as_posix()
-                        found.setdefault((node.module or "", alias.name), []).append(where)
+    for where in wheres:
+        if (
+            where.parts[:2] != ("packages", "mainboard")
+            and not any(skip in where.parts for skip in _SKIPPED)
+            and where.as_posix() not in _BROKEN
+        ):
+            for imported in _imported(_WORKSPACE / where):
+                found.setdefault(imported, []).append(where.as_posix())
     return found
 
 
 _FOUND = _consumers() if (_WORKSPACE / "research").is_dir() else {}
 
 
-@pytest.mark.skipif(not _FOUND, reason="not inside the monorepo")
-@pytest.mark.parametrize("imported", sorted(_FOUND), ids=lambda pair: f"{pair[0]}.{pair[1]}")
-def test_every_imported_name_exists(imported: tuple[str, str]) -> None:
-    module_name, name = imported
+def _is_gone(module_name: str, *, name: str) -> bool:
+    """Whether `name` left `module_name`; a name behind a missing optional dependency is kept."""
     try:
         module = importlib.import_module(module_name.replace("mb.", "mainboard.", 1))
     except ModuleNotFoundError as missing:
-        if not (missing.name or "").startswith("mainboard"):
-            pytest.skip(f"needs {missing.name}, an optional dependency")
-        raise
-    assert hasattr(module, name) or importlib.util.find_spec(f"{module_name}.{name}"), (
-        f"{module_name}.{name} is gone but {', '.join(_FOUND[imported][:3])} import it"
-    )
+        return (missing.name or "").startswith("mainboard")
+    if hasattr(module, name):
+        return False
+    try:
+        return importlib.util.find_spec(f"{module_name}.{name}") is None
+    except ModuleNotFoundError:
+        return True
+
+
+# One case for every import, so the node id is the same inside the monorepo and outside it.
+@pytest.mark.skipif(not _FOUND, reason="not inside the monorepo")
+def test_every_imported_name_exists() -> None:
+    gone = [
+        f"{module_name}.{name} ({', '.join(_FOUND[module_name, name][:3])})"
+        for module_name, name in sorted(_FOUND)
+        if _is_gone(module_name, name=name)
+    ]
+    assert not gone, f"gone but still imported: {gone}"

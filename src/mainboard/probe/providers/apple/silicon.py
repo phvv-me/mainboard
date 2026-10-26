@@ -2,8 +2,8 @@ import platform
 from functools import cached_property
 from typing import ClassVar
 
-from ....core.host import MACOS
-from ...facts.memory import Memory
+from ....core.execution import host
+from ...facts.memory.core import Memory
 from ...shell import sysctl
 
 
@@ -28,12 +28,12 @@ class AppleSilicon:
         """The SoC name followed by the engine's, e.g. `Apple M4 Pro GPU`."""
         return f"{self.architecture} {self.engine}"
 
+    @classmethod
+    def is_available(cls) -> bool:
+        """Whether this host is an Apple Silicon Mac."""
+        return host.is_macos() and platform.machine() == "arm64"
+
     @property
     def memory(self) -> Memory:
         """Unified memory visible to CPU, GPU, and Neural Engine."""
         return Memory.system(scope="unified", unified=True)
-
-    @classmethod
-    def is_available(cls) -> bool:
-        """Whether this host is an Apple Silicon Mac."""
-        return MACOS and platform.machine() == "arm64"

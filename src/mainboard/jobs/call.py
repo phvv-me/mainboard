@@ -31,18 +31,21 @@ from typing import TYPE_CHECKING
 
 from cyclopts import App
 
-from ..dispatch.evidence import RECEIPTS_VAR
-from ..dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
-from ..proc import TIMED_OUT, Processes
-from . import beacon
-from .pins import staging
-from .target import SEPARATOR, TEST_PREFIX, dotted, home_of
+from ..dispatch.constants import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR, RECEIPTS_VAR
+from ..log import logger
+from ..proc import Exit, Processes
+from .constants import NESTED
+from .targets.pins import staging
+from .targets.target import Target, dotted, home_of
+from .testing import beacon
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
 # What separates the target from the arguments handed to it.
-DELIMITER = "--"
+_DELIMITER = "--"
+# This module's dotted name, also when it runs as `python -m` and `__name__` is `__main__`.
+_MODULE = __spec__.name if __spec__ is not None else __name__
 
 # Where the environment's installed distributions live, never first-party code.
 _INSTALLED = tuple(
@@ -59,19 +62,6 @@ class Guard(MetaPathFinder):
     deferred: top-level names admitted regardless of `shipped`, left to the environment.
     """
 
-    def __init__(
-        self,
-        names: Sequence[str],
-        shipped: Sequence[str],
-        root: Path,
-        *,
-        deferred: Sequence[str] = (),
-    ) -> None:
-        self.names = frozenset(names)
-        self.shipped = frozenset(shipped)
-        self.root = root
-        self.deferred = frozenset(deferred)
-
     @classmethod
     def armed(cls, root: Path) -> Guard | None:
         """The guard the environment describes, first on `sys.meta_path`; None for a command."""
@@ -81,12 +71,25 @@ class Guard(MetaPathFinder):
         rows = Path(listing).read_text(encoding="utf-8").splitlines()
         guard = cls(
             FIRST_PARTY_VAR.read().split(":"),
-            [row.split("\t", maxsplit=1)[0] for row in rows if row],
-            root,
+            shipped=[row.split("\t", maxsplit=1)[0] for row in rows if row],
+            root=root,
             deferred=DEFERRED_VAR.read().split(":"),
         )
         sys.meta_path.insert(0, guard)
         return guard
+
+    def __init__(
+        self,
+        names: Sequence[str],
+        *,
+        shipped: Sequence[str],
+        root: Path,
+        deferred: Sequence[str] = (),
+    ) -> None:
+        self.names = frozenset(names)
+        self.shipped = frozenset(shipped)
+        self.root = root
+        self.deferred = frozenset(deferred)
 
     def find_spec(
         self, fullname: str, path: Sequence[str] | None = None, target: ModuleType | None = None
@@ -132,28 +135,28 @@ class Guard(MetaPathFinder):
         return spec
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _main(argv: Sequence[str] | None = None) -> int:
     """Run one target, from the tokens after the runner's name (this process's when None)."""
     tokens = list(sys.argv[1:] if argv is None else argv)
-    if not tokens or tokens[0] == DELIMITER:
-        raise SystemExit(f"usage: python -m {__spec__.name} <file>{SEPARATOR}<name> [-- args]")
+    if not tokens or tokens[0] == _DELIMITER:
+        raise SystemExit(f"usage: python -m {_MODULE} <file>{Target.SEPARATOR}<name> [-- args]")
     spelling, args = tokens[0], tokens[1:]
-    if args and args[0] == DELIMITER:
+    if args and args[0] == _DELIMITER:
         args = args[1:]
     fresh = Fresh.parsed(args)
     if fresh is not None:
         return fresh.run(spelling)
-    file, _, name = spelling.partition(SEPARATOR)
+    file, _, name = spelling.partition(Target.SEPARATOR)
     guard = Guard.armed(Path.cwd())
     pins = Path.cwd() / staging(Path.cwd())
     if pins.is_dir():
         # A job that declared Hub pins reads exactly them, whatever the host caches elsewhere.
         os.environ["HF_HUB_CACHE"] = str(pins)
-    if Path(file).stem.startswith(TEST_PREFIX):
+    if Path(file).stem.startswith(Target.TEST_PREFIX):
         # The one environment-dependent import: an env without pytest still runs other targets.
         runner = importlib.import_module(".pytest", package=__package__)
         return runner.Runner(guard).run([spelling if name else file, *args])
-    return called(getattr(loaded(Path(file)), name), name, args)
+    return _called(getattr(_loaded(Path(file)), name), name, args)
 
 
 class Fresh:
@@ -168,11 +171,6 @@ class Fresh:
     FLAG = "--fresh"
     TIMEOUT = "--timeout"
 
-    def __init__(self, ids: Sequence[str], args: Sequence[str], timeout: float) -> None:
-        self.ids = tuple(ids)
-        self.args = tuple(args)
-        self.timeout = timeout
-
     @classmethod
     def parsed(cls, tokens: Sequence[str]) -> Fresh | None:
         """The fresh plan the tokens spell, None when they name no `--fresh`."""
@@ -185,12 +183,40 @@ class Fresh:
                 raise SystemExit(f"{cls.TIMEOUT} takes the seconds one cell may run")
             timeout = float(rest[1])
             rest = rest[2:]
-        ids, args = _partitioned(rest)
+        ids, args = Fresh._partitioned(rest)
         if not ids:
             raise SystemExit(
                 f"{cls.FLAG} takes the parametrize ids to run, then -- and pytest args"
             )
-        return cls(ids, args, timeout)
+        return cls(ids, args=args, timeout=timeout)
+
+    @staticmethod
+    def _partitioned(tokens: Sequence[str]) -> tuple[list[str], list[str]]:
+        """The tokens before the delimiter and after it."""
+        if _DELIMITER in tokens:
+            cut = list(tokens).index(_DELIMITER)
+            return list(tokens[:cut]), list(tokens[cut + 1 :])
+        return list(tokens), []
+
+    def __init__(self, ids: Sequence[str], *, args: Sequence[str], timeout: float) -> None:
+        self.ids = tuple(ids)
+        self.args = tuple(args)
+        self.timeout = timeout
+
+    def cells(self, spelling: str, *, dispatched: bool) -> int:
+        nested = {**os.environ, **NESTED.exported("1")}
+        for identity in self.ids:
+            cell = f"{spelling}[{identity}]"
+            logger.result(f"mainboard: fresh process for {cell}")
+            command = [sys.executable, "-m", _MODULE, cell, _DELIMITER, *self.args]
+            code = Processes().timeout(self.timeout, command, env=nested)
+            if code == Exit.TIMED_OUT:
+                logger.result(f"mainboard: {cell} exceeded {self.timeout:g} s and was killed")
+                if dispatched:
+                    beacon.say(beacon.Marker.CELL, f"failed {cell}")
+            if code:
+                return code
+        return 0
 
     def run(self, spelling: str) -> int:
         """Run every id as its own process, answering the first nonzero exit code.
@@ -201,37 +227,14 @@ class Fresh:
         """
         dispatched = RECEIPTS_VAR.present()
         if dispatched:
-            beacon.say(beacon.CELLS, str(len(self.ids)))
+            beacon.say(beacon.Marker.CELLS, str(len(self.ids)))
         code = self.cells(spelling, dispatched=dispatched)
         if dispatched:
-            beacon.say(beacon.SESSION, str(code))
+            beacon.say(beacon.Marker.SESSION, str(code))
         return code
 
-    def cells(self, spelling: str, *, dispatched: bool) -> int:
-        nested = {**os.environ, **beacon.NESTED.exported("1")}
-        for identity in self.ids:
-            cell = f"{spelling}[{identity}]"
-            print(f"mainboard: fresh process for {cell}", flush=True)
-            command = [sys.executable, "-m", __spec__.name, cell, DELIMITER, *self.args]
-            code = Processes().timeout(self.timeout, command, env=nested)
-            if code == TIMED_OUT:
-                print(f"mainboard: {cell} exceeded {self.timeout:g} s and was killed", flush=True)
-                if dispatched:
-                    beacon.say(beacon.CELL, f"failed {cell}")
-            if code:
-                return code
-        return 0
 
-
-def _partitioned(tokens: Sequence[str]) -> tuple[list[str], list[str]]:
-    """The tokens before the delimiter and after it."""
-    if DELIMITER in tokens:
-        cut = list(tokens).index(DELIMITER)
-        return list(tokens[:cut]), list(tokens[cut + 1 :])
-    return list(tokens), []
-
-
-def loaded(file: Path) -> ModuleType:
+def _loaded(file: Path) -> ModuleType:
     """Import `file` by the name its package chain gives it, from the root the chain stops at."""
     real = file.resolve()
     home = home_of(real, root=Path(real.anchor))
@@ -240,7 +243,7 @@ def loaded(file: Path) -> ModuleType:
     return importlib.import_module(dotted(real, home=home))
 
 
-def called(target: App | Callable[[], int | None], name: str, args: Sequence[str]) -> int:
+def _called(target: App | Callable[[], int | None], name: str, args: Sequence[str]) -> int:
     """Run `target`: an application with `args`, a function with none, answering an exit code."""
     if isinstance(target, App):
         outcome = target(list(args))
@@ -254,4 +257,4 @@ def called(target: App | Callable[[], int | None], name: str, args: Sequence[str
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_main())

@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from enum import StrEnum, auto
 
 from patos import FrozenModel
@@ -27,7 +28,7 @@ class Section(FrozenModel):
     fix: str = ""
 
 
-def failed(sections: list[Section]) -> bool:
+def failed(sections: Iterable[Section]) -> bool:
     """Whether any of `sections` is broken, the exit status every report shares."""
     return any(section.verdict is Verdict.FAIL for section in sections)
 

@@ -1,4 +1,5 @@
 import os
+from collections.abc import Iterable
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -38,19 +39,19 @@ class Variable(FrozenModel):
 
     names: tuple[str, ...]
 
-    def read(self, environ: Mapping[str, str] | None = None) -> str:
-        """The value under the first name `environ` (the process environment) sets, else empty."""
-        source = os.environ if environ is None else environ
-        return next((source[name] for name in self.names if name in source), "")
+    def exported(self, value: str) -> dict[str, str]:
+        """`value` under every name, the mapping a child environment is updated with."""
+        return dict.fromkeys(self.names, value)
 
     def present(self, environ: Mapping[str, str] | None = None) -> bool:
         """Whether `environ` (the process environment) sets the variable under any name."""
         source = os.environ if environ is None else environ
         return any(name in source for name in self.names)
 
-    def exported(self, value: str) -> dict[str, str]:
-        """`value` under every name, the mapping a child environment is updated with."""
-        return dict.fromkeys(self.names, value)
+    def read(self, environ: Mapping[str, str] | None = None) -> str:
+        """The value under the first name `environ` (the process environment) sets, else empty."""
+        source = os.environ if environ is None else environ
+        return next((source[name] for name in self.names if name in source), "")
 
 
 class Project(FrozenModel):
@@ -70,19 +71,13 @@ class Project(FrozenModel):
     names: tuple[str, ...] = _names()
 
     @property
-    def name(self) -> str:
-        """The primary name: the command a user types and the stem of everything new."""
-        return self.names[0]
+    def jobs_roots(self) -> tuple[str, ...]:
+        """Where a dispatch target keeps the tool's code and state, primary first.
 
-    @property
-    def manifests(self) -> tuple[str, ...]:
-        """The workspace manifest filenames, primary first."""
-        return tuple(f"{name}.toml" for name in self.names)
-
-    @property
-    def out_dirs(self) -> tuple[str, ...]:
-        """The generated-state directory names a workspace root may hold, primary first."""
-        return tuple(f".{name}" for name in self.names)
+        That is one dedicated folder under the login home, never a human checkout, unless its
+        profile says otherwise. `dispatch.targets.resolve` decides which one a host uses.
+        """
+        return tuple(f"~/.{name}-jobs" for name in self.names)
 
     @property
     def locks(self) -> tuple[str, ...]:
@@ -90,51 +85,60 @@ class Project(FrozenModel):
         return tuple(f"{name}.lock" for name in self.names)
 
     @property
-    def jobs_roots(self) -> tuple[str, ...]:
-        """Where a dispatch target keeps the tool's code and state unless its profile says
-        otherwise, primary first: one dedicated folder under the login home, never a human
-        checkout. `dispatch.targets.resolve` decides which one a host uses."""
-        return tuple(f"~/.{name}-jobs" for name in self.names)
+    def manifests(self) -> tuple[str, ...]:
+        """The workspace manifest filenames, primary first."""
+        return tuple(f"{name}.toml" for name in self.names)
+
+    @property
+    def name(self) -> str:
+        """The primary name: the command a user types and the stem of everything new."""
+        return self.names[0]
+
+    @property
+    def out_dirs(self) -> tuple[str, ...]:
+        """The generated-state directory names a workspace root may hold, primary first."""
+        return tuple(f".{name}" for name in self.names)
 
     @property
     def plugin_groups(self) -> tuple[str, ...]:
         """The entry-point groups third-party providers advertise under, primary first."""
         return tuple(f"{name}.providers" for name in self.names)
 
-    def table[T](self, tool: Mapping[str, T]) -> T | None:
-        """This tool's table in a pyproject's `[tool]`: the primary name's, else a legacy one's."""
-        return next((tool[name] for name in self.names if name in tool), None)
+    @staticmethod
+    def _one(directory: Path, names: Iterable[str], why: str) -> Path | None:
+        """The one file `directory` holds under any of `names`, None when it holds none.
 
-    def variable(self, key: str) -> Variable:
-        """The environment variable `<NAME>_<key>` under every name, `MB_SOURCE` first."""
-        return Variable(names=tuple(f"{name.upper()}_{key}" for name in self.names))
-
-    def marker(self, suffix: str) -> str:
-        """The name a cross-machine marker file `.<name>-<suffix>` is written under.
-
-        Deliberately the legacy stem: center and hosts may run different releases, and a marker
-        an older release cannot find reads as missing (an unpinned tree, an unbuilt prefix), so
-        writers keep the name every release reads until no host runs one without `markers`.
+        why: what holding several would mean, for the refusal.
         """
-        return f".{self.package}-{suffix}"
+        found = [directory / name for name in names if (directory / name).is_file()]
+        if len(found) > 1:
+            raise MissionError(
+                f"{directory} holds both {' and '.join(path.name for path in found)}, which "
+                f"{why}; keep {found[0].name} and delete the other"
+            )
+        return found[0] if found else None
 
-    def markers(self, suffix: str) -> tuple[str, ...]:
-        """Every name a marker file `.<name>-<suffix>` is read under, primary first."""
-        return tuple(f".{name}-{suffix}" for name in self.names)
+    def _declared(self, directory: Path) -> Path | None:
+        """The one manifest `directory` holds under any name, None when it holds none."""
+        return self._one(directory, self.manifests, "declare one workspace twice")
 
-    def marked(self, directory: Path, suffix: str) -> Path:
-        """The marker file `.<name>-<suffix>` in `directory` under the first name it exists by,
-        else where `marker` writes it."""
-        found = (directory / name for name in self.markers(suffix))
-        return next((path for path in found if path.exists()), directory / self.marker(suffix))
+    def _nearest(self, start: Path) -> Path:
+        """The nearest directory at or above `start` holding a manifest."""
+        for directory in (start, *start.parents):
+            if self._declared(directory):
+                return directory
+        raise NoWorkspace(
+            f"no {' or '.join(self.manifests)} found from {start} upward; run inside a workspace"
+        )
 
-    def manifest(self, directory: Path) -> Path:
-        """The manifest `directory` holds, or where a new one goes (the primary name).
+    def activation(self, env: str = "default", root: Path | None = None) -> str:
+        """`env`'s activation script, relative to workspace `root` (the cwd's workspace).
 
-        Raises MissionError when `directory` holds more than one, since which is meant is the
-        owner's call.
+        It lives in the environment's own directory beside the prefix it activates, as a
+        content-addressed prefix keeps its own, so the state directory holds none;
+        `mb shell-hook` names it for a shell to source.
         """
-        return self._declared(directory) or directory / self.manifests[0]
+        return f"{self.out_dir(root)}/envs/{env}/activate.sh"
 
     def dotenv(self, root: Path) -> dict[str, str]:
         """The variables workspace `root`'s `.env` defines, by name, quotes around a value gone."""
@@ -150,6 +154,20 @@ class Project(FrozenModel):
             if sign and not name.startswith("#")
         }
 
+    def find_root(self, start: Path) -> Path:
+        """The workspace `start` lies in: the nearest manifest upward, or the one composing it.
+
+        Inside a member, the ancestor whose `[workspace] members` claims that member is the
+        workspace, the way cargo finds its workspace root, so a member's tasks are reachable
+        from its own directory; cloned alone, the member's manifest is the nearest and only one.
+        """
+        nearest = self._nearest(start)
+        for ancestor in nearest.parents:
+            declared = self._declared(ancestor)
+            if declared and Membership.declared(declared, self.manifests).claims(nearest):
+                return ancestor
+        return nearest
+
     def lock(self, root: Path | None = None) -> Path:
         """The committed lock at workspace `root` (the cwd's workspace), or where a new one goes.
 
@@ -164,6 +182,40 @@ class Project(FrozenModel):
         here = root or self.workspace()
         found = self._one(here, self.locks, "record one workspace's solves twice")
         return found or here / self.locks[0]
+
+    def manifest(self, directory: Path) -> Path:
+        """The manifest `directory` holds, or where a new one goes (the primary name).
+
+        Raises MissionError when `directory` holds more than one, since which is meant is the
+        owner's call.
+        """
+        return self._declared(directory) or directory / self.manifests[0]
+
+    def marked(self, directory: Path, suffix: str) -> Path:
+        """The marker file `.<name>-<suffix>` in `directory`, under the first name it exists by.
+
+        Otherwise it is where `marker` writes it.
+        """
+        found = (directory / name for name in self.markers(suffix))
+        return next((path for path in found if path.exists()), directory / self.marker(suffix))
+
+    def marker(self, suffix: str) -> str:
+        """The name a cross-machine marker file `.<name>-<suffix>` is written under.
+
+        Deliberately the legacy stem: center and hosts may run different releases, and a marker
+        an older release cannot find reads as missing (an unpinned tree, an unbuilt prefix), so
+        writers keep the name every release reads until no host runs one without `markers`.
+        """
+        return f".{self.package}-{suffix}"
+
+    def markers(self, suffix: str) -> tuple[str, ...]:
+        """Every name a marker file `.<name>-<suffix>` is read under, primary first."""
+        return tuple(f".{name}-{suffix}" for name in self.names)
+
+    def out(self, root: Path | None = None) -> Path:
+        """The generated-state directory itself, under `root` or the cwd's workspace."""
+        here = root or self.workspace()
+        return here / self.out_dir(here)
 
     def out_dir(self, root: Path | None = None) -> str:
         """The generated-state directory's name at workspace `root` (the cwd's workspace).
@@ -184,33 +236,13 @@ class Project(FrozenModel):
         declared = self._declared(here)
         return f".{declared.stem}" if declared else self.out_dirs[0]
 
-    def out(self, root: Path | None = None) -> Path:
-        """The generated-state directory itself, under `root` or the cwd's workspace."""
-        here = root or self.workspace()
-        return here / self.out_dir(here)
+    def table[T](self, tool: Mapping[str, T]) -> T | None:
+        """This tool's table in a pyproject's `[tool]`: the primary name's, else a legacy one's."""
+        return next((tool[name] for name in self.names if name in tool), None)
 
-    def activation(self, env: str = "default", root: Path | None = None) -> str:
-        """`env`'s activation script, relative to workspace `root` (the cwd's workspace).
-
-        It lives in the environment's own directory beside the prefix it activates, as a
-        content-addressed prefix keeps its own, so the state directory holds none;
-        `mb shell-hook` names it for a shell to source.
-        """
-        return f"{self.out_dir(root)}/envs/{env}/activate.sh"
-
-    def find_root(self, start: Path) -> Path:
-        """The workspace `start` lies in: the nearest manifest upward, or the one composing it.
-
-        Inside a member, the ancestor whose `[workspace] members` claims that member is the
-        workspace, the way cargo finds its workspace root, so a member's tasks are reachable
-        from its own directory; cloned alone, the member's manifest is the nearest and only one.
-        """
-        nearest = self._nearest(start)
-        for ancestor in nearest.parents:
-            declared = self._declared(ancestor)
-            if declared and Membership.declared(declared, self.manifests).claims(nearest):
-                return ancestor
-        return nearest
+    def variable(self, key: str) -> Variable:
+        """The environment variable `<NAME>_<key>` under every name, `MB_SOURCE` first."""
+        return Variable(names=tuple(f"{name.upper()}_{key}" for name in self.names))
 
     def workspace(self, start: Path | None = None) -> Path:
         """The workspace `start` (default the cwd) belongs to, or `start` itself outside any.
@@ -223,30 +255,3 @@ class Project(FrozenModel):
             return self.find_root(here)
         except FileNotFoundError:
             return here
-
-    def _nearest(self, start: Path) -> Path:
-        """The nearest directory at or above `start` holding a manifest."""
-        for directory in (start, *start.parents):
-            if self._declared(directory):
-                return directory
-        raise NoWorkspace(
-            f"no {' or '.join(self.manifests)} found from {start} upward; run inside a workspace"
-        )
-
-    def _declared(self, directory: Path) -> Path | None:
-        """The one manifest `directory` holds under any name, None when it holds none."""
-        return self._one(directory, self.manifests, "declare one workspace twice")
-
-    @staticmethod
-    def _one(directory: Path, names: tuple[str, ...], why: str) -> Path | None:
-        """The one file `directory` holds under any of `names`, None when it holds none.
-
-        why: what holding several would mean, for the refusal.
-        """
-        found = [directory / name for name in names if (directory / name).is_file()]
-        if len(found) > 1:
-            raise MissionError(
-                f"{directory} holds both {' and '.join(path.name for path in found)}, which "
-                f"{why}; keep {found[0].name} and delete the other"
-            )
-        return found[0] if found else None

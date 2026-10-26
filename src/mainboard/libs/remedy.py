@@ -8,9 +8,10 @@ from patos import FrozenModel
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..core.section import Section, Verdict
+from ..deps import Edit, Tables
 
 if TYPE_CHECKING:
-    from ..board import Board
+    from ..fleet.board import Board
 
 # The tool this workspace answers to, so no command below spells the binary's name.
 _TOOL = Project().name
@@ -27,14 +28,14 @@ class Remedy(FrozenModel, ABC):
     the environment's own directory.
     """
 
+    @abstractmethod
+    def apply(self, board: Board) -> Section:
+        """Do the repair and answer the one row saying what changed."""
+
     @property
     @abstractmethod
     def command(self) -> str:
         """The command that does what `apply` does, for a report to name."""
-
-    @abstractmethod
-    def apply(self, board: Board) -> Section:
-        """Do the repair and answer the one row saying what changed."""
 
 
 class Raise(Remedy):
@@ -66,7 +67,7 @@ class Raise(Remedy):
         """
         try:
             moved = board.deps().add(
-                self.package, ecosystem=self.ecosystem, env=self.env, install=True
+                self.package, edit=Edit(tables=Tables(ecosystem=self.ecosystem, env=self.env))
             )[0]
         except MissionError as refusal:
             return _done(

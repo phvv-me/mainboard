@@ -1,6 +1,8 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
+from cyclopts import Parameter
 from patos import FrozenModel
+from pydantic import ConfigDict, Field
 
 from ..core.errors import MissionError
 
@@ -29,48 +31,10 @@ class Slot(FrozenModel):
         return f"[{'.'.join(self.path)}]"
 
 
-def candidates(*, ecosystem: str, env: str, dev: bool) -> tuple[Slot, ...]:
-    """Every table a requirement of this shape may live in, the preferred one first.
-
-    Dev requirements have two house spellings (`[dev.python.deps]`, `[nodejs.dev]`); the caller
-    takes the first the manifest already carries, so an edit lands beside its neighbours.
-
-    env: an environment name, the whole manifest when empty.
-    """
-    base = ("envs", env) if env else ()
-    if ecosystem == _CONDA:
-        if not dev:
-            return (Slot(path=(*base, _DEPS), ecosystem=ecosystem),)
-        if env:
-            raise MissionError(
-                f"environment {env!r} has no conda development table. Declare the requirement "
-                f"in [envs.{env}.deps], or drop --env to reach the workspace-wide [dev.deps]."
-            )
-        return (Slot(path=(_DEV, _DEPS), ecosystem=ecosystem),)
-    if not dev:
-        return (Slot(path=(*base, ecosystem, _DEPS), ecosystem=ecosystem),)
-    if env:
-        return (Slot(path=(*base, ecosystem, _DEV), ecosystem=ecosystem),)
-    return (
-        Slot(path=(_DEV, ecosystem, _DEPS), ecosystem=ecosystem),
-        Slot(path=(ecosystem, _DEV), ecosystem=ecosystem),
-    )
-
-
 def declared(manifest: Manifest) -> dict[Slot, tuple[str, ...]]:
     """Every requirement the manifest declares, by table; an empty table is left out."""
-    found: dict[Slot, tuple[str, ...]] = {}
-    for path, scope in _scopes(manifest):
-        if scope.deps:
-            found[Slot(path=(*path, _DEPS), ecosystem=_CONDA)] = tuple(scope.deps)
-        for ecosystem, chain in scope.toolchains().items():
-            if chain.deps:
-                found[Slot(path=(*path, ecosystem, _DEPS), ecosystem=ecosystem)] = tuple(
-                    chain.deps
-                )
-            if chain.dev:
-                found[Slot(path=(*path, ecosystem, _DEV), ecosystem=ecosystem)] = tuple(chain.dev)
-    return found
+    tables = (table for path, scope in _scopes(manifest) for table in _tables(path, scope))
+    return {slot: names for slot, names in tables if names}
 
 
 def _scopes(manifest: Manifest) -> Iterator[tuple[tuple[str, ...], Scope]]:
@@ -83,3 +47,82 @@ def _scopes(manifest: Manifest) -> Iterator[tuple[tuple[str, ...], Scope]]:
         yield ("envs", name), env
         for platform, overlay in env.on.items():
             yield ("envs", name, "on", platform), overlay
+
+
+def _tables(path: tuple[str, ...], scope: Scope) -> Iterator[tuple[Slot, tuple[str, ...]]]:
+    """Each requirement table `scope` carries at `path`, the empty ones too."""
+    yield Slot(path=(*path, _DEPS), ecosystem=_CONDA), tuple(scope.deps)
+    for ecosystem, chain in scope.toolchains().items():
+        yield Slot(path=(*path, ecosystem, _DEPS), ecosystem=ecosystem), tuple(chain.deps)
+        yield Slot(path=(*path, ecosystem, _DEV), ecosystem=ecosystem), tuple(chain.dev)
+
+
+@Parameter(name="*")
+class Tables(FrozenModel):
+    """Which manifest tables a requirement edit names or searches; all of them unless narrowed."""
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    ecosystem: Annotated[str, Parameter(name=["--lang", "-l"])] = ""
+    """only this ecosystem's tables (`python`, `conda`, `nodejs`, ...); a new requirement is
+    declared for conda when empty."""
+    env: str = ""
+    """only this environment's tables, the workspace-wide ones when empty."""
+    dev: bool = False
+    """only the development-only tables."""
+
+    @property
+    def is_narrowed(self) -> bool:
+        """Whether a flag narrows the search to some tables."""
+        return bool(self.ecosystem or self.env or self.dev)
+
+    def _conda_dev(self) -> Slot:
+        """The one conda development table, which no environment has."""
+        if self.env:
+            raise MissionError(
+                f"environment {self.env!r} has no conda development table. Declare the "
+                f"requirement in [envs.{self.env}.deps], or drop --env to reach the "
+                "workspace-wide [dev.deps]."
+            )
+        return Slot(path=(_DEV, _DEPS), ecosystem=_CONDA)
+
+    def candidates(self) -> tuple[Slot, ...]:
+        """Every table these flags name, the preferred one first.
+
+        Dev requirements have two house spellings (`[dev.python.deps]`, `[nodejs.dev]`); the
+        caller takes the first the manifest already carries, so an edit lands beside its
+        neighbours.
+        """
+        ecosystem = self.ecosystem or _CONDA
+        scope = ("envs", self.env) if self.env else ()
+        resolver = () if ecosystem == _CONDA else (ecosystem,)
+        if not self.dev:
+            return (Slot(path=(*scope, *resolver, _DEPS), ecosystem=ecosystem),)
+        if ecosystem == _CONDA:
+            return (self._conda_dev(),)
+        if self.env:
+            return (Slot(path=(*scope, ecosystem, _DEV), ecosystem=ecosystem),)
+        return (
+            Slot(path=(_DEV, ecosystem, _DEPS), ecosystem=ecosystem),
+            Slot(path=(ecosystem, _DEV), ecosystem=ecosystem),
+        )
+
+
+@Parameter(name="*")
+class Relock(FrozenModel):
+    """What a requirement edit does to the lock: solve and install, solve alone, or leave it."""
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    no_install: bool = False
+    """re-lock without installing."""
+    frozen: bool = False
+    """edit the manifest alone, leaving the lock as it stands, to solve several edits at once."""
+
+
+@Parameter(name="*")
+class Edit(FrozenModel):
+    """One requirement edit's reach: which tables it touches, and what it then does to the lock."""
+
+    tables: Tables = Field(default_factory=Tables)
+    relock: Relock = Field(default_factory=Relock)

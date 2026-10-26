@@ -40,7 +40,7 @@ def module_specs(modules: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(f"{name}/{version}" if version else name for name, version in modules.items())
 
 
-def activation(
+def _activation(
     hook: str,
     *,
     modules: Sequence[str] = (),
@@ -83,8 +83,10 @@ def activation(
 def write(
     path: Path, hook: str, *, modules: Mapping[str, str], binaries: Sequence[Path] = ()
 ) -> Path:
-    """Write the activation of the environment at `path`'s directory, with line feeds, since
-    bash reads a carriage return as part of each command."""
-    text = activation(hook, modules=module_specs(modules), binaries=binaries)
+    """Write the activation of the environment at `path`'s directory, with line feeds.
+
+    Bash reads a carriage return as part of each command.
+    """
+    text = _activation(hook, modules=module_specs(modules), binaries=binaries)
     path.write_text(text, encoding="utf-8", newline="\n")
     return path

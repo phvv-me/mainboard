@@ -531,7 +531,7 @@ $ mb lake upgrade      # the catalog to the newest DuckLake spec
 $ mb lake ingest DIR   # evidence files kept byte for byte, so they can leave git
 $ mb lake materialize DIR  # kept evidence written back where it stood
 $ mb lake replicate DIR    # every evidence object and the path index, copied to another disk
-$ mb lake serve        # this lake over DuckDB's Quack protocol, on localhost:9494
+$ mb lake serve        # this lake over DuckDB's Quack protocol, on localhost:9494 (reads on 9495)
 ```
 
 `lake ingest` keeps each evidence file once per content in `blobs` (8 MiB
@@ -553,15 +553,20 @@ resources and needs before shipping them. Run `lake replicate` after ingesting
 data that is leaving git, until which the lake is its only copy.
 
 `lake serve` lets other machines use this lake directly. It listens on localhost
-only, so another machine comes in through ssh, then points `mb` at it:
+only, on two ports: 9494 takes reads and appends, and 9495 takes reads alone,
+since DuckLake is opened READ_ONLY there and no client can write, drop or
+maintain through it. Another machine comes in through ssh and points `mb` at
+both, so reads go to the read-only port:
 
 ```console
-$ ssh -R 9494:localhost:9494 gold                  # from the center
+$ ssh -R 9494:localhost:9494 -R 9495:localhost:9495 gold   # from the center
 gold$ export MB_LAKE=quack:localhost:9494 MB_LAKE_TOKEN=<.mb/run/lake.token>
+gold$ export MB_LAKE_READ=quack:localhost:9495 MB_LAKE_READ_TOKEN=<.mb/run/lake.read.token>
 gold$ mb job list                                  # the center's runs, read and written live
 ```
 
-Both ends must run the same DuckDB release (`mb self version`). Maintenance
+A host with `MB_LAKE` alone cannot run `mb query` or other read-only attaches;
+give it the `MB_LAKE_READ` pair too. Both ends must run the same DuckDB release (`mb self version`). Maintenance
 (`check`, `compact`, `upgrade`) stays on the machine holding the files.
 
 ## Portable process chores
@@ -992,7 +997,7 @@ mainboard apple results path/to/DerivedData/Logs/Test --json
 mainboard lint --check --only swift-format path/to/Changed.swift
 ```
 
-Use `mainboard rules swift-compare before.json after.json --json` to compare two
+Use `mainboard refactor swift-compare before.json after.json --json` to compare two
 saved `swift-inventory --json` observations for the same repository-relative scope.
 This works without invoking Xcode or rereading source. It retains artifact SHA256s,
 parser/toolchain identity and changed rule IDs, per-category totals, byte changes,
@@ -1080,10 +1085,10 @@ The rules use syntax evidence, including inactive conditional branches; compiler
 still decide names, types, actor isolation and availability.
 
 ```sh
-mainboard rules catalog --rule SW-UI0001 --json
-mainboard rules explain SW-MIG0004 --json
-mainboard rules gate --rule SW-UI0001 --rule SW-PARSE0001 Sources/Screen.swift
-mainboard rules check . --rule SW-MIG0001 --rule SW-MIG0002 --rule SW-MIG0003 --rule SW-MIG0004
+mainboard refactor catalog --rule SW-UI0001 --json
+mainboard refactor explain SW-MIG0004 --json
+mainboard refactor gate --rule SW-UI0001 --rule SW-PARSE0001 Sources/Screen.swift
+mainboard refactor check . --rule SW-MIG0001 --rule SW-MIG0002 --rule SW-MIG0003 --rule SW-MIG0004
 ```
 
 `gate` fails for findings in its named files. `check` is an inventory: it prints findings
@@ -1110,7 +1115,7 @@ populated-store upgrades are proved; never automatically rewrite their stored fo
 Native owners can declare per-rule policy in `[analysis.rules."RULE-ID"]`; the existing
 `pyproject.toml` policy remains supported, and conflicting declarations are refused.
 
-`mainboard rules swift-inventory . --json` accounts for each Swift/Objective-C
+`mainboard refactor swift-inventory . --json` accounts for each Swift/Objective-C
 implementation file, with physical/nonblank lines, content hashes, category totals,
 source imports, placed conditional-compilation expressions and the existing migration
 signals with offline guidance. The API is `SwiftSourceInventory(Scope.of(path)).read()`

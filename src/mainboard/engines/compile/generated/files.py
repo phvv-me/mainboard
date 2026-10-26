@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from filelock import FileLock
 from patos import FrozenModel
 
 from ..state import SyncState
@@ -12,7 +13,6 @@ from .writer import Writer
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from filelock import FileLock
 
 # One FileLock per generated directory, since filelock is reentrant per instance only: a
 # transaction (stale-check plus recompile) inside `provision`'s lock would deadlock on a second
@@ -24,6 +24,21 @@ class GeneratedFiles(FrozenModel):
     """Atomic generated-file writes guarded by one workspace sync lock."""
 
     directory: Path
+
+    @contextmanager
+    def locked(self) -> Generator[Writer]:
+        """Serialize compilers that target the same generated directory.
+
+        The `Writer` exists only inside this context, so holding the lock is the only way to
+        write. filelock is imported here because it drags in asyncio, 13 ms of every cold start.
+        """
+
+        # Parents too: a shard's lock may be taken before anything ever compiled into it.
+        self.directory.mkdir(parents=True, exist_ok=True)
+        key = self.directory.resolve()
+        lock = _LOCKS.setdefault(key, FileLock(key / ".sync.lock"))
+        with lock:
+            yield Writer(lock)
 
     @property
     def inputs(self) -> tuple[Path, ...]:
@@ -39,19 +54,3 @@ class GeneratedFiles(FrozenModel):
             and not entry.name.startswith(".")
             and entry.name not in ("activate.sh", SyncState.path(self.directory).name)
         )
-
-    @contextmanager
-    def locked(self) -> Generator[Writer]:
-        """Serialize compilers that target the same generated directory.
-
-        The `Writer` exists only inside this context, so holding the lock is the only way to
-        write. filelock is imported here because it drags in asyncio, 13 ms of every cold start.
-        """
-        from filelock import FileLock
-
-        # Parents too: a shard's lock may be taken before anything ever compiled into it.
-        self.directory.mkdir(parents=True, exist_ok=True)
-        key = self.directory.resolve()
-        lock = _LOCKS.setdefault(key, FileLock(key / ".sync.lock"))
-        with lock:
-            yield Writer(lock)

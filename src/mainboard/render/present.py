@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING
 from patos import value_dispatch
 
 from ..core.errors import MissionError
-from . import human, tabular
-from .values import pairs_of, to_row
+from ..log import logger
+from . import human
+from .values import encode, pairs_of, to_row
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -30,7 +31,7 @@ def _record(
     """
     del mode, title
     # A record's `field value` header line says nothing its pairs do not.
-    print(tabular.encode(pairs_of(to_row(payload), fields=fields or None)).partition("\n")[2])
+    logger.result(encode(pairs_of(to_row(payload), fields=fields or None)).partition("\n")[2])
 
 
 record = value_dispatch(_record, kind="mode")
@@ -38,7 +39,7 @@ record = value_dispatch(_record, kind="mode")
 
 @record.register("json")
 def _record_json(payload: Mapping[str, Node], *, fields: Sequence[str], title: str) -> None:
-    print(json.dumps(_project(payload, fields), separators=(",", ":")))
+    logger.result(json.dumps(_project(payload, fields), separators=(",", ":")))
 
 
 @record.register("human")
@@ -58,7 +59,7 @@ def _rows(
     fields: the column names to keep, every field when empty.
     """
     del mode, title
-    print(tabular.encode([to_row(payload) for payload in payloads], fields=fields or None))
+    logger.result(encode([to_row(payload) for payload in payloads], fields=fields or None))
 
 
 rows = value_dispatch(_rows, kind="mode")
@@ -68,7 +69,9 @@ rows = value_dispatch(_rows, kind="mode")
 def _rows_json(
     payloads: Sequence[Mapping[str, Node]], *, fields: Sequence[str], title: str
 ) -> None:
-    print(json.dumps([_project(payload, fields) for payload in payloads], separators=(",", ":")))
+    logger.result(
+        json.dumps([_project(payload, fields) for payload in payloads], separators=(",", ":"))
+    )
 
 
 @rows.register("human")

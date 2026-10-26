@@ -16,6 +16,8 @@ import pytest
 
 import mainboard
 
+from . import runner
+
 Guard = pytest.importorskip(
     "guard", reason="M00-GATE: only a gate worker carries the guard (integration/gates/run.sh)"
 ).Guard
@@ -126,7 +128,6 @@ def test_seeded_extensions_copy_without_user_duckdb_or_source_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from . import runner
 
     home = tmp_path / "source-home"
     (home / ".duckdb").mkdir(parents=True)

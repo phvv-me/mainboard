@@ -1,0 +1,128 @@
+# The accelerator bindings, each present only where its package is installed, and the structural
+# contracts of the untyped CUPTI, NVTX, and CUDA runtime and driver modules: they ship no stubs,
+# so each handle is `import_module`'s untyped `ModuleType`, cast to its Protocol here.
+
+from collections.abc import Callable
+from contextlib import suppress
+from functools import cache
+from importlib import import_module
+from typing import Protocol, SupportsInt, cast
+
+from ...formats.protocols import RawActivity
+
+
+class ActivityKind(Protocol):
+    """The `cupti.ActivityKind` enum: members are selected by name with `getattr`."""
+
+    RUNTIME: int
+    DRIVER: int
+
+
+class CallbackDomain(Protocol):
+    """The `cupti.CallbackDomain` enum members the tracer routes records and callbacks by."""
+
+    RUNTIME_API: int
+    DRIVER_API: int
+
+
+class ApiCallbackSite(Protocol):
+    """The `cupti.ApiCallbackSite` enum: distinguishes the API-enter from the API-exit edge."""
+
+    API_ENTER: int
+
+
+class CallbackData(Protocol):
+    """The CUPTI callback payload the tracer reads: which edge fired and the API name."""
+
+    callback_site: int
+    function_name: str
+
+
+class Cupti(Protocol):
+    """The `cupti.cupti` surface the tracer drives: the asynchronous Activity API and the
+    synchronous Callback API."""
+
+    ActivityKind: ActivityKind
+    CallbackDomain: CallbackDomain
+    ApiCallbackSite: ApiCallbackSite
+
+    def activity_disable(self, kind: int) -> None: ...
+    def activity_enable(self, kind: int) -> None: ...
+    def activity_flush_all(self, flag: int) -> None: ...
+    def activity_get_num_dropped_records(
+        self, context: int, stream_id: int, dropped: int
+    ) -> None: ...
+    def activity_register_callbacks(
+        self,
+        on_requested: Callable[[], tuple[int, int]],
+        on_completed: Callable[[list[RawActivity]], None],
+    ) -> None: ...
+    def enable_domain(self, enable: int, subscriber: Subscriber, domain: int) -> None: ...
+    def get_callback_name(self, domain: int, cbid: int) -> str: ...
+    def get_context_id(self, context: int) -> int: ...
+    def get_device_id(self, context: int) -> int: ...
+    def get_timestamp(self) -> int: ...
+    def subscribe(
+        self, callback: Callable[[None, int, int, CallbackData], None], userdata: None
+    ) -> Subscriber: ...
+    def unsubscribe(self, subscriber: Subscriber) -> None: ...
+
+
+class Subscriber(Protocol):
+    """An opaque CUPTI callback-subscriber token, only threaded back into CUPTI calls."""
+
+
+class Nvtx(Protocol):
+    """The `nvtx` annotation surface the tracer emits."""
+
+    def end_range(self, range_id: tuple[int, int]) -> None: ...
+    def mark(self, message: str) -> None: ...
+    def pop_range(self) -> None: ...
+    def push_range(self, message: str) -> None: ...
+    def start_range(self, message: str) -> tuple[int, int]: ...
+
+
+class CudaRuntime(Protocol):
+    """Current CUDA-visible ordinal and the current-context completion barrier."""
+
+    def cudaDeviceSynchronize(self) -> tuple[int]: ...
+    def cudaGetDevice(self) -> tuple[int, int]: ...
+
+
+class CudaDriver(Protocol):
+    """The CUDA driver's report of the context bound to the calling host thread."""
+
+    def cuCtxGetCurrent(self) -> tuple[int, SupportsInt]: ...
+
+
+nvtx: Nvtx | None = None
+with suppress(ImportError):
+    nvtx = cast("Nvtx", import_module("nvtx"))
+
+cupti: Cupti | None = None
+with suppress(ImportError):
+    cupti = cast("Cupti", import_module("cupti.cupti"))  # the `cupti` package's `cupti` submodule
+
+
+def loaded() -> Cupti:
+    """The loaded CUPTI module — every caller reaches here only when CUPTI is present."""
+    assert cupti is not None  # noqa: S101  reason=type narrowing, guaranteed by is_available() since=2026-08-16
+    return cupti
+
+
+@cache
+def cuda_runtime() -> CudaRuntime | None:
+    """CUDA Runtime, loaded only when a deep trace needs its synchronization barrier."""
+    with suppress(ImportError, OSError):
+        return cast("CudaRuntime", import_module("cuda.bindings.runtime"))
+    return None
+
+
+def synchronize() -> None:
+    """Synchronize the device so all kernels land in the CUPTI buffer before a flush."""
+    runtime = cuda_runtime()
+    if runtime is None:
+        raise RuntimeError("CUDA runtime binding is required to synchronize activity capture")
+    (status,) = runtime.cudaDeviceSynchronize()
+    if status != 0:  # cudaSuccess is zero; asynchronous execution errors surface here too.
+        raise RuntimeError(f"cudaDeviceSynchronize failed with CUDA status {status}")

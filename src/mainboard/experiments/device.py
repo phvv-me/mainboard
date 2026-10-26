@@ -34,8 +34,10 @@ def _shorten(label: str) -> str:
 
 @functools.cache
 def device_tag(index: int = 0) -> str:
-    """`{short_name}_CC{major}.{minor}` for the GPU at `index` as the probe lists it, the bare
-    short name for an accelerator with no CUDA architecture (an Apple GPU), or `CPU` without one.
+    """`{short_name}_CC{major}.{minor}` for the GPU at `index` as the probe lists it.
+
+    An accelerator with no CUDA architecture (an Apple GPU) gives the bare short name, and a
+    machine without one gives `CPU`.
     """
     gpus = Machine().gpus
     if index >= len(gpus):

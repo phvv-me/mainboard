@@ -7,10 +7,10 @@ from pathlib import Path
 
 from ...log import logger
 from ..catalog import needed
-from ..facts import Budget, Facts, Query, listed
+from ..engine.facts import Budget, Facts, Query, listed
 from ..providers.ducks import Ducks
 
-CACHES = Path.home() / ".cache/mainboard/analysis"
+_CACHES = Path.home() / ".cache/mainboard/analysis"
 
 type Binding = str | int | Sequence[str]
 
@@ -31,7 +31,7 @@ class Workspace:
     def __init__(self, root: Path, *, memory: str = "2GB") -> None:
         self.root = root.resolve()
         self.installed: set[str] = set()
-        folder = CACHES / sha1(str(self.root).encode(), usedforsecurity=False).hexdigest()[:12]
+        folder = _CACHES / sha1(str(self.root).encode(), usedforsecurity=False).hexdigest()[:12]
         budget = Budget(memory=memory)
         self.facts = Facts(self.root, budget)
         atexit.register(budget.close)
@@ -47,9 +47,15 @@ class Workspace:
                     f"CREATE VIEW python.{view} AS SELECT * FROM main.{view} WHERE false"
                 )
 
+    def files(self) -> list[str]:
+        """Every file of the project git does not ignore."""
+        return listed(self.root)
+
     def install(self, *sql: str) -> None:
-        """Define the relations `sql` calls, each after those it calls, and compute the stored
-        ones once, so that `FROM relation()` reads a table."""
+        """Define the relations `sql` calls and compute the stored ones once.
+
+        Each is defined after those it calls, so that `FROM relation()` reads a table.
+        """
         for relation in needed(Query(sql=text) for text in sql):
             if relation.name() in self.installed:
                 continue
@@ -61,17 +67,6 @@ class Workspace:
             self.installed.add(relation.name())
             logger.debug("installed {}", relation.name())
 
-    def rows(self, sql: str, parameters: Mapping[str, Binding] | None = None) -> list[dict]:
-        """The rows of `sql` as dicts, after installing the relations it calls."""
-        self.install(sql)
-        cursor = self.db.execute(sql, parameters or {})
-        names = [column for column, *_ in cursor.description]
-        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
-
-    def files(self) -> list[str]:
-        """Every file of the project git does not ignore."""
-        return listed(self.root)
-
     def read_texts(self, table: str, paths: list[str]) -> None:
         """Create `table(path, content)` holding the text of `paths`, project-relative."""
         self.db.execute(f"CREATE OR REPLACE TABLE {table} (path VARCHAR, content VARCHAR)")
@@ -82,3 +77,10 @@ class Workspace:
                 "JOIN read_text($files) r ON r.filename = file",
                 {"paths": paths, "files": [str(self.root / path) for path in paths]},
             )
+
+    def rows(self, sql: str, parameters: Mapping[str, Binding] | None = None) -> list[dict]:
+        """The rows of `sql` as dicts, after installing the relations it calls."""
+        self.install(sql)
+        cursor = self.db.execute(sql, parameters or {})
+        names = [column for column, *_ in cursor.description]
+        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]

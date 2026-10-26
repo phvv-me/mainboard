@@ -28,25 +28,22 @@ from pydantic import JsonValue
 from ..dispatch.provenance import registered
 from ..state.evidence import EvidenceTree
 from .artifacts import Artifact, Artifacts
-from .coverage import PROBED, Cell, LaneStatus, Probed
-from .dataset import ADMISSIBILITY, LEDGER, OPENED, PARTIAL
-from .flags import moved, reading
-from .lease import CardLease
+from .contract.flags import moved, reading
+from .contract.vocabulary import Outcome
+from .lanes.coverage import Cell, LaneStatus, Probed
 from .provenance import Admissibility, Preflight, digested, parsed
-from .stage import Stage
-from .vocabulary import Outcome
+from .running.lease import CardLease
+from .running.stage import Stage
+from .store import dataset
+from .store.constants import ADMISSIBILITY, OPENED, PROBED, WORD
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     import pytest
 
-    from .declaration import Declaration
-    from .ledger import TrialReceipts
-
-# The report property a settled word rides to the terminal on, through pytest's own typed channel
-# from an item to its report.
-WORD = "mainboard_trials_word"
+    from .contract.declaration import Declaration
+    from .store.ledger import TrialReceipts
 
 
 def params_of(item: pytest.Item, axes: Sequence[str] = ()) -> dict[str, JsonValue]:
@@ -84,40 +81,10 @@ class Session:
     ending in random hex orders on the hex.
     """
 
-    def __init__(self, declared: Declaration) -> None:
-        self.declared = declared
-        self.opened = time_ns()
-        opened = datetime.fromtimestamp(self.opened // 1_000_000_000, UTC)
-        self.run = f"{opened:%Y%m%dT%H%M%SZ}-{uuid7().hex}"
-        self.taken = Preflight(
-            declared.universe.root, declared.tree, probed=declared.universe.probed
-        )
-        self.baseline = reading(declared.flags)
-        self.common: dict[str, JsonValue] = {
-            **self.taken.stamp,
-            OPENED: self.opened,
-            **{f"session_{name}": value for name, value in self.baseline.items()},
-        }
-        self.writers: dict[str, TrialReceipts] = {}
-        self.stores: dict[str, Artifacts] = {}
-        self.manifests: dict[str, Artifact] = {}
-        self.lanes: tuple[LaneStatus, ...] = ()
-        self.leaked: dict[str, str] = {}
-        self.staged: Stage = Stage("", resident=declared.resident)
-        self.leased: CardLease | None = None
-
     @property
     def card(self) -> str:
         """The device this run measures on, empty on a host that carries none."""
         return str(self.common.get("card", ""))
-
-    def claim(self) -> None:
-        """Take this run's exclusive hold on its card; a no-op on a host with no card.
-
-        Collection decides whether to call this, so a run touching no `gpu` lane is never blocked.
-        """
-        if self.card:
-            self.leased = CardLease.acquire(self.card)
 
     @property
     def heading(self) -> str:
@@ -133,6 +100,28 @@ class Session:
             return f"evidence on {where}:"
         return f"evidence on {where}, INADMISSIBLE ({stance}), these rows are scratch work:"
 
+    def __init__(self, declared: Declaration) -> None:
+        self.declared = declared
+        self.opened = time_ns()
+        opened = datetime.fromtimestamp(self.opened // 1_000_000_000, UTC)
+        self.run = f"{opened:%Y%m%dT%H%M%SZ}-{uuid7().hex}"
+        self.taken = Preflight(
+            declared.universe.root, repo=declared.tree, probed=declared.universe.probed
+        )
+        self.baseline = reading(declared.flags)
+        self.common: dict[str, JsonValue] = {
+            **self.taken.stamp,
+            OPENED: self.opened,
+            **{f"session_{name}": value for name, value in self.baseline.items()},
+        }
+        self.writers: dict[str, TrialReceipts] = {}
+        self.stores: dict[str, Artifacts] = {}
+        self.manifests: dict[str, Artifact] = {}
+        self.lanes: tuple[LaneStatus, ...] = ()
+        self.leaked: dict[str, str] = {}
+        self.staged: Stage = Stage("", resident=declared.resident)
+        self.leased: CardLease | None = None
+
     def cell(self, params: Mapping[str, JsonValue]) -> Cell:
         """Where a trial sits on the declared axes, and why each axis reads what it does.
 
@@ -147,6 +136,14 @@ class Session:
             outcome = str(self.common.get(f"{axis}{PROBED}", "")) if drawn is None else ""
             probing[axis] = Probed(outcome) if outcome else Probed.UNASKED
         return Cell(values=values, probing=probing)
+
+    def claim(self) -> None:
+        """Take this run's exclusive hold on its card; a no-op on a host with no card.
+
+        Collection decides whether to call this, so a run touching no `gpu` lane is never blocked.
+        """
+        if self.card:
+            self.leased = CardLease.acquire(self.card)
 
     def close(self) -> str:
         """Release the claim and card, remint each ledger, then return what must fail.
@@ -173,9 +170,9 @@ class Session:
         for node, writer in self.writers.items():
             store = self.declared.universe.dataset(node)
             if store.full(self.run):
-                store.as_jsonl(store.root / LEDGER)
+                store.as_jsonl(store.root / dataset.LEDGER)
             else:
-                store.as_jsonl(store.root / PARTIAL.format(self.run), self.run)
+                store.as_jsonl(store.root / dataset.Dataset.PARTIAL.format(self.run), self.run)
             artifacts = store.root.parent / "artifacts" / self.run
             written += [writer.directory, *([artifacts] if artifacts.is_dir() else [])]
         # An object a concurrent run already moved into the lake is gone from the tree, and kept.
@@ -210,15 +207,6 @@ class Session:
             return
         self.staged.drop()
         self.staged = Stage(node, resident=self.declared.resident)
-
-    def trial(self, item: pytest.Item) -> Trial:
-        """The evidence line for one collected trial, its claim entered first.
-
-        Every measuring lane asks for its evidence line, so no claim starts before the previous
-        one's holdings are dropped.
-        """
-        self.enter(self.declared.universe.node_of(Path(str(item.path))))
-        return Trial(item, self)
 
     def manifest(self, path: Path) -> Artifact | None:
         """One run manifest per node of an `experiments` universe, from the dispatch's listing.
@@ -265,6 +253,15 @@ class Session:
             self.stores[node] = Artifacts(self.declared.tree, evidence)
         return self.stores[node]
 
+    def trial(self, item: pytest.Item) -> Trial:
+        """The evidence line for one collected trial, its claim entered first.
+
+        Every measuring lane asks for its evidence line, so no claim starts before the previous
+        one's holdings are dropped.
+        """
+        self.enter(self.declared.universe.node_of(Path(str(item.path))))
+        return Trial(item, self)
+
     def writer(self, node: str) -> TrialReceipts:
         """One claim's append-only store for this run, opened on first use.
 
@@ -291,15 +288,6 @@ class Trial:
     nothing settles `failed` at teardown, leaving a row rather than a hole, and the trial fails.
     """
 
-    def __init__(self, item: pytest.Item, session: Session) -> None:
-        self.item = item
-        self.session = session
-        self.lane, self.key = lane_of(item)
-        self.settled = ""
-        self.gated = ""
-        self.artifacts: dict[str, JsonValue] = {}
-        self.recorded_artifacts: dict[str, JsonValue] = {}
-
     def __getattr__(self, name: str) -> Callable[..., None]:
         """One declared word as a method, `trial.validated(...)`; an undeclared one refuses."""
         words = self.session.declared.words
@@ -308,6 +296,15 @@ class Trial:
                 f"{name!r} is not a declared settle word; declared: {words.names}"
             )
         return partial(self.settle, name)
+
+    def __init__(self, item: pytest.Item, session: Session) -> None:
+        self.item = item
+        self.session = session
+        self.lane, self.key = lane_of(item)
+        self.settled = ""
+        self.gated = ""
+        self.artifacts: dict[str, JsonValue] = {}
+        self.recorded_artifacts: dict[str, JsonValue] = {}
 
     def gate(self, registration: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
         """Hand back the committed row this trial is scored against, digesting it on the way.

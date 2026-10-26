@@ -9,39 +9,36 @@ an import and a name use are, and which module an import reaches.
 """
 
 import re
+from collections.abc import Set
 
 from ...catalog import Family
-from .annotations import ANNOTATION
-from .calls import CALL, CALL_ARG
-from .definitions import DECOR, DEF, PARAM
-from .edges import EDGE
-from .files import FILE, NODE
-from .imports import IMPORT
-from .references import REF
-from .text import TEXT
+from . import text as text
+from .constants import annotations, calls, files
+from .constants.bindings import definitions, imports, references
+from .constants.text import TEXT
 
 
 class Core(Family):
     """The core as one family: `file` first, so every relation narrows through its `language`."""
 
     family = "Core"
+    verified = False
     relations = {
-        "file": FILE,
-        "node": NODE,
-        "import": IMPORT,
-        "def": DEF,
-        "param": PARAM,
-        "decor": DECOR,
-        "annotation": ANNOTATION,
-        "call": CALL,
-        "call_arg": CALL_ARG,
-        "ref": REF,
-        "edge": EDGE,
+        "file": files.FILE,
+        "node": files.NODE,
+        "import": imports.IMPORT,
+        "def": definitions.DEF,
+        "param": definitions.PARAM,
+        "decor": definitions.DECOR,
+        "annotation": annotations.ANNOTATION,
+        "call": calls.CALL,
+        "call_arg": calls.CALL_ARG,
+        "ref": references.REF,
         "text": TEXT,
     }
 
     @classmethod
-    def reading(cls, views: set[str]) -> dict[str, str]:
+    def reading(cls, views: Set[str]) -> dict[str, str]:
         """The relations `views` name and, transitively, those they read, in dependency order."""
         wanted = {name for name in cls.relations if f"core_{name}" in views}
         pending = list(wanted)

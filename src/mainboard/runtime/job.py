@@ -12,7 +12,7 @@ from patos import FrozenModel
 from pydantic import Field
 
 from ..core.project import Project
-from ..engines.compile.prefixes import ACTIVATION, STAMPED
+from ..engines.compile.constants import ACTIVATION, STAMPED
 from .activation import Runtime, prepended
 from .entry import Refusal, activated
 
@@ -47,6 +47,14 @@ class PrefixActivation(FrozenModel):
     env: str
     refusal: str
 
+    @staticmethod
+    def _stamped(prefix: Path) -> bool:
+        try:
+            stamp = Project().marked(prefix, STAMPED)
+            return stamp.read_text(encoding="utf-8").strip() == prefix.name
+        except OSError:
+            return False
+
     def entered(self, base: Mapping[str, str], *, cwd: str) -> dict[str, str]:
         """`base` inside the prefix, with the runtime step applied and its own `lib/` leading.
 
@@ -62,14 +70,6 @@ class PrefixActivation(FrozenModel):
             raise Refusal(self.refusal)
         entered = activated(base, script=script, cwd=cwd)
         return Runtime(prefix / ".pixi" / "envs" / self.env).entered(entered)
-
-    @staticmethod
-    def _stamped(prefix: Path) -> bool:
-        try:
-            stamp = Project().marked(prefix, STAMPED)
-            return stamp.read_text(encoding="utf-8").strip() == prefix.name
-        except OSError:
-            return False
 
 
 class WorkspaceActivation(FrozenModel):
@@ -116,8 +116,7 @@ class Job(FrozenModel):
         caller chose none.
     logs: the directory a PBS job appends its merged output and exit artifact to, empty for a
         backend that captures the output itself.
-    pythonpath: the exact `PYTHONPATH` the command imports under, empty for none.
-    isolate_pythonpath: drop an inherited `PYTHONPATH` when no exact one is given.
+    pythonpath: the exact `PYTHONPATH` the command imports under; empty drops an inherited one.
     variables: exported after activation, provenance first and the host profile's exports last.
     provide: builds the environment before it is entered, None when nothing has to.
     attestation: records the machine in the foreground right before the command, None for none.
@@ -131,11 +130,20 @@ class Job(FrozenModel):
     walltime: str = ""
     logs: str = ""
     pythonpath: str = ""
-    isolate_pythonpath: bool = True
     variables: dict[str, str] = {}
     provide: ToolCall | None = None
     attestation: ToolCall | None = None
     sampler: ToolCall | None = None
+
+    @classmethod
+    def handed(cls, script: str) -> Job:
+        """The record a rendered job script hands over, the last word of its last line.
+
+        Lines split on newline only, as a shell reads them, since the record may carry raw
+        characters Python would also call a line break.
+        """
+        handover = script.rstrip("\n").rpartition("\n")[2]
+        return cls.model_validate_json(shlex.split(handover)[-1])
 
     @classmethod
     def read(cls, given: str) -> Job:
@@ -148,16 +156,6 @@ class Job(FrozenModel):
             return cls.model_validate_json(given)
         return cls.handed(Path(given).read_text(encoding="utf-8"))
 
-    @classmethod
-    def handed(cls, script: str) -> Job:
-        """The record a rendered job script hands over, the last word of its last line.
-
-        Lines split on newline only, as a shell reads them, since the record may carry raw
-        characters Python would also call a line break.
-        """
-        handover = script.rstrip("\n").rpartition("\n")[2]
-        return cls.model_validate_json(shlex.split(handover)[-1])
-
 
 def walltime_seconds(walltime: str) -> int:
     """A `HH:MM:SS` walltime as whole seconds."""
@@ -166,7 +164,9 @@ def walltime_seconds(walltime: str) -> int:
 
 
 def walltime(seconds: float) -> str:
-    """Whole `seconds` as the `HH:MM:SS` a walltime is written in, hours past 24 included: a
-    clock format wrapped a 25-hour allocation to one hour (B28)."""
+    """Whole `seconds` as the `HH:MM:SS` a walltime is written in, hours past 24 kept.
+
+    A clock format wrapped a 25-hour allocation to one hour (B28).
+    """
     hours, rest = divmod(int(seconds), 3600)
     return f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"

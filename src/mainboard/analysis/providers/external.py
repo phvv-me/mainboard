@@ -14,7 +14,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs ruff
 import sys
 import tomllib
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from functools import cache
 from pathlib import Path
@@ -24,19 +24,19 @@ from packaging.utils import canonicalize_name
 from patos import FrozenModel, FrozenOpenModel
 from pydantic import TypeAdapter
 
-from ..facts import listed, snake
+from ..engine.facts import listed, snake
 
 if TYPE_CHECKING:
-    from ..facts import Facts, Query
+    from ..engine.facts import Facts, Query
 
 type Row = tuple[str | int | None, ...]
 type Table = tuple[dict[str, str], list[Row]]
 type Place = tuple[int, int]
 
 # Characters of file arguments one ruff command carries, well inside every kernel's limit.
-BATCH = 24_000
+_BATCH = 24_000
 
-DIAGNOSTICS = {
+_DIAGNOSTICS = {
     "fact_id": "VARCHAR",
     "path": "VARCHAR",
     "language": "VARCHAR",
@@ -51,8 +51,8 @@ DIAGNOSTICS = {
     "fix_applicability": "VARCHAR",
     "fix_message": "VARCHAR",
 }
-RUFF_DIAGNOSTICS = DIAGNOSTICS | {"project": "VARCHAR"}
-EDITS = {
+_RUFF_DIAGNOSTICS = _DIAGNOSTICS | {"project": "VARCHAR"}
+_EDITS = {
     "fact_id": "VARCHAR",
     "edit_index": "BIGINT",
     "path": "VARCHAR",
@@ -107,6 +107,11 @@ class Sources:
         self.root = root
         self.files: dict[str, list[bytes]] = {}
 
+    def _lines(self, path: str) -> list[bytes]:
+        if path not in self.files:
+            self.files[path] = (self.root / path).read_bytes().split(b"\n")
+        return self.files[path]
+
     def place(self, path: str, point: Point) -> Place:
         """`point` as (line, byte column)."""
         lines = self._lines(path)
@@ -115,7 +120,7 @@ class Sources:
         before = lines[point.row - 1].decode(errors="replace")[: point.column - 1]
         return point.row, len(before.encode()) + point.column - 1 - len(before)
 
-    def text(self, path: str, start: Place, end: Place) -> str:
+    def text(self, path: str, start: Place, *, end: Place) -> str:
         """The text between two places of `path`."""
         lines = self._lines(path)
         (first, begin), (last, stop) = start, end
@@ -128,11 +133,6 @@ class Sources:
             errors="replace"
         )
 
-    def _lines(self, path: str) -> list[bytes]:
-        if path not in self.files:
-            self.files[path] = (self.root / path).read_bytes().split(b"\n")
-        return self.files[path]
-
 
 @cache
 def project_name(folder: Path) -> str | None:
@@ -142,38 +142,6 @@ def project_name(folder: Path) -> str | None:
     except FileNotFoundError, KeyError, NotADirectoryError, tomllib.TOMLDecodeError:
         return None if folder == folder.parent else project_name(folder.parent)
     return canonicalize_name(name)
-
-
-def batches(names: Sequence[str]) -> Iterator[list[str]]:
-    """`names` in runs whose characters stay under `BATCH`."""
-    batch: list[str] = []
-    size = 0
-    for name in names:
-        if batch and size + len(name) + 1 > BATCH:
-            yield batch
-            batch, size = [], 0
-        batch.append(name)
-        size += len(name) + 1
-    if batch:
-        yield batch
-
-
-def imports(content: str) -> list[str]:
-    """The import statements `content` consists of; none when it is anything else, and none for
-    `__future__`, which must stay the first statement of its file."""
-    if not content.lstrip().startswith(("import ", "from ")):
-        return []
-    try:
-        body = ast.parse(content).body
-    except SyntaxError:
-        return []
-    if all(
-        isinstance(node, ast.Import | ast.ImportFrom)
-        and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
-        for node in body
-    ):
-        return [ast.unparse(node) for node in body]
-    return []
 
 
 class Tool(FrozenModel, ABC):
@@ -187,6 +155,10 @@ class Tool(FrozenModel, ABC):
     seconds: ClassVar[int] = 600
     defined: ClassVar[dict[str, type[Tool]]] = {}
     extended: tuple[str, ...] = ()
+
+    @abstractmethod
+    def run(self, root: Path) -> dict[str, Table]:
+        """The tool's findings over `root` as relations, the identity relation first."""
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: str) -> None:
@@ -223,11 +195,7 @@ class Tool(FrozenModel, ABC):
             for tool, relations in zip(tools, ran, strict=True):
                 tool.register(facts, relations)
 
-    @abstractmethod
-    def run(self, root: Path) -> dict[str, Table]:
-        """The tool's findings over `root` as relations, the identity relation first."""
-
-    def register(self, facts: Facts, relations: dict[str, Table]) -> None:
+    def register(self, facts: Facts, relations: Mapping[str, Table]) -> None:
         """Register `relations` as this tool's family."""
         for relation, (types, rows) in relations.items():
             columns = [list(c) for c in zip(*rows, strict=True)] if rows else [[]] * len(types)
@@ -266,6 +234,108 @@ class Ruff(Tool):
     report: ClassVar[TypeAdapter[list[RuffDiagnostic]]] = TypeAdapter(list[RuffDiagnostic])
     limits: ClassVar[dict[str, int]] = {"max-args": 5, "max-positional-args": 5, "max-branches": 4}
 
+    @staticmethod
+    def _batches(names: Sequence[str]) -> Iterator[list[str]]:
+        """`names` in runs whose characters stay under `BATCH`."""
+        batch: list[str] = []
+        size = 0
+        for name in names:
+            if batch and size + len(name) + 1 > _BATCH:
+                yield batch
+                batch, size = [], 0
+            batch.append(name)
+            size += len(name) + 1
+        if batch:
+            yield batch
+
+    @staticmethod
+    def _imports(content: str) -> list[str]:
+        """The import statements `content` consists of; none when it is anything else.
+
+        `__future__` imports are left out too, since they must stay the first statement of their
+        file.
+        """
+        if not content.lstrip().startswith(("import ", "from ")):
+            return []
+        try:
+            body = ast.parse(content).body
+        except SyntaxError:
+            return []
+        if all(
+            isinstance(node, ast.Import | ast.ImportFrom)
+            and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
+            for node in body
+        ):
+            return [ast.unparse(node) for node in body]
+        return []
+
+    @staticmethod
+    def _key(item: RuffDiagnostic) -> tuple[str, int, int, str | None]:
+        return item.filename, item.location.row, item.location.column, item.code
+
+    def _check(
+        self, root: Path, files: list[str], flags: Sequence[str] = ()
+    ) -> list[RuffDiagnostic]:
+        """Ruff's diagnostics over `files`, run in batches under the command-line budget.
+
+        The files are named so Ruff's exclusions still apply.
+        """
+        found: list[RuffDiagnostic] = []
+        for batch in Ruff._batches(files):
+            output = subprocess.run(
+                ["ruff", "check", "--output-format", "json", "--exit-zero", "--no-cache"]
+                + ["--force-exclude", *flags, "--", *batch],
+                cwd=root,
+                capture_output=True,
+                check=True,
+                timeout=self.seconds,
+            ).stdout
+            found += self.report.validate_json(output)
+        return found
+
+    def _diagnostic(
+        self, fact_id: str, *, path: str, item: RuffDiagnostic, sources: Sources
+    ) -> Row:
+        fix = item.fix
+        return (
+            fact_id,
+            path,
+            "python",
+            *sources.place(path, item.location),
+            *sources.place(path, item.end_location),
+            item.code or item.name,
+            item.name,
+            item.message,
+            item.severity,
+            fix.applicability if fix else None,
+            fix.message if fix else None,
+            project_name((sources.root / path).resolve().parent),
+        )
+
+    def _edits(
+        self, fact_id: str, *, path: str, fix: RuffFix | None, sources: Sources
+    ) -> list[Row]:
+        placed = [
+            (sources.place(path, e.location), sources.place(path, e.end_location), e.content)
+            for e in (fix.edits if fix else ())
+        ]
+        statements = [
+            Ruff._imports(text)
+            if start == end or sources.text(path, start, end=end) == text
+            else []
+            for start, end, text in placed
+        ]
+        written = {
+            start for (start, _, _), found in zip(placed, statements, strict=True) if not found
+        }
+        rows: list[Row] = []
+        for (start, end, text), found in zip(placed, statements, strict=True):
+            if found and start not in written:
+                rows += [(fact_id, len(rows), path, *start, *end, None, s) for s in found]
+            else:
+                rows.append((fact_id, len(rows), path, *start, *end, text, None))
+        return rows
+
     def run(self, root: Path) -> dict[str, Table]:
         files = [name for name in listed(root) if name.endswith((".py", ".pyi"))]
         own = {self._key(item) for item in self._check(root, files)}
@@ -284,68 +354,11 @@ class Ruff(Tool):
             path = Path(item.filename).relative_to(base).as_posix()
             if item.cell is None and path.endswith((".py", ".pyi")):
                 fact_id = f"ruff:{number}"
-                diagnostics.append(self._diagnostic(fact_id, path, item, sources))
-                edits += self._edits(fact_id, path, item.fix, sources)
-        return {"diagnostics": (RUFF_DIAGNOSTICS, diagnostics), "edits": (EDITS, edits)}
-
-    @staticmethod
-    def _key(item: RuffDiagnostic) -> tuple[str, int, int, str | None]:
-        return item.filename, item.location.row, item.location.column, item.code
-
-    def _check(
-        self, root: Path, files: list[str], flags: Sequence[str] = ()
-    ) -> list[RuffDiagnostic]:
-        """Ruff's diagnostics over `files`, named so its exclusions still apply and run in
-        batches under the command-line budget."""
-        found: list[RuffDiagnostic] = []
-        for batch in batches(files):
-            output = subprocess.run(
-                ["ruff", "check", "--output-format", "json", "--exit-zero", "--no-cache"]
-                + ["--force-exclude", *flags, "--", *batch],
-                cwd=root,
-                capture_output=True,
-                check=True,
-                timeout=self.seconds,
-            ).stdout
-            found += self.report.validate_json(output)
-        return found
-
-    def _diagnostic(self, fact_id: str, path: str, item: RuffDiagnostic, sources: Sources) -> Row:
-        fix = item.fix
-        return (
-            fact_id,
-            path,
-            "python",
-            *sources.place(path, item.location),
-            *sources.place(path, item.end_location),
-            item.code or item.name,
-            item.name,
-            item.message,
-            item.severity,
-            fix.applicability if fix else None,
-            fix.message if fix else None,
-            project_name((sources.root / path).resolve().parent),
-        )
-
-    def _edits(self, fact_id: str, path: str, fix: RuffFix | None, sources: Sources) -> list[Row]:
-        placed = [
-            (sources.place(path, e.location), sources.place(path, e.end_location), e.content)
-            for e in (fix.edits if fix else ())
-        ]
-        statements = [
-            imports(text) if start == end or sources.text(path, start, end) == text else []
-            for start, end, text in placed
-        ]
-        written = {
-            start for (start, _, _), found in zip(placed, statements, strict=True) if not found
-        }
-        rows: list[Row] = []
-        for (start, end, text), found in zip(placed, statements, strict=True):
-            if found and start not in written:
-                rows += [(fact_id, len(rows), path, *start, *end, None, s) for s in found]
-            else:
-                rows.append((fact_id, len(rows), path, *start, *end, text, None))
-        return rows
+                diagnostics.append(
+                    self._diagnostic(fact_id, path=path, item=item, sources=sources)
+                )
+                edits += self._edits(fact_id, path=path, fix=item.fix, sources=sources)
+        return {"diagnostics": (_RUFF_DIAGNOSTICS, diagnostics), "edits": (_EDITS, edits)}
 
 
 class Ty(Tool):
@@ -389,4 +402,4 @@ class Ty(Tool):
                         None,
                     )
                 )
-        return {"diagnostics": (DIAGNOSTICS, diagnostics)}
+        return {"diagnostics": (_DIAGNOSTICS, diagnostics)}

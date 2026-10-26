@@ -16,11 +16,11 @@ from .base import (
     http_transport,
     route,
 )
-from .cloud import CloudBackend
+from .cloud.core import CloudBackend
+from .cloud.lambdacloud import LambdaBackend
+from .cloud.runpod import RunPodBackend
 from .hpcai import HpcAiBackend, api_key
-from .lambdacloud import LambdaBackend
 from .modal import ModalBackend
-from .runpod import RunPodBackend
 from .vast import VastBackend
 
 __all__ = [

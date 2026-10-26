@@ -1,0 +1,224 @@
+"""The environment verbs behave as pixi's do.
+
+`install` solves a lock the manifest moved past and then installs, `--locked` refuses such a lock
+(what every host runs), `--frozen` installs it as it stands, `lock` solves without installing and
+`--check` says when it had to, and `run --as-is` touches neither. Requirement edits keep a
+table-style requirement's other fields.
+"""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from mainboard import Board, MissionError
+from mainboard.deps import Change, Dependencies, Edit, Index, ManifestText, Tables, indexes
+from mainboard.engines.compile import LockPolicy, SyncState
+from mainboard.engines.compile.compiler import Compiler
+from mainboard.engines.compile.pixi.policy import Locking, Preparation
+
+_MANIFEST = '[workspace]\nname = "it"\n\n[deps]\npython = ">=3.14"\n'
+
+
+@pytest.fixture
+def python_only(workspace: Path) -> Path:
+    """A workspace declaring Python alone, the smallest environment that solves."""
+    (workspace / "mb.toml").write_text(_MANIFEST, encoding="utf-8")
+    return workspace
+
+
+def test_install_solves_a_stale_lock_and_locked_refuses_it(mb, python_only: Path) -> None:
+    assert mb("install").code == 0
+    assert (python_only / "mb.lock").is_file()
+    assert mb("lock", "--check").code == 0
+
+    assert mb("add", "--frozen", "--lang", "python", "six>=1.15").code == 0
+    refused = mb("install", "--locked")
+    assert refused.code == 1 and "was not solved from the manifest" in refused.said
+
+    assert mb("lock", "--check").code == 1
+    assert "six" in (python_only / "mb.lock").read_text(encoding="utf-8")
+    assert mb("lock", "--check").code == 0
+    assert mb("install", "--frozen").code == 0
+
+
+def test_as_is_runs_what_is_installed_without_solving(mb, python_only: Path) -> None:
+    assert mb("install").code == 0
+    lock = (python_only / "mb.lock").read_bytes()
+    (python_only / "mb.toml").write_text(_MANIFEST + '\n[python.deps]\nsix = ">=1.15"\n')
+
+    ran = mb("run", "--as-is", "python", "-c", "print('ran as it is')")
+
+    assert ran.code == 0 and "ran as it is" in ran.out
+    assert (python_only / "mb.lock").read_bytes() == lock
+
+
+def test_a_failed_solve_leaves_the_manifest_and_lock_as_they_were(mb, python_only: Path) -> None:
+    assert mb("install").code == 0
+    kept = {name: (python_only / name).read_bytes() for name in ("mb.toml", "mb.lock")}
+
+    refused = mb("add", "--no-install", "--lang", "python", "six>=999")
+
+    assert refused.code == 1
+    assert {name: (python_only / name).read_bytes() for name in kept} == kept
+    assert mb("lock", "--check").code == 0
+
+
+def test_upgrade_leaves_a_member_named_by_version(mb, python_only: Path) -> None:
+    (python_only / "member").mkdir()
+    (python_only / "member/pyproject.toml").write_text(
+        '[project]\nname = "member"\nversion = "0.1"\n', encoding="utf-8"
+    )
+    member = '[python.deps]\nmember = "*"\n'
+    manifest = _MANIFEST.replace("\n\n", '\nmembers = ["member"]\n\n') + member
+    (python_only / "mb.toml").write_text(manifest, encoding="utf-8")
+
+    assert mb("upgrade", "member", "--no-install").code == 0
+    assert (python_only / "mb.toml").read_text(encoding="utf-8") == manifest
+
+
+def test_locked_and_frozen_exclude_each_other() -> None:
+    with pytest.raises(MissionError, match="exclude each other"):
+        _ = Locking(locked=True, frozen=True).policy
+    assert Locking(locked=True).policy.flag == "--locked"
+    assert Preparation(as_is=True).policy is LockPolicy.FROZEN
+    assert Locking().policy.flag == ""
+
+
+def test_raising_a_table_requirement_keeps_its_other_fields() -> None:
+    manifest = ManifestText(
+        """[python.deps]
+torch = { version = "==2.14.0", index = "https://example.invalid" }
+local = { path = "packages/local", editable = true }
+lint = { version = "0.65.1", url = "https://example.invalid/lint.zip", sha256 = "00" }
+stable = "==1.9.0"  # byte-stable
+"""
+    )
+
+    manifest.put(("python", "deps"), "torch", spec=">=2.15")
+
+    assert manifest.constraint(("python", "deps"), "torch") == ">=2.15"
+    assert 'index = "https://example.invalid"' in manifest.text()
+    assert manifest.versioned(("python", "deps"), "torch")
+    assert not manifest.versioned(("python", "deps"), "local")
+    assert not manifest.versioned(("python", "deps"), "lint")
+    assert not manifest.versioned(("python", "deps"), "stable")
+
+
+def test_a_requirement_under_a_table_split_across_the_file_is_raised() -> None:
+    manifest = ManifestText(
+        """[on.linux.deps]
+cuda = ">=13.0"
+
+[on.unix.deps]
+git = ">=2"
+
+[on.linux.python.deps]
+torch = ">=2.14, <3"  # why
+"""
+    )
+
+    manifest.put(("on", "linux", "python", "deps"), "torch", spec=">=2.15, <3")
+
+    assert manifest.constraint(("on", "linux", "python", "deps"), "torch") == ">=2.15, <3"
+    assert manifest.text().index("[on.unix.deps]") < manifest.text().index("torch")
+
+
+@pytest.mark.parametrize(
+    "declaration", ['python = "scalar"', 'python = ["array"]', "python = { deps = {} }"]
+)
+@pytest.mark.parametrize("create", [False, True])
+def test_an_invalid_requirement_parent_is_refused_without_mutation(
+    declaration: str, create: bool
+) -> None:
+    manifest = ManifestText(declaration + "\n")
+    before = manifest.text()
+
+    with pytest.raises(MissionError, match=r"\[python\] is not a table of requirements"):
+        manifest.table(("python", "deps"), create=create)
+
+    assert manifest.text() == before
+
+
+@pytest.mark.parametrize(
+    ("spec", "comment_at"),
+    [(">=2.5.12", 33), (">=2.4.6,<2.5,!=2.4.9", 33), (">=2.4.6,<2.5,!=2.4.9,!=2.4.10", 41)],
+)
+def test_a_raised_requirement_keeps_its_comment_column(spec: str, comment_at: int) -> None:
+    """The comment stays in its column, one space past the value once the value outgrows it."""
+    manifest = ManifestText("""[deps]
+numpy  = ">=2.4.6,<2.5"          # why capped
+torch  = { version = "==2.14" }  # why pinned
+""")
+
+    manifest.put(("deps",), "numpy", spec=spec)
+    manifest.put(("deps",), "torch", spec=">=2.15")
+
+    numpy, torch = manifest.text().splitlines()[1:]
+    assert numpy.startswith("numpy  = ") and numpy.index("#") == comment_at
+    assert torch.index("#") == 33
+
+
+def test_raising_takes_the_newest_final_release_not_yanked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listing = {
+        "versions": ["2.4.0", "2.5.0", "2.6.0rc1"],
+        "files": [
+            {"filename": "tool-2.4.0.tar.gz", "yanked": False},
+            {"filename": "tool-2.5.0-py3-none-any.whl", "yanked": "accidental breaking change"},
+            {"filename": "tool-2.5.0.tar.gz", "yanked": True},
+            {"filename": "tool-2.6.0rc1.tar.gz", "yanked": False},
+        ],
+    }
+    monkeypatch.setattr(indexes, "_fetched", lambda url, *, accept: json.dumps(listing).encode())
+
+    assert Index.of("python").latest("tool") == "2.4.0"
+    assert Index.of("python").pin("2.4.0") == ">=2.4.0, <3"
+    assert Index.of("python").pin("20260107") == ">=20260107"
+    assert Index.of("rust").pin("0.3.14") == "0.3.14"
+
+
+def test_a_requirement_changing_ecosystem_is_kept_until_a_solve_frees_it(tmp_path: Path) -> None:
+    before = """[dependencies]
+pandas = "*"
+numpy = "*"
+
+[feature.gpu.target.linux-64.pypi-dependencies]
+Python_Docx = "*"
+"""
+    after = """[dependencies]
+numpy = "*"
+python-docx = "*"
+
+[pypi-dependencies]
+pandas = "*"
+httpx = "*"
+"""
+
+    moved = Compiler._moved(before, after=after, pending=("filelock",))
+
+    assert moved == ("filelock", "pandas", "python-docx")
+    SyncState.path(tmp_path).write_text(SyncState(moved=moved).render(), encoding="utf-8")
+    assert SyncState.load(tmp_path).moved == moved
+
+
+def test_any_failed_edit_puts_back_the_manifest_and_the_lock_it_had_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path
+    (workspace / "mb.toml").write_text(_MANIFEST, encoding="utf-8")
+    board = Board(workspace)
+    lock = board.project.lock(workspace)
+
+    def resolved(self: Dependencies, *_: object, **__: object) -> list[Change]:
+        lock.write_text("version: 6\n", encoding="utf-8")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Dependencies, "_resolved", resolved)
+
+    with pytest.raises(OSError, match="No space left"):
+        Dependencies(board).add("six>=1.15", edit=Edit(tables=Tables(ecosystem="python")))
+
+    assert (workspace / "mb.toml").read_text(encoding="utf-8") == _MANIFEST
+    assert not lock.exists()

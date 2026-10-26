@@ -1,13 +1,11 @@
-from .engine import PIXI_VERSION, POSIX_INSTALLER, PixiEngine
-from .pixi import Pixi
+from .pixi.core import Pixi
+from .pixi.engine import PixiEngine
+from .pixi.repair import EnvironmentAudit
 from .process import Process
-from .repair import EnvironmentAudit
 from .result import CommandResult
 from .tool import Tool
 
 __all__ = [
-    "PIXI_VERSION",
-    "POSIX_INSTALLER",
     "CommandResult",
     "EnvironmentAudit",
     "Pixi",

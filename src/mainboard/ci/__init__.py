@@ -1,11 +1,8 @@
-from .definition import FAMILIES, Definition, Family, Package, Step, family_of
-from .legs import HERE, SHIP, Leg, LocalLeg, RemoteLeg, Result, Verdict
+from .definition import Definition, Family, Package, Step, family_of
+from .legs import Leg, LocalLeg, RemoteLeg, Result, Verdict
 from .matrix import Matrix, PackageMirror
 
 __all__ = [
-    "FAMILIES",
-    "HERE",
-    "SHIP",
     "Definition",
     "Family",
     "Leg",

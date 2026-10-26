@@ -55,11 +55,6 @@ class Compilers(FrozenModel):
     cpu: str
     cuda_arch: str
 
-    @property
-    def cuda_flags_release_init(self) -> str | None:
-        """`CMAKE_CUDA_FLAGS_RELEASE_INIT`, the host flags forwarded through nvcc."""
-        return " ".join(f"-Xcompiler={flag}" for flag in self.release_flags) or None
-
     @cached_property
     def cxx(self) -> Compiler:
         """Host C++ compiler, Grace Clang on aarch64 when installed, otherwise g++ then clang++."""
@@ -69,11 +64,6 @@ class Compilers(FrozenModel):
         if found := shutil.which("g++") or grace:
             return Compiler(path=Path(found))
         raise FileNotFoundError("No C++ compiler found on PATH.")
-
-    @property
-    def cxx_flags_release_init(self) -> str | None:
-        """`CMAKE_CXX_FLAGS_RELEASE_INIT` tuned for this CPU, `None` when it is untuned."""
-        return " ".join(self.release_flags) or None
 
     @cached_property
     def nvcc(self) -> Compiler:
@@ -106,3 +96,13 @@ class Compilers(FrozenModel):
         if self.arch in {"x86_64", "amd64"}:
             return ("-march=native", "-mtune=native")
         return ()
+
+    @property
+    def cuda_flags_release_init(self) -> str | None:
+        """`CMAKE_CUDA_FLAGS_RELEASE_INIT`, the host flags forwarded through nvcc."""
+        return " ".join(f"-Xcompiler={flag}" for flag in self.release_flags) or None
+
+    @property
+    def cxx_flags_release_init(self) -> str | None:
+        """`CMAKE_CXX_FLAGS_RELEASE_INIT` tuned for this CPU, `None` when it is untuned."""
+        return " ".join(self.release_flags) or None

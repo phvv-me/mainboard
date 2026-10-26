@@ -1,0 +1,290 @@
+# THE SOLVE IS SOURCE, NOT CACHE. Each environment's pixi.lock used to live only in the ignored
+# state directory, beside the `state.toml` that vouched for it, and a wiped disk (2026-09) left a
+# single surviving copy on a host. Every host installs a lock and every prefix is addressed by
+# one, so the solve now lives in one committed file at the workspace root, a section per
+# environment, and the state directory's copy is materialized from it.
+#
+# The lock text rides byte for byte in a TOML multi-line literal string. A TOML reader normalizes
+# the line endings inside one, so the text is cut from the file's own characters and only checked
+# against what the reader parsed.
+
+import json
+import re
+import tomllib
+from collections.abc import Collection, Mapping
+from contextlib import suppress
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
+
+import yaml
+from packaging.utils import (
+    InvalidSdistFilename,
+    InvalidWheelFilename,
+    canonicalize_name,
+    parse_sdist_filename,
+    parse_wheel_filename,
+)
+from patos import FrozenModel
+
+from ....core import MissionError, Project
+from .lock import packages
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ..generated import Writer
+
+# The format this release reads and writes; a file claiming another is refused, never guessed at.
+_VERSION = 1
+
+_DELIMITER = "'''"
+
+# What an environment name may be written as unquoted in a table header.
+_BARE = re.compile(r"[A-Za-z0-9_-]+")
+
+# A section's header, its name bare or quoted (`environment_segment` allows dots), and its lock:
+# the literal after the opening line, up to a delimiter no further quote follows, the one or two
+# quotes a literal may end in kept. Both anchored to a line start and scanned in order, so the
+# text of one lock never reads as the next header.
+_SECTION = re.compile(r'^\[environments\.([A-Za-z0-9_-]+|"[^"\\\r\n]*")\]\r?\n', re.MULTILINE)
+_LOCK = re.compile(r"^lock = '''\r?\n(.*?'{0,2})'''(?!')", re.MULTILINE | re.DOTALL)
+
+# What a TOML literal string cannot hold once CRLF pairs are taken out: every control character
+# but the tab and the newline, a lone carriage return among them.
+_UNCARRIABLE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+# Conda encodes name, version and build in the artifact's filename, even when the lock omits
+# those fields from its package records. Match Python itself, never python_abi or libpython.
+_PYTHON = re.compile(r"/python-(\d+)\.(\d+)\.([^-]+)-[^/]+\.(?:conda|tar\.bz2)$")
+# Where PyPI serves its files.
+_PYPI_FILES = "files.pythonhosted.org"
+# A conda artifact's filename: its name, then its version and build, which hold no dash.
+_CONDA_FILE = re.compile(r"^(.+)-[^-]+-[^-]+\.(?:conda|tar\.bz2)$")
+
+
+class Solved(FrozenModel):
+    """One environment's solve as committed.
+
+    solved_from: the resolution digest (`Compiler.resolution_digest`) the lock answers to.
+    solved_by: the pixi version that wrote the lock.
+    lock: the pixi.lock text, exactly as pixi wrote it.
+    """
+
+    solved_from: str
+    solved_by: str
+    lock: str
+
+
+class Lockfile:
+    """The committed lock at a workspace root: one section per environment, sorted by name."""
+
+    @staticmethod
+    def _texts(raw: str) -> dict[str, str]:
+        """Each section's lock, cut from the file's own characters so its line endings survive."""
+        texts: dict[str, str] = {}
+        position = 0
+        while (header := _SECTION.search(raw, position)) and (
+            lock := _LOCK.search(raw, header.end())
+        ):
+            # A quoted table-header key is JSON; a bare one is the environment's name itself.
+            key = header.group(1)
+            texts[str(json.loads(key)) if key.startswith('"') else key] = lock.group(1)
+            position = lock.end()
+        return texts
+
+    def __init__(self, root: Path) -> None:
+        project = Project()
+        self.path = project.lock(root)
+        self.manifest = project.manifest(root).name
+
+    def _carriable(self, environment: str, *, text: str) -> str:
+        """`text`, refused when a TOML literal string cannot carry it byte for byte."""
+        if _DELIMITER in text or _UNCARRIABLE.search(text.replace("\r\n", "")):
+            raise MissionError(
+                f"the lock solved for {environment!r} holds {_DELIMITER} or a control character, "
+                f"which {self.path.name} cannot carry byte for byte, so nothing was written"
+            )
+        return text
+
+    def _default(self) -> tuple[Path, str]:
+        """The default environment's lock text and where it was read.
+
+        That is the committed solve, else its generated copy, else nothing.
+        """
+        if (solved := self.get("default")) is not None:
+            return self.path, solved.lock
+        path = Project().out(self.path.parent) / "envs/default/pixi.lock"
+        try:
+            return path, path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return path, ""
+
+    def _malformed(self, why: str) -> MissionError:
+        return MissionError(
+            f"{self.path} cannot be read: {why}. Restore it from git (`git checkout -- "
+            f"{self.path.name}`), or solve it again with `{Project().name} lock `."
+        )
+
+    def conda_names(self) -> dict[str, str]:
+        """Every package some environment takes from a conda channel, by canonical name.
+
+        The name is spelled as the channel spells it (`huggingface_hub` for `huggingface-hub`).
+        """
+        return {
+            canonicalize_name(found[1]): found[1]
+            for solved in self.environments().values()
+            for locations in packages(solved.lock).values()
+            for location in locations
+            if (found := _CONDA_FILE.match(PurePosixPath(urlsplit(location).path).name))
+        }
+
+    def environments(self) -> dict[str, Solved]:
+        """Every environment's solve, none when the file does not exist yet."""
+        try:
+            raw = self.path.read_bytes().decode("utf-8")
+        except FileNotFoundError:
+            return {}
+        except UnicodeDecodeError as error:
+            raise self._malformed(f"it is not UTF-8 ({error.reason})") from error
+        try:
+            parsed = tomllib.loads(raw)
+        except tomllib.TOMLDecodeError as error:
+            raise self._malformed(str(error)) from error
+        tables = parsed.get("environments", {})
+        if parsed.get("version") != _VERSION or not isinstance(tables, dict):
+            raise self._malformed(
+                f"it is not a version {_VERSION} lock, which is all this release reads"
+            )
+        texts = self._texts(raw)
+        found: dict[str, Solved] = {}
+        for name, table in tables.items():
+            text = texts.get(name)
+            if (
+                not isinstance(table, dict)
+                or text is None
+                or text.replace("\r\n", "\n") != table.get("lock")
+            ):
+                raise self._malformed(f"[environments.{name}] is not in the shape it is written")
+            found[name] = Solved(
+                solved_from=str(table.get("solved_from", "")),
+                solved_by=str(table.get("solved_by", "")),
+                lock=text,
+            )
+        return found
+
+    def get(self, environment: str) -> Solved | None:
+        """`environment`'s committed solve, None when the file holds none."""
+        return self.environments().get(environment)
+
+    def mixed_sources(self) -> list[str]:
+        """Each package one environment builds from the workspace and another takes from an index.
+
+        A lean environment once lost the workspace's pins, so cutoken's `mainboard` came from
+        PyPI (a months-old 0.4.8) and shadowed the tool on the host's PATH, a skew no version
+        number showed. Whatever the workspace builds from source, it builds everywhere.
+        """
+        local: dict[str, str] = {}
+        indexed: dict[str, str] = {}
+        for name, solved in self.environments().items():
+            for entry in yaml.safe_load(solved.lock).get("packages", []):
+                url, package = entry.get("pypi"), entry.get("name")
+                if url and package:
+                    remote = str(url).startswith(("http://", "https://"))
+                    (indexed if remote else local).setdefault(str(package), name)
+        return [
+            f"{package}: `{indexed[package]}` takes it from an index, `{local[package]}` from "
+            "the workspace"
+            for package in sorted(local.keys() & indexed.keys())
+        ]
+
+    def pins(self, platform: str) -> dict[str, str]:
+        """The default environment's PyPI release of each package on `platform`, by name.
+
+        A host's tool, installed from PyPI alone, is constrained to them, so the tool a host runs
+        its commands with holds the very releases its jobs do (one DuckDB on both sides of a lake).
+        Workspace members and other indexes' files are left free.
+        """
+        found: dict[str, str] = {}
+        for location in packages(self._default()[1], environment="default").get(platform, []):
+            url = urlsplit(location)
+            if url.hostname != _PYPI_FILES:
+                continue
+            name = PurePosixPath(url.path).name
+            with suppress(InvalidWheelFilename, InvalidSdistFilename):
+                package, version = (
+                    parse_wheel_filename(name)[:2]
+                    if name.endswith(".whl")
+                    else parse_sdist_filename(name)
+                )
+                found[package] = str(version)
+        return found
+
+    def retain(self, files: Writer, declared: Collection[str]) -> bool:
+        """Drop the sections of environments the manifest no longer declares; whether any went."""
+        environments = self.environments()
+        kept = {name: solved for name, solved in environments.items() if name in declared}
+        if len(kept) < len(environments):
+            files.write(self.path, self.render(kept))
+        return len(kept) < len(environments)
+
+    def put(
+        self, files: Writer, environment: str, solved: Solved, *, declared: Collection[str]
+    ) -> None:
+        """Record `environment`'s solve atomically, every other declared section kept as it reads.
+
+        files: the writer holding the workspace sync lock, which serializes every
+            read-modify-write of this one file across environments.
+        declared: the environments the manifest declares; a section of one it no longer declares
+            goes, so a retired environment's pins never ship (`gpu` kept a DuckDB dev build).
+        """
+        environments = {
+            name: kept for name, kept in self.environments().items() if name in declared
+        }
+        environments[environment] = solved
+        files.write(self.path, self.render(environments))
+
+    def python_request(self, platform: str) -> str:
+        """The interpreter uv runs the tool on, as a request.
+
+        That is a final release of the default environment's solved Python minor
+        (`>=3.14.0,<3.15`), or the candidate it solved.
+
+        The committed solve wins over its generated copy. Never ask uv to choose from the tool's
+        open-ended Requires-Python, which could pick an unsolved minor, nor for a bare minor,
+        which a release candidate already installed satisfies: miyabi-g's tool ran on 3.14.0rc2,
+        which the pydantic the lock moved to cannot run on (2026-10-23). Nor for the solved
+        patch, which conda-forge publishes before uv's builds have it (3.14.9).
+        """
+        path, text = self._default()
+        solved = {
+            matched.groups()
+            for location in packages(text, environment="default").get(platform, [])
+            if (matched := _PYTHON.search(location))
+        }
+        if len(solved) != 1:
+            raise MissionError(
+                f"{path} must pin one Python for default on "
+                f"{platform or '(unknown platform)'!r}; "
+                f"found {', '.join(sorted('.'.join(found) for found in solved)) or 'none'}. "
+                f"Run `{Project().name} lock default` for that platform before setting up a host."
+            )
+        major, minor, patch = solved.pop()
+        floor = "0" if patch.isdigit() else patch
+        return f">={major}.{minor}.{floor},<{major}.{int(minor) + 1}"
+
+    def render(self, environments: Mapping[str, Solved]) -> str:
+        """The file's text: a header, the version, then each environment in name order."""
+        parts = [
+            f"# Generated by {Project().name} from {self.manifest}; commit it. Do not edit.\n",
+            f"version = {_VERSION}\n",
+        ]
+        for name in sorted(environments):
+            solved = environments[name]
+            parts.append(
+                f"\n[environments.{(name if _BARE.fullmatch(name) else json.dumps(name))}]\n"
+                f"solved_from = {json.dumps(solved.solved_from)}\n"
+                f"solved_by = {json.dumps(solved.solved_by)}\n"
+                f"lock = {_DELIMITER}\n{self._carriable(name, text=solved.lock)}{_DELIMITER}\n"
+            )
+        return "".join(parts)

@@ -30,7 +30,9 @@ final class Declarations: SyntaxVisitor {
       if current.is(CodeBlockSyntax.self) || current.is(ClosureExprSyntax.self)
         || current.is(MemberBlockSyntax.self)
         || (current.is(DeclSyntax.self) && !current.is(IfConfigDeclSyntax.self))
-      { return }
+      {
+        return
+      }
       parent = current.parent
     }
   }
@@ -337,10 +339,11 @@ func main() throws {
     }
     trees.append((path, tree, errors, local.names))
   }
-  var output: [String: [[Any]]] = Dictionary(uniqueKeysWithValues: [
-    "facts", "imports", "conditions", "conformances", "attributes", "attribute_options",
-    "calls", "references", "states", "erasures",
-  ].map { ($0, []) })
+  var output: [String: [[Any]]] = Dictionary(
+    uniqueKeysWithValues: [
+      "facts", "imports", "conditions", "conformances", "attributes", "attribute_options",
+      "calls", "references", "states", "erasures",
+    ].map { ($0, []) })
   for (path, tree, errors, localNames) in trees {
     let importVisitor = Imports()
     importVisitor.walk(tree)

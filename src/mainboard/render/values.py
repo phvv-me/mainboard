@@ -72,3 +72,22 @@ _ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 def plain(text: str) -> str:
     """`text` with its ANSI escape sequences removed, colour and cursor codes alike."""
     return _ESCAPES.sub("", text)
+
+
+def encode(rows: Sequence[Row], *, fields: Sequence[str] | None = None) -> str:
+    """Columns-once text, a header line of field names then one tab-separated line per row.
+
+    A cell holding a tab, a newline, or a leading quote is JSON-encoded (a plain leading quote
+    would read as an encoded cell on `decode`); every other cell keeps its plain string form.
+
+    fields: the column order and projection, every key from the first row when None.
+    """
+    columns = columns_of(rows, fields)
+    lines = ["\t".join(columns)]
+    lines.extend("\t".join(_cell(row.get(column)) for column in columns) for row in rows)
+    return "\n".join(lines)
+
+
+def _cell(value: Cell) -> str:
+    text = "" if value is None else str(value)
+    return json.dumps(text) if text.startswith('"') or "\t" in text or "\n" in text else text

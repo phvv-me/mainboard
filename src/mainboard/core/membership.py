@@ -22,11 +22,10 @@ class Membership:
     manifests: every file name a manifest may take.
     """
 
-    def __init__(self, root: Path, patterns: Sequence[str], manifests: Sequence[str]) -> None:
-        self.root = root
-        self.markers = (*manifests, _PYPROJECT)
-        self.included = [pattern for pattern in patterns if not pattern.startswith("!")]
-        self.excluded = [pattern[1:] for pattern in patterns if pattern.startswith("!")]
+    excluded: list[str]
+    included: list[str]
+    markers: tuple[str, ...]
+    root: Path
 
     @classmethod
     def declared(cls, path: Path, manifests: Sequence[str]) -> Membership:
@@ -35,16 +34,22 @@ class Membership:
             tree = tomllib.loads(path.read_text(encoding="utf-8"))
         except tomllib.TOMLDecodeError as error:
             raise MissionError(f"{path} is not valid TOML: {error}") from None
-        return cls(path.parent, tree.get("workspace", {}).get("members", []), manifests)
+        return cls(path.parent, tree.get("workspace", {}).get("members", []), manifests=manifests)
 
-    def directories(self) -> list[str]:
-        """Every member's workspace-relative path, sorted."""
-        found = {
-            PurePosixPath(match.relative_to(self.root).as_posix())
-            for pattern in self.included
-            for match in self.root.glob(pattern)
-        }
-        return sorted(str(path) for path in found if self._composes(path))
+    def __init__(self, root: Path, patterns: Sequence[str], *, manifests: Sequence[str]) -> None:
+        self.root = root
+        self.markers = (*manifests, _PYPROJECT)
+        self.included = [pattern for pattern in patterns if not pattern.startswith("!")]
+        self.excluded = [pattern[1:] for pattern in patterns if pattern.startswith("!")]
+
+    def _composes(self, relative: PurePosixPath) -> bool:
+        """Whether a matched path is a project no exclusion leaves out, never the root itself."""
+        directory = self.root / relative
+        return (
+            relative != PurePosixPath(".")
+            and not any(relative.full_match(pattern) for pattern in self.excluded)
+            and any((directory / marker).is_file() for marker in self.markers)
+        )
 
     def claims(self, directory: Path) -> bool:
         """Whether `directory`, anywhere on disk, is one of these members."""
@@ -56,11 +61,11 @@ class Membership:
             relative
         )
 
-    def _composes(self, relative: PurePosixPath) -> bool:
-        """Whether a matched path is a project no exclusion leaves out, never the root itself."""
-        directory = self.root / relative
-        return (
-            relative != PurePosixPath(".")
-            and not any(relative.full_match(pattern) for pattern in self.excluded)
-            and any((directory / marker).is_file() for marker in self.markers)
-        )
+    def directories(self) -> list[str]:
+        """Every member's workspace-relative path, sorted."""
+        found = {
+            PurePosixPath(match.relative_to(self.root).as_posix())
+            for pattern in self.included
+            for match in self.root.glob(pattern)
+        }
+        return sorted(str(path) for path in found if self._composes(path))

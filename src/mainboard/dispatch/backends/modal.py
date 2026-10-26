@@ -27,8 +27,8 @@ from typing import TYPE_CHECKING
 
 from ...core.errors import MissionError
 from ...runtime.job import walltime_seconds
-from ..evidence import framing, staging
-from ..vocabulary import JobState
+from ..jobs.evidence import framing, staging
+from ..jobs.vocabulary import JobState
 from .base import (
     Account,
     Credentials,
@@ -42,8 +42,8 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from ...context.plan import ExecutionPlan
-    from ..allocation import Allocation
-    from ..vocabulary import Resources
+    from ..hosts.allocation import Allocation
+    from ..jobs.vocabulary import Resources
 
 # One shared app for every one-shot sandbox (Modal scopes billing and the dashboard by app).
 _APP_NAME = "mainboard"
@@ -53,44 +53,17 @@ _CREDIT_VAR = "MODAL_CREDIT_USD"
 
 def _modal() -> ModuleType:
     """The imported `modal` module, raising a clear fix when the optional extra is missing."""
+    # Modal sets a Windows event-loop policy Python 3.14 deprecates, warning on every import.
+    # A filter rather than `catch_warnings`, which is not thread-safe and leaked the warning
+    # while `host list` probed providers in parallel.
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"modal(\.|$)")
     try:
-        # Modal sets a Windows event-loop policy Python 3.14 deprecates, warning on every import.
-        # A filter rather than `catch_warnings`, which is not thread-safe and leaked the warning
-        # while `host list` probed providers in parallel.
-        warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"modal(\.|$)")
         return import_module("modal")
     except ModuleNotFoundError:
         raise MissionError(
             "the installed Mainboard tool needs its `modal` extra; reinstall Mainboard "
             "with that extra alongside the extras already in use, then authenticate "
             "with `mainboard run modal token new`"
-        ) from None
-
-
-def cycle_month(start: datetime) -> str:
-    """`start` as its billing-cycle month in UTC, a naive stamp read as UTC.
-
-    Modal's cycle boundary is a UTC fact, so the month never depends on the local clock.
-    """
-    pinned = start if start.tzinfo else start.replace(tzinfo=UTC)
-    return pinned.astimezone(UTC).strftime("%Y-%m")
-
-
-def declared_credit() -> float:
-    """The credit `MODAL_CREDIT_USD` declares, 0.0 when none; Modal never says what is left.
-
-    Not a secret, but it lives beside the provider keys in the workspace `.env`, the one file
-    every provider's account settings share.
-    """
-    Credentials().load()
-    declared = os.environ.get(_CREDIT_VAR, "")
-    if not declared:
-        return 0.0
-    try:
-        return float(declared)
-    except ValueError:
-        raise MissionError(
-            f"{_CREDIT_VAR} must be a dollar amount like `30`, not {declared!r}"
         ) from None
 
 
@@ -108,6 +81,44 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         Delivery: "modal backend cannot deliver {path!r} yet; mount a modal Volume at submit "
         "time and pull it by hand until that path lands",
     }
+
+    @staticmethod
+    def _cycle_month(start: datetime) -> str:
+        """`start` as its billing-cycle month in UTC, a naive stamp read as UTC.
+
+        Modal's cycle boundary is a UTC fact, so the month never depends on the local clock.
+        """
+        pinned = start if start.tzinfo else start.replace(tzinfo=UTC)
+        return pinned.astimezone(UTC).strftime("%Y-%m")
+
+    @staticmethod
+    def _declared_credit() -> float:
+        """The credit `MODAL_CREDIT_USD` declares, 0.0 when none; Modal never says what is left.
+
+        Not a secret, but it lives beside the provider keys in the workspace `.env`, the one file
+        every provider's account settings share.
+        """
+        Credentials().load()
+        declared = os.environ.get(_CREDIT_VAR, "")
+        if not declared:
+            return 0.0
+        try:
+            return float(declared)
+        except ValueError:
+            raise MissionError(
+                f"{_CREDIT_VAR} must be a dollar amount like `30`, not {declared!r}"
+            ) from None
+
+    @staticmethod
+    def _gpu_spec(resources: Resources) -> str | None:
+        """`resources` as a Modal `gpu=` value, or None to request no GPU."""
+        if not resources.gpus:
+            return None
+        if not resources.gpu_name:
+            return str(resources.gpus)
+        return (
+            resources.gpu_name if resources.gpus == 1 else f"{resources.gpu_name}:{resources.gpus}"
+        )
 
     @staticmethod
     def budgeted(modal: ModuleType) -> Standing | None:
@@ -143,12 +154,12 @@ class ModalBackend(ProviderBackend, Account, LogSource):
 
         modal: the imported `modal` module, already known to carry credentials.
         """
-        declared = declared_credit()
+        declared = ModalBackend._declared_credit()
         try:
             summary = modal.Workspace.from_context().billing.summary()
         except modal.exception.Error as refused:
             return Standing(keyed=True, note=f"modal refused the billing summary, {refused}")
-        spent, cycle = float(summary.metered_cost), cycle_month(summary.start)
+        spent, cycle = float(summary.metered_cost), ModalBackend._cycle_month(summary.start)
         if not declared:
             return Standing(
                 keyed=True,
@@ -218,14 +229,3 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         allocation.begin()
         sandbox = modal.Sandbox.create("bash", "-c", script, **kwargs)
         return allocation.created(str(sandbox.object_id))
-
-    @staticmethod
-    def _gpu_spec(resources: Resources) -> str | None:
-        """`resources` as a Modal `gpu=` value, or None to request no GPU."""
-        if not resources.gpus:
-            return None
-        if not resources.gpu_name:
-            return str(resources.gpus)
-        return (
-            resources.gpu_name if resources.gpus == 1 else f"{resources.gpu_name}:{resources.gpus}"
-        )

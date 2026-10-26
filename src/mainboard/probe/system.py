@@ -1,9 +1,10 @@
+from contextlib import suppress
 from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
 from patos import FrozenOpenModel
 
-from ..core.host import pixi_platform
+from ..core.execution.host import pixi_platform
 from .census import Census
 
 
@@ -65,26 +66,6 @@ class System(FrozenOpenModel):
         return cls.model_validate(Census().survey(str(root)))
 
     @property
-    def surveyed(self) -> bool:
-        """Whether a census filled this in, since a host onboarded by an older tool has none."""
-        return bool(self.system)
-
-    @property
-    def platform(self) -> str:
-        """This machine as a pixi platform string, empty before a census ran."""
-        return pixi_platform(self.system, self.arch) if self.surveyed else ""
-
-    @property
-    def vram_mb(self) -> int:
-        """The largest card's memory in MiB, 0 without a card."""
-        return max((card.vram_mb for card in self.gpus), default=0)
-
-    @property
-    def unified(self) -> bool:
-        """Whether a card shares the system's memory rather than holding its own."""
-        return any(card.unified for card in self.gpus)
-
-    @property
     def capability(self) -> Version | None:
         """The newest card's compute capability, None without a card that reports one."""
         return max(filter(None, (_version(card.capability) for card in self.gpus)), default=None)
@@ -94,6 +75,26 @@ class System(FrozenOpenModel):
         """The newest CUDA the driver supports, None without an NVIDIA driver."""
         return _version(self.cuda)
 
+    @property
+    def platform(self) -> str:
+        """This machine as a pixi platform string, empty before a census ran."""
+        return pixi_platform(self.system, machine=self.arch) if self.surveyed else ""
+
+    @property
+    def surveyed(self) -> bool:
+        """Whether a census filled this in, since a host onboarded by an older tool has none."""
+        return bool(self.system)
+
+    @property
+    def unified(self) -> bool:
+        """Whether a card shares the system's memory rather than holding its own."""
+        return any(card.unified for card in self.gpus)
+
+    @property
+    def vram_mb(self) -> int:
+        """The largest card's memory in MiB, 0 without a card."""
+        return max((card.vram_mb for card in self.gpus), default=0)
+
     def summary(self) -> str:
         """One line naming the operating system, its architecture and the driver's CUDA."""
         cuda = f", driver CUDA {self.cuda}" if self.cuda else ""
@@ -102,7 +103,6 @@ class System(FrozenOpenModel):
 
 def _version(text: str) -> Version | None:
     """`text` as a comparable version, None when it is empty or unreadable."""
-    try:
+    with suppress(InvalidVersion):
         return Version(text)
-    except InvalidVersion:
-        return None
+    return None

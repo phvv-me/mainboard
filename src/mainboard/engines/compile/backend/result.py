@@ -1,5 +1,6 @@
-import sys
 from typing import NamedTuple
+
+from ....log import logger
 
 
 class CommandResult(NamedTuple):
@@ -15,7 +16,6 @@ class CommandResult(NamedTuple):
 
     def replay(self) -> None:
         """Write retained output to the caller's streams, flushed."""
-        sys.stdout.write(self.stdout)
-        sys.stdout.flush()
-        sys.stderr.write(self.stderr)
-        sys.stderr.flush()
+        logger.result(self.stdout, end="")
+        if said := self.stderr.rstrip("\n"):
+            logger.info(said)

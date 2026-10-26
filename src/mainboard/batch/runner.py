@@ -7,20 +7,18 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.errors import MissionError
-from ..dispatch import vocabulary
+from ..dispatch.jobs import vocabulary
 from ..dispatch.schedulers import is_quota_refusal
 from ..dispatch.shared import Watcher
-from ..dispatch.transport import HostUnreachable
-from ..dispatch.vocabulary import Request
-from .estimate import Estimator
+from ..dispatch.transport.core import HostUnreachable
+from .estimate.core import Estimator
+from .estimate.transfer import Transfer
 from .receipts import Journal, Topic, payload, publish
 from .spec import Selection
-from .transfer import Transfer
 
 if TYPE_CHECKING:
-    from ..board import Board
-    from .estimate import BatchEstimate
-    from .receipts import Bus
+    from ..fleet.board import Board
+    from .estimate.core import BatchEstimate
     from .spec import BatchJob, BatchSpec
 
 # How a batch's jobs are labelled in the run registry, the prefix `labelled_batch` reads back.
@@ -34,7 +32,7 @@ _REFUSALS = (MissionError, HostUnreachable, OSError, LookupError, SystemExit)
 _UNSELECTED = "skipped: not named by --only"
 
 # What a row's `state` column says about the request, one word per thing that can happen to it.
-DISPATCHED = "dispatched"
+_DISPATCHED = "dispatched"
 
 
 class Dispatched(FrozenModel):
@@ -48,7 +46,7 @@ class Dispatched(FrozenModel):
 
     job: str
     target: str
-    state: str = DISPATCHED
+    state: str = _DISPATCHED
     handle: str = ""
     kind: str = ""
     reason: str = ""
@@ -63,12 +61,16 @@ class Batch:
     plan share one stream and the jobs left behind are recorded as skipped.
     """
 
+    @property
+    def id(self) -> str:
+        return self.spec.batch_id
+
     def __init__(
         self,
         board: Board,
         spec: BatchSpec,
         *,
-        bus: Bus | None = None,
+        bus: Journal | None = None,
         selection: Selection | None = None,
     ) -> None:
         self.board = board
@@ -78,10 +80,6 @@ class Batch:
         self.jobs = self.selection.chosen(spec.jobs)
         self.skipped = tuple(job for job in spec.jobs if not self.selection.holds(job.name))
 
-    @property
-    def id(self) -> str:
-        return self.spec.batch_id
-
     def dispatch(self, job: BatchJob, *, watch: Watcher | None = None) -> Dispatched:
         """Send one job to its target, recording its handle, its refusal, or its hold.
 
@@ -89,11 +87,8 @@ class Batch:
         durable sweep to ask again rather than dropped from the wave (four of thirteen, miyabi-g's
         njobs-g limit, 2026-09-04).
         """
-        bound = self.board.on(job.target)
         try:
-            run = bound.submit(
-                job.command, name=self.labelling(job.name), watch=watch, **job.submission()
-            )
+            run = self.board.dispatch(job.request(self.labelling(job.name)), watch=watch)
         except _REFUSALS as refusal:
             if is_quota_refusal(str(refusal)):
                 return self.held(job, refusal)
@@ -124,6 +119,14 @@ class Batch:
             publish(self.bus, self.id, Topic.ESTIMATED, job=row.job, data=payload(row))
         return table
 
+    def held(self, job: BatchJob, refusal: BaseException) -> Dispatched:
+        """Keep one job whose target had no room in the run registry, for the cron sweep.
+
+        The sweep resubmits it, and a receipt gives this batch's watch a row.
+        """
+        self.board.dispatcher.hold(job.request(self.labelling(job.name)), reason=str(refusal))
+        return self.told(job, vocabulary.Word.HELD, Topic.HELD, str(refusal))
+
     def labelling(self, job: str) -> str:
         """The dispatch label of one job (empty for the whole batch), its run-registry key.
 
@@ -147,27 +150,14 @@ class Batch:
             },
         )
 
-    def held(self, job: BatchJob, refusal: BaseException) -> Dispatched:
-        """Keep one job whose target had no room in the run registry, durable for the cron sweep
-        that resubmits it, with a receipt so this batch's watch shows a row."""
-        self.board.dispatcher.hold(
-            Request(
-                target=job.target,
-                command=job.command,
-                name=self.labelling(job.name),
-                **job.submission(),
-            ),
-            reason=str(refusal),
-        )
-        return self.told(job, vocabulary.HELD, Topic.HELD, str(refusal))
-
     def refused(self, job: BatchJob, refusal: BaseException) -> Dispatched:
         """Record one target's refusal as the receipt the batch keeps in place of a handle."""
-        return self.told(job, vocabulary.VANISHED, Topic.REFUSED, str(refusal))
+        return self.told(job, vocabulary.Word.VANISHED, Topic.REFUSED, str(refusal))
 
     def run(self, *, watch: Watcher | None = None) -> list[Dispatched]:
-        """Dispatch every selected job to its own target, one refusal being only that job's row,
-        and record the unselected as skipped.
+        """Dispatch every selected job to its own target and record the rest as skipped.
+
+        A refusal is only that job's row.
 
         watch: announces what each dispatch does on the far side, for a queued host the priming
             of the environment its wave will run in.
@@ -180,7 +170,7 @@ class Batch:
 
     def skip(self, job: BatchJob) -> Dispatched:
         """Record one job the selection left out, which would otherwise read as a lost dispatch."""
-        return self.told(job, vocabulary.SKIPPED, Topic.SKIPPED, _UNSELECTED)
+        return self.told(job, vocabulary.Word.SKIPPED, Topic.SKIPPED, _UNSELECTED)
 
     def told(self, job: BatchJob, state: str, topic: Topic, reason: str) -> Dispatched:
         """Publish why `job` has no handle and answer its row."""

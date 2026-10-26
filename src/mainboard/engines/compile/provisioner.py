@@ -14,10 +14,11 @@ from .compiler import Compiler
 from .ecosystems import SecondStage
 from .generated import GeneratedFiles
 from .generated.activation import write
-from .pixi_manifest import local_sources, selected_manifest
-from .policy import LockPolicy
+from .inputs.vendor import Vendor
+from .pixi.manifest import selected_manifest
+from .pixi.paths import local_sources
+from .pixi.policy import LockPolicy
 from .state import SyncState
-from .vendor import Vendor
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping, Sequence
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 _ENVIRONMENT_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
-def environment_segment(environment: str) -> str:
+def _environment_segment(environment: str) -> str:
     """Validate a logical environment name as a generated path segment."""
     if not _ENVIRONMENT_SEGMENT.fullmatch(environment) or environment.endswith("."):
         raise MissionError(
@@ -48,16 +49,18 @@ _ENVS = "envs"
 
 
 def environment_shard(environment: str, root: Path | None = None) -> PurePosixPath:
-    """The directory `environment`'s artifact is generated into, by name, relative to workspace
-    `root` (the cwd's workspace)."""
-    return PurePosixPath(Project().out_dir(root)) / _ENVS / environment_segment(environment)
+    """The directory `environment`'s artifact is generated into, by name.
+
+    It is relative to workspace `root`, the cwd's workspace by default.
+    """
+    return PurePosixPath(Project().out_dir(root)) / _ENVS / _environment_segment(environment)
 
 
-def validate_environment_roster(manifest: Manifest) -> None:
+def _validate_environment_roster(manifest: Manifest) -> None:
     """Refuse logical names that alias the same portable shard directory."""
     seen: dict[str, str] = {}
     for environment in ("default", *manifest.envs):
-        segment = environment_segment(environment)
+        segment = _environment_segment(environment)
         folded = segment.casefold()
         if folded in seen and seen[folded] != segment:
             raise MissionError(
@@ -73,8 +76,8 @@ def task_line(manifest: Manifest, command: str, *, env: str) -> str:
     Anything else is returned as written. The manifest path is relative, since every wrapped
     command already runs from the workspace root.
     """
-    validate_environment_roster(manifest)
-    env = environment_segment(env)
+    _validate_environment_roster(manifest)
+    env = _environment_segment(env)
     declared = {*manifest.tasks, *manifest.envs.get(env, Env()).tasks}
     if command.partition(" ")[0] not in declared:
         return command
@@ -94,15 +97,7 @@ class _EnvironmentShard:
         self.directory = directory
         self.pixi = Pixi(directory)
         self.stage = SecondStage(root, projected, directory, self.pixi)
-        self.compiler = Compiler(
-            root,
-            projected,
-            directory,
-            self.pixi,
-            self.stage,
-            Vendor(root, manifest),
-            environment=environment,
-        )
+        self.compiler = Compiler(self.stage, Vendor(root, manifest), environment=environment)
 
 
 class Provisioner:
@@ -112,51 +107,28 @@ class Provisioner:
     from a stale state directory.
     """
 
-    def __init__(self, root: Path, manifest: Manifest) -> None:
-        validate_environment_roster(manifest)
-        self.root = root
-        self.manifest = manifest
-        self.out = Project().out(root)
-        self._shards: dict[str, _EnvironmentShard] = {}
+    @contextmanager
+    def activated(self, env: str = "default") -> Generator[None]:
+        """Recompile `env` if stale, then put everything it installed on PATH for the block.
 
-    def _shard(self, environment: str = "default") -> _EnvironmentShard:
-        """The cached compile stack for one logical environment."""
-        environment = environment_segment(environment)
-        self.manifest.environment(environment)
-        if environment not in self._shards:
-            directory = self.root / environment_shard(environment, self.root)
-            self._shards[environment] = _EnvironmentShard(
-                self.root, self.manifest, directory, environment
-            )
-        return self._shards[environment]
+        Second-stage directories lead pixi's `bin/`, the order `activate.sh` writes.
+        """
+        shard = self._shard(env)
+        with GeneratedFiles(directory=self.out).locked() as files:
+            if shard.compiler.stale():
+                shard.compiler.write(files)
+        with shard.pixi.activated(env), self.leading(env):
+            yield
 
-    def environment_dir(self, environment: str = "default") -> Path:
-        return self._shard(environment).directory
+    @contextmanager
+    def leading(self, env: str) -> Generator[None]:
+        """Put `env`'s second-stage binary directories ahead of PATH for the block.
 
-    def pixi_for(self, environment: str = "default") -> Pixi:
-        return self._shard(environment).pixi
-
-    def stage_for(self, environment: str = "default") -> SecondStage:
-        return self._shard(environment).stage
-
-    def compiler_for(self, environment: str = "default") -> Compiler:
-        return self._shard(environment).compiler
-
-    def solver_version(self) -> str:
-        """The pixi that solves here, empty on a machine that has none."""
-        return self._shard("default").pixi.version()
-
-    @property
-    def pixi(self) -> Pixi:
-        return self.pixi_for()
-
-    @property
-    def stage(self) -> SecondStage:
-        return self._shard().stage
-
-    @property
-    def compiler(self) -> Compiler:
-        return self.compiler_for()
+        `pixi run` then puts the prefix's own directories ahead of them.
+        """
+        installed = [str(directory) for directory in self.binaries(env)]
+        with local.env(PATH=os.pathsep.join([*installed, local.env["PATH"]])):
+            yield
 
     @property
     def artifact(self) -> tuple[str, ...]:
@@ -166,6 +138,59 @@ class Provisioner:
         compiler, the last thing that belongs in a lock's dependency path.
         """
         return self.artifact_for("default")
+
+    @property
+    def compiler(self) -> Compiler:
+        return self.compiler_for()
+
+    @property
+    def pixi(self) -> Pixi:
+        return self.pixi_for()
+
+    @property
+    def stage(self) -> SecondStage:
+        return self._shard().stage
+
+    @staticmethod
+    @contextmanager
+    def runtime(shard: _EnvironmentShard, env: str) -> Generator[None]:
+        """Hand Pixi an environment the runtime step already added its facts to.
+
+        pixi's activation leaves these variables alone, so a local run matches a dispatched one.
+        """
+        added = Runtime(shard.pixi.env_prefix(env)).changes(dict(local.env))
+        with local.env(**added):
+            yield
+
+    def __init__(self, root: Path, manifest: Manifest) -> None:
+        _validate_environment_roster(manifest)
+        self.root = root
+        self.manifest = manifest
+        self.out = Project().out(root)
+        self._shards: dict[str, _EnvironmentShard] = {}
+
+    def _shard(self, environment: str = "default") -> _EnvironmentShard:
+        """The cached compile stack for one logical environment."""
+        environment = _environment_segment(environment)
+        self.manifest.environment(environment)
+        if environment not in self._shards:
+            directory = self.root / environment_shard(environment, self.root)
+            self._shards[environment] = _EnvironmentShard(
+                self.root, self.manifest, directory, environment
+            )
+        return self._shards[environment]
+
+    def activate(self, env: str = "default", *, modules: Mapping[str, str] = {}) -> Path:
+        """Write `env`'s activation into its own directory for this host, returning it.
+
+        modules: this host's Lmod stack, name to version.
+        """
+        shard = self._shard(env)
+        path = self.root / Project().activation(env)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return write(
+            path, shard.pixi.shell_hook(env), modules=modules, binaries=self.binaries(env)
+        )
 
     def artifact_for(self, environment: str) -> tuple[str, ...]:
         """Every defining generated input and lock, second-stage locks required locally.
@@ -194,60 +219,13 @@ class Provisioner:
         )
         return tuple(dict.fromkeys(path.relative_to(self.root).as_posix() for path in paths))
 
-    def activate(self, env: str = "default", *, modules: Mapping[str, str] = {}) -> Path:
-        """Write `env`'s activation into its own directory for this host, returning it.
-
-        modules: this host's Lmod stack, name to version.
-        """
-        shard = self._shard(env)
-        path = self.root / Project().activation(env)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return write(
-            path, shard.pixi.shell_hook(env), modules=modules, binaries=self.binaries(env)
-        )
-
-    def runs_here(self, env: str = "default") -> bool:
-        """Whether `env` declares this machine's platform, so it can be installed here."""
-        return self._shard(env).pixi.runs_here()
-
-    def recompiled(self, env: str = "default") -> None:
-        """Bring `env`'s generated artifact in line with the manifest and its lock in line with
-        the committed one, and touch nothing else.
-
-        All a dispatch needs, without `refreshed`'s local sync: an older compile once moved the
-        workstation's address away from the host's and killed a wave at environment prime.
-        Unconditional, since `stale` reads nothing compiled as fresh and a no-op write is free.
-        """
-        with GeneratedFiles(directory=self.out).locked() as files:
-            compiler = self._shard(env).compiler
-            compiler.write(files)
-            compiler.materialize(files)
-
-    @contextmanager
-    def activated(self, env: str = "default") -> Generator[None]:
-        """Recompile `env` if stale, then put everything it installed on PATH for the block.
-
-        Second-stage directories lead pixi's `bin/`, the order `activate.sh` writes.
-        """
-        shard = self._shard(env)
-        with GeneratedFiles(directory=self.out).locked() as files:
-            if shard.compiler.stale():
-                shard.compiler.write(files)
-        with shard.pixi.activated(env), self.leading(env):
-            yield
-
-    def run(
-        self,
-        command: Sequence[str],
-        env: str = "default",
-        *,
-        policy: LockPolicy = LockPolicy.UPDATE,
-        install: bool = True,
-    ) -> int:
-        """Bring `env` to `policy` as `pixi run` does, then let Pixi's runner run `command`."""
-        shard = self.refreshed(env, policy=policy, install=install)
-        with local.cwd(str(self.root)), self.runtime(shard, env), self.leading(env):
-            return shard.pixi.run(command, env)
+    def binaries(self, env: str) -> list[Path]:
+        """The existing second-stage binary directories in PATH order, never a dead entry."""
+        return [
+            directory
+            for directory in self._shard(env).stage.binary_dirs(env)
+            if directory.is_dir()
+        ]
 
     def capture(
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
@@ -257,77 +235,14 @@ class Provisioner:
         with local.cwd(str(self.root)), self.runtime(shard, env), self.leading(env):
             return shard.pixi.capture(command, env, timeout=timeout)
 
-    @staticmethod
-    @contextmanager
-    def runtime(shard: _EnvironmentShard, env: str) -> Generator[None]:
-        """Hand Pixi an environment the runtime step already added its facts to.
+    def compiler_for(self, environment: str = "default") -> Compiler:
+        return self._shard(environment).compiler
 
-        pixi's activation leaves these variables alone, so a local run matches a dispatched one.
-        """
-        added = Runtime(shard.pixi.env_prefix(env)).changes(dict(local.env))
-        with local.env(**added):
-            yield
+    def environment_dir(self, environment: str = "default") -> Path:
+        return self._shard(environment).directory
 
-    def refreshed(
-        self, env: str, *, policy: LockPolicy = LockPolicy.FROZEN, install: bool = True
-    ) -> _EnvironmentShard:
-        """`env`'s compile stack ready to run a command in: its generated files current, its lock
-        brought to `policy` and, unless `install` is off, its prefix in line with that lock."""
-        shard = self._shard(env)
-        with GeneratedFiles(directory=self.out).locked() as files:
-            if shard.compiler.stale() or not shard.pixi.manifest.exists():
-                shard.compiler.write(files)
-            if policy is not LockPolicy.FROZEN:
-                shard.compiler.materialize(files)
-                shard.compiler.locked(files, policy=policy)
-            if install:
-                self.synchronized(shard, env)
-        return shard
-
-    def synchronized(self, shard: _EnvironmentShard, env: str) -> None:
-        """Bring `env`'s prefix in line with its lock once, under the lock the caller holds.
-
-        pixi's own per-command sync races when a wave shares a prefix (see `Pixi.sync`). The
-        stamp names the lock revision and resolver inputs, so tasks and activation never force a
-        reinstall; tool configuration and editable native sources still need an explicit one.
-        An environment never installed is installed whole, second stage included, as `pixi run`
-        installs one; an unlocked one is left for activation to refuse by name.
-        """
-        if not shard.pixi.lock.is_file():
-            return
-        current = f"{shard.compiler.resolution_digest()}:{shard.pixi.lock.stat().st_mtime_ns}"
-        if not shard.pixi.ready(env):
-            if shard.pixi.runs_here():
-                shard.compiler.install()
-                shard.stage.install(env)
-        else:
-            with suppress(OSError):
-                marked = Project().marked(shard.directory, _SYNCED).read_text(encoding="utf-8")
-                if marked == current:
-                    return
-            shard.pixi.sync(env)
-        with suppress(OSError):
-            (shard.directory / Project().marker(_SYNCED)).write_text(
-                current, encoding="utf-8", newline="\n"
-            )
-
-    def binaries(self, env: str) -> list[Path]:
-        """The existing second-stage binary directories in PATH order, never a dead entry."""
-        return [
-            directory
-            for directory in self._shard(env).stage.binary_dirs(env)
-            if directory.is_dir()
-        ]
-
-    @contextmanager
-    def leading(self, env: str) -> Generator[None]:
-        """Put `env`'s second-stage binary directories ahead of PATH for the block.
-
-        `pixi run` then puts the prefix's own directories ahead of them.
-        """
-        installed = [str(directory) for directory in self.binaries(env)]
-        with local.env(PATH=os.pathsep.join([*installed, local.env["PATH"]])):
-            yield
+    def pixi_for(self, environment: str = "default") -> Pixi:
+        return self._shard(environment).pixi
 
     def provision(
         self,
@@ -337,8 +252,9 @@ class Provisioner:
         update: Sequence[str] | None = None,
         install: bool = True,
     ) -> None:
-        """Compile `env`, bring its lock to `policy`, then install it, all under the workspace
-        lock, as `pixi install` does.
+        """Compile `env`, bring its lock to `policy` and install it, as `pixi install` does.
+
+        All of it runs under the workspace lock.
 
         The whole run holds the lock so no agent rewrites the manifest mid-solve; the second
         stage runs last since its managers are conda packages pixi just installed, and re-solves
@@ -358,9 +274,93 @@ class Provisioner:
                 # Solved for platforms this machine cannot run: the lock ships with `setup`,
                 # and the host that runs it installs the second stage and its activation.
                 return
-            shard.compiler.install()
+            shard.pixi.install(env)
             # Solved whenever this policy may solve, not only when the pixi lock moved in this
             # call: an `upgrade --no-install` moved it and raised `package.json` earlier, and the
             # frozen pnpm install that followed refused the stale lock (2026-10-23). A manager
             # resolving a lock that already matches changes nothing.
             shard.stage.install(env, resolve=moved or policy is LockPolicy.UPDATE)
+
+    def recompiled(self, env: str = "default") -> None:
+        """Bring `env`'s generated artifact and lock in line, touching nothing else.
+
+        The artifact follows the manifest and the lock follows the committed one.
+
+        All a dispatch needs, without `refreshed`'s local sync: an older compile once moved the
+        workstation's address away from the host's and killed a wave at environment prime.
+        Unconditional, since `stale` reads nothing compiled as fresh and a no-op write is free.
+        """
+        with GeneratedFiles(directory=self.out).locked() as files:
+            compiler = self._shard(env).compiler
+            compiler.write(files)
+            compiler.materialize(files)
+
+    def refreshed(
+        self, env: str, *, policy: LockPolicy = LockPolicy.FROZEN, install: bool = True
+    ) -> _EnvironmentShard:
+        """`env`'s compile stack, ready to run a command in.
+
+        Its generated files are current, its lock brought to `policy` and, unless `install` is off,
+        its prefix in line with that lock.
+        """
+        shard = self._shard(env)
+        with GeneratedFiles(directory=self.out).locked() as files:
+            if shard.compiler.stale() or not shard.pixi.manifest.exists():
+                shard.compiler.write(files)
+            if policy is not LockPolicy.FROZEN:
+                shard.compiler.materialize(files)
+                shard.compiler.locked(files, policy=policy)
+            if install:
+                self.synchronized(shard, env)
+        return shard
+
+    def run(
+        self,
+        command: Sequence[str],
+        env: str = "default",
+        *,
+        policy: LockPolicy = LockPolicy.UPDATE,
+        install: bool = True,
+    ) -> int:
+        """Bring `env` to `policy` as `pixi run` does, then let Pixi's runner run `command`."""
+        shard = self.refreshed(env, policy=policy, install=install)
+        with local.cwd(str(self.root)), self.runtime(shard, env), self.leading(env):
+            return shard.pixi.run(command, env)
+
+    def runs_here(self, env: str = "default") -> bool:
+        """Whether `env` declares this machine's platform, so it can be installed here."""
+        return self._shard(env).pixi.runs_here()
+
+    def solver_version(self) -> str:
+        """The pixi that solves here, empty on a machine that has none."""
+        return self._shard("default").pixi.version()
+
+    def stage_for(self, environment: str = "default") -> SecondStage:
+        return self._shard(environment).stage
+
+    def synchronized(self, shard: _EnvironmentShard, env: str) -> None:
+        """Bring `env`'s prefix in line with its lock once, under the lock the caller holds.
+
+        pixi's own per-command sync races when a wave shares a prefix (see `Pixi.sync`). The
+        stamp names the lock revision and resolver inputs, so tasks and activation never force a
+        reinstall; tool configuration and editable native sources still need an explicit one.
+        An environment never installed is installed whole, second stage included, as `pixi run`
+        installs one; an unlocked one is left for activation to refuse by name.
+        """
+        if not shard.pixi.lock.is_file():
+            return
+        current = f"{shard.compiler.resolution_digest()}:{shard.pixi.lock.stat().st_mtime_ns}"
+        if not shard.pixi.ready(env):
+            if shard.pixi.runs_here():
+                shard.pixi.install(env)
+                shard.stage.install(env)
+        else:
+            with suppress(OSError):
+                marked = Project().marked(shard.directory, _SYNCED).read_text(encoding="utf-8")
+                if marked == current:
+                    return
+            shard.pixi.sync(env)
+        with suppress(OSError):
+            (shard.directory / Project().marker(_SYNCED)).write_text(
+                current, encoding="utf-8", newline="\n"
+            )

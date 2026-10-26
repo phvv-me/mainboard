@@ -1,4 +1,4 @@
-"""An offline gpuhunt: one recorded vast.ai offer, and each query's filters appended to a file.
+"""An offline gpuhunt: one recorded vast.ai offer, each query's set filters appended to a file.
 
 Importing this module installs it; the log is the file `MB_GATE_CATALOG` names.
 """
@@ -22,10 +22,10 @@ _OFFER = SimpleNamespace(
 )
 
 
-def _query(**filters: str | int | list[str]) -> list[SimpleNamespace]:
+def _query(**filters: str | int | list[str] | None) -> list[SimpleNamespace]:
     with _CALLS.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(filters) + "\n")
+        stream.write(json.dumps({k: v for k, v in filters.items() if v is not None}) + "\n")
     return [_OFFER]
 
 
-gpuhunt.query = _query
+vars(gpuhunt)["query"] = _query

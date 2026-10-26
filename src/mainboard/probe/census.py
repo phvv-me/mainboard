@@ -34,7 +34,7 @@ _DRIVER_CUDA = re.compile(r"CUDA (?:UMD )?Version:\s*(\d+(?:\.\d+)+)")
 
 # Every tool a report names, with the argv that makes it say its version. `git lfs` is asked
 # through git, the way every checkout reaches it.
-TOOLS: dict[str, tuple[str, ...]] = {
+_TOOLS: dict[str, tuple[str, ...]] = {
     "git": ("git", "--version"),
     "git-lfs": ("git", "lfs", "version"),
     "gh": ("gh", "--version"),
@@ -49,10 +49,10 @@ TOOLS: dict[str, tuple[str, ...]] = {
 }
 
 # The shells an agent or a person may run commands through, by the name each is known as.
-SHELLS = ("bash", "zsh", "sh")
+_SHELLS = ("bash", "zsh", "sh")
 
 # The git settings a checkout depends on, read from the global scope a clone inherits.
-GIT_SETTINGS = ("core.autocrlf", "core.eol", "credential.helper")
+_GIT_SETTINGS = ("core.autocrlf", "core.eol", "credential.helper")
 
 type Runner = Callable[[Sequence[str]], tuple[int, str]]
 
@@ -61,7 +61,7 @@ type Json = str | int | float | bool | None | Sequence[Json] | Mapping[str, Json
 type Finder = Callable[[str], str | None]
 
 
-def run(command: Sequence[str]) -> tuple[int, str]:
+def _run(command: Sequence[str]) -> tuple[int, str]:
     """Run `command` under a deadline, stdout and stderr joined, answering rather than raising."""
     try:
         done = subprocess.run(
@@ -86,38 +86,6 @@ class Census:
     system: the platform as `platform.system()` spells it, this machine's when empty.
     """
 
-    def __init__(
-        self, runner: Runner = run, finder: Finder = shutil.which, system: str = ""
-    ) -> None:
-        self.runner = runner
-        self.finder = finder
-        self.system = system or platform.system()
-
-    def survey(self, root: str) -> dict[str, Json]:
-        """Everything this census reads, the filesystem measured where `root` lives.
-
-        root: the workspace root, which need not exist yet; its nearest existing ancestor is
-            what the filesystem questions are asked of.
-        """
-        anchor = self.anchor(root)
-        cuda, gpus = self.nvidia()
-        return {
-            "system": self.system,
-            "release": platform.release(),
-            "version": self.version(),
-            "arch": platform.machine(),
-            "python": platform.python_version(),
-            "shells": self.shells(),
-            "root": str(anchor),
-            "case_sensitive": self.case_sensitive(anchor),
-            "symlinks": self.symlinks(anchor),
-            "free_bytes": shutil.disk_usage(anchor).free,
-            "git": self.git(),
-            "tools": self.tools(),
-            "cuda": cuda,
-            "gpus": gpus,
-        }
-
     @staticmethod
     def anchor(root: str) -> Path:
         """The nearest existing directory at or above `root`, where a clone would land."""
@@ -126,20 +94,16 @@ class Census:
             path = path.parent
         return path
 
-    def version(self) -> str:
-        """The operating system's own name for its version, a distribution's where it has one."""
-        if self.system == "Darwin":
-            return f"macOS {platform.mac_ver()[0]}"
+    @staticmethod
+    def card_memory(memory: str) -> dict[str, Json]:
+        """A card's memory in MiB from its `memory.total`, the system's when it has none."""
+        if memory.isdigit():
+            return {"vram_mb": int(memory)}
         try:
-            text = Path("/etc/os-release").read_text(encoding="utf-8")
-        except OSError:
-            return platform.version()
-        fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
-        return fields.get("PRETTY_NAME", platform.version()).strip('"')
-
-    def shells(self) -> dict[str, str]:
-        """Every shell on PATH by name."""
-        return {name: path for name in SHELLS if (path := self.finder(name))}
+            pages = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        except ValueError, OSError:
+            pages = 0
+        return {"vram_mb": pages // 2**20, "unified": True}
 
     @staticmethod
     def case_sensitive(anchor: Path) -> bool:
@@ -161,21 +125,19 @@ class Census:
             return str(refusal) or type(refusal).__name__
         return ""
 
+    def __init__(
+        self, runner: Runner = _run, finder: Finder = shutil.which, system: str = ""
+    ) -> None:
+        self.runner = runner
+        self.finder = finder
+        self.system = system or platform.system()
+
     def git(self) -> dict[str, str]:
         """The global git settings a clone inherits, each empty when unset."""
         return {
             name: said.strip() if not status else ""
-            for name in GIT_SETTINGS
+            for name in _GIT_SETTINGS
             for status, said in [self.runner(("git", "config", "--global", "--get", name))]
-        }
-
-    def tools(self) -> dict[str, str]:
-        """Every tool that answers with a version, keyed by name; a silent one is left out."""
-        said = {name: self.runner(argv) for name, argv in TOOLS.items() if self.finder(argv[0])}
-        return {
-            name: number[0]
-            for name, (status, text) in said.items()
-            if not status and (number := _VERSION.search(text))
         }
 
     def nvidia(self) -> tuple[str, list[Json]]:
@@ -208,16 +170,54 @@ class Census:
         ]
         return (cuda[1] if cuda else ""), (cards if not status else [])
 
-    @staticmethod
-    def card_memory(memory: str) -> dict[str, Json]:
-        """A card's memory in MiB from its `memory.total`, the system's when it has none."""
-        if memory.isdigit():
-            return {"vram_mb": int(memory)}
+    def shells(self) -> dict[str, str]:
+        """Every shell on PATH by name."""
+        return {name: path for name in _SHELLS if (path := self.finder(name))}
+
+    def survey(self, root: str) -> dict[str, Json]:
+        """Everything this census reads, the filesystem measured where `root` lives.
+
+        root: the workspace root, which need not exist yet; its nearest existing ancestor is
+            what the filesystem questions are asked of.
+        """
+        anchor = self.anchor(root)
+        cuda, gpus = self.nvidia()
+        return {
+            "system": self.system,
+            "release": platform.release(),
+            "version": self.version(),
+            "arch": platform.machine(),
+            "python": platform.python_version(),
+            "shells": self.shells(),
+            "root": str(anchor),
+            "case_sensitive": self.case_sensitive(anchor),
+            "symlinks": self.symlinks(anchor),
+            "free_bytes": shutil.disk_usage(anchor).free,
+            "git": self.git(),
+            "tools": self.tools(),
+            "cuda": cuda,
+            "gpus": gpus,
+        }
+
+    def tools(self) -> dict[str, str]:
+        """Every tool that answers with a version, keyed by name; a silent one is left out."""
+        said = {name: self.runner(argv) for name, argv in _TOOLS.items() if self.finder(argv[0])}
+        return {
+            name: number[0]
+            for name, (status, text) in said.items()
+            if not status and (number := _VERSION.search(text))
+        }
+
+    def version(self) -> str:
+        """The operating system's own name for its version, a distribution's where it has one."""
+        if self.system == "Darwin":
+            return f"macOS {platform.mac_ver()[0]}"
         try:
-            pages = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-        except ValueError, OSError:
-            pages = 0
-        return {"vram_mb": pages // 2**20, "unified": True}
+            text = Path("/etc/os-release").read_text(encoding="utf-8")
+        except OSError:
+            return platform.version()
+        fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+        return fields.get("PRETTY_NAME", platform.version()).strip('"')
 
 
 def main(root: str) -> None:

@@ -2,6 +2,7 @@
 
 import json
 import platform
+from contextlib import suppress
 from enum import StrEnum, auto
 from hashlib import blake2b, sha256
 from importlib.metadata import PackageNotFoundError, packages_distributions, version
@@ -11,23 +12,22 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.project import Project
+from ..dispatch.constants import CLOSURE_VAR, DIGEST_VAR
 from ..dispatch.provenance import Row, SourceTree, Status, blob_of, listing
-from ..dispatch.shared import CLOSURE_VAR, DIGEST_VAR
 from ..probe.machine import Machine
-from .coverage import Probed
+from .lanes.coverage import Probed
+from .store.constants import BASELINES
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from pydantic import JsonValue
 
-# What a claim's registered rows live under, one directory per node, and what counts as a source
-# file when the universe root is digested.
-BASELINES, SOURCES = "baselines", "*.py"
+_SOURCES = "*.py"
 
 # Every digest's width in bytes: a fingerprint a person can compare by eye in a receipt column. It
 # accelerates the question whether two trees are the same and never settles it.
-WIDTH = 16
+_WIDTH = 16
 
 
 class Admissibility(StrEnum):
@@ -53,11 +53,6 @@ def parsed(manifest: str) -> list[Row]:
     ]
 
 
-def _built(name: str) -> bool:
-    """Whether one relative path is build output rather than source a digest should read."""
-    return any(part.startswith(".") or part == "__pycache__" for part in name.split("/"))
-
-
 def digest_of(directory: Path, pattern: str = "*") -> str:
     """One digest over every file under `directory` matching `pattern`, in relative-path order.
 
@@ -68,14 +63,19 @@ def digest_of(directory: Path, pattern: str = "*") -> str:
     if not directory.is_dir():
         return ""
     found = (path.relative_to(directory).as_posix() for path in directory.rglob(pattern))
-    names = sorted(name for name in found if not _built(name) and (directory / name).is_file())
+    names = sorted(
+        name
+        for name in found
+        if not any(part.startswith(".") or part == "__pycache__" for part in name.split("/"))
+        and (directory / name).is_file()
+    )
     if not names:
         return ""
-    running = blake2b(digest_size=WIDTH)
+    running = blake2b(digest_size=_WIDTH)
     for name in names:
         running.update(name.encode())
         running.update(b"\0")
-        running.update(blake2b((directory / name).read_bytes(), digest_size=WIDTH).digest())
+        running.update(blake2b((directory / name).read_bytes(), digest_size=_WIDTH).digest())
     return running.hexdigest()
 
 
@@ -85,7 +85,7 @@ def digested(payload: JsonValue) -> str:
     A lane's gate rides on the receipt as this: the exact row a verdict was scored against.
     """
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return blake2b(canonical.encode(), digest_size=WIDTH).hexdigest()
+    return blake2b(canonical.encode(), digest_size=_WIDTH).hexdigest()
 
 
 class Source(FrozenModel):
@@ -160,10 +160,8 @@ def installed(name: str) -> str:
     except PackageNotFoundError:
         found: set[str] = set()
         for distribution in packages_distributions().get(name, ()):
-            try:
+            with suppress(PackageNotFoundError):
                 found.add(version(distribution))
-            except PackageNotFoundError:
-                continue
         return found.pop() if len(found) == 1 else "absent"
 
 
@@ -218,24 +216,6 @@ def card_of(machine: Machine) -> Card:
 class Preflight:
     """Capture the source once, then check lane membership and bytes before each trial."""
 
-    def __init__(
-        self,
-        root: Path,
-        repo: Path,
-        *,
-        probed: Sequence[str] = (),
-        machine: Machine | None = None,
-    ) -> None:
-        self.root = root
-        self.source = source(repo)
-        self.digest = self.source.digest
-        manifest = Path(self.source.closure).read_text(encoding="utf-8")
-        self.captured = {
-            (self.source.root / row.path).resolve(): row.blob for row in parsed(manifest)
-        }
-        self.card = card_of(machine or Machine())
-        self.versions: dict[str, JsonValue] = {name: installed(name) for name in probed}
-
     @property
     def admissibility(self) -> Admissibility:
         """Whether this run's readings can be evidence at all, before any lane is looked at."""
@@ -258,6 +238,24 @@ class Preflight:
             "mirrored": self.source.mirrored,
             "versions": self.versions,
         }
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        repo: Path,
+        probed: Sequence[str] = (),
+        machine: Machine | None = None,
+    ) -> None:
+        self.root = root
+        self.source = source(repo)
+        self.digest = self.source.digest
+        manifest = Path(self.source.closure).read_text(encoding="utf-8")
+        self.captured = {
+            (self.source.root / row.path).resolve(): row.blob for row in parsed(manifest)
+        }
+        self.card = card_of(machine or Machine())
+        self.versions: dict[str, JsonValue] = {name: installed(name) for name in probed}
 
     def admits(self, lane: Path) -> Admissibility:
         """Whether the lane's current bytes belong to the captured source."""

@@ -1,0 +1,292 @@
+# Bring a target's copy of the workspace up to date with this one, on any OS at either end.
+#
+# Both ends walk the same scopes under the same compiled rules and describe every file by its
+# size and SHA-256, each end remembering its digests by size and timestamp so an unchanged tree
+# is never reread. The difference between the two descriptions is the whole transfer: the files
+# that differ travel as one compressed tar stream over the one SSH channel, the paths the center
+# no longer holds are pruned unless a protect rule keeps them, and the target applies all of it
+# under its own mirror lock. Content decides what differs, never a timestamp, so two machines
+# whose clocks or file systems keep time differently still agree on what is already there.
+
+import os
+import tarfile
+from functools import partial
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from patos import FrozenModel
+from pydantic import TypeAdapter
+
+from ...core.errors import MissionError
+from ...log import logger
+from ..agent import Digests, Entry, program, walk
+from ..agent.program import native
+from ..shared import state_dir
+from ..state.digests import KeptDigests
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping, Sequence
+
+    from ..agent import Agent, Rules, Scope
+    from ..agent.program import ReceiveSpec
+    from ..agent.runner import Sink
+
+# The compression the stream is packed at: the fastest gzip level, since source text still
+# shrinks severalfold while Parquet and weights shrink at no level, and a slower level would cap
+# a fast link at what one core compresses.
+_LEVEL = 1
+# How much of the stream is written at a time, so no file ever has to fit in memory.
+_BUFFER = 1 << 20
+
+# One survey record: path, kind, size, nanosecond mtime, execute bit, and digest or link target.
+_RECORD = TypeAdapter(tuple[str, str, int, int, bool, str])
+
+
+class _Capabilities(FrozenModel):
+    """What the target's file system can hold, the first record of every survey.
+
+    fold: whether it folds case, holding two paths that differ only in case as one.
+    """
+
+    fold: bool
+
+
+class _Received(FrozenModel):
+    """What the target reports once it applied a mirror."""
+
+    written: int
+    bytes: int
+    deleted: tuple[str, ...]
+    kept: tuple[str, ...]
+
+
+class Pushed(FrozenModel):
+    """What one mirror did.
+
+    files: how many files the center holds in scope.
+    sent: how many of them crossed the wire, and their `bytes` before compression.
+    deleted: what the target pruned; `kept`, what it could not prune because the rules keep
+        something beneath it.
+    """
+
+    files: int = 0
+    sent: int = 0
+    bytes: int = 0
+    deleted: tuple[str, ...] = ()
+    kept: tuple[str, ...] = ()
+
+
+class Mirror:
+    """Mirror scoped trees and named files of this workspace onto one target.
+
+    workspace: the local workspace root every path is relative to.
+    agent: the target's agent.
+    """
+
+    @staticmethod
+    def _clashing(paths: Iterable[str]) -> list[str]:
+        """The paths differing from another only in case, which a case-folding target merges."""
+        folded: dict[str, list[str]] = {}
+        for path in paths:
+            folded.setdefault(path.casefold(), []).append(path)
+        return sorted(path for group in folded.values() if len(group) > 1 for path in group)
+
+    def __hashed(self, entry: Entry, digests: Digests) -> Entry:
+        if entry.kind != program.FILE:
+            return entry
+        path = native(str(self.workspace), relative=entry.path)
+        return entry._replace(detail=digests.of(path, key=entry.path))
+
+    def __init__(self, workspace: Path, agent: Agent) -> None:
+        self.workspace = workspace
+        self.agent = agent
+
+    def __local(
+        self, scopes: Sequence[Scope], named: Sequence[str], *, digests: Digests
+    ) -> dict[str, Entry]:
+        """Every entry this workspace holds in scope and by name, files hashed through memory."""
+        root = str(self.workspace)
+        found: dict[str, Entry] = {}
+        for scope in scopes:
+            for entry in walk(root, scope):
+                found[entry.path] = self.__hashed(entry, digests)
+        for relative in named:
+            status = os.stat(native(root, relative=relative))
+            found[relative] = self.__hashed(Entry.stated(relative, status), digests)
+        return found
+
+    def __pack(self, files: Sequence[Entry], sink: Sink, *, named: frozenset[str]) -> None:
+        """Stream `files` into `sink` as one gzip tar, a file at a time and a chunk at a time.
+
+        A file that vanished since it was hashed is skipped with a warning, unless it was named,
+        since a named file is one the dispatch cannot run without.
+        """
+        with tarfile.open(
+            fileobj=sink, mode="w|gz", bufsize=_BUFFER, compresslevel=_LEVEL
+        ) as archive:
+            for entry in files:
+                try:
+                    with open(native(str(self.workspace), relative=entry.path), "rb") as source:
+                        info = tarfile.TarInfo(entry.path)
+                        info.size = os.fstat(source.fileno()).st_size
+                        info.mtime = entry.mtime // 1_000_000_000
+                        info.mode = 0o755 if entry.executable else 0o644
+                        archive.addfile(info, source)
+                except FileNotFoundError as vanished:
+                    if entry.path in named:
+                        raise MissionError(
+                            f"{entry.path} vanished before it could be sent"
+                        ) from vanished
+                    logger.warning("skipping {}, gone before the stream reached it", entry.path)
+
+    def push(
+        self,
+        root: str,
+        *,
+        scopes: Sequence[Scope],
+        named: Sequence[str] = (),
+        protected: Rules,
+    ) -> Pushed:
+        """Bring `root` on the target up to date and answer what that took.
+
+        scopes: the trees mirrored whole, each pruned on the target down to what it holds here.
+        named: files shipped by name whatever the rules say, never pruned, each required to
+            exist here and to still exist when the stream reaches it.
+        protected: what the target never prunes, whether or not this workspace holds it.
+        """
+        digests = KeptDigests(self.workspace, "mirror")
+        local = self.__local(scopes, named, digests=digests)
+        first, *records = self.agent.ask(
+            {
+                "survey": {
+                    "root": root,
+                    "state": state_dir(),
+                    "scopes": [scope.spec() for scope in scopes],
+                    "named": list(named),
+                }
+            }
+        )
+        capabilities = _Capabilities.model_validate(first)
+        digests.save()
+        if capabilities.fold and (clashes := Mirror._clashing(local)):
+            raise MissionError(
+                f"{self.agent.host} folds case, and these paths differ only in case: "
+                + ", ".join(clashes)
+            )
+        held = {
+            entry.path: entry
+            for entry in (Entry._make(_RECORD.validate_python(record)) for record in records)
+        }
+        delta = Delta.between(local, held=held, protected=protected)
+        logger.info(
+            "mirroring {} of {} path(s) to {}:{}",
+            len(delta.files),
+            len(local),
+            self.agent.host,
+            root,
+        )
+        [answer] = self.agent.ask(
+            {"receive": delta.request(root)},
+            payload=partial(self.__pack, delta.files, named=frozenset(named)),
+        )
+        received = _Received.model_validate(answer)
+        if received.deleted:
+            logger.warning(
+                "mirror deleted {} path(s): {}", len(received.deleted), ", ".join(received.deleted)
+            )
+        return Pushed(
+            files=sum(entry.kind == program.FILE for entry in local.values()),
+            sent=received.written,
+            bytes=received.bytes,
+            deleted=received.deleted,
+            kept=received.kept,
+        )
+
+
+class Delta(FrozenModel):
+    """The difference between two descriptions of one tree, as the target has to apply it.
+
+    files: what the stream carries, in path order.
+    directories: what the target makes, empty ones included.
+    links: what the target links, path to target.
+    delete: what the target prunes, deepest first on its side.
+    """
+
+    files: tuple[Entry, ...] = ()
+    directories: tuple[str, ...] = ()
+    links: tuple[tuple[str, str], ...] = ()
+    delete: tuple[str, ...] = ()
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @classmethod
+    def between(
+        cls,
+        local: Mapping[str, Entry],
+        *,
+        held: Mapping[str, Entry],
+        protected: Rules,
+    ) -> Delta:
+        """What turns `held` into `local`, leaving alone whatever `protected` claims.
+
+        A file differs by size, digest or execute bit. A path whose kind changed, or a link whose
+        target did, is pruned before it is remade, since neither a directory nor a link is
+        replaced by a rename.
+
+        held: what the target described.
+        protected: paths the target keeps whether or not this workspace holds them.
+        """
+        files = tuple(
+            entry
+            for path, entry in sorted(local.items())
+            if entry.kind == program.FILE and Delta._is_differs(entry, held.get(path))
+        )
+        stale = tuple(
+            path
+            for path, theirs in held.items()
+            if Delta._stale(local.get(path), theirs)
+            and not protected.matches(path, directory=theirs.kind == program.DIRECTORY)
+        )
+        remade = set(stale)
+        placed = [
+            (path, entry)
+            for path, entry in sorted(local.items())
+            if path not in held or path in remade
+        ]
+        return cls(
+            files=files,
+            directories=tuple(path for path, entry in placed if entry.kind == program.DIRECTORY),
+            links=tuple(
+                (path, entry.detail) for path, entry in placed if entry.kind == program.LINK
+            ),
+            delete=stale,
+        )
+
+    @staticmethod
+    def _is_differs(mine: Entry, theirs: Entry | None) -> bool:
+        """Whether the target's copy of a file is missing or holds other bytes or another mode."""
+        if theirs is None or theirs.kind != program.FILE:
+            return True
+        return (mine.size, mine.detail, mine.executable) != (
+            theirs.size,
+            theirs.detail,
+            theirs.executable,
+        )
+
+    @staticmethod
+    def _stale(mine: Entry | None, theirs: Entry) -> bool:
+        """Whether the target's entry must go: gone here, of another kind, or linked elsewhere."""
+        if mine is None or mine.kind != theirs.kind:
+            return True
+        return mine.kind == program.LINK and mine.detail != theirs.detail
+
+    def request(self, root: str) -> ReceiveSpec:
+        """This delta as the receive request the target applies under `root`."""
+        return {
+            "root": root,
+            "state": state_dir(),
+            "delete": list(self.delete),
+            "directories": list(self.directories),
+            "links": dict(self.links),
+            "files": {entry.path: (entry.mtime, entry.executable) for entry in self.files},
+        }

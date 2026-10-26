@@ -23,11 +23,6 @@ if TYPE_CHECKING:
 class _Alias(MetaPathFinder, Loader):
     """Finds `mb.<x>` as the already-importable `mainboard.<x>`."""
 
-    def find_spec(
-        self, name: str, path: Sequence[str] | None = None, target: ModuleType | None = None
-    ) -> ModuleSpec | None:
-        return spec_from_loader(name, self) if name.startswith("mb.") else None
-
     def create_module(self, spec: ModuleSpec) -> ModuleType:
         module = import_module("mainboard" + spec.name.removeprefix("mb"))
         # The import system stamps this alias spec onto the module; keep the real one to restore.
@@ -37,6 +32,11 @@ class _Alias(MetaPathFinder, Loader):
     def exec_module(self, module: ModuleType) -> None:
         if module.__spec__ is not None:
             module.__spec__ = module.__spec__.loader_state
+
+    def find_spec(
+        self, name: str, path: Sequence[str] | None = None, target: ModuleType | None = None
+    ) -> ModuleSpec | None:
+        return spec_from_loader(name, self) if name.startswith("mb.") else None
 
 
 sys.meta_path.insert(0, _Alias())

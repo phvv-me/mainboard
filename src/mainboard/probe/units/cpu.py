@@ -2,7 +2,7 @@ from functools import cached_property
 from typing import ClassVar
 
 from ..enums import UnitKind
-from ..facts.memory import Memory
+from ..facts.memory.core import Memory
 from .unit import Unit
 
 

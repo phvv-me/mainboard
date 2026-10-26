@@ -4,6 +4,7 @@
 
 import json
 from compression import zstd
+from contextlib import suppress
 from datetime import UTC, datetime
 from time import sleep
 from typing import TYPE_CHECKING
@@ -30,13 +31,18 @@ class Spool:
     reopening the same `(root, job)` after a restart resumes rather than overwriting.
     """
 
-    def __init__(self, root: Path, job: str, *, roll_bytes: int = _ROLL_BYTES) -> None:
-        self.dir = root / job
-        self.dir.mkdir(parents=True, exist_ok=True)
-        self.job = job
-        self.roll_bytes = roll_bytes
-        self.segment_start, self.offset = self.__resume()
-        self.handle = self.__live_path().open("ab")
+    @staticmethod
+    def _contents(path: Path, *, compressed: bool) -> bytes:
+        raw = path.read_bytes()
+        return zstd.decompress(raw) if compressed else raw
+
+    def __archives(self) -> list[tuple[int, int, Path, bool]]:
+        """Every rolled, compressed segment, oldest first, its span read from its filename."""
+        spans = [
+            (path, path.name.removesuffix(".ndjson.zst").split("-"))
+            for path in sorted(self.dir.glob("*.ndjson.zst"))
+        ]
+        return [(int(start), int(end), path, True) for path, (start, end) in spans]
 
     def __enter__(self) -> Spool:
         return self
@@ -50,55 +56,13 @@ class Spool:
         del exc_type, exc_value, traceback
         self.close()
 
-    def append(self, frame: Frame) -> Frame:
-        """Write `frame`, its `offset` set to the true write position, rolling a grown segment."""
-        stamped = frame.model_copy(update={"offset": self.offset})
-        body = encode(stamped).encode()
-        self.handle.write(body)
-        self.handle.flush()
-        self.offset += len(body)
-        if self.offset - self.segment_start >= self.roll_bytes:
-            self.__roll()
-        return stamped
-
-    def close(self) -> None:
-        self.handle.close()
-
-    def frames_from(self, offset: int) -> list[Frame]:
-        """Every frame at or after the global `offset`, spanning archived and live segments."""
-        chunks = [
-            _contents(path, compressed=compressed)[max(0, offset - start) :]
-            for start, end, path, compressed in self.__segments()
-            if end > offset
-        ]
-        return parse_tail(b"".join(chunks).decode())
-
-    def heartbeat(self, state: str) -> None:
-        """Atomically publish `status.json` for a poll channel; `state` is `running` or `ended`."""
-        payload = {
-            "state": state,
-            "offset": self.offset,
-            "updated_at": datetime.now(UTC).isoformat(),
-            "base": self.segment_start,
-        }
-        tmp = self.dir / f"{_STATUS_NAME}.tmp"
-        tmp.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
-        tmp.replace(self.dir / _STATUS_NAME)
-
-    def status(self) -> dict[str, JSONValue] | None:
-        """The last published heartbeat, or `None` before any heartbeat has landed."""
-        try:
-            return json.loads((self.dir / _STATUS_NAME).read_text())
-        except FileNotFoundError:
-            return None
-
-    def __archives(self) -> list[tuple[int, int, Path, bool]]:
-        """Every rolled, compressed segment, oldest first, its span read from its filename."""
-        spans = [
-            (path, path.name.removesuffix(".ndjson.zst").split("-"))
-            for path in sorted(self.dir.glob("*.ndjson.zst"))
-        ]
-        return [(int(start), int(end), path, True) for path, (start, end) in spans]
+    def __init__(self, root: Path, job: str, *, roll_bytes: int = _ROLL_BYTES) -> None:
+        self.dir = root / job
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.job = job
+        self.roll_bytes = roll_bytes
+        self.segment_start, self.offset = self.__resume()
+        self.handle = self.__live_path().open("ab")
 
     def __live_path(self) -> Path:
         return self.dir / _LIVE_NAME
@@ -134,10 +98,46 @@ class Spool:
         base = archives[-1][1] if archives else 0
         return [*archives, (base, base + live.stat().st_size, live, False)]
 
+    def append(self, frame: Frame) -> Frame:
+        """Write `frame`, its `offset` set to the true write position, rolling a grown segment."""
+        stamped = frame.model_copy(update={"offset": self.offset})
+        body = encode(stamped).encode()
+        self.handle.write(body)
+        self.handle.flush()
+        self.offset += len(body)
+        if self.offset - self.segment_start >= self.roll_bytes:
+            self.__roll()
+        return stamped
 
-def _contents(path: Path, *, compressed: bool) -> bytes:
-    raw = path.read_bytes()
-    return zstd.decompress(raw) if compressed else raw
+    def close(self) -> None:
+        self.handle.close()
+
+    def frames_from(self, offset: int) -> list[Frame]:
+        """Every frame at or after the global `offset`, spanning archived and live segments."""
+        chunks = [
+            Spool._contents(path, compressed=compressed)[max(0, offset - start) :]
+            for start, end, path, compressed in self.__segments()
+            if end > offset
+        ]
+        return parse_tail(b"".join(chunks).decode())
+
+    def heartbeat(self, state: str) -> None:
+        """Atomically publish `status.json` for a poll channel; `state` is `running` or `ended`."""
+        payload = {
+            "state": state,
+            "offset": self.offset,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "base": self.segment_start,
+        }
+        tmp = self.dir / f"{_STATUS_NAME}.tmp"
+        tmp.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+        tmp.replace(self.dir / _STATUS_NAME)
+
+    def status(self) -> dict[str, JSONValue] | None:
+        """The last published heartbeat, or `None` before any heartbeat has landed."""
+        with suppress(FileNotFoundError):
+            return json.loads((self.dir / _STATUS_NAME).read_text())
+        return None
 
 
 def follow(

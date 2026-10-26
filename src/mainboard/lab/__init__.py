@@ -5,9 +5,9 @@
 # trial tells the outside world is its one `board_surface.RECEIPT` line.
 
 from .board_surface import experiment
-from .domains import Choices, Fixed, FloatRange, IntRange
+from .declarations.domains import Choices, Fixed, FloatRange, IntRange
+from .declarations.gates import Idle, Offline, Parity, Receipt
 from .experiment import Experiment
-from .gates import Idle, Offline, Parity, Receipt
 from .lane import Lane
 from .run import Run
 

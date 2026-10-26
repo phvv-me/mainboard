@@ -2,12 +2,17 @@ import abc
 from collections.abc import Sequence
 from typing import ClassVar
 
-from ...manifest.schema.container import Container
+from ...manifest.schema.compute.container import Container
 from .base import ContainerRuntime
 
 
 class DockerCompatible(ContainerRuntime):
     """Shared `run --rm` argv for the docker-CLI runtimes, which differ only in `gpu_flags`."""
+
+    @classmethod
+    @abc.abstractmethod
+    def gpu_flags(cls) -> list[str]:
+        """The flags that expose every GPU to the container."""
 
     @classmethod
     def command(cls, container: Container, *, prefix_bind: str, argv: Sequence[str]) -> list[str]:
@@ -23,11 +28,6 @@ class DockerCompatible(ContainerRuntime):
             container.image,
             *cls.guarded_argv(container, argv),
         ]
-
-    @classmethod
-    @abc.abstractmethod
-    def gpu_flags(cls) -> list[str]:
-        """The flags that expose every GPU to the container."""
 
 
 class Docker(DockerCompatible):

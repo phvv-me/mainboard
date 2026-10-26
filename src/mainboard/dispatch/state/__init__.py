@@ -1,15 +1,17 @@
 from .cache import Cache, RunRecord
+from .captured import Captured
+from .digests import KeptDigests
 from .monitor import DownHost, Failed, Finished, Held, MonitorReport, Resumed, SettlementBusy
-from .reconcile import ReconcileRow
 
 __all__ = [
     "Cache",
+    "Captured",
     "DownHost",
     "Failed",
     "Finished",
     "Held",
+    "KeptDigests",
     "MonitorReport",
-    "ReconcileRow",
     "Resumed",
     "RunRecord",
     "SettlementBusy",

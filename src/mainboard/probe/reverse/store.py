@@ -51,15 +51,6 @@ class EvidenceStore:
         self.session.run(append)
         return evidence_id
 
-    def read(self, evidence_id: str) -> Evidence[DeviceResult] | NotFound:
-        current = schema.re_evidence_current
-        rows = self.session.rows(
-            select(current.c.record_json).where(current.c.evidence_id == evidence_id)
-        )
-        if not rows:
-            return NotFound(evidence_id=evidence_id)
-        return Evidence[DeviceResult].model_validate_json(rows[0][0])
-
     def query(
         self,
         *,
@@ -82,3 +73,12 @@ class EvidenceStore:
             Evidence[DeviceResult].model_validate_json(row[0])
             for row in self.session.rows(statement)
         )
+
+    def read(self, evidence_id: str) -> Evidence[DeviceResult] | NotFound:
+        current = schema.re_evidence_current
+        rows = self.session.rows(
+            select(current.c.record_json).where(current.c.evidence_id == evidence_id)
+        )
+        if not rows:
+            return NotFound(evidence_id=evidence_id)
+        return Evidence[DeviceResult].model_validate_json(rows[0][0])

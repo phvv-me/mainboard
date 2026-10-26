@@ -1,19 +1,40 @@
-"""The engine's commands as `mainboard rules`, and as the hidden `analyze` they answered to until
-2026-10-23, kept for one release.
-
-Cyclopts refuses to register an imported app under another name than its own, and the engine's
-app is named `lint` for the harness that predates the verb, so the commands are re-registered
-here under the names the CLI uses.
-"""
+"""The engine's commands as `mainboard refactor`: the rules that judge a project, the fixes that
+repair it, and the tools that move, prove and query its code."""
 
 from cyclopts import App
 
-from .lint import app as engine
+from .commands import catalog, gate, swift
+from .commands.graphs import diagram, matrix, uses
+from .commands.papers import evidence, impact, prose
+from .commands.tools import move, preview, proof, sql, trial
+from .engine import lint
 
-rules = App(name="rules", help=engine.help)
-analyze = App(name="analyze", help=engine.help, show=False)
+_HELP = "Refactor a project: check and fix it with the rules, move and prove its code."
 
-for command in engine:
-    if not command.startswith("-"):
-        for group in (rules, analyze):
-            group.command(engine[command], name=command)
+# Every engine command; help lists them by name.
+_COMMANDS = (
+    lint.check,
+    lint.compare,
+    lint.fix,
+    lint.test,
+    catalog.catalog,
+    catalog.explain,
+    diagram.diagram,
+    evidence.evidence,
+    gate.gate,
+    impact.impact,
+    matrix.matrix,
+    prose.prose,
+    move,
+    preview,
+    proof,
+    sql,
+    trial,
+    swift.swift_compare,
+    swift.swift_inventory,
+    uses.uses,
+)
+
+refactor = App(name="refactor", help=_HELP)
+for command in _COMMANDS:
+    refactor.command(command)

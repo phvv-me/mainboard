@@ -16,14 +16,25 @@ import duckdb
 import pytest
 from cyclopts import App
 from guard import Guard
+from pydantic import JsonValue
 
 import mainboard
-from mainboard.state.database import load
+from mainboard.state.storage.database import load
+from mb import logger
 
 # Seconds of the budget that launching, preflight and cleanup keep for themselves.
 _RESERVE = 30
 _TOOLS = ["pytest", "ruff", "pyrefly", "ty", "mypy", "mcmr"]
-_INHERITED = ["PATH", "LANG", "SYSTEMROOT", "DYLD_FALLBACK_LIBRARY_PATH", "DEVELOPER_DIR"]
+_INHERITED = [
+    "PATH",
+    "LANG",
+    "SYSTEMROOT",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "DEVELOPER_DIR",
+    "MB_FIX_MIRROR",
+]
+# The worker modules every lane imports beside the source.
+_WORKER = "integration/gates/worker"
 _HOMES = {
     "HOME": "home",
     "TMPDIR": "tmp",
@@ -49,49 +60,13 @@ _WITNESSES = [
     f"{_HARNESS}::test_a_write_outside_the_roots_is_refused",
     f"{_HARNESS}::test_a_provider_name_is_refused",
     f"{_HARNESS}::test_the_installed_hook_runs_first",
-    "integration/test_commands.py::"
+    "integration/cli/test_commands.py::"
     "test_an_environment_narrowing_the_mirror_still_ships_every_lock_input",
 ]
 
 
 class Gate:
     """One lane of the gate: its worker's environment, sandbox, bounds and report."""
-
-    def __init__(self, mode: str) -> None:
-        self.tree = Path(os.environ["MB_GATE_WORKTREE"]).resolve()
-        self.root = Path(os.environ["MB_GATE_ROOT"]).resolve()
-        self.report = Path(os.environ["MB_GATE_REPORT"]).resolve()
-        self.budget = int(os.environ["MB_GATE_BUDGET"]) - _RESERVE
-        self.started = time.monotonic()
-        self.baseline = json.loads(
-            (self.tree / "integration/gates/baseline.json").read_text(encoding="utf-8")
-        )
-        tool = "pytest" if mode in _TESTERS else mode
-        versions = {name: importlib.metadata.version(name) for name in _TOOLS if name == tool}
-        self.result = {
-            "import": mainboard.__file__,
-            "python": sys.executable,
-            "temporary_root": str(self.root),
-            "budget_seconds": self.budget + _RESERVE,
-            "versions": versions,
-        }
-        self._verify(versions)
-
-    def run(self, mode: str, selection: list[str]) -> int:
-        """Run lane `mode` and return the exit code its worker ended with."""
-        if mode == "inspect":
-            return self._inspect()
-        if mode in {"suite", "target"}:
-            return self._pytest(mode, selection)
-        if mode == "seed":
-            return self._install()
-        return self._execute(mode, self._checker(mode), self.budget, isolated=False)
-
-    def save(self, name: str) -> None:
-        self.result["wall_seconds"] = round(time.monotonic() - self.started, 3)
-        (self.report / f"{name}.json").write_text(
-            json.dumps(self.result, indent=2) + "\n", encoding="utf-8"
-        )
 
     @staticmethod
     def _wait(child: subprocess.Popen[bytes], limit: int) -> int:
@@ -106,7 +81,27 @@ class Gate:
         child.wait()
         return 124
 
-    def _accounting(self, listing: str) -> dict[str, object]:
+    def __init__(self, mode: str) -> None:
+        self.tree = Path(os.environ["MB_GATE_WORKTREE"]).resolve()
+        self.root = Path(os.environ["MB_GATE_ROOT"]).resolve()
+        self.report = Path(os.environ["MB_GATE_REPORT"]).resolve()
+        self.budget = int(os.environ["MB_GATE_BUDGET"]) - _RESERVE
+        self.started = time.monotonic()
+        self.baseline = json.loads(
+            (self.tree / "integration/gates/baseline.json").read_text(encoding="utf-8")
+        )
+        tool = "pytest" if mode in _TESTERS else mode
+        versions = {name: importlib.metadata.version(name) for name in _TOOLS if name == tool}
+        self.result: dict[str, JsonValue] = {
+            "import": mainboard.__file__,
+            "python": sys.executable,
+            "temporary_root": str(self.root),
+            "budget_seconds": self.budget + _RESERVE,
+            "versions": {**versions},
+        }
+        self._verify(versions)
+
+    def _accounting(self, listing: str) -> dict[str, JsonValue]:
         """Every baseline case must still be collected; additions are listed apart."""
         collected = {line for line in listing.splitlines() if "::" in line}
         original = {case["nodeid"] for case in self.baseline["cases"]}
@@ -115,14 +110,14 @@ class Gate:
             "historical_counts": self.baseline["counts"],
             "original_collected": len(original),
             "new_collected": len(collected - original),
-            "collected": sorted(collected),
+            "collected": [*sorted(collected)],
             "execution": "collection only; historical outcomes are not fresh gate passes",
         }
 
-    def _arguments(self) -> list[str]:
+    def _arguments(self, tree: Path | None = None) -> list[str]:
         return [
             "-c",
-            str(self.tree / "pyproject.toml"),
+            str((tree or self.tree) / "pyproject.toml"),
             "-p",
             "no:randomly",
             "-p",
@@ -246,6 +241,30 @@ class Gate:
             code = pytest.main(arguments)
         return int(code), listing.getvalue()
 
+    def _counted(self, tree: Path) -> int:
+        """How many tests pytest collects from `tree`'s suite, its own source imported."""
+        listed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                *self._arguments(tree),
+                "--collect-only",
+                str(tree / "integration"),
+            ],
+            cwd=self.root,
+            # Collection runs no test, so it needs no sandbox, as in the inspect lane.
+            env={
+                **self._environment(),
+                "PYTHONPATH": f"{tree / 'src'}:{tree / _WORKER}",
+                "MB_GATE_INSPECT": "1",
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return sum("::" in line for line in listed.stdout.splitlines())
+
     def _environment(self) -> dict[str, str]:
         """The worker's environment, rebuilt from an allowlist, every state path in the root."""
         environment = {key: os.environ[key] for key in _INHERITED if key in os.environ}
@@ -253,7 +272,7 @@ class Gate:
             (self.root / child).mkdir(parents=True, exist_ok=True)
             environment[key] = str(self.root / child)
         environment.update(
-            PYTHONPATH=f"{self.tree / 'src'}:{self.tree / 'integration/gates/worker'}",
+            PYTHONPATH=f"{self.tree / 'src'}:{self.tree / _WORKER}",
             PYTHONDONTWRITEBYTECODE="1",
             PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
             NO_COLOR="1",
@@ -279,21 +298,12 @@ class Gate:
             )
             code = self._wait(child, limit)
         self.result[name] = {
-            "argv": command,
+            "argv": [*command],
             "limit_seconds": limit,
             "exit_code": code,
             "seconds": round(time.monotonic() - started, 3),
         }
         return code
-
-    def _install(self) -> int:
-        """Install the extensions a sandbox is seeded from, the one lane that goes online.
-
-        A machine that never ran the tool needs it once; installing what is there changes nothing.
-        """
-        load(duckdb.connect(), _EXTENSIONS, _SEED)
-        self.result["seed"] = {"directory": str(_SEED), "extensions": _EXTENSIONS}
-        return 0
 
     def _inspect(self) -> int:
         """Collect, then run the reviewed witnesses here with every child process refused.
@@ -307,10 +317,19 @@ class Gate:
         self.result.update(
             collection_exit=code,
             baseline_accounting=self._accounting(listing),
-            witnesses={"nodes": _WITNESSES, "exit_code": int(witnesses)},
+            witnesses={"nodes": [*_WITNESSES], "exit_code": int(witnesses)},
             postgres={"missing": [n for n in _POSTGRES if not (binaries / n).is_file()]},
         )
         return max(code, int(witnesses))
+
+    def _install(self) -> int:
+        """Install the extensions a sandbox is seeded from, the one lane that goes online.
+
+        A machine that never ran the tool needs it once; installing what is there changes nothing.
+        """
+        load(duckdb.connect(), _EXTENSIONS, _SEED)
+        self.result["seed"] = {"directory": str(_SEED), "extensions": [*_EXTENSIONS]}
+        return 0
 
     def _preflight(self) -> bool:
         """Prove the OS refuses an external write and connection before any test code runs."""
@@ -318,7 +337,7 @@ class Gate:
         code = self._execute("isolation", [sys.executable, "-S", str(probe), str(self.root)], 20)
         if code:
             self.result["blocked"] = "M00-OS: OS isolation unavailable; no suite/checker launched"
-            sys.stderr.write((self.report / "isolation.log").read_text(encoding="utf-8"))
+            logger.error((self.report / "isolation.log").read_text(encoding="utf-8").rstrip("\n"))
         return code == 0
 
     def _pytest(self, mode: str, selection: list[str]) -> int:
@@ -380,13 +399,47 @@ class Gate:
         cache = self.root / ("home/Library/Caches/mb/duckdb" if darwin else "cache/mb/duckdb")
         shutil.copytree(_SEED, cache, dirs_exist_ok=True)
 
+    def _shrunk(self) -> str:
+        """Why this suite collects fewer tests than the project a fix mirror was made from.
+
+        Empty outside a fix mirror and when nothing went missing. A fix that moves a test out of
+        collection passes a suite that runs only what it finds, so the fixer's proof asks here.
+        """
+        origin = os.environ.get("MB_FIX_ROOT")
+        if not origin:
+            return ""
+        before, after = self._counted(Path(origin)), self._counted(self.tree)
+        self.result["collected"] = {"project": before, "mirror": after}
+        return f"the fix collects {after} tests where the project collects {before}" * (
+            after < before
+        )
+
     def _verify(self, versions: dict[str, str]) -> None:
         """Refuse a worktree other than this one and a lane tool that drifted from the baseline."""
         assert Path(mainboard.__file__).resolve() == self.tree / "src/mainboard/__init__.py"
         assert versions == {name: self.baseline["versions"][name] for name in versions}, (
             "M00-VERSIONS: tool version changed; explicitly rebaseline before accepting results"
         )
-        sys.stdout.write(f"mainboard.__file__ = {mainboard.__file__}\n")
+        logger.result(f"mainboard.__file__ = {mainboard.__file__}\n", end="")
+
+    def run(self, mode: str, selection: list[str]) -> int:
+        """Run lane `mode` and return the exit code its worker ended with."""
+        if mode == "inspect":
+            return self._inspect()
+        if mode == "suite" and (shrunk := self._shrunk()):
+            logger.error(shrunk)
+            return 1
+        if mode in {"suite", "target"}:
+            return self._pytest(mode, selection)
+        if mode == "seed":
+            return self._install()
+        return self._execute(mode, self._checker(mode), self.budget, isolated=False)
+
+    def save(self, name: str) -> None:
+        self.result["wall_seconds"] = round(time.monotonic() - self.started, 3)
+        (self.report / f"{name}.json").write_text(
+            json.dumps(self.result, indent=2) + "\n", encoding="utf-8"
+        )
 
 
 def _main(mode: str = "suite", *selection: str) -> None:

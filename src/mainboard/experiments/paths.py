@@ -29,28 +29,24 @@ class ExperimentPaths(FrozenModel):
         return path
 
     @property
-    def raw_dir(self) -> Path:
-        """Measurement rows, never hand-edited."""
-        return self._ensure("raw")
-
-    @property
     def plots_dir(self) -> Path:
         """Rendered figures."""
         return self._ensure("plots")
+
+    @property
+    def raw_dir(self) -> Path:
+        """Measurement rows, never hand-edited."""
+        return self._ensure("raw")
 
     @property
     def results_dir(self) -> Path:
         """Pooled summaries derived from the raw rows."""
         return self._ensure("results")
 
-    def table(self, filename: str) -> Path:
-        """A raw table path, given the `.parquet` suffix unless it names a table format already.
-
-        A bare suffix check misreads a model slug such as `Qwen3-1.7B` as an extension.
-        """
-        if Path(filename).suffix not in (".parquet", ".csv"):
-            filename = f"{filename}.parquet"
-        return self.raw_dir / filename
+    def _ensure(self, child: str) -> Path:
+        path = self.home / child
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def device_table(self, tag: str, name: str = "results") -> Path:
         """The table for one device, under its own tag so hosts never overwrite each other."""
@@ -62,7 +58,11 @@ class ExperimentPaths(FrozenModel):
         """A figure path under the plots directory."""
         return self.plots_dir / filename
 
-    def _ensure(self, child: str) -> Path:
-        path = self.home / child
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    def table(self, filename: str) -> Path:
+        """A raw table path, given the `.parquet` suffix unless it names a table format already.
+
+        A bare suffix check misreads a model slug such as `Qwen3-1.7B` as an extension.
+        """
+        if Path(filename).suffix not in (".parquet", ".csv"):
+            filename = f"{filename}.parquet"
+        return self.raw_dir / filename

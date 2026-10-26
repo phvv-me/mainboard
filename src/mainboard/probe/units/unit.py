@@ -4,7 +4,7 @@ from typing import ClassVar
 from patos import FrozenModel
 
 from ..enums import UnitKind, Vendor
-from ..facts.memory import Memory
+from ..facts.memory.core import Memory
 
 
 class Unit(FrozenModel):

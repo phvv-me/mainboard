@@ -43,8 +43,30 @@ _GITHUB_HELPER = "credential.https://github.com.helper"
 class Git:
     """Git run in one working tree, captured and never prompting."""
 
+    @staticmethod
+    def _credential() -> tuple[str, ...]:
+        """The `gh` credential helper appended for a GitHub call, nothing when `gh` is absent."""
+        if (found := shutil.which("gh")) is None:
+            return ()
+        return ("-c", f'{_GITHUB_HELPER}=!"{Path(found).as_posix()}" auth git-credential')
+
     def __init__(self, path: Path) -> None:
         self.path = path
+
+    def line(self, *args: str) -> str:
+        """The one line a query that has to succeed prints, trimmed."""
+        return self.out(*args).strip()
+
+    def ok(self, *args: str) -> bool:
+        """Whether a yes-or-no query answered yes, which git says with exit code zero."""
+        return self.run(*args).succeeded
+
+    def out(self, *args: str, stdin: str = "") -> str:
+        """The output of a call that has to succeed, refused with git's own words when not."""
+        result = self.run(*args, stdin=stdin)
+        if not result.succeeded:
+            raise MissionError(f"git {' '.join(args)} failed in {self.path}: {said(result)}")
+        return result.stdout
 
     def run(self, *args: str, stdin: str = "", network: bool = False) -> CommandResult:
         """Run `git args` here, whatever it exits with.
@@ -55,7 +77,7 @@ class Git:
         argv = [_executable(), "-C", str(self.path)]
         argv += [word for setting in _QUIET for word in ("-c", setting)]
         if network:
-            argv.extend(_credential())
+            argv.extend(Git._credential())
         try:
             done = subprocess.run(
                 [*argv, *args],
@@ -73,21 +95,6 @@ class Git:
                 _TIMED_OUT, "", f"git {args[0]} gave no answer in {_NETWORK_SECONDS:.0f} s"
             )
         return CommandResult(done.returncode, done.stdout, done.stderr)
-
-    def out(self, *args: str, stdin: str = "") -> str:
-        """The output of a call that has to succeed, refused with git's own words when not."""
-        result = self.run(*args, stdin=stdin)
-        if not result.succeeded:
-            raise MissionError(f"git {' '.join(args)} failed in {self.path}: {said(result)}")
-        return result.stdout
-
-    def line(self, *args: str) -> str:
-        """The one line a query that has to succeed prints, trimmed."""
-        return self.out(*args).strip()
-
-    def ok(self, *args: str) -> bool:
-        """Whether a yes-or-no query answered yes, which git says with exit code zero."""
-        return self.run(*args).succeeded
 
 
 def said(result: CommandResult) -> str:
@@ -108,10 +115,3 @@ def _executable() -> str:
     if (found := shutil.which("git")) is None:
         raise MissionError("git is not on PATH; install it before operating the repository tree")
     return found
-
-
-def _credential() -> tuple[str, ...]:
-    """The `gh` credential helper appended for a GitHub call, nothing when `gh` is absent."""
-    if (found := shutil.which("gh")) is None:
-        return ()
-    return ("-c", f'{_GITHUB_HELPER}=!"{Path(found).as_posix()}" auth git-credential')

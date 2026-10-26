@@ -15,6 +15,7 @@ import ast
 import hashlib
 import tempfile
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, ClassVar
@@ -24,11 +25,11 @@ from patos import FrozenModel
 from pydantic import Field
 
 from ...log import logger
-from ...state.database import quoted
-from ..facts import Budget, listed
+from ...state.storage.database import quoted
+from ..engine.facts import Budget, listed
 
 if TYPE_CHECKING:
-    from ..facts import Facts
+    from ..engine.facts import Facts
 
 
 class Source(FrozenModel):
@@ -70,20 +71,85 @@ class Ducks(FrozenModel):
     TEXT: ClassVar[dict[str, tuple[str, ...]]] = {"latex": (".tex",)}
     EMPTY: ClassVar[str] = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 
+    @staticmethod
+    def _parses(file: Path) -> bool:
+        try:
+            ast.parse(file.read_bytes())
+        except SyntaxError, ValueError:
+            return False
+        return True
+
+    def _attach(self, db: duckdb.DuckDBPyConnection) -> bool:
+        """Name the cache file `astcache` in `db`, answering whether the file is attached.
+
+        When another process holds the file, the tables stay in `db` itself under the same name.
+        """
+        self.cache.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            db.execute(f"ATTACH {quoted(str(self.cache))} AS astcache")
+            attached = True
+        except duckdb.Error as error:
+            logger.info("{} is in use, parsing into this run's own tables: {}", self.cache, error)
+            db.execute("CREATE SCHEMA astcache")
+            attached = False
+        db.execute("CREATE TABLE IF NOT EXISTS astcache.keys (blob VARCHAR, language VARCHAR)")
+        return attached
+
+    def _nodes(self, db: duckdb.DuckDBPyConnection, scratch: str) -> str:
+        """A `SELECT` of the nodes of the files linked in `scratch`.
+
+        Each node carries the blob and language its link names.
+        """
+        return f"""
+            SELECT unnest(regexp_extract(file_path, '([0-9a-f]{{40}})\\.(\\w+)\\.\\w+$',
+                                         ['blob', 'language'])),
+                   * EXCLUDE (file_path, language, semantic_type),
+                   semantic_type_to_string(semantic_type) AS semantic_type,
+                   get_kind(semantic_type) AS kind,
+                   get_super_kind(semantic_type) AS super_kind
+            FROM ({self._read(scratch, "prune := ['punctuation']")})"""
+
+    def _read(self, scratch: str, *options: str) -> str:
+        """`read_ast` over each grammar folder of `scratch`, one row per node."""
+        extra = "".join(f", {option}" for option in options)
+        return " UNION ALL ".join(
+            f"""SELECT * FROM read_ast({quoted(str(folder / "*"))}, '{folder.name}',
+                 source := 'full', peek := 'none', ignore_errors := true{extra})"""
+            for folder in Path(scratch).iterdir()
+            if folder.is_dir()
+        )
+
+    def _report_gaps(self, facts: Facts, root: Path) -> None:
+        """Warn about Python files Python accepts but whose syntax tree has errors.
+
+        That is syntax the grammar lacks (PEP 646 `x[*idx]`), which the derived families skip.
+        """
+        broken = facts.db.execute(
+            "SELECT DISTINCT n.path FROM ast_nodes n JOIN ast_files f USING (path) "
+            "WHERE f.language = 'python' AND n.type = 'ERROR' ORDER BY 1"
+        ).fetchall()
+        if gaps := [path for (path,) in broken if Ducks._parses(root / path)]:
+            logger.warning(
+                "the Python grammar misreads {} valid files, so derived facts skip them: {}",
+                len(gaps),
+                ", ".join(gaps[:5]),
+            )
+
+    def _rows(self, select: str) -> list[tuple[str, int]]:
+        """The (file, count) rows of `select`, parsed under the budget."""
+        with closing(self.budget.connect()) as db:
+            return db.execute(select).fetchall()
+
     def close(self) -> None:
         """Remove this run's cache and spill."""
         self.budget.close()
 
-    def language(self, suffix: str) -> str | None:
-        """The language a file suffix holds, None when none here parses it."""
-        return next(
-            (language for language, (_, ends) in self.LANGUAGES.items() if suffix.lower() in ends),
-            None,
-        )
+    def errors(self, texts: Mapping[str, bytes]) -> Counter[str]:
+        """How many syntax errors tree-sitter finds in each text, by its key's language.
 
-    def errors(self, texts: dict[str, bytes]) -> Counter[str]:
-        """How many syntax errors tree-sitter finds in each text (error nodes and the zero-width
-        tokens it inserts for missing ones), by the language of its key's suffix."""
+        Errors are error nodes and the zero-width tokens it inserts for missing ones; the language
+        comes from the key's suffix.
+        """
         with tempfile.TemporaryDirectory() as scratch:
             named = {}
             for number, (key, data) in enumerate(texts.items()):
@@ -100,23 +166,14 @@ class Ducks(FrozenModel):
                 FROM ({self._read(scratch)}) GROUP BY ALL"""
             return Counter({named[file]: errors for file, errors in self._rows(counted)})
 
-    def sources(self, root: Path) -> list[Source]:
-        """The project's files git does not ignore, in a language we parse or list, with their
-        blobs."""
-        suffixes = {
-            suffix: language for language, (_, ends) in self.LANGUAGES.items() for suffix in ends
-        } | {suffix: language for language, ends in self.TEXT.items() for suffix in ends}
-        found = []
-        for path in listed(root):
-            language = suffixes.get(Path(path).suffix.lower())
-            if language is None or not (root / path).is_file():
-                continue
-            data = (root / path).read_bytes()
-            blob = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
-            found.append(Source(path=path, language=language, blob=blob))
-        return found
+    def language(self, suffix: str) -> str | None:
+        """The language a file suffix holds, None when none here parses it."""
+        return next(
+            (language for language, (_, ends) in self.LANGUAGES.items() if suffix.lower() in ends),
+            None,
+        )
 
-    def parse(self, db: duckdb.DuckDBPyConnection, root: Path, sources: list[Source]) -> int:
+    def parse(self, db: duckdb.DuckDBPyConnection, root: Path, sources: Sequence[Source]) -> int:
         """Parse the sources whose content `astcache` lacks; return how many were parsed.
 
         `read_ast` skips a file whose suffix its grammar does not claim (a `.cu` file read as
@@ -159,8 +216,11 @@ class Ducks(FrozenModel):
         return len(files)
 
     def register(self, facts: Facts, root: Path) -> None:
-        """Parse what `astcache` lacks, then name the project's files and nodes as `ast_*` views:
-        `ast_files` (path, language, blob) and `ast_nodes`, columns zero-based like mcmr's."""
+        """Parse what `astcache` lacks, then name the project's files and nodes as views.
+
+        The views are `ast_files` (path, language, blob) and `ast_nodes`, their columns zero-based
+        like mcmr's.
+        """
         db = facts.db
         attached = self._attach(db)
         sources = self.sources(root)
@@ -199,65 +259,20 @@ class Ducks(FrozenModel):
         if self.report_gaps:
             self._report_gaps(facts, root)
 
-    def _attach(self, db: duckdb.DuckDBPyConnection) -> bool:
-        """Name the cache file `astcache` in `db`, or, when another process holds it, keep the
-        tables in `db` itself under the same name. Whether the file is attached."""
-        self.cache.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            db.execute(f"ATTACH {quoted(str(self.cache))} AS astcache")
-            attached = True
-        except duckdb.Error as error:
-            logger.info("{} is in use, parsing into this run's own tables: {}", self.cache, error)
-            db.execute("CREATE SCHEMA astcache")
-            attached = False
-        db.execute("CREATE TABLE IF NOT EXISTS astcache.keys (blob VARCHAR, language VARCHAR)")
-        return attached
+    def sources(self, root: Path) -> list[Source]:
+        """The project's files git does not ignore, with their blobs.
 
-    def _read(self, scratch: str, *options: str) -> str:
-        """`read_ast` over each grammar folder of `scratch`, one row per node."""
-        extra = "".join(f", {option}" for option in options)
-        return " UNION ALL ".join(
-            f"""SELECT * FROM read_ast({quoted(str(folder / "*"))}, '{folder.name}',
-                 source := 'full', peek := 'none', ignore_errors := true{extra})"""
-            for folder in Path(scratch).iterdir()
-            if folder.is_dir()
-        )
-
-    def _nodes(self, db: duckdb.DuckDBPyConnection, scratch: str) -> str:
-        """A `SELECT` of the nodes of the files linked in `scratch`, with the blob and language
-        their links name."""
-        return f"""
-            SELECT unnest(regexp_extract(file_path, '([0-9a-f]{{40}})\\.(\\w+)\\.\\w+$',
-                                         ['blob', 'language'])),
-                   * EXCLUDE (file_path, language, semantic_type),
-                   semantic_type_to_string(semantic_type) AS semantic_type,
-                   get_kind(semantic_type) AS kind,
-                   get_super_kind(semantic_type) AS super_kind
-            FROM ({self._read(scratch, "prune := ['punctuation']")})"""
-
-    def _rows(self, select: str) -> list[tuple[str, int]]:
-        """The (file, count) rows of `select`, parsed under the budget."""
-        with closing(self.budget.connect()) as db:
-            return db.execute(select).fetchall()
-
-    def _report_gaps(self, facts: Facts, root: Path) -> None:
-        """Warn about Python files Python itself accepts but whose syntax tree has errors:
-        syntax the grammar lacks (PEP 646 `x[*idx]`), which the derived families skip."""
-        broken = facts.db.execute(
-            "SELECT DISTINCT n.path FROM ast_nodes n JOIN ast_files f USING (path) "
-            "WHERE f.language = 'python' AND n.type = 'ERROR' ORDER BY 1"
-        ).fetchall()
-        if gaps := [path for (path,) in broken if _parses(root / path)]:
-            logger.warning(
-                "the Python grammar misreads {} valid files, so derived facts skip them: {}",
-                len(gaps),
-                ", ".join(gaps[:5]),
-            )
-
-
-def _parses(file: Path) -> bool:
-    try:
-        ast.parse(file.read_bytes())
-    except SyntaxError, ValueError:
-        return False
-    return True
+        Only files in a language we parse or list are kept.
+        """
+        suffixes = {
+            suffix: language for language, (_, ends) in self.LANGUAGES.items() for suffix in ends
+        } | {suffix: language for language, ends in self.TEXT.items() for suffix in ends}
+        found = []
+        for path in listed(root):
+            language = suffixes.get(Path(path).suffix.lower())
+            if language is None or not (root / path).is_file():
+                continue
+            data = (root / path).read_bytes()
+            blob = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+            found.append(Source(path=path, language=language, blob=blob))
+        return found

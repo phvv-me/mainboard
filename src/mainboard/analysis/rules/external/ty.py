@@ -1,7 +1,6 @@
 """ty's type diagnostics as findings: the inference mcmr says only a type checker can do."""
 
 from ...catalog import Example, Rule
-from . import wired
 
 
 class TypeDiagnostics(Rule, id="PY-TY0001"):
@@ -14,7 +13,3 @@ class TypeDiagnostics(Rule, id="PY-TY0001"):
     """
     message = "{code}: {message}"
     examples = (Example(bad='x: int = "text"\n'),)
-
-
-if not wired():
-    Rule.defined.pop(TypeDiagnostics.id)

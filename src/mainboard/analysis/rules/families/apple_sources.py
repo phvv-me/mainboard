@@ -3,13 +3,12 @@
 from pathlib import Path
 
 from ...catalog import Family
-from ...facts import Facts
-from .project import ProjectTree
+from ...engine.facts import Facts
+from .project.core import ProjectTree
 
 
 class AppleSource(Family):
     family = "AppleSource"
-    verified = True
     relations = {
         "facts": """
             SELECT 'source:' || entry AS fact_id, entry AS path,

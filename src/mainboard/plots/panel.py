@@ -1,29 +1,31 @@
 """Native panel composition; semantic legends remain separate from measurement layers."""
 
-from typing import TYPE_CHECKING, cast, get_args
+import numbers
+from collections.abc import Set as AbstractSet
+from typing import TYPE_CHECKING, get_args
 
 import matplotlib as mpl
-import numpy as np
 import seaborn.objects as so
-from matplotlib.colors import LogNorm, Normalize
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FuncFormatter, NullFormatter
+from matplotlib.ticker import NullFormatter
 
 from ..manifest.schema.figures.layer import Layer
-from .table import Plot
+from .heatmap import Heatmap
+from .table.core import Plot, loose
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from matplotlib.artist import Artist
+    from matplotlib.axes import Axes
+    from matplotlib.axis import Axis
     from matplotlib.figure import FigureBase, SubFigure
-    from matplotlib.image import AxesImage
     from matplotlib.legend import Legend
     from pydantic import JsonValue
 
     from ..manifest import Panel
-    from ..manifest.schema.plot import PlotStyle
-    from .columns import Columns
+    from ..manifest.schema.figures.plot import PlotStyle
+    from .table.columns import Columns
 
 # Every manifest mark but Heatmap, which the panel draws itself, is a Seaborn mark of that name.
 _MARKS: dict[str, Callable[..., so.Mark]] = {
@@ -33,27 +35,12 @@ _MARKS: dict[str, Callable[..., so.Mark]] = {
 }
 _MOVES: dict[str, Callable[..., so.Move]] = {"Dodge": so.Dodge, "Stack": so.Stack}
 _SECONDARY = {"marker", "linestyle", "fill"}
+_STYLED = {"color", "marker", "linestyle"}
 _PLAIN_KEY: dict[str, JsonValue] = {"loc": "best", "frameon": False}
 
 
 class PanelPlot(Plot):
     """One panel and its native layers, with no hidden data transformation."""
-
-    def __init__(self, frame: Columns, panel: Panel, style: PlotStyle) -> None:
-        super().__init__(frame, style)
-        self.panel = panel
-
-    def draw(self, target: SubFigure, tables: list[Columns]) -> dict[str, Artist]:
-        """Compile marks, apply axes, and return the shared color legend."""
-        if any(layer.mark == "Heatmap" for layer in self.panel.layers):
-            return self._heatmap(target, tables)
-        parent = target.get_figure(root=True)
-        assert parent is not None
-        owners = (target, parent)
-        existing = {legend for owner in owners for legend in owner.legends}
-        self._drawing(tables).on(target).plot()
-        self._axes(target)
-        return self._legends(target, tables, self._detach(owners, existing))
 
     @property
     def _facets(self) -> dict[str, str]:
@@ -64,44 +51,6 @@ class PanelPlot(Plot):
             if key in {"row", "col"} and isinstance(value, str)
         }
 
-    def _variables(self, layer: Layer) -> dict[str, str]:
-        """Every column one layer binds: the panel's, its own, then the facets."""
-        return self.panel.variables | layer.variables | self._facets
-
-    def _mapped(self) -> dict[str, str]:
-        """Every variable the panel binds, whether on the panel or on one of its layers."""
-        mapped = dict(self.panel.variables)
-        for layer in self.panel.layers:
-            mapped |= layer.variables
-        return mapped
-
-    def _drawing(self, tables: list[Columns]) -> so.Plot:
-        """Bind each layer's complete mappings before native Seaborn composition."""
-        drawing = cast("Callable[..., so.Plot]", so.Plot)(
-            self.frame.plain(), **self.panel.variables
-        ).theme(dict(mpl.rcParams.items()))
-        for layer, selected in zip(self.panel.layers, tables, strict=True):
-            self._validate(selected, layer)
-            drawing = cast("Callable[..., so.Plot]", drawing.add)(
-                _MARKS[layer.mark](**layer.kws),
-                *[_MOVES[name](**kws) for name, kws in layer.moves.items()],
-                data=selected.plain(),
-                **self._variables(layer),
-            )
-        return self._scales(drawing)
-
-    def _validate(self, frame: Columns, layer: Layer) -> None:
-        """Missing data and absent interval bounds are never silently estimated."""
-        variables = self._variables(layer)
-        frame.select(list(variables.values())).checked()
-        self._bounds(frame, variables)
-        if layer.mark in {"Range", "Band"} and not ({"xmin", "ymin"} & variables.keys()):
-            raise ValueError("Range/Band requires explicit bounds from SQL, never estimation")
-        if layer.mark in {"Bar", "Bars"}:
-            self._bars(frame, variables)
-        if self.style.colors and "color" in variables:
-            self._named(str(value) for value in frame.unique(variables["color"]))
-
     @staticmethod
     def _bounds(frame: Columns, variables: Mapping[str, str]) -> None:
         """Supplied interval endpoints are numeric, ordered, and contain a numeric center."""
@@ -109,161 +58,11 @@ class PanelPlot(Plot):
             low, high = f"{coordinate}min", f"{coordinate}max"
             if (low in variables) != (high in variables):
                 raise ValueError("intervals require both lower and upper bound columns")
-            if low not in variables:
-                continue
-            if not {variables[low], variables[high]} <= frame.numbers:
-                raise ValueError("interval bounds must be numeric")
-            lower, upper = frame.floats(variables[low]), frame.floats(variables[high])
-            if any(below > above for below, above in zip(lower, upper, strict=True)):
-                raise ValueError("interval lower bound exceeds upper bound")
-            center = variables.get(coordinate, variables[low])
-            if center in frame.numbers and any(
-                not below <= value <= above
-                for below, value, above in zip(lower, frame.floats(center), upper, strict=True)
-            ):
-                raise ValueError("interval bounds must contain the plotted value")
-
-    def _bars(self, frame: Columns, variables: Mapping[str, str]) -> None:
-        """Bars require one row per category, semantic group, and facet."""
-        orient = "y" if "y" in variables and variables["y"] not in frame.numbers else "x"
-        grouping = [
-            column
-            for key, column in variables.items()
-            if key in {orient, "color", "group", "marker"}
-        ]
-        if frame.distinct([*grouping, *self._facets.values()]) != frame.height:
-            raise ValueError("bar groups repeat; aggregate each group in SQL first")
-
-    def _scales(self, drawing: so.Plot) -> so.Plot:
-        """Keep color identity stable across subsets and reuse native nominal ordering."""
-        panel = self.panel
-        for variable, values in (
-            ("color", self.style.colors),
-            ("marker", self.style.markers),
-            ("linestyle", self.style.linestyles),
-        ):
-            if values:
-                ordered = list(panel.order.get(variable, values))
-                drawing = drawing.scale(**{variable: so.Nominal(values=values, order=ordered)})
-        for variable, order in panel.order.items():
-            if variable not in {"color", "marker", "linestyle"}:
-                drawing = drawing.scale(**{variable: so.Nominal(order=list(order))})
-        if not self.style.colors:
-            drawing = drawing.scale(color=so.Nominal(values=self.style.palette))
-        for method, options in (
-            (so.Plot.label, panel.label),
-            (so.Plot.facet, panel.facet),
-            (so.Plot.share, panel.share),
-        ):
-            if options:
-                drawing = cast("Callable[..., so.Plot]", method)(drawing, **options)
-        return drawing
-
-    def _axes(self, target: SubFigure) -> None:
-        """Apply native axis settings and the project's semantic display labels."""
-        panel = self.panel
-        for axis in target.axes:
-            axis.set(**panel.axis)
-            cast("Callable[..., None]", axis.tick_params)(**panel.ticks)
-            # Matplotlib turns a tick label about its centre, which walks a slanted label off
-            # the tick it names. Anchoring the corner keeps each one under its own category.
-            rotation = panel.ticks.get("labelrotation")
-            if isinstance(rotation, (int, float)) and rotation % 180:
-                for label in axis.get_xticklabels():
-                    label.set_horizontalalignment("right" if rotation % 360 < 180 else "left")
-                    label.set_rotation_mode("anchor")
-            # Explicit ticks name every label the author wants; a log axis adds none between.
-            for ticks, coordinate in (("xticks", axis.xaxis), ("yticks", axis.yaxis)):
-                if ticks in panel.axis:
-                    coordinate.set_minor_formatter(NullFormatter())
-            if panel.grid:
-                cast("Callable[..., None]", axis.grid)(**panel.grid)
-            title = axis.get_title()
-            axis.set_title(self.style.labels.get(title, title))
-        for axis in target.axes:
-            for coordinate in (axis.xaxis, axis.yaxis):
-                texts = [label.get_text() for label in coordinate.get_ticklabels()]
-                if any(text in self.style.labels for text in texts):
-                    coordinate.set_ticks(
-                        coordinate.get_ticklocs(),
-                        [self.style.labels.get(text, text) for text in texts],
-                    )
-
-    def _heatmap(self, target: SubFigure, tables: list[Columns]) -> dict[str, Artist]:
-        """One grid of cells at the distinct x and y values, colored by a value column.
-
-        A Heatmap panel holds exactly one layer. `x` and `y` are numeric columns whose distinct
-        values become the ordered categories, `color` the numeric cell value, and an optional
-        `text` the cell annotation; cells without a row stay blank. Layer kws: `cmap` (a
-        Matplotlib colormap name), `log` (a logarithmic color scale), `vmin` and `vmax` (the
-        color scale's ends, the cell values' by default), `fontsize` for the annotations,
-        `label` for the color bar, `fmt` for the tick labels and `cbar_fmt` for the color bar's,
-        which sits at the cell values when there are at most eight of them.
-        """
-        panel = self.panel
-        if len(panel.layers) != 1:
-            raise ValueError("a Heatmap panel holds exactly one layer")
-        (layer,), (selected,) = panel.layers, tables
-        variables = self._variables(layer)
-        columns = [variables[key] for key in ("x", "y", "color") if key in variables]
-        if len(columns) != 3:
-            raise ValueError("Heatmap needs x, y and color columns")
-        selected.select(columns).checked()
-        if not set(columns) <= selected.numbers:
-            raise ValueError("Heatmap x, y and color columns must be numeric")
-        if selected.distinct(columns[:2]) != selected.height:
-            raise ValueError("heatmap cells repeat; aggregate each cell in SQL first")
-        across, up, cells = (selected.floats(column) for column in columns)
-        xs, ys = sorted(set(across)), sorted(set(up))
-        grid = np.full((len(ys), len(xs)), np.nan)
-        for x, y, cell in zip(across, up, cells, strict=True):
-            grid[ys.index(y), xs.index(x)] = cell
-        kws = dict(layer.kws)
-        fmt = str(kws.pop("fmt", "{:g}"))
-        bar_fmt = str(kws.pop("cbar_fmt", fmt))
-        fontsize = kws.pop("fontsize", mpl.rcParams["font.size"])
-        label = str(kws.pop("label", ""))
-        logarithmic = bool(kws.pop("log", False))
-        colormap = mpl.colormaps[str(kws.pop("cmap", "Purples"))]
-        values = np.ma.masked_invalid(grid)
-        low = float(cast("float", kws.pop("vmin", values.min())))
-        high = float(cast("float", kws.pop("vmax", values.max())))
-        norm = LogNorm(low, high) if logarithmic else Normalize(low, high)
-        axis = target.subplots()
-        mesh = cast("Callable[..., AxesImage]", axis.imshow)(
-            values, cmap=colormap, norm=norm, aspect="auto", origin="lower", **kws
-        )
-        axis.set_xticks(range(len(xs)), [fmt.format(value) for value in xs])
-        axis.set_yticks(range(len(ys)), [fmt.format(value) for value in ys])
-        axis.grid(False)
-        if "text" in variables:
-            for x, y, text in zip(across, up, selected[variables["text"]], strict=True):
-                column, line = xs.index(x), ys.index(y)
-                red, green, blue, _ = colormap(norm(grid[line, column]))
-                axis.text(
-                    column,
-                    line,
-                    str(text),
-                    ha="center",
-                    va="center",
-                    fontsize=fontsize,
-                    color="white" if 0.299 * red + 0.587 * green + 0.114 * blue < 0.5 else "black",
-                )
-        colorbar = target.colorbar(mesh, ax=axis, fraction=0.05, pad=0.03)
-        colorbar.set_label(label)
-        distinct = sorted(set(values.compressed().tolist()))
-        if len(distinct) <= 8:
-            colorbar.set_ticks(distinct)
-        colorbar.ax.yaxis.set_major_formatter(
-            FuncFormatter(lambda value, _: bar_fmt.format(value))
-        )
-        colorbar.ax.yaxis.set_minor_formatter(NullFormatter())
-        axis.set(**panel.axis)
-        cast("Callable[..., None]", axis.tick_params)(**panel.ticks)
-        return {}
+            if low in variables:
+                PanelPlot._interval(frame, variables, coordinate=coordinate)
 
     @staticmethod
-    def _detach(owners: Sequence[FigureBase], existing: set[Legend]) -> dict[str, Artist]:
+    def _detach(owners: Sequence[FigureBase], existing: AbstractSet[Legend]) -> dict[str, Artist]:
         """Remove the legends Seaborn just drew and return their entries, label to handle."""
         created = [
             legend for owner in owners for legend in owner.legends if legend not in existing
@@ -277,6 +76,101 @@ class PanelPlot(Plot):
             if handle is not None
         }
 
+    @staticmethod
+    def _interval(frame: Columns, variables: Mapping[str, str], *, coordinate: str) -> None:
+        """One coordinate's declared bounds: numeric, ordered, and around its plotted value."""
+        low, high = variables[f"{coordinate}min"], variables[f"{coordinate}max"]
+        if not {low, high} <= frame.numbers:
+            raise ValueError("interval bounds must be numeric")
+        lower, upper = frame.floats(low), frame.floats(high)
+        if any(below > above for below, above in zip(lower, upper, strict=True)):
+            raise ValueError("interval lower bound exceeds upper bound")
+        center = variables.get(coordinate, low)
+        if center in frame.numbers and any(
+            not below <= value <= above
+            for below, value, above in zip(lower, frame.floats(center), upper, strict=True)
+        ):
+            raise ValueError("interval bounds must contain the plotted value")
+
+    @staticmethod
+    def _slanted(axis: Axes, rotation: JsonValue) -> None:
+        """Anchor a slanted category label's corner, so each stays under the tick it names.
+
+        Matplotlib turns a tick label about its centre, which walks a slanted label off the tick
+        it names.
+        """
+        if not (isinstance(rotation, numbers.Real) and (angle := float(rotation)) % 180):
+            return
+        for label in axis.get_xticklabels():
+            label.set_horizontalalignment("right" if angle % 360 < 180 else "left")
+            label.set_rotation_mode("anchor")
+
+    def __init__(self, frame: Columns, panel: Panel, style: PlotStyle) -> None:
+        super().__init__(frame, style)
+        self.panel = panel
+
+    def _axes(self, target: SubFigure) -> None:
+        """Apply native axis settings and the project's semantic display labels."""
+        for axis in target.axes:
+            self._axis(axis)
+        for axis in target.axes:
+            self._relabelled(axis.xaxis)
+            self._relabelled(axis.yaxis)
+
+    def _axis(self, axis: Axes) -> None:
+        """One axis's native settings, its grid, and its title's display label."""
+        panel = self.panel
+        axis.set(**panel.axis)
+        loose(axis.tick_params)(**panel.ticks)
+        PanelPlot._slanted(axis, panel.ticks.get("labelrotation"))
+        # Explicit ticks name every label the author wants; a log axis adds none between.
+        for ticks, coordinate in (("xticks", axis.xaxis), ("yticks", axis.yaxis)):
+            if ticks in panel.axis:
+                coordinate.set_minor_formatter(NullFormatter())
+        if panel.grid:
+            loose(axis.grid)(**panel.grid)
+        title = axis.get_title()
+        axis.set_title(self.style.labels.get(title, title))
+
+    def _bars(self, frame: Columns, variables: Mapping[str, str]) -> None:
+        """Bars require one row per category, semantic group, and facet."""
+        orient = "y" if "y" in variables and variables["y"] not in frame.numbers else "x"
+        grouping = [
+            column
+            for key, column in variables.items()
+            if key in {orient, "color", "group", "marker"}
+        ]
+        if frame.distinct([*grouping, *self._facets.values()]) != frame.height:
+            raise ValueError("bar groups repeat; aggregate each group in SQL first")
+
+    def _drawing(self, tables: list[Columns]) -> so.Plot:
+        """Bind each layer's complete mappings before native Seaborn composition."""
+        drawing = loose(so.Plot)(self.frame.plain(), **self.panel.variables).theme(
+            dict(mpl.rcParams.items())
+        )
+        for layer, selected in zip(self.panel.layers, tables, strict=True):
+            self._validate(selected, layer)
+            drawing = loose(drawing.add)(
+                _MARKS[layer.mark](**layer.kws),
+                *[_MOVES[name](**kws) for name, kws in layer.moves.items()],
+                data=selected.plain(),
+                **self._variables(layer),
+            )
+        return self._scales(drawing)
+
+    def _key(
+        self,
+        target: SubFigure,
+        entries: Mapping[str, Artist],
+        options: Mapping[str, JsonValue],
+    ) -> None:
+        """Draw `entries` as the panel's own legend under the style's display labels."""
+        loose(target.axes[0].legend)(
+            list(entries.values()),
+            [self.style.labels.get(label, label) for label in entries],
+            **options,
+        )
+
     def _legends(
         self, target: SubFigure, tables: list[Columns], native: dict[str, Artist]
     ) -> dict[str, Artist]:
@@ -286,18 +180,9 @@ class PanelPlot(Plot):
             return {}
         secondary = self._secondary(native)
         layered = bool(_SECONDARY & self._mapped().keys())
-        # A mark only one layer carries has no key of its own, so the panel draws the whole
-        # key itself, colors first and marks under them. A mark the panel carries keeps the
-        # split it already had: marks here, colors in the figure's shared key.
-        alone = layered and not (_SECONDARY & panel.variables.keys())
         if secondary and (isinstance(panel.legend, dict) or layered):
-            colors = self._swatches(tables) if panel.key != "marks" else {}
-            shapes = secondary if panel.key != "colors" else {}
-            options = panel.legend if isinstance(panel.legend, dict) else _PLAIN_KEY
-            self._key(target, (colors | shapes) if alone else secondary, options)
-            if alone:
-                return {}
-        elif isinstance(panel.legend, dict) and native:
+            return self._marked(target, tables, secondary=secondary, layered=layered)
+        if isinstance(panel.legend, dict) and native:
             # Seaborn hands back whichever artist drew each level last, so a reference line
             # layered over the series lends the key its own grey dash and the key stops
             # naming colors. Entries that are color values are redrawn in their own color;
@@ -309,18 +194,75 @@ class PanelPlot(Plot):
         # Color-only figure legends do not confuse batch markers with engine identity.
         return self._swatches(tables, **self.style.legend_marker) if self.style.colors else native
 
-    def _key(
+    def _mapped(self) -> dict[str, str]:
+        """Every variable the panel binds, whether on the panel or on one of its layers."""
+        mapped = dict(self.panel.variables)
+        for layer in self.panel.layers:
+            mapped |= layer.variables
+        return mapped
+
+    def _marked(
         self,
         target: SubFigure,
-        entries: Mapping[str, Artist],
-        options: Mapping[str, JsonValue],
-    ) -> None:
-        """Draw `entries` as the panel's own legend under the style's display labels."""
-        cast("Callable[..., Legend]", target.axes[0].legend)(
-            list(entries.values()),
-            [self.style.labels.get(label, label) for label in entries],
-            **options,
+        tables: list[Columns],
+        *,
+        secondary: dict[str, Artist],
+        layered: bool,
+    ) -> dict[str, Artist]:
+        """Draw the panel's own key of its marks, answering what the figure's shared key adds.
+
+        A mark only one layer carries has no key of its own, so the panel draws the whole key
+        itself, colors first and marks under them. A mark the panel carries keeps the split it
+        already had: marks here, colors in the figure's shared key.
+        """
+        panel = self.panel
+        alone = layered and not (_SECONDARY & panel.variables.keys())
+        colors = self._swatches(tables) if panel.key != "marks" else {}
+        shapes = secondary if panel.key != "colors" else {}
+        options = panel.legend if isinstance(panel.legend, dict) else _PLAIN_KEY
+        self._key(target, (colors | shapes) if alone else secondary, options)
+        if alone:
+            return {}
+        return (
+            self._swatches(tables, **self.style.legend_marker) if self.style.colors else secondary
         )
+
+    def _relabelled(self, coordinate: Axis) -> None:
+        """Show the style's display label for every tick label it names."""
+        texts = [label.get_text() for label in coordinate.get_ticklabels()]
+        if any(text in self.style.labels for text in texts):
+            coordinate.set_ticks(
+                coordinate.get_ticklocs(), [self.style.labels.get(text, text) for text in texts]
+            )
+
+    def _scales(self, drawing: so.Plot) -> so.Plot:
+        """Keep color identity stable across subsets and reuse native nominal ordering."""
+        panel, style = self.panel, self.style
+        scales = {
+            variable: so.Nominal(values=values, order=list(panel.order.get(variable, values)))
+            for variable, values in (
+                ("color", style.colors),
+                ("marker", style.markers),
+                ("linestyle", style.linestyles),
+            )
+            if values
+        }
+        scales |= {
+            variable: so.Nominal(order=list(order))
+            for variable, order in panel.order.items()
+            if variable not in _STYLED
+        }
+        if not style.colors:
+            scales["color"] = so.Nominal(values=style.palette)
+        drawing = drawing.scale(**scales)
+        for method, options in (
+            (loose(so.Plot.label), panel.label),
+            (loose(so.Plot.facet), panel.facet),
+            (loose(so.Plot.share), panel.share),
+        ):
+            if options:
+                drawing = method(drawing, **options)
+        return drawing
 
     def _secondary(self, native: dict[str, Artist]) -> dict[str, Artist]:
         """Draw observed batch/line/fill keys independently of engine colors."""
@@ -334,11 +276,10 @@ class PanelPlot(Plot):
             if label not in self.style.colors and label not in mapped.values()
         }
         ink = mpl.rcParams["text.color"]
-        proxy = cast("Callable[..., Line2D]", Line2D)
         for variable in sorted(_SECONDARY & mapped.keys()):
             for value in self.frame.unique(mapped[variable]):
                 label = str(value)
-                secondary[label] = proxy(
+                secondary[label] = loose(Line2D)(
                     [],
                     [],
                     color=ink,
@@ -355,7 +296,36 @@ class PanelPlot(Plot):
             if "color" in (variables := self._variables(layer)):
                 present.update(str(value) for value in selected.unique(variables["color"]))
         return {
-            name: cast("Callable[..., Line2D]", Line2D)([], [], color=color, **options)
+            name: loose(Line2D)([], [], color=color, **options)
             for name, color in self.style.colors.items()
             if name in present
         }
+
+    def _validate(self, frame: Columns, layer: Layer) -> None:
+        """Missing data and absent interval bounds are never silently estimated."""
+        variables = self._variables(layer)
+        frame.select(list(variables.values())).checked()
+        self._bounds(frame, variables)
+        if layer.mark in {"Range", "Band"} and not ({"xmin", "ymin"} & variables.keys()):
+            raise ValueError("Range/Band requires explicit bounds from SQL, never estimation")
+        if layer.mark in {"Bar", "Bars"}:
+            self._bars(frame, variables)
+        if self.style.colors and "color" in variables:
+            self._named(str(value) for value in frame.unique(variables["color"]))
+
+    def _variables(self, layer: Layer) -> dict[str, str]:
+        """Every column one layer binds: the panel's, its own, then the facets."""
+        return self.panel.variables | layer.variables | self._facets
+
+    def draw(self, target: SubFigure, tables: list[Columns]) -> dict[str, Artist]:
+        """Compile marks, apply axes, and return the shared color legend."""
+        if any(layer.mark == "Heatmap" for layer in self.panel.layers):
+            Heatmap(self.panel).draw(target, tables[0], self._variables(self.panel.layers[0]))
+            return {}
+        parent = target.get_figure(root=True)
+        assert parent is not None
+        owners = (target, parent)
+        existing = {legend for owner in owners for legend in owner.legends}
+        self._drawing(tables).on(target).plot()
+        self._axes(target)
+        return self._legends(target, tables, self._detach(owners, existing))

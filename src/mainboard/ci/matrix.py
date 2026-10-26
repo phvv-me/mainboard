@@ -8,16 +8,16 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from ..core.errors import MissionError
-from ..dispatch.mirror import Mirror
-from ..dispatch.sync import patterns
+from ..dispatch.mirroring.mirror import Mirror
+from ..dispatch.mirroring.sync import patterns
 from .legs import Leg, LocalLeg, RemoteLeg
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ..board import Board
     from ..context.plan import ExecutionPlan
     from ..dispatch.dispatcher import Dispatcher
+    from ..fleet.board import Board
     from .definition import Family, Package
     from .legs import Result
 
@@ -31,13 +31,13 @@ class PackageMirror:
     git ignores and a mirror therefore never prunes.
     """
 
-    def __init__(self, dispatcher: Dispatcher) -> None:
-        self.dispatcher = dispatcher
-
-    def __call__(self, plan: ExecutionPlan, root: str, package: str) -> None:
+    def __call__(self, plan: ExecutionPlan, root: str, *, package: str) -> None:
         """Send `package` to `root` on `plan`'s host."""
         mirror = Mirror(self.dispatcher.root, self.dispatcher.agent(plan))
         mirror.push(root, scopes=[self.dispatcher.scope(plan, [package])], protected=patterns([]))
+
+    def __init__(self, dispatcher: Dispatcher) -> None:
+        self.dispatcher = dispatcher
 
 
 class Matrix:
@@ -46,10 +46,6 @@ class Matrix:
     package: the package and its gate.
     legs: the machines it runs on, this one among them when it is a supported platform.
     """
-
-    def __init__(self, package: Package, legs: Sequence[Leg]) -> None:
-        self.package = package
-        self.legs = legs
 
     @classmethod
     def planned(cls, package: Package, board: Board) -> Matrix:
@@ -72,6 +68,10 @@ class Matrix:
         """The supported families no leg runs on."""
         covered = {leg.family for leg in self.legs}
         return [family for family in self.package.definition.os if family not in covered]
+
+    def __init__(self, package: Package, legs: Sequence[Leg]) -> None:
+        self.package = package
+        self.legs = legs
 
     def run(self) -> list[Result]:
         """Every leg's results, the legs run at once and reported in their declared order."""

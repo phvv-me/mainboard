@@ -5,9 +5,9 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from ....core.errors import MissionError
-from ....core.host import current_platform, platform_selectors
-from ....manifest.schema.toolchain import Toolchain
-from ..pixi_manifest import normalized
+from ....core.execution.host import current_platform, platform_selectors
+from ....manifest.schema.compute.toolchain import Toolchain
+from ..pixi.paths import normalized
 from .base import Ecosystem
 
 if TYPE_CHECKING:
@@ -32,6 +32,66 @@ class SecondStage:
         self.manifest = manifest
         self.out = out
         self.pixi = pixi
+
+    def _merged(self, scopes: Sequence[Scope]) -> dict[str, Toolchain]:
+        """Every ecosystem table across `scopes`, each merged over the ones before it."""
+        merged: dict[str, Toolchain] = {}
+        for scope in scopes:
+            for name, table in scope.toolchains().items():
+                merged[name] = table.merged(merged[name]) if name in merged else table
+        return merged
+
+    def _overlays(self, scope: Manifest | Env) -> list[Scope]:
+        """``scope`` followed by the platform overlays under it that this machine matches.
+
+        A Node table is refused in any overlay: it would give each platform its own
+        `package.json`, while the one lock solved on the center must match every platform's.
+        """
+        selectors = platform_selectors(current_platform())
+        for key, over in scope.on.items():
+            if "nodejs" in over.toolchains():
+                raise MissionError(
+                    f"[on.{key}.nodejs] makes package.json differ per platform, which no single "
+                    "lock can match; declare the package in [nodejs] instead, or under "
+                    "[nodejs.package] optionalDependencies where it cannot build everywhere"
+                )
+        return [scope, *(over for key, over in scope.on.items() if key in selectors)]
+
+    def _scopes(self, env: str) -> list[Scope]:
+        """Every scope whose tables apply to `env` on this machine, least specific first.
+
+        The base manifest and its overlays (plus `[dev]` for `default`), then the named
+        environment and its overlays. `no-default` starts from the environment alone, as pixi
+        solves it. An undeclared `env` is refused.
+        """
+        named = self.manifest.environment(env)
+        scopes: list[Scope] = []
+        if not named.no_default:
+            scopes.extend(self._overlays(self.manifest))
+            if env == "default":
+                scopes.append(self.manifest.dev)
+        scopes.extend(self._overlays(named))
+        return scopes
+
+    def _shared_scopes(self) -> list[Scope]:
+        """Every scope this machine matches anywhere in the manifest, whichever env owns it.
+
+        A shared toolchain has one tree for every environment, so reading one environment's view
+        would let provisioning an environment with no table delete what the others install from.
+        """
+        return [
+            *self._overlays(self.manifest),
+            self.manifest.dev,
+            *(scope for env in self.manifest.envs.values() for scope in self._overlays(env)),
+        ]
+
+    def _toolchains(self, env: str) -> dict[str, Toolchain]:
+        """Every ecosystem table active for `env`, each merged over the scopes beneath it."""
+        return self._merged(self._scopes(env))
+
+    def binary_dirs(self, env: str) -> list[Path]:
+        """Every directory the toolchains link executables into, for `env`'s activation."""
+        return [directory for eco in self.ecosystems(env) for directory in eco.binary_dirs()]
 
     def digest(self) -> str:
         """A location-independent digest of every second-stage table, in scope and overlay order.
@@ -77,10 +137,6 @@ class SecondStage:
         )
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
-    def binary_dirs(self, env: str) -> list[Path]:
-        """Every directory the toolchains link executables into, for `env`'s activation."""
-        return [directory for eco in self.ecosystems(env) for directory in eco.binary_dirs()]
-
     def ecosystems(self, env: str) -> list[Ecosystem]:
         """One bound ecosystem per implementation, in registration order.
 
@@ -88,8 +144,8 @@ class SecondStage:
         deleted table. A table none claims (`[python]`, pixi's own) is ignored, and a `shared`
         implementation binds to the whole manifest.
         """
-        scoped = self.toolchains(env)
-        shared = self.merged(self.shared_scopes())
+        scoped = self._toolchains(env)
+        shared = self._merged(self._shared_scopes())
         return [
             implementation(
                 (shared if implementation.shared else scoped).get(
@@ -104,73 +160,17 @@ class SecondStage:
             for implementation in Ecosystem.implementations()
         ]
 
+    def frozen_inputs(self, env: str) -> tuple[Path, ...]:
+        """Require each selected runtime's native frozen contract before transferring files."""
+        return tuple(path for eco in self.ecosystems(env) for path in eco.frozen_inputs())
+
     def generate(self, files: Writer, env: str) -> None:
         """Write every file the toolchains install from, under the sync lock the caller holds."""
         for ecosystem in self.ecosystems(env):
             ecosystem.generate(files)
-
-    def frozen_inputs(self, env: str) -> tuple[Path, ...]:
-        """Require each selected runtime's native frozen contract before transferring files."""
-        return tuple(path for eco in self.ecosystems(env) for path in eco.frozen_inputs())
 
     def install(self, env: str, *, resolve: bool = False) -> None:
         """Install locked inputs; only an explicit resolve may choose new package versions."""
         with self.pixi.activated(env):
             for ecosystem in self.ecosystems(env):
                 ecosystem.sync(resolve=resolve)
-
-    def merged(self, scopes: Sequence[Scope]) -> dict[str, Toolchain]:
-        """Every ecosystem table across `scopes`, each merged over the ones before it."""
-        merged: dict[str, Toolchain] = {}
-        for scope in scopes:
-            for name, table in scope.toolchains().items():
-                merged[name] = table.merged(merged[name]) if name in merged else table
-        return merged
-
-    def overlays(self, scope: Manifest | Env) -> list[Scope]:
-        """``scope`` followed by the platform overlays under it that this machine matches.
-
-        A Node table is refused in any overlay: it would give each platform its own
-        `package.json`, while the one lock solved on the center must match every platform's.
-        """
-        selectors = platform_selectors(current_platform())
-        for key, over in scope.on.items():
-            if "nodejs" in over.toolchains():
-                raise MissionError(
-                    f"[on.{key}.nodejs] makes package.json differ per platform, which no single "
-                    "lock can match; declare the package in [nodejs] instead, or under "
-                    "[nodejs.package] optionalDependencies where it cannot build everywhere"
-                )
-        return [scope, *(over for key, over in scope.on.items() if key in selectors)]
-
-    def scopes(self, env: str) -> list[Scope]:
-        """Every scope whose tables apply to `env` on this machine, least specific first.
-
-        The base manifest and its overlays (plus `[dev]` for `default`), then the named
-        environment and its overlays. `no-default` starts from the environment alone, as pixi
-        solves it. An undeclared `env` is refused.
-        """
-        named = self.manifest.environment(env)
-        scopes: list[Scope] = []
-        if not named.no_default:
-            scopes.extend(self.overlays(self.manifest))
-            if env == "default":
-                scopes.append(self.manifest.dev)
-        scopes.extend(self.overlays(named))
-        return scopes
-
-    def shared_scopes(self) -> list[Scope]:
-        """Every scope this machine matches anywhere in the manifest, whichever env owns it.
-
-        A shared toolchain has one tree for every environment, so reading one environment's view
-        would let provisioning an environment with no table delete what the others install from.
-        """
-        return [
-            *self.overlays(self.manifest),
-            self.manifest.dev,
-            *(scope for env in self.manifest.envs.values() for scope in self.overlays(env)),
-        ]
-
-    def toolchains(self, env: str) -> dict[str, Toolchain]:
-        """Every ecosystem table active for `env`, each merged over the scopes beneath it."""
-        return self.merged(self.scopes(env))

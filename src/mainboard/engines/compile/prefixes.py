@@ -15,54 +15,47 @@ import hashlib
 import json
 import shutil
 from functools import partial
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
-from ...core.retention import RetentionPins
+from ...core.execution.retention import RetentionPins
 from .backend import Pixi
 from .compiler import Compiler
+from .constants import ACTIVATION, LOCK, MANIFEST, STAMPED
 from .ecosystems import SecondStage
 from .generated import GeneratedFiles
 from .generated.activation import write
-from .pixi_lock import canonical
-from .pixi_manifest import anchored, normalized, selected_manifest
+from .pixi.lock import canonical
+from .pixi.manifest import selected_manifest
+from .pixi.paths import anchored, normalized
 from .provisioner import environment_shard
 from .state import SyncState
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-    from ...core.retention import Retention
+    from ...core.execution.retention import Retention
     from ...manifest import Manifest
     from .generated import Writer
 
 # Beside `envs/`, so nothing walking the mutable shards descends into a built prefix.
-PREFIXES = "prefixes"
+_PREFIXES = "prefixes"
 
 # Unreferenced prefixes surviving a prune: the running wave's and the next one's.
-KEEP = 2
+_KEEP = 2
 
-# A finished prefix's stamp naming its digest, so an interrupted build never passes as complete.
-# A marker file (`Project.marker`): written under the legacy name, read under any.
-STAMPED = "prefix"
-STAMP = Project().marker(STAMPED)
-
-ACTIVATION = "activate.sh"
-
-# Pixi's required pair, the core of an environment's identity.
-MANIFEST = "pixi.toml"
-LOCK = "pixi.lock"
+_STAMP = Project().marker(STAMPED)
 
 
-def prefix_path(root: str, environment: str, digest: str, *, out: str) -> str:
+def prefix_path(root: str, *, environment: str, digest: str, out: str) -> str:
     """Where the environment `digest` (from `digest_of`) lives under `root`, on any machine.
 
     Path arithmetic alone, so a dispatch can pin it before the host has been asked anything.
 
     out: the workspace's state directory name, the center's own for a host's mirror of it.
     """
-    return f"{root}/{out}/{PREFIXES}/{environment}/{digest}"
+    return f"{root}/{out}/{_PREFIXES}/{environment}/{digest}"
 
 
 def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
@@ -78,7 +71,7 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
     """
     shard = environment_shard(source.name, root=source.parents[2])
     state = SyncState.load(source)
-    root = PurePath(state.compiled_at or _standing(source, shard))
+    root = PurePath(state.compiled_at or source.parents[len(shard.parts) - 1].as_posix())
     payload = []
     for name in (MANIFEST, LOCK):
         text = normalized(_defining(source, name), root=root, generated_dir=shard)
@@ -103,14 +96,6 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def _standing(source: Path, shard: PurePosixPath) -> str:
-    """The root of an artifact older than `compiled_at`: where its shard hangs.
-
-    Harmless when read elsewhere, since a root matching nothing rewrites nothing.
-    """
-    return source.parents[len(shard.parts) - 1].as_posix()
-
-
 def _defining(source: Path, name: str) -> str:
     """One of the compiled artifact's defining files, refusing a half-written artifact."""
     try:
@@ -125,22 +110,6 @@ def _defining(source: Path, name: str) -> str:
 class Prefixes:
     """One workspace's addressed environments: built once, never written to again, pruned late."""
 
-    def __init__(self, root: Path, manifest: Manifest, environment: str = "default") -> None:
-        self.root = root
-        self.manifest = manifest
-        self.environment = environment
-        self.retention = RetentionPins(root, Project().out_dir(root))
-
-    @property
-    def base(self) -> Path:
-        """The directory holding this environment's addressed prefixes, one per digest."""
-        return self.path("")
-
-    def path(self, digest: str) -> Path:
-        """Where the environment `digest` names is built, whether or not it has been yet."""
-        out = Project().out_dir(self.root)
-        return Path(prefix_path(str(self.root), self.environment, digest, out=out))
-
     @property
     def _building(self) -> GeneratedFiles:
         """The files whose lock orders every build and sweep of every environment's prefixes.
@@ -149,6 +118,55 @@ class Prefixes:
         release excludes this one's.
         """
         return GeneratedFiles(directory=self.base.parent)
+
+    @property
+    def base(self) -> Path:
+        """The directory holding this environment's addressed prefixes, one per digest."""
+        return self.path("")
+
+    def __init__(self, root: Path, manifest: Manifest, environment: str = "default") -> None:
+        self.root = root
+        self.manifest = manifest
+        self.environment = environment
+        self.retention = RetentionPins(root, Project().out_dir(root))
+
+    def __take(self, source: Path, *, target: Path, files: Writer) -> None:
+        """Copy every defining generated file and the state into the prefix, anchored.
+
+        The loaders and second-stage inputs travel too, or activation and `[nodejs]` would go
+        missing; dotted bookkeeping and installed trees stay. Anchored at this machine's root,
+        which outlives every pruned pinned tree a shared prefix serves, so an editable follows
+        the mirror rather than the snapshot. Only the copy is rewritten, never the digested source.
+        """
+        shard = environment_shard(self.environment, root=self.root)
+        for entry in (*GeneratedFiles(directory=source).inputs, SyncState.path(source)):
+            text = entry.read_text(encoding="utf-8")
+            files.write(target / entry.name, anchored(text, root=self.root, generated_dir=shard))
+
+    def _sweep(self, live: Collection[str], inventory: Retention) -> list[str]:
+        referenced = self.referenced(self.retention.base)
+        if referenced is None:
+            return []
+        try:
+            found = sorted(
+                (
+                    entry
+                    for entry in self.base.iterdir()
+                    if not entry.is_symlink() and entry.is_dir() and entry.name[0] != "."
+                ),
+                key=lambda entry: entry.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return []
+        doomed = [
+            entry
+            for entry in found[_KEEP:]
+            if entry.name not in {*live, *referenced} and not inventory.protects(entry)
+        ]
+        for entry in doomed:
+            shutil.rmtree(entry, ignore_errors=True)
+        return [entry.name for entry in doomed]
 
     def built(self, digest: str) -> bool:
         """Whether the environment `digest` names is finished and safe to activate."""
@@ -188,7 +206,7 @@ class Prefixes:
             if self.built(digest):
                 return target
             target.mkdir(parents=True, exist_ok=True)
-            self.__take(source, target, files)
+            self.__take(source, target=target, files=files)
             pixi.install(self.environment)
             stage.install(self.environment)
             write(
@@ -201,21 +219,27 @@ class Prefixes:
                     if directory.is_dir()
                 ],
             )
-            files.write(target / STAMP, f"{digest}\n")
+            files.write(target / _STAMP, f"{digest}\n")
         return target
 
-    def __take(self, source: Path, target: Path, files: Writer) -> None:
-        """Copy every defining generated file and the state into the prefix, anchored.
+    def path(self, digest: str) -> Path:
+        """Where the environment `digest` names is built, whether or not it has been yet."""
+        out = Project().out_dir(self.root)
+        return Path(
+            prefix_path(str(self.root), environment=self.environment, digest=digest, out=out)
+        )
 
-        The loaders and second-stage inputs travel too, or activation and `[nodejs]` would go
-        missing; dotted bookkeeping and installed trees stay. Anchored at this machine's root,
-        which outlives every pruned pinned tree a shared prefix serves, so an editable follows
-        the mirror rather than the snapshot. Only the copy is rewritten, never the digested source.
+    def prune(self, *, live: Collection[str], inventory: Retention) -> list[str]:
+        """Remove and name every built environment nothing still names, the newest `KEEP` kept.
+
+        live: digests a snapshot or unsettled run activates, never removed whatever their age.
+        inventory: what `Snapshots.inventory` found, the same one source pruning used; an unknown
+            in it, or in the pins, removes nothing.
         """
-        shard = environment_shard(self.environment, root=self.root)
-        for entry in (*GeneratedFiles(directory=source).inputs, SyncState.path(source)):
-            text = entry.read_text(encoding="utf-8")
-            files.write(target / entry.name, anchored(text, root=self.root, generated_dir=shard))
+        # A direct build holds this lock before it has a source snapshot at all. Waiting it out
+        # comes first, since the pin lock is what a dispatch's launch waits on.
+        with self._building.locked():
+            return self.retention.swept(inventory, partial(self._sweep, live))
 
     def referenced(self, sources: Path) -> set[str] | None:
         """Every environment digest a pinned tree under `sources` still activates.
@@ -230,40 +254,3 @@ class Prefixes:
             }
         except OSError:
             return None
-
-    def prune(self, *, live: Collection[str], inventory: Retention) -> list[str]:
-        """Remove and name every built environment nothing still names, the newest `KEEP` kept.
-
-        live: digests a snapshot or unsettled run activates, never removed whatever their age.
-        inventory: what `Snapshots.inventory` found, the same one source pruning used; an unknown
-            in it, or in the pins, removes nothing.
-        """
-        # A direct build holds this lock before it has a source snapshot at all. Waiting it out
-        # comes first, since the pin lock is what a dispatch's launch waits on.
-        with self._building.locked():
-            return self.retention.swept(inventory, partial(self._sweep, live))
-
-    def _sweep(self, live: Collection[str], inventory: Retention) -> list[str]:
-        referenced = self.referenced(self.retention.base)
-        if referenced is None:
-            return []
-        try:
-            found = sorted(
-                (
-                    entry
-                    for entry in self.base.iterdir()
-                    if not entry.is_symlink() and entry.is_dir() and entry.name[0] != "."
-                ),
-                key=lambda entry: entry.stat().st_mtime,
-                reverse=True,
-            )
-        except OSError:
-            return []
-        doomed = [
-            entry
-            for entry in found[KEEP:]
-            if entry.name not in {*live, *referenced} and not inventory.protects(entry)
-        ]
-        for entry in doomed:
-            shutil.rmtree(entry, ignore_errors=True)
-        return [entry.name for entry in doomed]

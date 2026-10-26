@@ -1,0 +1,102 @@
+"""Hub pins a job declares as needs: `hf://<repo>@<revision>/<filename>`, shipped from the cache.
+
+A tokenizer or config read offline at a pinned revision fails on a host whose cache never held
+it, so a need may name the Hub entry: the dispatch stages the locally cached file under the
+workspace state directory's `pins` in the cache's layout as a link into the cache (never a
+second copy), ships it like any need, and the runner points the Hub client there, so an
+offline read finds exactly what was pinned.
+"""
+
+import os
+import shutil
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+from patos import FrozenModel
+
+from ...core.errors import MissionError
+from ...core.project import Project
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+_PREFIX = "hf://"
+
+
+class Pin(FrozenModel):
+    """One Hub file at one revision of repository `org/name`."""
+
+    repo: str
+    revision: str
+    filename: str
+
+    @classmethod
+    def parse(cls, spec: str) -> Pin:
+        """A pin from its spelling, `hf://org/name@revision/filename`."""
+        body = spec.removeprefix(_PREFIX)
+        repo, at, rest = body.partition("@")
+        revision, slash, filename = rest.partition("/")
+        if not (spec.startswith(_PREFIX) and at and slash and repo.count("/") == 1 and filename):
+            raise MissionError(f"a pin is spelled hf://org/name@revision/filename, not {spec!r}")
+        return cls(repo=repo, revision=revision, filename=filename)
+
+    @property
+    def relative(self) -> str:
+        """The file's path inside a Hub cache, the layout the Hub client reads offline."""
+        folder = "models--" + self.repo.replace("/", "--")
+        return f"{folder}/snapshots/{self.revision}/{self.filename}"
+
+    @staticmethod
+    def _hub_cache() -> Path:
+        """This machine's Hub cache directory, as the Hub client would resolve it."""
+        if explicit := os.environ.get("HF_HUB_CACHE"):
+            return Path(explicit)
+        return Path(os.environ.get("HF_HOME", Path.home() / ".cache/huggingface")) / "hub"
+
+    def cached(self, cache: Path | None = None) -> Path:
+        """Where this machine's Hub cache holds the file, whether or not it is there."""
+        return (cache or Pin._hub_cache()) / self.relative
+
+
+def staging(root: Path | None = None) -> str:
+    """Where staged pins sit under workspace `root`, relative to it, in the Hub cache layout.
+
+    `root` is the cwd's workspace by default, and the runner points a job's Hub client here.
+    """
+    return f"{Project().out_dir(root)}/pins"
+
+
+def split(needs: Iterable[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The declared needs as workspace paths and Hub pins, each in declaration order."""
+    listed = list(needs)
+    pins = tuple(need for need in listed if need.startswith(_PREFIX))
+    return tuple(need for need in listed if need not in pins), pins
+
+
+def stage(specs: Sequence[str], root: Path, cache: Path | None = None) -> tuple[str, ...]:
+    """Copy every pin from the Hub cache (this machine's by default) under the workspace `root`.
+
+    A pin the cache does not hold refuses the dispatch by name, with the command that fetches it.
+    """
+    staged = []
+    for spec in specs:
+        pin = Pin.parse(spec)
+        source = pin.cached(cache)
+        if not source.is_file():
+            raise MissionError(
+                f"the pin {spec} is not in this machine's Hub cache at {source}; fetch it with "
+                f"`hf download {pin.repo} {pin.filename} --revision {pin.revision}` first"
+            )
+        relative = PurePosixPath(staging(root)) / pin.relative
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not (target.is_symlink() and target.resolve() == source.resolve()):
+            # A link into the Hub cache, never a second copy of its bytes; the mirror follows it
+            # and ships the file. A copy only where this machine cannot make a link.
+            target.unlink(missing_ok=True)
+            try:
+                target.symlink_to(source.resolve())
+            except OSError:
+                shutil.copyfile(source, target)
+        staged.append(relative.as_posix())
+    return tuple(staged)

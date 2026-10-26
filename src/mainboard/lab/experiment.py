@@ -1,18 +1,17 @@
 import abc
-from typing import TYPE_CHECKING, ClassVar, Protocol
+from typing import TYPE_CHECKING, ClassVar
 
 from patos import FrozenModel, Registry
 
 from ..experiments.identity import run_id as content_hash
 
 if TYPE_CHECKING:
-    from .gates import Gate
+    from .declarations.gates import Gate
     from .lane import Lane
     from .run import Run
 
-
-class Fixture(Protocol):
-    """An intentionally unconstrained value `setup` hands on to `measure`."""
+# What a trial hands an artifact writer: a model, so it carries its own serialization.
+type Fixture = FrozenModel
 
 
 class DeclaredExperiment(FrozenModel):
@@ -49,6 +48,5 @@ class Experiment(Registry, DeclaredExperiment, abc.ABC):
         lane_name = lane.name if lane is not None else ""
         return content_hash({**self.model_dump(mode="json"), "model": model, "lane": lane_name})
 
-    def setup(self, run: Run) -> Fixture:
-        """Prepare this trial's shared fixture; the default does nothing."""
-        return None
+    def setup(self, run: Run) -> None:
+        """Prepare what this trial's `measure` reads; the default does nothing."""

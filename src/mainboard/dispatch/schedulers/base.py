@@ -4,20 +4,21 @@
 
 import re
 import shlex
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, ClassVar
 
 from plumbum.commands.processes import ProcessTimedOut
 
 from ...core.project import Project
-from .. import vocabulary
+from ..jobs import vocabulary
+from ..jobs.vocabulary import JobState, Resources
 from ..shared import since, state_dir
-from ..transport import HostUnreachable, is_transport_failure
-from ..vocabulary import JobState, Resources
+from ..transport.core import HostUnreachable, is_transport_failure
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ..transport import Machine
+    from ..transport.core import Machine
 
 
 # How long a probe may take before the link counts as down: an ssh that answers while the
@@ -54,7 +55,7 @@ def login_run(remote: Machine, body: str) -> str:
     return login_ask(remote, body)[1]
 
 
-def within(root: str, command: str) -> str:
+def within(root: str, *, command: str) -> str:
     """`command` run from `root`, the one way a backend enters the tree a dispatch pinned it to.
 
     Every ssh-reached scheduler takes the job's working directory from where it was submitted:
@@ -67,15 +68,15 @@ def within(root: str, command: str) -> str:
     return f"cd {shlex.quote(root)} && {command}"
 
 
-@runtime_checkable
-class Scheduler(Protocol):
+class Scheduler(ABC):
     """A pluggable job backend, one stateless instance per kind.
 
     `remote` is an open plumbum `SshMachine` (or `local`); `root` is the host's workspace path.
     """
 
-    name: str
+    name: ClassVar[str]
 
+    @abstractmethod
     def cancel(self, remote: Machine, root: str, *, handle: str) -> None:
         """Cancel `handle` on the host.
 
@@ -84,57 +85,48 @@ class Scheduler(Protocol):
         host), so no caller reports a cancel that did not happen.
         """
 
-    def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
-        """The one command an interactive session runs inside the caller's ssh and staging.
-
-        A queued backend asks for an interactive allocation (`qsub -I`, `srun --pty`); a host that
-        runs the work itself hands the terminal to its own tool.
-
-        command: run instead of handing over the terminal, empty for a session.
-        resources: the allocation a queued backend asks for.
-        """
-
-    def logs(self, remote: Machine, root: str, *, handle: str) -> str:
-        """`handle`'s captured log so far (merged stdout+stderr)."""
-
+    @abstractmethod
     def state(self, remote: Machine, root: str, *, handle: str) -> JobState:
         """Post-mortem `handle`: its state, exit code, and a verdict, for reconcile."""
 
+    @abstractmethod
     def states(self, remote: Machine, root: str, handles: Sequence[str]) -> dict[str, JobState]:
         """`handles` (and any other live job) in one round trip, keyed by handle.
 
         A handle the host no longer remembers may be absent; the caller falls back to `state`.
         """
 
+    @abstractmethod
     def submit(
         self,
         remote: Machine,
         root: str,
         *,
         script: str,
-        args: Sequence[str],
         resources: Resources,
     ) -> str:
-        """Launch `script` with `args` under `resources`; return the job handle."""
+        """Launch `script` under `resources`; return the job handle."""
 
+    def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
+        """The one command an interactive session runs inside the caller's ssh and staging.
 
-def workspace_session(*, env: str, command: Sequence[str], resources: Resources) -> str:
-    """The interactive line for a host that runs the work itself, with no queue in between.
+        A queued backend asks for an interactive allocation (`qsub -I`, `srun --pty`). A host
+        that runs the work itself, as by default, hands the terminal to its own tool (`shell`,
+        or `run` for a command), which owns the activation, so an interactive session and a
+        dispatched job never disagree about their interpreter; it allocates nothing.
 
-    The host's own tool (`shell`, or `run` for a command) owns the activation, so an interactive
-    session and a dispatched job never disagree about their interpreter. `resources` is ignored:
-    such a host allocates nothing.
-    """
-    del resources
-    tool = Project().package
-    if command:
-        return shlex.join([tool, "run", "--env", env, "--", *command])
-    return shlex.join([tool, "shell", env])
+        command: run instead of handing over the terminal, empty for a session.
+        resources: the allocation a queued backend asks for.
+        """
+        del resources
+        tool = Project().package
+        if command:
+            return shlex.join([tool, "run", "--env", env, "--", *command])
+        return shlex.join([tool, "shell", env])
 
-
-def log_path(root: str, *, handle: str) -> str:
-    """The merged stdout+stderr a PBS runner and SLURM's `--output` both write for `handle`."""
-    return f"{root}/{state_dir()}/logs/{bare(handle)}.log"
+    def logs(self, remote: Machine, root: str, *, handle: str) -> str:
+        """`handle`'s captured log so far (merged stdout+stderr), from its log file by default."""
+        return read_log(remote, root, handle=handle)
 
 
 def bare(handle: str) -> str:
@@ -148,7 +140,7 @@ def bare(handle: str) -> str:
 
 def read_log(remote: Machine, root: str, *, handle: str, offset: int = 0) -> str:
     """`handle`'s captured log from byte `offset` on, as a string."""
-    path = shlex.quote(log_path(root, handle=handle))
+    path = shlex.quote(f"{root}/{state_dir()}/logs/{bare(handle)}.log")
     body = f"tail -c +{offset + 1} {path} 2>/dev/null"
     return remote["bash"][["-lc", body]](retcode=None)
 
@@ -217,30 +209,28 @@ def failure_reason(log: str, exit_code: int | None = None) -> str:
             return matches[-1].strip()[:240]
     if reason := exit_reason(exit_code):
         return reason
-    lines = meaningful_lines(log)
+    lines = _meaningful_lines(log)
     return lines[-1][:240] if lines else "(no log output)"
 
 
-def meaningful_lines(log: str) -> list[str]:
-    """The log's content lines: ANSI codes and rich panel borders stripped, blanks dropped, and
-    OpenSSH's own `** ` warnings left out (its post-quantum notice rides every connection's
-    stderr and was named as the reason a remote command failed)."""
+def _meaningful_lines(log: str) -> list[str]:
+    """The log's content lines, stripped of decoration.
+
+    ANSI codes and rich panel borders are stripped, blanks dropped, and OpenSSH's own `** `
+    warnings left out: its post-quantum notice rides every connection's stderr and was named as the
+    reason a remote command failed.
+    """
     stripped = (
         _BOX_DRAWING.sub(" ", _ANSI_CODES.sub("", raw)).strip() for raw in log.splitlines()
     )
     return [line for line in stripped if line and not line.startswith("** ")]
 
 
-def log_excerpt(log: str, limit: int = 10) -> list[str]:
-    """The last `limit` meaningful log lines, the tail a triage view prints under its verdict."""
-    return meaningful_lines(log)[-limit:]
-
-
 def short_reason(verdict: str, exit_code: int | None) -> str:
     """A short, network-free cause for a non-ok terminal verdict, from its cached state alone."""
-    if verdict == vocabulary.CANCELLED:
+    if verdict == vocabulary.Word.CANCELLED:
         return "cancelled (stopped on purpose, not by the job or the queue)"
-    if verdict == vocabulary.VANISHED:
+    if verdict == vocabulary.Word.VANISHED:
         return "vanished (the scheduler no longer remembers the job)"
     if known := exit_reason(exit_code):
         return known
@@ -271,16 +261,3 @@ def standing(state: JobState, *, submitted_at: str = "", host: str = "") -> str:
     if state.note:
         parts.append(state.note)
     return "; ".join(parts)
-
-
-def verdict_line(state: JobState, *, submitted_age: str = "") -> str:
-    """The one structured verdict line a triage view leads with, before any log excerpt."""
-    details: list[str] = []
-    if state.exit_code is not None:
-        details.append(f"exit {state.exit_code}")
-        if (known := exit_reason(state.exit_code)) is not None:
-            details.append(known)
-    if submitted_age:
-        details.append(f"submitted {submitted_age}")
-    suffix = f" ({', '.join(details)})" if details else ""
-    return f"{state.handle} {state.verdict}{suffix}"

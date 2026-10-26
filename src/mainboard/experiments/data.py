@@ -4,8 +4,9 @@
 
 import hashlib
 import shlex
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
@@ -13,16 +14,17 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
 
-@runtime_checkable
-class Stageable(Protocol):
+class Stageable(ABC, FrozenModel):
     """A declared staging need a preflight can check and fetch."""
 
-    @property
-    def key(self) -> str:
-        """The CAS key identifying this need's content, stable across hosts and runs."""
-
+    @abstractmethod
     def command(self, work_root: str) -> str:
         """An idempotent shell command staging (or checking) this need under `work_root`."""
+
+    @property
+    @abstractmethod
+    def key(self) -> str:
+        """The CAS key identifying this need's content, stable across hosts and runs."""
 
 
 def _hf_download(
@@ -46,7 +48,7 @@ def _hf_download(
     return f"HF_HOME={cache} hf download {shlex.quote(repo)}{flag_text}"
 
 
-class _HfRepo(FrozenModel):
+class _HfRepo(Stageable):
     """A Hugging Face repo (`org/name`) at a pinned revision or branch, `main` when empty."""
 
     repo: str
@@ -82,7 +84,7 @@ class HfDataset(_HfRepo):
         )
 
 
-class RepoFile(FrozenModel):
+class RepoFile(Stageable):
     """A file checked into this repo a trial reads, `path` relative to the workspace root."""
 
     path: str

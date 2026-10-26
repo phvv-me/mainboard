@@ -11,11 +11,12 @@
 
 import os
 import shlex
-import sys
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from ..log import logger
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, MutableMapping, Sequence
@@ -29,7 +30,7 @@ def prepended(environ: MutableMapping[str, str], name: str, entries: Sequence[Pa
         environ[name] = os.pathsep.join(dict.fromkeys([*leading, *current]))
 
 
-def defaulted(environ: MutableMapping[str, str], name: str, value: str) -> None:
+def _defaulted(environ: MutableMapping[str, str], name: str, *, value: str) -> None:
     """Set `name` to `value` unless the caller already gave it one, empty counting as none."""
     if not environ.get(name):
         environ[name] = value
@@ -93,7 +94,7 @@ class BuildPaths(Step):
         if (library / "pkgconfig").is_dir():
             prepended(environ, "PKG_CONFIG_PATH", [library / "pkgconfig"])
         if any(library.glob("libclang.so*")):
-            defaulted(environ, "LIBCLANG_PATH", str(library))
+            _defaulted(environ, "LIBCLANG_PATH", value=str(library))
 
 
 class CompileCaches(Step):
@@ -123,8 +124,8 @@ class CompileCaches(Step):
         scheduled = environ.get("LOCALDIR") or environ.get("PBS_JOBID") or self.mount.is_dir()
         if scratch is None or not scheduled:
             return
-        defaulted(environ, "TORCHINDUCTOR_CACHE_DIR", str(scratch / "torchinductor"))
-        defaulted(environ, "TRITON_CACHE_DIR", str(scratch / "triton"))
+        _defaulted(environ, "TORCHINDUCTOR_CACHE_DIR", value=str(scratch / "torchinductor"))
+        _defaulted(environ, "TRITON_CACHE_DIR", value=str(scratch / "triton"))
         # A cache directory that cannot be made is the compiler's to report, not a refusal here.
         for name in ("TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR"):
             with suppress(OSError):
@@ -151,20 +152,22 @@ class Runtime:
         for step in self.steps:
             step.apply(environ, self.prefix)
 
-    def entered(self, environ: Mapping[str, str]) -> dict[str, str]:
-        """`environ` as a job enters the environment: every step applied, then the prefix's own
-        `lib/` leading the loader path, so a library the environment ships wins over the host's
-        copy and a wheel's."""
-        entered = dict(environ)
-        self.apply(entered)
-        prepended(entered, "LD_LIBRARY_PATH", [self.prefix / "lib"])
-        return entered
-
     def changes(self, environ: Mapping[str, str]) -> dict[str, str]:
         """The variables applying the steps to `environ` would set."""
         applied = dict(environ)
         self.apply(applied)
         return {name: value for name, value in applied.items() if environ.get(name) != value}
+
+    def entered(self, environ: Mapping[str, str]) -> dict[str, str]:
+        """`environ` as a job enters the environment, its `lib/` leading the loader path.
+
+        Every step is applied, then the prefix's own `lib/` leads, so a library the environment
+        ships wins over the host's copy and a wheel's.
+        """
+        entered = dict(environ)
+        self.apply(entered)
+        prepended(entered, "LD_LIBRARY_PATH", [self.prefix / "lib"])
+        return entered
 
     def shell(self, environ: Mapping[str, str]) -> str:
         """The POSIX shell lines making `environ` what `apply` would."""
@@ -174,12 +177,12 @@ class Runtime:
         )
 
 
-def main() -> None:
+def _main() -> None:
     """Print the lines finishing the activation of the `CONDA_PREFIX` pixi's hook just set."""
     prefix = os.environ.get("CONDA_PREFIX", "")
     if prefix:
-        sys.stdout.write(Runtime(Path(prefix)).shell(os.environ))
+        logger.result(Runtime(Path(prefix)).shell(os.environ), end="")
 
 
 if __name__ == "__main__":
-    main()
+    _main()

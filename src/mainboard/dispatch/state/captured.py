@@ -21,27 +21,31 @@ if TYPE_CHECKING:
 class Captured:
     """One workspace's captured transcripts and trial receipts, in its state lake."""
 
+    @staticmethod
+    def _receipt(stream: str, number: int, line: str) -> dict[str, object]:
+        """One kept receipt line with the fields a query filters on.
+
+        It is empty for a line that is not a receipt envelope.
+        """
+        try:
+            envelope = json.loads(line)
+        except json.JSONDecodeError:
+            envelope = None
+        found = envelope.get("trial_receipt") if isinstance(envelope, dict) else None
+        receipt = found if isinstance(found, dict) else {}
+        return {
+            "ts": now(),
+            "batch": stream,
+            "n": number,
+            "run": receipt.get("run"),
+            "trial": receipt.get("trial"),
+            "verdict": receipt.get("verdict"),
+            "host": receipt.get("host"),
+            "line": line,
+        }
+
     def __init__(self, session: Session) -> None:
         self.session = session
-
-    def keep_transcript(self, stream: str, handle: str, transcript: str) -> None:
-        """Keep `transcript` as `handle`'s output, unless it already is the one kept."""
-        if self.transcript(stream, handle) != transcript:
-            stamp = now()
-            self.session.append(
-                schema.log_lines,
-                [
-                    {
-                        "ts": stamp,
-                        "batch": stream,
-                        "file": _file(stream, handle),
-                        "n": number,
-                        "line": line,
-                        "lossy": False,
-                    }
-                    for number, line in enumerate(transcript.split("\n"), 1)
-                ],
-            )
 
     def keep_receipts(self, stream: str, receipts: Iterable[str]) -> None:
         """Keep each of `receipts` that `stream` does not hold yet, in order."""
@@ -50,8 +54,30 @@ class Captured:
         fresh = [line for line in dict.fromkeys(receipts) if line not in known]
         self.session.append(
             schema.receipts,
-            [_receipt(stream, number, line) for number, line in enumerate(fresh, len(held) + 1)],
+            [
+                Captured._receipt(stream, number, line)
+                for number, line in enumerate(fresh, len(held) + 1)
+            ],
         )
+
+    def keep_transcript(self, stream: str, *, handle: str, transcript: str) -> None:
+        """Keep `transcript` as `handle`'s output, unless it already is the one kept."""
+        if self.transcript(stream, handle=handle) != transcript:
+            stamp = now()
+            self.session.append(
+                schema.log_lines,
+                [
+                    {
+                        "ts": stamp,
+                        "batch": stream,
+                        "file": _file(stream, handle=handle),
+                        "n": number,
+                        "line": line,
+                        "lossy": False,
+                    }
+                    for number, line in enumerate(transcript.split("\n"), 1)
+                ],
+            )
 
     def receipts(self, stream: str) -> list[str]:
         """Every receipt line kept for `stream`, in the order they were kept."""
@@ -59,13 +85,13 @@ class Captured:
         query = select(kept.c.line).where(kept.c.batch == stream).order_by(literal_column("rowid"))
         return [line for (line,) in self.session.rows(query)]
 
-    def transcript(self, stream: str, handle: str, *, last: int = 0) -> str | None:
+    def transcript(self, stream: str, *, handle: str, last: int = 0) -> str | None:
         """`handle`'s newest captured output, None when none was captured.
 
         last: only that many final lines, 0 for all of them.
         """
         log = schema.log_lines
-        file = log.c.file == _file(stream, handle)
+        file = log.c.file == _file(stream, handle=handle)
         newest = select(func.max(log.c.ts)).where(file).scalar_subquery()
         lines = (
             select(log.c.line, log.c.n, func.max(log.c.n).over().label("top"))
@@ -77,27 +103,6 @@ class Captured:
         return "\n".join(line for (line,) in rows) if rows else None
 
 
-def _file(stream: str, handle: str) -> str:
+def _file(stream: str, *, handle: str) -> str:
     """The name one run's transcript is kept under, the path it had under the batches folder."""
     return f"{stream}/{handle}.log"
-
-
-def _receipt(stream: str, number: int, line: str) -> dict[str, object]:
-    """One kept receipt line with the fields a query filters on, empty for a line that is not
-    a receipt envelope."""
-    try:
-        envelope = json.loads(line)
-    except json.JSONDecodeError:
-        envelope = None
-    found = envelope.get("trial_receipt") if isinstance(envelope, dict) else None
-    receipt = found if isinstance(found, dict) else {}
-    return {
-        "ts": now(),
-        "batch": stream,
-        "n": number,
-        "run": receipt.get("run"),
-        "trial": receipt.get("trial"),
-        "verdict": receipt.get("verdict"),
-        "host": receipt.get("host"),
-        "line": line,
-    }

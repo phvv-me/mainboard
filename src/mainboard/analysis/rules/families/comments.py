@@ -17,7 +17,14 @@ Differences from the kernel, kept on purpose: a group does not state `preceding_
 launch `<<<...>>>` does not parse).
 """
 
+import ast
+import warnings
+from typing import ClassVar
+
+import duckdb
+
 from ...catalog import Family, Function
+from ...engine.facts import snake
 
 
 class TreeClean(Function):
@@ -35,69 +42,31 @@ class TreeClean(Function):
 
 
 class PythonSource(Function):
-    """Whether `body` is Python 3 source, as `ast.parse` would say: a clean tree-sitter parse that
-    breaks none of the rules CPython adds to the grammar tree-sitter knows (Python 2's print, exec
-    and backquotes, leading-zero integers, an unparenthesized `:=` statement, `as` outside
-    `with`, `except`, `import` and `case`, an annotated tuple or list, and two statements on one
-    line without `;`), with `python_annotated` for annotations tree-sitter cannot read. On the
-    51,780 punctuated comment bodies of this workspace (2026-10-23) the two agree with
-    `ast.parse` on every one."""
+    """Whether `body` is Python 3 source, as `ast.parse` says: CPython's own parser, run by DuckDB
+    once per body, where SQL could only emulate it over tree-sitter's grammar. A warning the
+    parse raises about the source (an invalid escape) is not an error."""
 
     body: str
 
-    expression = r"""
-        tree_clean(body, 'python') AND (
-          WITH tree AS (SELECT parse_ast_list(body, 'python') AS n)
-          SELECT len(list_filter(n, lambda x:
-              x.type IN ('print_statement', 'exec_statement')
-              OR (x.type = 'string_start' AND x.peek = '`')
-              OR (x.type = 'integer' AND regexp_matches(x.peek, '^0[0-9_]*[1-9]'))
-              OR (x.type = 'constrained_type'
-                  AND n[n[x.parent_id + 1].parent_id + 1].type IS DISTINCT FROM 'type_parameter')
-              OR (x.type = 'named_expression'
-                  AND n[x.parent_id + 1].type = 'expression_statement')
-              OR (x.type = 'as_pattern' AND n[x.parent_id + 1].type NOT IN
-                    ('with_item', 'except_clause', 'except_group_clause', 'case_pattern',
-                     'case_clause'))
-              OR (x.type = 'assignment'
-                  AND (n[x.node_id + 2].type IN ('pattern_list', 'expression_list', 'list',
-                                                 'tuple', 'list_pattern')
-                       OR (n[x.node_id + 2].type = 'tuple_pattern'
-                           AND len(list_filter(n, lambda y: y.parent_id = x.node_id + 1
-                                                  AND y.type = ',')) > 0))
-                  AND len(list_filter(n, lambda y: y.parent_id = x.node_id AND y.type = ':')) > 0)
-              OR (x.type NOT IN (';', 'comment')
-                  AND NOT regexp_matches(x.peek, '^[\[(]')
-                  AND list_contains(['module', 'block'], n[x.parent_id + 1].type)
-                  AND len(list_filter(n, lambda y: y.parent_id = x.parent_id
-                                         AND y.sibling_index < x.sibling_index
-                                         AND y.end_line = x.start_line
-                                         AND y.type NOT IN (';', 'comment'))) > 0
-                  AND len(list_filter(n, lambda y: y.parent_id = x.parent_id AND y.type = ';'
-                                         AND y.start_line = x.start_line)) = 0))) = 0
-          FROM tree)
-    """
+    expression: ClassVar[str] = ""
 
+    @classmethod
+    def create(cls, db: duckdb.DuckDBPyConnection) -> None:
+        db.create_function(snake(cls.__name__), PythonSource._parses, side_effects=False)
 
-class PythonAnnotated(Function):
-    """Whether `body` is an annotated name (`Pattern: start[-end][:step]`), which CPython reads
-    as any expression after the colon while tree-sitter's annotation grammar takes types only:
-    a dotted name that is no keyword, a colon, and one expression (a bare tuple is refused)."""
+    @classmethod
+    def definition(cls) -> str:
+        return ""
 
-    body: str
-
-    expression = r"""
-        regexp_matches(body, '^[A-Za-z_][A-Za-z0-9_.]*\s*:[^=]+$')
-        AND NOT regexp_matches(body, '^(False|None|True|and|as|assert|async|await|break|class'
-                                     || '|continue|def|del|elif|else|except|finally|for|from'
-                                     || '|global|if|import|in|is|lambda|nonlocal|not|or|pass'
-                                     || '|raise|return|try|while|with|yield)\s*:')
-        AND (WITH wrapped AS (SELECT '_ = (' || regexp_extract(body, ':\s*(.*)$', 1) || ')' AS code)
-             SELECT python_source(code)
-                    AND len(list_filter(parse_ast_list(code, 'python'),
-                                        lambda n: n.parent_id = 2 AND n.type = 'tuple')) = 0
-             FROM wrapped)
-    """
+    @staticmethod
+    def _parses(body: str) -> bool:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                ast.parse(body)
+            except SyntaxError, ValueError:
+                return False
+        return True
 
 
 class CommentParses(Function):
@@ -110,7 +79,7 @@ class CommentParses(Function):
 
     expression = r"""
         CASE
-          WHEN language = 'python' THEN python_source(body) OR python_annotated(body)
+          WHEN language = 'python' THEN python_source(body)
           WHEN language IN ('rust', 'typescript', 'javascript', 'c', 'cpp', 'cuda') THEN
             tree_clean(CASE language WHEN 'rust' THEN 'fn mcmr_probe() {'
                                      WHEN 'typescript' THEN 'function mcmrProbe() {'
@@ -159,7 +128,6 @@ class CommentTokens(Function):
 
 class Comment(Family):
     family = "CommentFact"
-    verified = True
     relations = {
         "facts": r"""
             SELECT row_number() OVER (ORDER BY path) - 1 AS fact_order,

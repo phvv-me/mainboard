@@ -11,7 +11,6 @@ from ...catalog import Family
 
 class KernelLaunch(Family):
     family = "KernelLaunchFact"
-    verified = True
     relations = {
         "facts": r"""
             WITH cuda AS (

@@ -21,26 +21,28 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.errors import MissionError
-from ..core.host import current_platform
+from ..core.execution.host import current_platform
 from ..core.project import Project
-from ..dispatch.shells import Dialect
-from ..dispatch.targets import rooted
-from ..dispatch.transport import HostUnreachable, SshTransport
+from ..dispatch.transport.core import HostUnreachable, SshTransport
+from ..dispatch.transport.shells import Dialect
+from ..dispatch.transport.targets import rooted
 from ..engines.compile.backend import PixiEngine
-from ..lint.process import MISSING, TIMED_OUT, Invocation
+from ..lint.process import Invocation
+from ..proc import Exit
 from .definition import Family, family_of
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Iterator, Sequence
 
     from ..context.plan import ExecutionPlan
     from .definition import Step
+    from .matrix import PackageMirror
 
 # The leg that runs on this machine, in place.
-HERE = "local"
+_HERE = "local"
 
 # What the report calls a remote leg's first step, the package reaching the host.
-SHIP = "ship"
+_SHIP = "ship"
 
 # The variable `uv run` leaves pointing at the environment it ran from. A step names its own
 # project's environment through uv, so an inherited one would only draw a mismatch warning.
@@ -70,7 +72,9 @@ class Verdict(StrEnum):
     @classmethod
     def of(cls, code: int) -> Verdict:
         """The verdict an exit code states, with the shell's words for a deadline and a miss."""
-        return {0: cls.OK, TIMED_OUT: cls.TIMED_OUT, MISSING: cls.MISSING}.get(code, cls.FAILED)
+        return {0: cls.OK, Exit.TIMED_OUT: cls.TIMED_OUT, Exit.MISSING: cls.MISSING}.get(
+            code, cls.FAILED
+        )
 
 
 class Result(FrozenModel):
@@ -113,17 +117,13 @@ class Leg(ABC):
     name: what the report calls the leg.
     """
 
+    @abstractmethod
+    def _step(self, step: Step) -> Result:
+        """Run one step on this leg's machine."""
+
     def __init__(self, name: str, family: Family) -> None:
         self.name = name
         self.family = family
-
-    def run(self, steps: Sequence[Step]) -> Iterator[Result]:
-        """Each step's result as it settles, `not run` for everything after a failure."""
-        stopped = False
-        for step in steps:
-            result = self.skipped(step.name) if stopped else self._step(step)
-            stopped = stopped or result.failed
-            yield result
 
     def result(self, step: str, verdict: Verdict, *, started: float, output: str) -> Result:
         """One settled step of this leg, timed from `started`."""
@@ -137,13 +137,17 @@ class Leg(ABC):
             output=output,
         )
 
+    def run(self, steps: Sequence[Step]) -> Iterator[Result]:
+        """Each step's result as it settles, `not run` for everything after a failure."""
+        stopped = False
+        for step in steps:
+            result = self.skipped(step.name) if stopped else self._step(step)
+            stopped = stopped or result.failed
+            yield result
+
     def skipped(self, step: str) -> Result:
         """The row for a step that never ran because an earlier one failed."""
         return Result(leg=self.name, os=self.family, step=step, verdict=Verdict.NOT_RUN)
-
-    @abstractmethod
-    def _step(self, step: Step) -> Result:
-        """Run one step on this leg's machine."""
 
 
 class LocalLeg(Leg):
@@ -153,14 +157,17 @@ class LocalLeg(Leg):
     """
 
     def __init__(self, root: Path) -> None:
-        super().__init__(HERE, family_of(current_platform()))
+        super().__init__(_HERE, family_of(current_platform()))
         self.root = root
 
     def _step(self, step: Step) -> Result:
         environment = {
             key: value
             for key, value in os.environ.items()
-            if key != _INHERITED_VENV and not (key == _CONDA_PREFIX and _global_tool(value))
+            if key != _INHERITED_VENV
+            and not (
+                key == _CONDA_PREFIX and Path(value).is_relative_to(PixiEngine.home() / "envs")
+            )
         }
         if interpreter := shutil.which("python", path=environment.get("PATH")):
             environment.setdefault(_PYO3_PYTHON, interpreter)
@@ -169,7 +176,7 @@ class LocalLeg(Leg):
             owner=".",
             cwd=self.root,
             argv=step.argv,
-            env=HERE,
+            env=_HERE,
             timeout=step.timeout,
         ).run(environment)
         return Result(
@@ -191,12 +198,17 @@ class RemoteLeg(Leg):
     ssh: the bounded ssh policy every step rides.
     """
 
+    @property
+    def root(self) -> str:
+        """Where the leg's copy of the workspace lives on the host, beside the host's mirror."""
+        return f"{self.mirror}/{Project().out_dir()}/ci"
+
     def __init__(
         self,
         plan: ExecutionPlan,
         package: str,
         *,
-        ship: Callable[[ExecutionPlan, str, str], None],
+        ship: PackageMirror,
         ssh: SshTransport | None = None,
     ) -> None:
         if not plan.profile.platform:
@@ -210,23 +222,6 @@ class RemoteLeg(Leg):
         self.ship = ship
         self.ssh = ssh or SshTransport()
 
-    @property
-    def root(self) -> str:
-        """Where the leg's copy of the workspace lives on the host, beside the host's mirror."""
-        return f"{self.mirror}/{Project().out_dir()}/ci"
-
-    def run(self, steps: Sequence[Step]) -> Iterator[Result]:
-        """The package shipped, then its steps, every one `not run` when it never arrived."""
-        started = time.monotonic()
-        try:
-            self.ship(self.plan, self.root, self.package)
-        except (HostUnreachable, OSError, RuntimeError) as error:
-            yield self.result(SHIP, Verdict.UNREACHABLE, started=started, output=str(error))
-            yield from (self.skipped(step.name) for step in steps)
-            return
-        yield self.result(SHIP, Verdict.OK, started=started, output="")
-        yield from super().run(steps)
-
     def _step(self, step: Step) -> Result:
         dialect = Dialect()
         where = f"{self.root}/{self.package}"
@@ -236,7 +231,7 @@ class RemoteLeg(Leg):
         started = time.monotonic()
         try:
             code, out, err = self.ssh.invoke(
-                dialect.one_shot(self.ssh, self.plan.host, line),
+                dialect.one_shot(self.ssh, self.plan.host, line=line),
                 self.plan.host,
                 operation=f"ci {step.name}",
                 timeout=step.timeout,
@@ -248,7 +243,14 @@ class RemoteLeg(Leg):
         output = out + err
         return self.result(step.name, Verdict.of(code), started=started, output=output)
 
-
-def _global_tool(prefix: str) -> bool:
-    """Whether `prefix` is one of pixi's global environments, a tool's own, never a step's."""
-    return Path(prefix).is_relative_to(PixiEngine.home() / "envs")
+    def run(self, steps: Sequence[Step]) -> Iterator[Result]:
+        """The package shipped, then its steps, every one `not run` when it never arrived."""
+        started = time.monotonic()
+        try:
+            self.ship(self.plan, self.root, package=self.package)
+        except (HostUnreachable, OSError, RuntimeError) as error:
+            yield self.result(_SHIP, Verdict.UNREACHABLE, started=started, output=str(error))
+            yield from (self.skipped(step.name) for step in steps)
+            return
+        yield self.result(_SHIP, Verdict.OK, started=started, output="")
+        yield from super().run(steps)

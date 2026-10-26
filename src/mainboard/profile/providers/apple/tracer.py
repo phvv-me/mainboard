@@ -4,7 +4,7 @@ from contextlib import suppress
 from importlib import import_module
 from typing import TYPE_CHECKING, ClassVar, cast
 
-from ....core.host import MACOS
+from ....core.execution import host
 from ...tracer import Marker, Tracer, Vendor
 
 if TYPE_CHECKING:
@@ -23,14 +23,14 @@ class SignpostTracer(Tracer):
     vendor: ClassVar[Vendor] = Vendor.APPLE
     label: ClassVar[str] = "signpost"
 
+    @classmethod
+    def is_available(cls) -> bool:
+        return _signpost is not None and host.is_macos()
+
     def __init__(self) -> None:
         assert _signpost is not None  # noqa: S101  reason=built only when signpost loaded since=2026-08-16
         self._signposter = _signpost.Signposter(_SUBSYSTEM)
         self._stack: list[tuple[str, IntervalToken]] = []
-
-    @classmethod
-    def is_available(cls) -> bool:
-        return _signpost is not None and MACOS
 
     def mark(self, name: str) -> None:
         self._signposter.emit_event(name)

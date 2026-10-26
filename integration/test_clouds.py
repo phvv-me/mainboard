@@ -3,41 +3,51 @@ machine reads as, without a key or a bill. A live rent needs the owner's key (`h
 
 import io
 import json
+from email.message import Message
 from types import SimpleNamespace
 from urllib.error import HTTPError
+from urllib.request import Request
 
 import pytest
+from gpuhunt import AcceleratorVendor, CatalogItem
 
-from mainboard.core.errors import MissionError
-from mainboard.dispatch.arch import arch, capability, card, sm
-from mainboard.dispatch.backends import HpcAiBackend, LambdaBackend, RunPodBackend, VastBackend
-from mainboard.dispatch.backends.cloud import CapacityGone, _waiter, hunt
-from mainboard.dispatch.rentals import LAUNCH
-from mainboard.dispatch.sync import outermost
-from mainboard.dispatch.vocabulary import Resources
-from mainboard.reliability import reliability
+from mainboard import ExecutionPlan, MissionError
+from mainboard.dispatch import Resources, arch, sm
+from mainboard.dispatch.backends import HpcAiBackend, RunPodBackend, VastBackend
+from mainboard.dispatch.backends.cloud.core import _WAITER
+from mainboard.dispatch.backends.cloud.lambdacloud import LambdaApi
+from mainboard.dispatch.backends.cloud.offers import hunt
+from mainboard.dispatch.backends.cloud.runpod import RunPodApi
+from mainboard.dispatch.backends.exceptions import CapacityGone
+from mainboard.dispatch.backends.vast.market import Ask
+from mainboard.dispatch.hosts import rentals
+from mainboard.dispatch.jobs import OfferFilter, capability, card
+from mainboard.dispatch.mirroring.sync import outermost
+from mainboard.dispatch.state import RunRecord
+from mainboard.fleet.reliability import reliability
+from mainboard.manifest import HostProfile
 
 
 class Recorded:
     """A transport answering each (method, path suffix) from a table, keeping every request."""
 
-    def __init__(self, answers: dict[tuple[str, str], object]) -> None:
-        self.answers = answers
-        self.sent: list[tuple[str, str, dict | None]] = []
-
-    def __call__(self, request):
-        body = json.loads(request.data) if request.data else None
+    def __call__(self, request: Request) -> bytes:
+        body = json.loads(request.data) if isinstance(request.data, bytes) else {}
         self.sent.append((request.get_method(), request.full_url, body))
         for (method, suffix), answer in self.answers.items():
             if request.get_method() == method and request.full_url.endswith(suffix):
                 if isinstance(answer, HTTPError):
                     raise answer
-                return SimpleNamespace(status=200, read=lambda a=answer: json.dumps(a).encode())
+                return json.dumps(answer).encode()
         raise AssertionError(f"unexpected {request.get_method()} {request.full_url}")
+
+    def __init__(self, answers: dict[tuple[str, str], object]) -> None:
+        self.answers = answers
+        self.sent: list[tuple[str, str, dict]] = []
 
 
 def refusal(code: int, said: str) -> HTTPError:
-    return HTTPError("https://x", code, said, {}, io.BytesIO(said.encode()))
+    return HTTPError("https://x", code, said, Message(), io.BytesIO(said.encode()))
 
 
 @pytest.fixture(autouse=True)
@@ -46,9 +56,20 @@ def keys(monkeypatch) -> None:
     monkeypatch.setenv("LAMBDA_API_KEY", "test-lambda")
 
 
-def offer(**fields) -> SimpleNamespace:
-    return SimpleNamespace(
-        **{"instance_name": "x", "location": "r", "gpu_count": 1, "spot": False, **fields}
+def offer(*, instance_name: str = "x", location: str = "r") -> CatalogItem:
+    return CatalogItem(
+        provider="runpod",
+        instance_name=instance_name,
+        location=location,
+        price=1.0,
+        cpu=8,
+        memory=32.0,
+        gpu_count=1,
+        gpu_name="RTX4090",
+        gpu_memory=24.0,
+        spot=False,
+        disk_size=None,
+        gpu_vendor=AcceleratorVendor.NVIDIA,
     )
 
 
@@ -58,7 +79,7 @@ def test_a_card_reads_the_same_however_it_is_spelled() -> None:
 
 def test_runpod_creates_a_pod_that_opens_ssh_with_the_key() -> None:
     wire = Recorded({("POST", "/pods"): {"id": "pod-1"}})
-    handle = RunPodBackend(transport=wire).create(
+    handle = RunPodApi(transport=wire).create(
         offer(instance_name="NVIDIA GeForce RTX 4090"),
         name="hold-a",
         public_key="ssh-ed25519 K",
@@ -77,7 +98,7 @@ def test_runpod_reads_a_running_pod_by_its_mapped_ssh_port() -> None:
         "publicIp": "1.2.3.4",
         "portMappings": {"22": 40022},
     }
-    found = RunPodBackend(transport=Recorded({("GET", "/pods/pod-1"): pod})).machine("pod-1")
+    found = RunPodApi(transport=Recorded({("GET", "/pods/pod-1"): pod})).machine("pod-1")
     assert (found.status, found.host, found.port, found.user) == (
         "running",
         "1.2.3.4",
@@ -91,16 +112,16 @@ def test_runpod_out_of_capacity_is_a_retry_not_a_failure() -> None:
         {("POST", "/pods"): refusal(400, "There are no longer any instances available")}
     )
     with pytest.raises(CapacityGone):
-        RunPodBackend(transport=wire).create(offer(), name="n", public_key="k", disk_gb=10)
+        RunPodApi(transport=wire).create(offer(), name="n", public_key="k", disk_gb=10)
 
 
 def test_a_gone_pod_reads_as_gone_and_ends_quietly() -> None:
     wire = Recorded(
         {("GET", "/pods/p"): refusal(404, "{}"), ("DELETE", "/pods/p"): refusal(404, "{}")}
     )
-    backend = RunPodBackend(transport=wire)
-    assert backend.machine("p").status == "gone"
-    backend.terminate("p")
+    api = RunPodApi(transport=wire)
+    assert api.machine("p").status == "gone"
+    api.terminate("p")
 
 
 def test_lambda_registers_the_key_once_then_launches_with_it() -> None:
@@ -111,7 +132,7 @@ def test_lambda_registers_the_key_once_then_launches_with_it() -> None:
             ("POST", "/instance-operations/launch"): {"data": {"instance_ids": ["i-1"]}},
         }
     )
-    handle = LambdaBackend(transport=wire).create(
+    handle = LambdaApi(transport=wire).create(
         offer(instance_name="gpu_1x_h100_pcie", location="us-east-1"),
         name="hold-b",
         public_key="ssh-ed25519 K",
@@ -136,7 +157,7 @@ def test_lambda_reads_an_active_instance_as_ubuntu_over_ssh() -> None:
             "instance_type": {"price_cents_per_hour": 249},
         }
     }
-    found = LambdaBackend(transport=Recorded({("GET", "/instances/i-1"): active})).machine("i-1")
+    found = LambdaApi(transport=Recorded({("GET", "/instances/i-1"): active})).machine("i-1")
     assert (found.status, found.host, found.user, found.usd_hr) == (
         "running",
         "5.6.7.8",
@@ -156,7 +177,7 @@ def test_lambda_insufficient_capacity_is_a_retry() -> None:
         }
     )
     with pytest.raises(CapacityGone):
-        LambdaBackend(transport=wire).create(offer(), name="n", public_key="k", disk_gb=0)
+        LambdaApi(transport=wire).create(offer(), name="n", public_key="k", disk_gb=0)
 
 
 def test_offers_list_every_cloud_and_mark_what_mb_rents(mb) -> None:
@@ -178,9 +199,9 @@ def test_one_catalog_failing_leaves_every_other_clouds_offers(monkeypatch) -> No
     loaded = SimpleNamespace(providers=[SimpleNamespace(NAME="vultr"), SimpleNamespace(NAME="x")])
     monkeypatch.setattr(gpuhunt, "query", answered)
     monkeypatch.setattr(gpuhunt, "default_catalog", lambda: loaded)
-    found = {item.provider for item in hunt(gpu_name="RTX 4090")}
+    found = {item.provider for item in hunt(OfferFilter(gpu_name="RTX 4090"))}
     assert "x" in found and "runpod" in found and "vultr" not in found
-    assert hunt(providers=["vultr"]) == []
+    assert hunt(OfferFilter(), providers=["vultr"]) == []
 
 
 def test_an_architecture_matches_the_capability_its_kernels_load_on() -> None:
@@ -202,7 +223,7 @@ def test_an_architecture_matches_the_capability_its_kernels_load_on() -> None:
 def test_vast_asks_its_own_capability_field_for_an_architecture(monkeypatch) -> None:
     monkeypatch.setenv("VAST_API_KEY", "test-vast")
     wire = Recorded({("POST", "/bundles/"): {"offers": []}})
-    VastBackend(transport=wire).search(gpus=1, arch=arch("sm_120"))
+    VastBackend(transport=wire).market.search(Ask(gpus=1, arch=arch("sm_120")))
     query = wire.sent[0][2]
     assert query["compute_cap"] == {"gte": 1200, "lte": 1200} and "gpu_name" not in query
 
@@ -242,13 +263,15 @@ def test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture(monkeypatch
         ("B200-SXM-180GB", 8, 24.4, True),
     )
     backend = HpcAiBackend(transport=Recorded({("POST", "/resource/user/instance/list"): catalog}))
-    plan = SimpleNamespace(profile=SimpleNamespace(vars={"image-id": "img"}))
+    plan = ExecutionPlan(
+        host="hpc-ai", profile=HostProfile(vars={"image-id": "img"}), env="default"
+    )
     spot_dc = backend.chosen(plan, Resources(gpus=8, arch="sm_100", spot=True))
-    assert (spot_dc["instance_type_id"], spot_dc["spot"]) == ("type-B200-SXM-180GB-SPOT", True)
-    assert backend.chosen(plan, Resources(gpus=1, arch="sm_120"))["instance_type_id"] == (
+    assert (spot_dc.instance_type_id, spot_dc.spot) == ("type-B200-SXM-180GB-SPOT", True)
+    assert backend.chosen(plan, Resources(gpus=1, arch="sm_120")).instance_type_id == (
         "type-RTX-5090"
     )
-    assert backend.chosen(plan, Resources())["instance_type_id"] == "type-"
+    assert backend.chosen(plan, Resources()).instance_type_id == "type-"
     with pytest.raises(MissionError, match="no 8x H100"):
         backend.chosen(plan, Resources(gpus=8, gpu_name="H100"))
 
@@ -261,12 +284,12 @@ def test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves(monk
         "portMappings": {"22": 1},
     }
     backend = RunPodBackend(transport=Recorded({("GET", "/pods/pod-1"): running}))
-    monkeypatch.setattr(backend, "read", lambda handle, path: "")
+    monkeypatch.setattr(backend, "_read", lambda handle, path: "")
     assert backend.state("pod-1").verdict == "running"
-    monkeypatch.setattr(backend, "read", lambda handle, path: "3\n")
+    monkeypatch.setattr(backend, "_read", lambda handle, path: "3\n")
     finished = backend.state("pod-1")
     assert (finished.verdict, finished.exit_code) == ("failed", 3)
-    assert LAUNCH in _waiter() and "/tmp/mainboard.exit" in _waiter()
+    assert rentals.Rental.LAUNCH in _WAITER and "/tmp/mainboard.exit" in _WAITER
 
 
 def test_hpcai_gives_up_on_an_image_that_will_not_pull(monkeypatch) -> None:
@@ -299,29 +322,39 @@ def test_a_rate_limited_vast_create_waits_and_asks_again(monkeypatch) -> None:
         answer = next(answers)
         if isinstance(answer, HTTPError):
             raise answer
-        return SimpleNamespace(status=200, read=lambda: json.dumps(answer).encode())
+        return json.dumps(answer).encode()
 
     slept: list[float] = []
-    created = VastBackend(transport=wire, sleeper=slept.append).created({"id": 1}, {})
+    created = VastBackend(transport=wire, sleeper=slept.append).api.created({"id": 1}, {})
     assert created == {"new_contract": 7} and slept == [2.0, 5.0]
 
 
 def test_reliability_charges_the_machine_not_the_job() -> None:
     def run(
-        target: str, verdict: str, *, exit_code: int | None = None, evidence: str = ""
-    ) -> object:
-        return SimpleNamespace(
-            target=target, kind="vast", verdict=verdict, exit_code=exit_code, evidence=evidence
+        target: str, *, verdict: str, exit_code: int | None = None, evidence: str = ""
+    ) -> RunRecord:
+        return RunRecord(
+            handle=f"{target}-{verdict}-{exit_code}-{evidence}",
+            target=target,
+            kind="vast",
+            script="job.sh",
+            args="",
+            submitted_at="2026-10-24T00:00:00Z",
+            verdict=verdict,
+            exit_code=exit_code,
+            evidence=evidence,
         )
 
     rows = reliability(
         [
-            run("vast", "ok", exit_code=0),
-            run("vast", "failed", exit_code=1),  # the job's own failure: the machine delivered
-            run("vast", "failed", evidence="not_started"),  # the landing never started it
-            run("vast", "vanished"),  # taken back under it
-            run("vast", "cancelled"),  # judges nothing
-            run("held", "running"),
+            run("vast", verdict="ok", exit_code=0),
+            run(
+                "vast", verdict="failed", exit_code=1
+            ),  # the job's own failure: the machine delivered
+            run("vast", verdict="failed", evidence="not_started"),  # the landing never started it
+            run("vast", verdict="vanished"),  # taken back under it
+            run("vast", verdict="cancelled"),  # judges nothing
+            run("held", verdict="running"),
         ]
     )
     vast = next(row for row in rows if row.target == "vast")

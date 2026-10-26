@@ -34,122 +34,33 @@
 
 import ast
 import tomllib
+from collections.abc import Set as AbstractSet
 from configparser import ConfigParser
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from patos import FrozenModel
 
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..dispatch.provenance import SourceTree
-from ..engines.compile.backend.repair import recorded_extensions
+from ..engines.compile.backend.pixi.repair import recorded_extensions
 from ..state.evidence import EvidenceTree
-from .pins import Pin, split
-from .target import Target, dotted, home_of, parsed
+from .targets.pins import Pin, split
+from .targets.target import Target, home_of, parsed
+from .walker import Module, Walker
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
-# The dynamic import spellings whose literal argument the walk still follows.
-_DYNAMIC = ("import_module", "__import__")
 
+class _Shipped(NamedTuple):
+    """What a job's reached modules ship: files, the extensions among them, deferred names."""
 
-class Module(FrozenModel):
-    """One first-party module file the walk reached, and its import root, workspace-relative."""
-
-    path: str
-    root: str
-
-
-class Walker:
-    """The static import walk over a job's first-party roots.
-
-    home: the job's own import root, workspace-relative, searched first.
-    distributions: the roots the manifest installs editable, workspace-relative, in order.
-    """
-
-    def __init__(self, root: Path, *, home: str, distributions: Sequence[str]) -> None:
-        self.root = root
-        self.home = home
-        self.roots = list(dict.fromkeys([home, *distributions]))
-
-    def reach(self, file: str) -> list[Module]:
-        """Every first-party module `file` imports, transitively, `file` itself first."""
-        first = Module(path=file, root=self.home)
-        reached: dict[str, Module] = {file: first}
-        pending = [first]
-        while pending:
-            module = pending.pop()
-            for name in self.imported(module):
-                for found in self.resolve(name):
-                    if found.path not in reached:
-                        reached[found.path] = found
-                        pending.append(found)
-        return list(reached.values())
-
-    def imported(self, module: Module) -> Iterator[str]:
-        """Every module name `module` imports, relative ones spelled out, in syntax order."""
-        tree = ast.parse((self.root / module.path).read_text(encoding="utf-8"))
-        package = dotted(self.root / module.path, home=self.root / module.root)
-        # `_absolute` drops the importing module's last component, but an initializer imports
-        # relative to itself, so it keeps one to drop.
-        if Path(module.path).name == "__init__.py":
-            package = f"{package}.__init__"
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                yield from (alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                base = _absolute(package, level=node.level, name=node.module or "")
-                if base is None:
-                    continue
-                yield base
-                yield from (f"{base}.{alias.name}" for alias in node.names if alias.name != "*")
-            elif isinstance(node, ast.Call) and (literal := _dynamic(node)):
-                yield literal
-
-    def resolve(self, name: str) -> list[Module]:
-        """The files `name` imports, parent packages included, under the one root holding it.
-
-        Two roots holding one top-level package is refused rather than settled by order (two
-        campaigns each keep an `experiments` package, and importing the other's would run code
-        the receipts never named). Namespace portions, which roots legitimately share, are walked
-        wherever they are.
-        """
-        parts = name.split(".")
-        holders = [root for root in self.roots if self.__regular(self.root / root / parts[0])]
-        if len(holders) > 1:
-            raise MissionError(
-                f"`{parts[0]}` is a package under more than one import root "
-                f"({', '.join(holders)}); a job's imports have to name one, so keep the package "
-                "in one root or import it by the root that owns it"
-            )
-        for root in self.roots:
-            chain = self.__chain(self.root / root, parts)
-            if chain is not None:
-                return [
-                    Module(path=file.relative_to(self.root).as_posix(), root=root)
-                    for file in chain
-                ]
-        return []
-
-    @staticmethod
-    def __regular(package: Path) -> bool:
-        return (package / "__init__.py").is_file() or package.with_suffix(".py").is_file()
-
-    def __chain(self, base: Path, parts: Sequence[str]) -> list[Path] | None:
-        """The package files `parts` walks through under `base`, None when the chain breaks."""
-        found: list[Path] = []
-        for depth in range(1, len(parts) + 1):
-            package = base.joinpath(*parts[:depth])
-            if (package / "__init__.py").is_file():
-                found.append(package / "__init__.py")
-            elif depth == len(parts) and package.with_suffix(".py").is_file():
-                found.append(package.with_suffix(".py"))
-            elif not package.is_dir():
-                return None
-        return found
+    files: set[str]
+    built: set[str]
+    deferred: set[str]
 
 
 class Closure(FrozenModel):
@@ -177,6 +88,75 @@ class Closure(FrozenModel):
     deferred: tuple[str, ...] = ()
 
     @classmethod
+    def __needed(
+        cls, declared: Sequence[str], *, files: AbstractSet[str], root: Path
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """The data paths and Hub pins `declared` needs, each checked, the paths in the tree.
+
+        A need is data the mirror carries to the host, so one only the lake still keeps comes
+        back into the tree before the sync.
+        """
+        spelled, pinned = split(dict.fromkeys(declared))
+        wanted = cls.__outermost(spelled)
+        cls.__admissible(wanted, files)
+        EvidenceTree(root).restore(root / need for need in wanted if not (root / need).exists())
+        for pin in pinned:
+            Pin.parse(pin)
+        return wanted, pinned
+
+    @classmethod
+    def __reached(
+        cls, target: Target, *, root: Path, config: str, distributions: Sequence[str]
+    ) -> tuple[list[Module], list[str]]:
+        """Every first-party module the target imports, and the import roots they came from.
+
+        A pytest target also reaches each conftest above it with its imports and named plugins.
+        """
+        home = cls.__placed(target.file, root=root, config=config)
+        walker = Walker(root, home=home, distributions=distributions)
+        reached, places = walker.reach(target.file), [home, *distributions]
+        if not target.test:
+            return reached, places
+        for conftest, plugins in cls.__pytest_harness(target, root):
+            place = cls.__placed(conftest, root=root, config=config)
+            places.append(place)
+            reached += Walker(root, home=place, distributions=distributions).reach(conftest)
+            reached += [module for plugin in plugins for module in walker.resolve(plugin)]
+        return reached, places
+
+    @classmethod
+    def __shipped(
+        cls,
+        reached: Sequence[Module],
+        *,
+        sources: SourceTree,
+        distributions: Sequence[str],
+        environment: Path,
+    ) -> _Shipped:
+        """What the reached modules ship.
+
+        A node's module ships itself, a distribution's module its whole top-level package with
+        the extensions built inside it, unless an extension lives outside it, which defers the
+        package to the environment.
+        """
+        shipped = _Shipped(
+            files={module.path for module in reached if module.root not in distributions},
+            built=set(),
+            deferred=set(),
+        )
+        packages = dict.fromkeys(cls.__package(m) for m in reached if m.root in distributions)
+        for package in packages:
+            outside, extensions = cls.__compiled(
+                package, root=sources.root, environment=environment
+            )
+            if outside:
+                shipped.deferred.add(PurePosixPath(package).name)
+            else:
+                shipped.files.update([*sources.kept(package), *extensions])
+                shipped.built.update(extensions)
+        return shipped
+
+    @classmethod
     def of(
         cls,
         target: Target,
@@ -195,51 +175,25 @@ class Closure(FrozenModel):
         """
         sources = SourceTree(root)
         config = cls.__pytest_config(target, root) if target.test else ""
-        home = cls.__placed(target.file, root=root, config=config)
-        walker = Walker(root, home=home, distributions=distributions)
-        reached = walker.reach(target.file)
-        places = [home, *distributions]
-        if target.test:
-            for conftest, plugins in cls.__pytest_harness(target, root):
-                place = cls.__placed(conftest, root=root, config=config)
-                places.append(place)
-                reached.extend(
-                    Walker(root, home=place, distributions=distributions).reach(conftest)
-                )
-                for plugin in plugins:
-                    reached.extend(walker.resolve(plugin))
+        reached, places = cls.__reached(
+            target, root=root, config=config, distributions=distributions
+        )
+        shipped = cls.__shipped(
+            reached, sources=sources, distributions=distributions, environment=environment
+        )
         declared = target.declaration(root)
-        files = set(sources.kept(target.node))
-        built: set[str] = set()
-        deferred: set[str] = set()
-        decided: dict[str, tuple[bool, tuple[str, ...]]] = {}
-        for module in reached:
-            if module.root not in distributions:
-                files.add(module.path)
-                continue
-            package = cls.__package(module)
-            if package not in decided:
-                decided[package] = cls.__compiled(package, root=root, environment=environment)
-            outside, extensions = decided[package]
-            if outside:
-                deferred.add(PurePosixPath(package).name)
-            else:
-                files.update(sources.kept(package))
-                built.update(extensions)
-        files.update(built)
-        for resource in declared.resources:
-            files.update(cls.__pinned(resource, root, sources))
-        files.add(Project().manifest(root).name)
-        if config:
-            files.add(config)
-        spelled, pinned = split(dict.fromkeys([*declared.needs, *needs]))
-        wanted = cls.__outermost(spelled)
-        cls.__admissible(wanted, files)
-        # A need is data the mirror carries to the host, so one only the lake still keeps comes
-        # back into the tree before the sync.
-        EvidenceTree(root).restore(root / need for need in wanted if not (root / need).exists())
-        for pin in pinned:
-            Pin.parse(pin)
+        files = {
+            *sources.kept(target.node),
+            *shipped.files,
+            *(
+                found
+                for resource in declared.resources
+                for found in cls.__pinned(resource, root, sources)
+            ),
+            Project().manifest(root).name,
+            *([config] if config else []),
+        }
+        wanted, pinned = cls.__needed([*declared.needs, *needs], files=files, root=root)
         roster = tuple(dict.fromkeys(places))
         return cls(
             target=target,
@@ -251,48 +205,35 @@ class Closure(FrozenModel):
                 or any(file == place or file.startswith(f"{place}/") for file in files)
             ),
             first_party=tuple(
-                sorted({name for place in roster for name in _defined(root / place)})
+                sorted({name for place in roster for name in Closure._defined(root / place)})
             ),
             needs=wanted,
             pins=pinned,
             fetch=declared.fetch,
-            built=tuple(sorted(built)),
-            deferred=tuple(sorted(deferred)),
+            built=tuple(sorted(shipped.built)),
+            deferred=tuple(sorted(shipped.deferred)),
         )
 
     @staticmethod
-    def __placed(file: str, *, root: Path, config: str) -> str:
-        """`file`'s import root, workspace-relative, never above the pytest config's directory."""
-        home = home_of(root / file, root=root)
-        if config and home.is_relative_to((root / config).parent):
-            home = (root / config).parent
-        return home.relative_to(root).as_posix()
-
-    @staticmethod
-    def __pinned(resource: str, root: Path, sources: SourceTree) -> list[str]:
-        """The files a declared resource pins: itself, or everything kept under it, brought back
-        from the lake first when the tree no longer holds it."""
-        posix = PurePosixPath(resource)
-        if posix.is_absolute() or ".." in posix.parts:
-            raise MissionError(f"a resource must be a workspace-relative path, not {resource!r}")
-        if not (root / resource).exists():
-            EvidenceTree(root).restore([root / resource])
-        if (root / resource).is_dir():
-            return sources.kept(resource)
-        if (root / resource).is_file():
-            return [posix.as_posix()]
-        raise MissionError(f"the declared resource {resource!r} is not in the workspace")
-
-    @staticmethod
-    def __package(module: Module) -> str:
-        """The top-level package directory `module` belongs to under its distribution root."""
-        inside = PurePosixPath(module.path).relative_to(module.root)
-        return (PurePosixPath(module.root) / inside.parts[0]).as_posix()
+    def __admissible(needs: Sequence[str], files: AbstractSet[str]) -> None:
+        """Refuse a need that could not be linked: one leaving the workspace, or one over code."""
+        for need in needs:
+            posix = PurePosixPath(need)
+            if posix.is_absolute() or ".." in posix.parts:
+                raise MissionError(f"a need must be a workspace-relative path, not {need!r}")
+            shadowed = [file for file in files if file == need or file.startswith(f"{need}/")]
+            if shadowed:
+                raise MissionError(
+                    f"the need {need!r} would sit over shipped code ({shadowed[0]}); a need is "
+                    "data the job reads, declared beside the code rather than around it"
+                )
 
     @staticmethod
     def __compiled(package: str, *, root: Path, environment: Path) -> tuple[bool, tuple[str, ...]]:
-        """Whether top-level `package` (workspace-relative) defers to the environment, and which
-        of its extensions ship inside it."""
+        """Whether top-level `package` defers to the environment, and which extensions ship.
+
+        `package` is workspace-relative, and the extensions are those that ship inside it.
+        """
         tree = (root / package).resolve()
         inside: list[str] = []
         for file in recorded_extensions(PurePosixPath(package).name, prefix=environment):
@@ -302,29 +243,6 @@ class Closure(FrozenModel):
                 return True, ()
             inside.append((PurePosixPath(package) / relative).as_posix())
         return False, tuple(inside)
-
-    @staticmethod
-    def __pytest_harness(target: Target, root: Path) -> Iterator[tuple[str, tuple[str, ...]]]:
-        """The test file and every conftest above the node, with the plugins each names."""
-        place = PurePosixPath(target.node)
-        for candidate in [
-            PurePosixPath(target.file),
-            *(item / "conftest.py" for item in (place, *place.parents)),
-        ]:
-            if (root / candidate).is_file():
-                yield candidate.as_posix(), _pytest_plugins(root / candidate)
-
-    @staticmethod
-    def __pytest_config(target: Target, root: Path) -> str:
-        """The pytest configuration governing the node, nearest first as pytest adopts it, empty
-        for none."""
-        place = PurePosixPath(target.node)
-        for item in (place, *place.parents):
-            for name, carries in _PYTEST_CONFIGS:
-                candidate = item / name
-                if (root / candidate).is_file() and carries(root / candidate):
-                    return candidate.as_posix()
-        return ""
 
     @staticmethod
     def __outermost(needs: Sequence[str]) -> tuple[str, ...]:
@@ -341,18 +259,122 @@ class Closure(FrozenModel):
         )
 
     @staticmethod
-    def __admissible(needs: Sequence[str], files: set[str]) -> None:
-        """Refuse a need that could not be linked: one leaving the workspace, or one over code."""
-        for need in needs:
-            posix = PurePosixPath(need)
-            if posix.is_absolute() or ".." in posix.parts:
-                raise MissionError(f"a need must be a workspace-relative path, not {need!r}")
-            shadowed = [file for file in files if file == need or file.startswith(f"{need}/")]
-            if shadowed:
-                raise MissionError(
-                    f"the need {need!r} would sit over shipped code ({shadowed[0]}); a need is "
-                    "data the job reads, declared beside the code rather than around it"
+    def __package(module: Module) -> str:
+        """The top-level package directory `module` belongs to under its distribution root."""
+        inside = PurePosixPath(module.path).relative_to(module.root)
+        return (PurePosixPath(module.root) / inside.parts[0]).as_posix()
+
+    @staticmethod
+    def __pinned(resource: str, root: Path, sources: SourceTree) -> list[str]:
+        """The files a declared resource pins: itself, or everything kept under it.
+
+        They are brought back from the lake first when the tree no longer holds them.
+        """
+        posix = PurePosixPath(resource)
+        if posix.is_absolute() or ".." in posix.parts:
+            raise MissionError(f"a resource must be a workspace-relative path, not {resource!r}")
+        if not (root / resource).exists():
+            EvidenceTree(root).restore([root / resource])
+        if (root / resource).is_dir():
+            return sources.kept(resource)
+        if (root / resource).is_file():
+            return [posix.as_posix()]
+        raise MissionError(f"the declared resource {resource!r} is not in the workspace")
+
+    @staticmethod
+    def __placed(file: str, *, root: Path, config: str) -> str:
+        """`file`'s import root, workspace-relative, never above the pytest config's directory."""
+        home = home_of(root / file, root=root)
+        if config and home.is_relative_to((root / config).parent):
+            home = (root / config).parent
+        return home.relative_to(root).as_posix()
+
+    @staticmethod
+    def __pytest_config(target: Target, root: Path) -> str:
+        """The pytest configuration governing the node, empty for none.
+
+        The nearest is taken first, as pytest adopts it.
+        """
+        place = PurePosixPath(target.node)
+        for item in (place, *place.parents):
+            for name, carries in _PYTEST_CONFIGS:
+                candidate = item / name
+                if (root / candidate).is_file() and carries(root / candidate):
+                    return candidate.as_posix()
+        return ""
+
+    @staticmethod
+    def __pytest_harness(target: Target, root: Path) -> Iterator[tuple[str, tuple[str, ...]]]:
+        """The test file and every conftest above the node, with the plugins each names."""
+        place = PurePosixPath(target.node)
+        for candidate in [
+            PurePosixPath(target.file),
+            *(item / "conftest.py" for item in (place, *place.parents)),
+        ]:
+            if (root / candidate).is_file():
+                yield candidate.as_posix(), Closure._pytest_plugins(root / candidate)
+
+    @staticmethod
+    def _defined(root: Path) -> set[str]:
+        """The top-level names importable from `root`.
+
+        Those are its packages, namespace portions included, and its bare modules. A portion is a
+        directory without an initializer holding a module or a package, so code in one is guarded
+        as a regular package's is.
+        """
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            return set()
+        return {
+            entry.name
+            for entry in entries
+            if entry.name.isidentifier()
+            and entry.is_dir()
+            and (
+                (entry / "__init__.py").is_file()
+                or any(
+                    child.suffix == ".py" or (child / "__init__.py").is_file()
+                    for child in entry.iterdir()
                 )
+            )
+        } | {entry.stem for entry in entries if entry.suffix == ".py" and entry.is_file()}
+
+    @staticmethod
+    def _plugins_value(node: ast.stmt) -> ast.expr | None:
+        """The value `node` assigns to `_PLUGINS`, None when it is not that assignment."""
+        match node:
+            case ast.Assign(targets=targets, value=value) if any(
+                isinstance(target, ast.Name) and target.id == _PLUGINS for target in targets
+            ):
+                return value
+            case ast.AnnAssign(target=ast.Name(id=name), value=value) if name == _PLUGINS:
+                return value
+        return None
+
+    @staticmethod
+    def _pytest_plugins(file: Path) -> tuple[str, ...]:
+        """The plugin modules `file` names in a literal `pytest_plugins` (a string or a sequence).
+
+        Anything needing execution to be known is refused rather than guessed at.
+        """
+        for node in parsed(file).body:
+            if (value := Closure._plugins_value(node)) is None:
+                continue
+            try:
+                literal = ast.literal_eval(value)
+            except ValueError as opaque:
+                raise MissionError(
+                    f"`{_PLUGINS}` in {file} must be a literal module name or list of them, since "
+                    f"the file is read without being imported; {opaque}"
+                ) from None
+            names = (literal,) if isinstance(literal, str) else tuple(literal)
+            if not all(isinstance(name, str) for name in names):
+                raise MissionError(
+                    f"`{_PLUGINS}` in {file} must name modules as strings, not {names!r}"
+                )
+            return names
+        return ()
 
 
 # The variable a conftest names its plugins by.
@@ -382,89 +404,3 @@ _PYTEST_CONFIGS: tuple[tuple[str, Callable[[Path], bool]], ...] = (
     ("tox.ini", partial(_has_ini_section, section="pytest")),
     ("setup.cfg", partial(_has_ini_section, section="tool:pytest")),
 )
-
-
-def _pytest_plugins(file: Path) -> tuple[str, ...]:
-    """The plugin modules `file` names in a literal `pytest_plugins` (a string or a sequence).
-
-    Anything needing execution to be known is refused rather than guessed at.
-    """
-    for node in parsed(file).body:
-        if (value := _plugins_value(node)) is None:
-            continue
-        try:
-            literal = ast.literal_eval(value)
-        except ValueError as opaque:
-            raise MissionError(
-                f"`{_PLUGINS}` in {file} must be a literal module name or list of them, since "
-                f"the file is read without being imported; {opaque}"
-            ) from None
-        names = (literal,) if isinstance(literal, str) else tuple(literal)
-        if not all(isinstance(name, str) for name in names):
-            raise MissionError(
-                f"`{_PLUGINS}` in {file} must name modules as strings, not {names!r}"
-            )
-        return names
-    return ()
-
-
-def _plugins_value(node: ast.stmt) -> ast.expr | None:
-    """The value `node` assigns to `_PLUGINS`, None when it is not that assignment."""
-    match node:
-        case ast.Assign(targets=targets, value=value) if any(
-            isinstance(target, ast.Name) and target.id == _PLUGINS for target in targets
-        ):
-            return value
-        case ast.AnnAssign(target=ast.Name(id=name), value=value) if name == _PLUGINS:
-            return value
-    return None
-
-
-def _absolute(package: str, *, level: int, name: str) -> str | None:
-    """`name` (empty for `from . import x`) imported from module `package` with `level` leading
-    dots, None past the top package."""
-    if not level:
-        return name
-    parts = package.split(".")[:-1]
-    if level - 1 >= len(parts):
-        return None
-    base = parts[: len(parts) - (level - 1)]
-    return ".".join([*base, name] if name else base)
-
-
-def _dynamic(call: ast.Call) -> str:
-    """The absolute literal `import_module("a.b")` or `__import__("a.b")` imports, else empty."""
-    func = call.func
-    named = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-    if named not in _DYNAMIC or not call.args:
-        return ""
-    literal = call.args[0]
-    if not isinstance(literal, ast.Constant) or not isinstance(literal.value, str):
-        return ""
-    return "" if literal.value.startswith(".") else literal.value
-
-
-def _defined(root: Path) -> set[str]:
-    """The top-level names importable from `root`.
-
-    Those are its packages, namespace portions included, and its bare modules. A portion is a
-    directory without an initializer holding a module or a package, so code in one is guarded as
-    a regular package's is.
-    """
-    try:
-        entries = list(root.iterdir())
-    except OSError:
-        return set()
-    return {
-        entry.name
-        for entry in entries
-        if entry.name.isidentifier()
-        and entry.is_dir()
-        and (
-            (entry / "__init__.py").is_file()
-            or any(
-                child.suffix == ".py" or (child / "__init__.py").is_file()
-                for child in entry.iterdir()
-            )
-        )
-    } | {entry.stem for entry in entries if entry.suffix == ".py" and entry.is_file()}

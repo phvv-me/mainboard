@@ -55,21 +55,6 @@ class SettlementBusy(FrozenModel):
     age_s: float | None = None
     last_success: str = ""
 
-    @property
-    def note(self) -> str:
-        """The line a listing or a wait prints, so cached states never read as current."""
-        held = (
-            f"pid {self.owner.pid} on {self.owner.host}, started {self.owner.started_at} "
-            f"({since(self.owner.started_at)} ago), phase {self.owner.phase}, "
-            f"heartbeat {self.owner.heartbeat}, deadline {self.owner.deadline or 'none'}"
-            if self.owner
-            else "holder unknown (an older release, or a pass still starting)"
-        )
-        return (
-            f"settlement busy: {held}; states are cached; "
-            f"last successful pass {self.last_success or 'unknown'}"
-        )
-
     @classmethod
     def read(cls, lock_file: Path) -> SettlementBusy:
         """The holder of `lock_file` as its record describes it, which may be missing or stale."""
@@ -90,6 +75,21 @@ class SettlementBusy(FrozenModel):
             last_success=last_settlement(lock_file.parent),
         )
 
+    @property
+    def note(self) -> str:
+        """The line a listing or a wait prints, so cached states never read as current."""
+        held = (
+            f"pid {self.owner.pid} on {self.owner.host}, started {self.owner.started_at} "
+            f"({since(self.owner.started_at)} ago), phase {self.owner.phase}, "
+            f"heartbeat {self.owner.heartbeat}, deadline {self.owner.deadline or 'none'}"
+            if self.owner
+            else "holder unknown (an older release, or a pass still starting)"
+        )
+        return (
+            f"settlement busy: {held}; states are cached; "
+            f"last successful pass {self.last_success or 'unknown'}"
+        )
+
 
 class SettlementLock(FileLock):
     """The settlement lock made visible: its holder records who it is beside the lock file.
@@ -99,24 +99,6 @@ class SettlementLock(FileLock):
     """
 
     owner: SettlementOwner
-
-    def phase(self, phase: str, *, deadline: str = "") -> None:
-        """Record what the holder is doing now.
-
-        deadline: when this pass stops itself, kept from an earlier call when empty.
-        """
-        self.owner = self.owner.model_copy(
-            update={
-                "phase": phase,
-                "heartbeat": now(),
-                "deadline": deadline or self.owner.deadline,
-            }
-        )
-        _replace(Path(self.lock_file).with_name(_OWNER), self.owner.model_dump_json())
-
-    def succeeded(self) -> None:
-        """Stamp that a pass ran to its end, whatever it found."""
-        _replace(Path(self.lock_file).with_name(_SUCCESS), now())
 
     def _acquire(self) -> None:
         super()._acquire()
@@ -136,6 +118,24 @@ class SettlementLock(FileLock):
             Path(self.lock_file).with_name(_OWNER).unlink(missing_ok=True)
         finally:
             super()._release()
+
+    def phase(self, phase: str, *, deadline: str = "") -> None:
+        """Record what the holder is doing now.
+
+        deadline: when this pass stops itself, kept from an earlier call when empty.
+        """
+        self.owner = self.owner.model_copy(
+            update={
+                "phase": phase,
+                "heartbeat": now(),
+                "deadline": deadline or self.owner.deadline,
+            }
+        )
+        _replace(Path(self.lock_file).with_name(_OWNER), self.owner.model_dump_json())
+
+    def succeeded(self) -> None:
+        """Stamp that a pass ran to its end, whatever it found."""
+        _replace(Path(self.lock_file).with_name(_SUCCESS), now())
 
 
 def last_settlement(run: Path) -> str:

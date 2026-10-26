@@ -1,7 +1,7 @@
 from ..core.errors import MissionError
 from ..core.project import Project
-from ..engines.compile.vendor import path_deps, relocated
-from ..manifest.schema.container import Container
+from ..engines.compile.inputs.vendor import path_deps, relocated
+from ..manifest.schema.compute.container import Container
 from ..manifest.schema.root import Manifest
 from .plan import ExecutionPlan
 
@@ -15,6 +15,17 @@ class Resolver:
     def __init__(self, manifest: Manifest) -> None:
         """manifest: the loaded workspace manifest plans resolve against."""
         self.manifest = manifest
+
+    def _container(self, name: str) -> Container | None:
+        if not name:
+            return None
+        try:
+            return self.manifest.containers[name]
+        except KeyError:
+            declared = sorted(self.manifest.containers)
+            raise MissionError(
+                f"no container {name!r}; declared containers are {declared}"
+            ) from None
 
     def plan(self, host: str = "local", *, env: str = "", container: str = "") -> ExecutionPlan:
         """The execution plan for `host` (`local` for this machine), overrides beating the profile.
@@ -31,7 +42,7 @@ class Resolver:
             # missing one refused the lock the workstation had just vouched for (2026-09-29).
             # A built archive is a file with no metadata beside it, so it ships no such path.
             metadata = [
-                f"{relocated(name, path)}/pyproject.toml"
+                f"{relocated(name, path=path)}/pyproject.toml"
                 for name, path in sorted(path_deps(self.manifest).items())
                 if not path.endswith(_ARCHIVES)
             ]
@@ -48,14 +59,3 @@ class Resolver:
             vars={**self.manifest.vars, **profile.vars},
             exports=profile.exports,
         )
-
-    def _container(self, name: str) -> Container | None:
-        if not name:
-            return None
-        try:
-            return self.manifest.containers[name]
-        except KeyError:
-            declared = sorted(self.manifest.containers)
-            raise MissionError(
-                f"no container {name!r}; declared containers are {declared}"
-            ) from None

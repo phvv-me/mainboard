@@ -18,7 +18,7 @@ class Owners:
     markers: file names that make the directory holding them an owner.
     """
 
-    def __init__(self, root: Path, patterns: Sequence[str], markers: Sequence[str]) -> None:
+    def __init__(self, root: Path, patterns: Sequence[str], *, markers: Sequence[str]) -> None:
         self.root = root
         self.patterns = tuple(patterns)
         self.markers = tuple(markers)

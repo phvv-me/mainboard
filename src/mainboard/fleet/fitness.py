@@ -1,0 +1,324 @@
+# Whether one machine, as its census describes it, can serve this workspace: the census read
+# against what the manifest and its lock ask for. It is the single judge behind the findings
+# `host list`, `host setup` and `doctor --center` show, so a driver too old for
+# the lock is the same sentence wherever it surfaces.
+
+import re
+from collections import Counter
+from enum import StrEnum, auto
+from typing import TYPE_CHECKING
+
+from packaging.version import Version
+
+from ..center.readiness.workstation import abbreviated, install_command
+from ..core.errors import MissionError
+from ..core.execution.host import current_platform
+from ..core.section import Section, Verdict
+from ..engines.compile.inputs.platforms import SystemFloors
+from ..engines.compile.pixi.lock import packages
+from ..engines.compile.pixi.lockfile import Lockfile
+from ..engines.compile.provisioner import Provisioner
+from ..git.process import Git
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ..manifest.schema.compute.host import HostProfile
+    from ..manifest.schema.root import Manifest
+    from ..probe.system import System
+
+# The CUDA a locked build was compiled against, as a PyPI wheel spells it (`+cu132`, `/cu132/`)
+# and as conda pins it (`cuda-version-13.0-...`).
+_WHEEL_CUDA = re.compile(r"[+/]cu(\d{2})(\d)\b")
+_CONDA_CUDA = re.compile(r"/cuda-version-(\d+\.\d+)-")
+
+# The oldest CUDA whose builds carry kernels for each compute capability generation, newest
+# first. A card newer than every kernel a build carries has nothing to run, which is what a
+# Blackwell card on a CUDA 12.4 torch looks like: it imports, then fails its first launch.
+_KERNELS = ((Version("10.0"), Version("12.8")), (Version("8.9"), Version("11.8")))
+
+# Scheduler kinds whose ssh endpoint is a login node, whose cards say nothing about a job's.
+_LOGIN_NODES = frozenset({"pbs", "slurm"})
+
+# Free bytes needed where the workspace lives: a center holds the whole tree and every
+# environment, a target one mirror.
+_DISK = {"center": 60 * 10**9, "target": 20 * 10**9}
+
+_CENTER_TOOLS = ("git", "git-lfs", "gh", "ssh")
+
+_DRIVERS = "install a newer NVIDIA driver (https://www.nvidia.com/Download/index.aspx)"
+
+
+class Role(StrEnum):
+    """What a machine is for: the center that holds the monorepo, or a target that runs jobs."""
+
+    CENTER = auto()
+    TARGET = auto()
+
+
+def _row(section: str, verdict: Verdict, detail: str, *, fix: str = "") -> Section:
+    return Section(section=section, verdict=verdict, detail=detail, fix=fix)
+
+
+class Fitness:
+    """Judge one machine's census against this workspace's manifest and lock.
+
+    root: the workspace root, where the lock and the tracked paths are read.
+    """
+
+    def __init__(self, root: Path, manifest: Manifest) -> None:
+        self.root = root
+        self.manifest = manifest
+        self.locks: dict[str, dict[str, list[str]] | None] = {}
+
+    def _builds(self, system: System, environment: str) -> Section:
+        """Whether the locked CUDA builds run on this driver and carry kernels for this card.
+
+        CUDA's minor-version compatibility runs a build on any driver of its major version, the
+        rule conda's `cuda-version X.Y` states as `__cuda >=X`, so only a newer major fails.
+        """
+        built = self._built(system.platform, environment=environment)
+        if built is None or not system.gpus:
+            return _row("cuda-builds", Verdict.PASS, "no CUDA builds locked for this card to run")
+        driver = system.driver_cuda
+        if driver is not None and driver.major < built.major:
+            detail = (
+                f"builds locked for CUDA {built} need a CUDA {built.major} driver, not {driver}"
+            )
+            return _row("cuda-builds", Verdict.FAIL, detail, fix=_DRIVERS)
+        capability = system.capability
+        needed = next(
+            (cuda for generation, cuda in _KERNELS if capability and capability >= generation),
+            None,
+        )
+        if needed is not None and built < needed:
+            return _row(
+                "cuda-builds",
+                Verdict.FAIL,
+                f"compute capability {capability} needs CUDA {needed} builds, "
+                f"the lock holds CUDA {built}",
+                fix=f"raise the CUDA of the locked builds, then mb lock {environment}",
+            )
+        detail = f"CUDA {built} builds run on this driver and card"
+        if driver is not None and driver < built:
+            detail = (
+                f"CUDA {built} builds run on this CUDA {driver} driver by minor-version "
+                "compatibility"
+            )
+        return _row("cuda-builds", Verdict.PASS, detail)
+
+    def _built(self, platform: str, *, environment: str) -> Version | None:
+        """The newest CUDA any build locked for `platform` was compiled against, None for none."""
+        builds = (self._locked(environment) or {}).get(platform, [])
+        found = [
+            Version(f"{wheel[1]}.{wheel[2]}")
+            for location in builds
+            for wheel in _WHEEL_CUDA.finditer(location)
+        ] + [Version(conda[1]) for location in builds for conda in _CONDA_CUDA.finditer(location)]
+        return max(found, default=None)
+
+    def _cards(self, system: System, profile: HostProfile, environment: str) -> list[Section]:
+        """The driver, the locked CUDA builds and the card memory, against what jobs need.
+
+        A scheduler's ssh endpoint is its login node, whose cards (usually none) say nothing
+        about the compute node a job lands on, so such a host answers once, with that caveat.
+        """
+        if profile.kind in _LOGIN_NODES:
+            detail = f"{profile.kind} login node; cards are a compute node's, not read here"
+            return [_row("cards", Verdict.PASS, detail)]
+        floors = SystemFloors(declared=self._floors(environment)).on(system.platform)
+        return [
+            self._driver(system, floors.get("cuda", "")),
+            self._builds(system, environment),
+            self._memory(system, profile),
+        ]
+
+    def _case(self, system: System) -> Section:
+        """Whether the tracked tree checks out whole on this filesystem's idea of a name."""
+        if system.case_sensitive:
+            return _row("case", Verdict.PASS, "case-sensitive filesystem")
+        listed = [path for path in Git(self.root).run("ls-files", "-z").stdout.split("\0") if path]
+        counted = Counter(path.casefold() for path in listed)
+        clashes = sorted(path for path in listed if counted[path.casefold()] > 1)
+        if not clashes:
+            detail = "case-insensitive filesystem, and no tracked paths differ only in case"
+            return _row("case", Verdict.PASS, detail)
+        return _row(
+            "case",
+            Verdict.FAIL,
+            f"case-insensitive filesystem, and {len(clashes)} tracked paths differ only in "
+            f"case: {abbreviated(clashes)}",
+            fix="rename one of each colliding pair in the repository",
+        )
+
+    def _disk(self, system: System, role: Role) -> Section:
+        """Whether the disk where the workspace lives has room for it."""
+        need = _DISK[role]
+        free = f"{system.free_bytes / 1e9:.0f} GB free at {system.root}"
+        if system.free_bytes < need:
+            return _row("disk", Verdict.WARN, f"{free}, a {role} wants {need / 1e9:.0f}")
+        return _row("disk", Verdict.PASS, free)
+
+    def _driver(self, system: System, floor: str) -> Section:
+        """Whether the NVIDIA driver supports the CUDA floor the workspace solved against."""
+        found = system.driver_cuda
+        if not floor:
+            return _row("driver", Verdict.PASS, f"no CUDA floor on {system.platform}")
+        if found is None:
+            detail = f"no NVIDIA driver answered, and the workspace solves CUDA {floor} builds"
+            return _row("driver", Verdict.WARN, detail, fix=_DRIVERS)
+        if found < Version(floor):
+            detail = f"the driver supports CUDA {found}, below the workspace floor {floor}"
+            return _row("driver", Verdict.FAIL, detail, fix=_DRIVERS)
+        return _row("driver", Verdict.PASS, f"driver CUDA {found} meets the floor {floor}")
+
+    def _floors(self, environment: str) -> dict[str, str]:
+        """The floors `environment` solves against, its own over the workspace's."""
+        try:
+            own = self.manifest.environment(environment).system
+        except MissionError:
+            own = {}
+        return own or self.manifest.system
+
+    def _line_endings(self, system: System) -> Section:
+        """Whether text checks out with the newline the repository stores."""
+        automatic = system.git.get("core.autocrlf", "")
+        attributes = self.root / ".gitattributes"
+        pinned = attributes.is_file() and "eol=" in attributes.read_text(encoding="utf-8")
+        if automatic == "true" and not pinned:
+            return _row(
+                "line-endings",
+                Verdict.WARN,
+                "core.autocrlf=true rewrites every text file to CRLF on checkout",
+                fix="git config --global core.autocrlf input",
+            )
+        how = (
+            "the repository's .gitattributes"
+            if pinned
+            else f"core.autocrlf={automatic or 'unset'}"
+        )
+        return _row("line-endings", Verdict.PASS, f"newlines follow {how}")
+
+    def _links(self, system: System) -> Section:
+        """Whether the repository's symbolic links survive a checkout here."""
+        if not system.symlinks:
+            return _row("links", Verdict.PASS, "symbolic links work")
+        return _row(
+            "links",
+            Verdict.WARN,
+            f"symbolic links cannot be made where the workspace lives: {system.symlinks}",
+            fix="keep the workspace on a filesystem that holds links (APFS, ext4, XFS)",
+        )
+
+    def _lock(self, system: System, environment: str) -> Section:
+        """Whether the lock this workspace solved holds builds for this machine's platform."""
+        install = f"mb lock {environment}"
+        held = self._locked(environment)
+        if held is None:
+            return _row("lock", Verdict.WARN, f"{environment}: nothing solved yet", fix=install)
+        if not (builds := held.get(system.platform, [])):
+            detail = f"{environment}: the lock holds no {system.platform} builds"
+            return _row("lock", Verdict.FAIL, detail, fix=install)
+        detail = f"{environment}: {len(builds)} {system.platform} builds locked"
+        return _row("lock", Verdict.PASS, detail)
+
+    def _locked(self, environment: str) -> dict[str, list[str]] | None:
+        """What `environment`'s lock installs per platform, read once; None when never solved.
+
+        The committed lock when it holds one, since an install materializes the cached copy
+        from it; a fresh clone holds nothing else.
+        """
+        if environment not in self.locks:
+            committed = Lockfile(self.root).get(environment)
+            path = Provisioner(self.root, self.manifest).pixi_for(environment).lock
+            try:
+                text = committed.lock if committed else path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                self.locks[environment] = None
+            else:
+                self.locks[environment] = packages(text)
+        return self.locks[environment]
+
+    def _memory(self, system: System, profile: HostProfile) -> Section:
+        """Whether the cards hold what the profile declares a job there needs."""
+        need = profile.defaults.vram_gb
+        cards = len(system.gpus)
+        if (wanted := profile.defaults.gpus) > cards:
+            detail = f"jobs here ask for {wanted} cards, the machine has {cards}"
+            return _row("memory", Verdict.FAIL, detail)
+        have = system.vram_mb / 1024
+        if need and have < need:
+            detail = f"jobs here need {need} GB of card memory, the largest card holds {have:.0f}"
+            return _row("memory", Verdict.FAIL, detail)
+        unified = " (unified with system memory)" if system.unified else ""
+        detail = f"{cards} cards, largest {have:.0f} GB{unified}" + (
+            f", jobs need {need}" if need else ""
+        )
+        return _row("memory", Verdict.PASS, detail)
+
+    def _platform(self, system: System) -> Section:
+        """Whether the workspace declares this machine's platform at all."""
+        declared = self.manifest.workspace.platforms or [current_platform()]
+        if system.platform in declared:
+            return _row(
+                "platform",
+                Verdict.PASS,
+                f"{system.summary()} is {system.platform}, which the workspace declares",
+            )
+        return _row(
+            "platform",
+            Verdict.FAIL,
+            f"{system.platform} is not among the declared platforms {declared}",
+            fix=f'add "{system.platform}" to [workspace] platforms, then mainboard lock',
+        )
+
+    def _shell(self, system: System) -> Section:
+        """Whether the shells the agents run commands through are here."""
+        return _row("shells", Verdict.PASS, ", ".join(sorted(system.shells)))
+
+    def _tools(self, system: System) -> Section:
+        """Whether every tool a center runs answers, and which versions it found."""
+        missing = [tool for tool in _CENTER_TOOLS if tool not in system.tools]
+        found = ", ".join(f"{name} {version}" for name, version in sorted(system.tools.items()))
+        if not missing:
+            return _row("tools", Verdict.PASS, found)
+        return _row(
+            "tools",
+            Verdict.FAIL,
+            f"missing {', '.join(missing)}; found {found or 'nothing'}",
+            fix="; ".join(install_command(system.system, package=tool) for tool in missing),
+        )
+
+    def judge(
+        self, system: System, *, host: str = "local", role: Role = Role.TARGET
+    ) -> list[Section]:
+        """Every finding about `system`, one row per question.
+
+        A machine no census described is one row saying so, since every other question would
+        only repeat that absence. A center is also asked about its tooling and its checkout.
+
+        host: the alias whose profile says which environment and card the machine serves.
+        """
+        if not system.surveyed:
+            fix = f"mainboard host setup {host}" if host != "local" else ""
+            return [
+                _row(
+                    "census", Verdict.WARN, "no software census recorded for this machine", fix=fix
+                )
+            ]
+        profile = self.manifest.profile(host)
+        found = [
+            self._platform(system),
+            self._lock(system, profile.env),
+            *self._cards(system, profile, profile.env),
+            self._disk(system, role),
+        ]
+        if role is Role.CENTER:
+            found += [
+                self._tools(system),
+                self._links(system),
+                self._case(system),
+                self._line_endings(system),
+                self._shell(system),
+            ]
+        return found

@@ -1,5 +1,3 @@
-from collections.abc import Sequence
-
 import tomlkit
 import tomlkit.items
 from tomlkit.container import OutOfOrderTableProxy
@@ -11,6 +9,9 @@ _ASSIGN = len("= ")
 # version it also states (a binary's `url` and `sha256` beside its `version`).
 _SOURCES = {"path", "git", "url"}
 
+# One level of the manifest a table path walks through.
+type _Level = tomlkit.TOMLDocument | tomlkit.items.Table | OutOfOrderTableProxy
+
 
 class ManifestText:
     """The workspace manifest edited through tomlkit, which keeps comments and quoting.
@@ -19,39 +20,93 @@ class ManifestText:
     heading comment staying with its table rather than the entry appended above it.
     """
 
+    @staticmethod
+    def _append(table: tomlkit.items.Table, name: str, *, spec: str) -> None:
+        """Declare a new `name` padded to the column, beneath the last requirement."""
+        key = tomlkit.key(name)
+        key.sep = " " * max(ManifestText._column(table) - len(name) - _ASSIGN, 1) + "= "
+        # tomlkit files the trailing whitespace and comments inside the table's body, so lift
+        # them off, append, and lay them back down.
+        body = table.value.body
+        trailing = []
+        while body and body[-1][0] is None:
+            trailing.append(body.pop())
+        table.append(key, tomlkit.item(spec))
+        body.extend(reversed(trailing))
+
+    @staticmethod
+    def _column(table: tomlkit.items.Table) -> int:
+        """The column this table starts its values in: key text plus separator, 0 when empty."""
+        return max(
+            (len(str(key)) + len(key.sep) for key, _ in table.value.body if key is not None),
+            default=0,
+        )
+
+    @staticmethod
+    def _exact(constraint: str) -> bool:
+        """Whether `constraint` is one `==` clause naming a single release (`==1.9.0`).
+
+        That is the one spelling every ecosystem reads as exact; a bare `0.3.13` is a caret range
+        to cargo.
+        """
+        clauses = [clause.strip() for clause in constraint.split(",") if clause.strip()]
+        return len(clauses) == 1 and clauses[0].startswith("==") and "*" not in clauses[0]
+
+    @staticmethod
+    def _level(table: _Level, path: tuple[str, ...], made: tomlkit.items.Table | None) -> _Level:
+        """The table `path`'s last key names inside `table`, `made` there when absent."""
+        key, where = path[-1], f"[{'.'.join(path)}]"
+        if key not in table:
+            if made is None:
+                raise MissionError(f"{where} is not in this manifest")
+            table[key] = made
+        match table[key]:
+            case tomlkit.items.Table() | OutOfOrderTableProxy() as nested:
+                return nested
+            case _:
+                raise MissionError(f"{where} is not a table of requirements")
+
+    @staticmethod
+    def _replace(table: tomlkit.items.Table, name: str, *, spec: str) -> None:
+        """Point `name` at `spec`, keeping its alignment, its comment's column and its fields.
+
+        One written as a table (`{ version = ..., extras = [...] }`) changes only its version.
+        """
+        width = len(table[name].as_string())
+        match table[name]:
+            case tomlkit.items.InlineTable() | tomlkit.items.Table() as fields:
+                fields["version"] = spec
+            case _:
+                table[name] = spec
+        # tomlkit keeps the whitespace before a comment, which moves it by the value's growth.
+        trivia = table[name].trivia
+        if trivia.comment:
+            grown = len(table[name].as_string()) - width
+            trivia.comment_ws = " " * max(len(trivia.comment_ws) - grown, 1)
+
     def __init__(self, text: str) -> None:
         self.document = tomlkit.parse(text)
 
     def constraint(self, path: tuple[str, ...], name: str) -> str:
-        """What `name` is pinned to in the table at `path`, its version when written as a
-        table, or a source spec as written."""
-        declared = self.table(path)[name]
-        if isinstance(declared, str):
-            return declared
-        if isinstance(declared, dict) and "version" in declared:
-            return str(declared["version"])
-        return tomlkit.dumps({name: declared}).partition("=")[2].strip()
+        """What `name` is pinned to in the table at `path`.
 
-    def versioned(self, path: tuple[str, ...], name: str) -> bool:
-        """Whether `name` in the table at `path` names a version to raise: a bare requirement
-        or a table carrying one, not a path, git or url source, nor a workspace member the
-        manifest declares only through `[workspace] members`, nor an exact pin, which states the
-        one release it must be (a registered estimator kept byte-stable) rather than a range."""
-        if not self.declares(path, name):
-            return False
+        That is its version when written as a table, or a source spec as written.
+        """
         declared = self.table(path)[name]
-        if isinstance(declared, dict) and not _SOURCES & declared.keys():
-            declared = declared.get("version")
-        return isinstance(declared, str) and not _exact(declared)
+        match declared.unwrap():
+            case str() as constraint:
+                return constraint
+            case {"version": version}:
+                return str(version)
+            case _:
+                return tomlkit.dumps({name: declared}).partition("=")[2].strip()
 
-    def declares(self, path: Sequence[str], name: str) -> bool:
+    def declares(self, path: tuple[str, ...], name: str) -> bool:
         """Whether the table at `path` exists and carries `name`."""
-        table = self.document
-        for key in path:
-            if not isinstance(table, dict) or key not in table:
-                return False
-            table = table[key]
-        return isinstance(table, dict) and name in table
+        try:
+            return name in self.table(path)
+        except MissionError:
+            return False
 
     def drop(self, path: tuple[str, ...], name: str) -> None:
         """Remove `name` from the table at `path`, and any table left empty, undoing a `put`."""
@@ -72,28 +127,9 @@ class ManifestText:
         """
         table = self.table(path, create=True)
         if name in table:
-            declared = table[name]
-            width = len(declared.as_string())
-            if isinstance(declared, dict):
-                declared["version"] = spec
-            else:
-                table[name] = spec
-            # tomlkit keeps the whitespace before a comment, which moves it by the value's growth.
-            trivia = table[name].trivia
-            if trivia.comment:
-                grown = len(table[name].as_string()) - width
-                trivia.comment_ws = " " * max(len(trivia.comment_ws) - grown, 1)
-            return
-        key = tomlkit.key(name)
-        key.sep = " " * max(ManifestText._column(table) - len(name) - _ASSIGN, 1) + "= "
-        # tomlkit files the trailing whitespace and comments inside the table's body, so lift
-        # them off, append, and lay them back down.
-        body = table.value.body
-        trailing = []
-        while body and body[-1][0] is None:
-            trailing.append(body.pop())
-        table.append(key, tomlkit.item(spec))
-        body.extend(reversed(trailing))
+            ManifestText._replace(table, name, spec=spec)
+        else:
+            ManifestText._append(table, name, spec=spec)
 
     def table(self, path: tuple[str, ...], *, create: bool = False) -> tomlkit.items.Table:
         """The table at `path`, created on request as one `[rust.deps]` heading, not a nest.
@@ -103,34 +139,34 @@ class ManifestText:
         `OutOfOrderTableProxy`, which is walked through like a table; the requirements' own
         table at the end is always a real one.
         """
-        table: tomlkit.TOMLDocument | tomlkit.items.Table | OutOfOrderTableProxy = self.document
-        for at, key in enumerate(path):
-            if key not in table:
-                if not create:
-                    raise MissionError(f"[{'.'.join(path[: at + 1])}] is not in this manifest")
-                table[key] = tomlkit.table(is_super_table=at < len(path) - 1)
-            nested = table[key]
-            if not isinstance(nested, tomlkit.items.Table | OutOfOrderTableProxy):
-                raise MissionError(f"[{'.'.join(path[: at + 1])}] is not a table of requirements")
-            table = nested
-        if not isinstance(table, tomlkit.items.Table):
-            raise MissionError(f"[{'.'.join(path)}] is not a table of requirements")
-        return table
+        table: _Level = self.document
+        for at in range(len(path)):
+            # Every level but the last is only a heading prefix, never written on its own.
+            made = tomlkit.table(is_super_table=at < len(path) - 1) if create else None
+            table = ManifestText._level(table, path[: at + 1], made)
+        match table:
+            case tomlkit.items.Table():
+                return table
+            case _:
+                raise MissionError(f"[{'.'.join(path)}] is not a table of requirements")
 
     def text(self) -> str:
         return tomlkit.dumps(self.document)
 
-    @staticmethod
-    def _column(table: tomlkit.items.Table) -> int:
-        """The column this table starts its values in: key text plus separator, 0 when empty."""
-        return max(
-            (len(str(key)) + len(key.sep) for key, _ in table.value.body if key is not None),
-            default=0,
-        )
+    def versioned(self, path: tuple[str, ...], name: str) -> bool:
+        """Whether `name` in the table at `path` names a version to raise.
 
-
-def _exact(constraint: str) -> bool:
-    """Whether `constraint` is one `==` clause naming a single release (`==1.9.0`), the one
-    spelling every ecosystem reads as exact; a bare `0.3.13` is a caret range to cargo."""
-    clauses = [clause.strip() for clause in constraint.split(",") if clause.strip()]
-    return len(clauses) == 1 and clauses[0].startswith("==") and "*" not in clauses[0]
+        It does for a bare requirement or a table carrying one, not for a path, git or url source,
+        nor a workspace member the manifest declares only through `[workspace] members`, nor an
+        exact pin, which states the one release it must be (a registered estimator kept
+        byte-stable) rather than a range.
+        """
+        if not self.declares(path, name):
+            return False
+        match self.table(path)[name].unwrap():
+            case str() as version:
+                return not ManifestText._exact(version)
+            case {"version": str() as version, **fields} if not _SOURCES & fields.keys():
+                return not ManifestText._exact(version)
+            case _:
+                return False

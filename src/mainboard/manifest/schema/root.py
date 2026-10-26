@@ -5,22 +5,22 @@ from typing import ClassVar
 from pydantic import PrivateAttr, model_validator
 
 from ...core.errors import MissionError
-from .admission import Admission
-from .app import App
-from .ci import Ci
-from .container import Container
+from .compute.admission import Admission
+from .compute.container import Container
+from .compute.host import HostProfile
 from .environment import Env, Task
 from .figures.figure import FigureSpec
-from .gate import Gate
-from .git import GitPolicy
-from .host import HostProfile
-from .lint import Lint
-from .paper import Paper
-from .plot import PlotStyle
+from .figures.paper import Paper
+from .figures.plot import PlotStyle
+from .project.ci import Ci
+from .project.git import GitPolicy
+from .project.lint import Lint
+from .project.template import Template
+from .project.workspace import Header
 from .scope import PlatformScope, Scope
-from .template import Template
-from .tracking import Tracking
-from .workspace import Header
+from .services.app import App
+from .services.gate import Gate
+from .services.tracking import Tracking
 
 _DEFAULTS_KEY = "defaults"
 _RESERVED_ENVS = frozenset({"default", "dev"})
@@ -105,17 +105,6 @@ class Manifest(Scope):
             )
         return self
 
-    def environment(self, name: str) -> Env:
-        """The named environment table (`default` always), refusing others with the roster."""
-        if name == "default":
-            return Env()
-        try:
-            return self.envs[name]
-        except KeyError:
-            raise MissionError(
-                f"no environment {name!r}; declared environments are {sorted(self.envs)}"
-            ) from None
-
     @model_validator(mode="after")
     def names_resolve(self) -> Manifest:
         """Reserved env names stay free, and every host or lint tool names a real table."""
@@ -123,12 +112,12 @@ class Manifest(Scope):
         if taken:
             raise ValueError(f"reserved environment names declared: {sorted(taken)}")
         for alias, profile in self.declared().items():
-            self._resolves(f"host {alias!r}", profile.container, profile.env)
+            self._resolves(f"host {alias!r}", container=profile.container, env=profile.env)
         for name, tool in self.lint.tools.items():
-            self._resolves(f"lint tool {name!r}", "", tool.env)
+            self._resolves(f"lint tool {name!r}", container="", env=tool.env)
         return self
 
-    def _resolves(self, subject: str, container: str, env: str) -> None:
+    def _resolves(self, subject: str, *, container: str, env: str) -> None:
         """Refuse `subject`'s container or environment when neither declared table holds it."""
         if container and container not in self.containers:
             raise ValueError(
@@ -141,6 +130,26 @@ class Manifest(Scope):
                 f"{sorted(self.envs)}"
             )
 
+    def declared(self) -> dict[str, HostProfile]:
+        """Every `[hosts]` profile with `[hosts.defaults]` already inherited."""
+        base = self.hosts.get(_DEFAULTS_KEY, HostProfile())
+        return {
+            alias: profile.inheriting(base)
+            for alias, profile in self.hosts.items()
+            if alias != _DEFAULTS_KEY
+        }
+
+    def environment(self, name: str) -> Env:
+        """The named environment table (`default` always), refusing others with the roster."""
+        if name == "default":
+            return Env()
+        try:
+            return self.envs[name]
+        except KeyError:
+            raise MissionError(
+                f"no environment {name!r}; declared environments are {sorted(self.envs)}"
+            ) from None
+
     def holding(self, held: Callable[[], Mapping[str, HostProfile]]) -> Manifest:
         """This manifest with the held machines' ssh profiles consulted after `[hosts]`.
 
@@ -152,23 +161,16 @@ class Manifest(Scope):
         return manifest
 
     def profile(self, alias: str) -> HostProfile:
-        """The resolved profile for `alias` (ssh alias, held rental or `local`), defaults if
-        neither declared nor held."""
+        """The resolved profile for `alias`, defaults if it is neither declared nor held.
+
+        `alias` is an ssh alias, a held rental or `local`.
+        """
         declared = self.declared()
         if alias in declared:
             return declared[alias]
         base = self.hosts.get(_DEFAULTS_KEY, HostProfile())
         held = None if alias == "local" else self._held().get(alias)
         return (held or HostProfile()).inheriting(base)
-
-    def declared(self) -> dict[str, HostProfile]:
-        """Every `[hosts]` profile with `[hosts.defaults]` already inherited."""
-        base = self.hosts.get(_DEFAULTS_KEY, HostProfile())
-        return {
-            alias: profile.inheriting(base)
-            for alias, profile in self.hosts.items()
-            if alias != _DEFAULTS_KEY
-        }
 
     def profiles(self) -> dict[str, HostProfile]:
         """Every concrete host profile, held rentals laid over the declared hosts."""

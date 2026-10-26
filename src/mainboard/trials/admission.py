@@ -12,8 +12,8 @@ from patos import FrozenModel
 
 from ..core.project import Project
 from ..manifest.loading import load
-from ..manifest.schema.admission import Admission
-from ..probe.gating import wait_for_idle
+from ..manifest.schema.compute.admission import Admission
+from ..probe.readings.gating import wait_for_idle
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,7 +36,7 @@ class Admitted(FrozenModel):
     holders: tuple[int, ...] = ()
 
 
-def policy(card: str, root: Path | None = None) -> Admission:
+def _policy(card: str, root: Path | None = None) -> Admission:
     """The admission standard the workspace declares for `card`, the default when it names none.
 
     root: the workspace root; found from the working directory when omitted, which inside a
@@ -61,7 +61,7 @@ def admit(
     root: the workspace root the policy is read from, as in `policy`.
     idle: the idle wait, injectable by a test.
     """
-    standard = policy(device.label, root)
+    standard = _policy(device.label, root)
     if not idle(timeout=timeout, util_threshold=standard.utilization_pct):
         raise RuntimeError(
             f"{device.label} stayed above {standard.utilization_pct}% utilization for "

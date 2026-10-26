@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 
@@ -12,11 +12,10 @@ from patos import FrozenModel
 from pydantic import Field
 
 from ..state.evidence import EvidenceTree
-from .archive import ParquetArtifacts
+from .store.archive import ParquetArtifacts
 
-# What a read of table artifacts answers when none holds the schema: no rows, and the `_trial`
-# provenance column every such read adds beside the table's own.
-NO_TABLE = "SELECT NULL::VARCHAR AS _trial WHERE false"
+# Research imports this from here, where it lived before `constants`.
+from .store.constants import NO_TABLE as NO_TABLE
 
 # A file in the Hugging Face hub cache, `<kind>s--<repo, "/" spelled "--">/snapshots/<revision>/`;
 # a repository name may not hold `--`, so the spelling reads back exactly.
@@ -44,6 +43,23 @@ class Artifact(FrozenModel):
         """Validate canonical portable paths without interpreting the source machine's OS."""
         return relative_path(self.path)
 
+    def checked(self, data: bytes) -> bytes:
+        """`data`, raising ValueError unless it is this artifact's size and digest."""
+        if len(data) != self.size or hashlib.sha256(data).hexdigest() != self.sha256:
+            raise ValueError(f"artifact content changed: {self.path}")
+        return data
+
+    def held(self, root: Path) -> bytes:
+        """The bytes under `root` itself, on disk else in a Parquet archive, unchecked.
+
+        Raises FileNotFoundError when the tree holds neither, the file having left for the lake.
+        """
+        path = root / self.relative
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return ParquetArtifacts.read(path, boundary=root, digest=self.sha256)
+
     def read(self, root: Path) -> bytes:
         """Read pinned bytes through the project's logical storage mounts.
 
@@ -57,23 +73,6 @@ class Artifact(FrozenModel):
         except FileNotFoundError:
             data = EvidenceTree(root).recall(self.sha256)
         return self.checked(data)
-
-    def held(self, root: Path) -> bytes:
-        """The bytes under `root` itself, on disk else in a Parquet archive, unchecked.
-
-        Raises FileNotFoundError when the tree holds neither, the file having left for the lake.
-        """
-        path = root / self.relative
-        try:
-            return path.read_bytes()
-        except FileNotFoundError:
-            return ParquetArtifacts.read(path, boundary=root, digest=self.sha256)
-
-    def checked(self, data: bytes) -> bytes:
-        """`data`, raising ValueError unless it is this artifact's size and digest."""
-        if len(data) != self.size or hashlib.sha256(data).hexdigest() != self.sha256:
-            raise ValueError(f"artifact content changed: {self.path}")
-        return data
 
 
 def relative_path(value: str) -> PurePosixPath:
@@ -105,11 +104,56 @@ class Artifacts:
     trials and runs reference them; never an ambient latest store, since a reference names its
     digest."""
 
-    def __init__(self, root: Path, directory: Path) -> None:
-        self.root = Path(os.path.abspath(root))
-        self.directory = Path(os.path.abspath(directory))
-        self.directory.relative_to(self.root)
-        self.written: set[Path] = set()
+    @staticmethod
+    def _absent(
+        references: Iterable[Artifact], *, roots: Sequence[Path], directory: Path
+    ) -> dict[str, tuple[Artifact, Path]]:
+        """Read each reference present in the fetch; answer the others with their roots, by digest.
+
+        The fetch directory is always a root and a validated reference never climbs out of it, so
+        some root always matches; the outermost one is the project.
+        """
+        absent: dict[str, tuple[Artifact, Path]] = {}
+        for reference in references:
+            relative = reference.relative
+            root = next(root for root in roots if (root / relative).is_relative_to(directory))
+            if not (root / relative).resolve().is_relative_to(directory.resolve()):
+                raise ValueError(f"artifact link leaves the declared fetch: {relative}")
+            if (root / relative).exists():
+                reference.read(root)
+            else:
+                absent[reference.sha256] = (reference, root)
+        return absent
+
+    @staticmethod
+    def _publish(target: Path, data: bytes) -> None:
+        """Write `data` beside `target` and link it into place.
+
+        A racing writer's copy is kept when it holds the same bytes, and a damaged one is replaced.
+        """
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            if target.read_bytes() != data:
+                os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _recall(recalled: Mapping[Path, dict[str, Artifact]]) -> None:
+        """Check each root's wanted artifacts against the bytes a lake around it holds."""
+        for root, wanted in recalled.items():
+            sizes = {digest: reference.size for digest, reference in wanted.items()}
+            for digest, data in EvidenceTree(root).recalled(sizes):
+                wanted.pop(digest).checked(data)
+            if wanted:
+                raise FileNotFoundError(f"no lake around {root} holds {next(iter(wanted))}")
 
     @staticmethod
     def verify(receipts: Iterable[str], *, directory: Path, boundary: Path) -> None:
@@ -136,30 +180,20 @@ class Artifacts:
         # A file the center did not need sent is indexed in its lake only; its bytes are one
         # object there however many runs name it, so each digest is read back once, and all of
         # a root's together (`EvidenceTree.recalled`).
-        absent: dict[str, tuple[Artifact, Path]] = {}
-        for reference in references:
-            relative = reference.relative
-            # The fetch directory is always a root and a validated reference never climbs out of
-            # it, so some root always matches; the outermost one is the project.
-            root = next(root for root in roots if (root / relative).is_relative_to(directory))
-            if not (root / relative).resolve().is_relative_to(directory.resolve()):
-                raise ValueError(f"artifact link leaves the declared fetch: {relative}")
-            if (root / relative).exists():
-                reference.read(root)
-            else:
-                absent[reference.sha256] = (reference, root)
+        absent = Artifacts._absent(references, roots=roots, directory=directory)
         recalled: dict[Path, dict[str, Artifact]] = {}
         for reference, root in absent.values():
             try:
                 reference.checked(reference.held(root))
             except FileNotFoundError:
                 recalled.setdefault(root, {})[reference.sha256] = reference
-        for root, wanted in recalled.items():
-            sizes = {digest: reference.size for digest, reference in wanted.items()}
-            for digest, data in EvidenceTree(root).recalled(sizes):
-                wanted.pop(digest).checked(data)
-            if wanted:
-                raise FileNotFoundError(f"no lake around {root} holds {next(iter(wanted))}")
+        Artifacts._recall(recalled)
+
+    def __init__(self, root: Path, directory: Path) -> None:
+        self.root = Path(os.path.abspath(root))
+        self.directory = Path(os.path.abspath(directory))
+        self.directory.relative_to(self.root)
+        self.written: set[Path] = set()
 
     def write(
         self, data: bytes, *, media_type: str, schema_name: str = "", source: str = ""
@@ -176,7 +210,7 @@ class Artifacts:
         except FileNotFoundError:
             held = False
         if not held:
-            _publish(target, data)
+            Artifacts._publish(target, data)
         self.written.add(target)
         return Artifact(
             path=target.relative_to(self.root).as_posix(),
@@ -186,23 +220,3 @@ class Artifacts:
             schema_name=schema_name,
             source=source,
         )
-
-
-def _publish(target: Path, data: bytes) -> None:
-    """Write `data` beside `target` and link it into place.
-
-    A racing writer's copy is kept when it holds the same bytes, and a damaged one is replaced.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as stream:
-        temporary = Path(stream.name)
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    try:
-        os.link(temporary, target)
-    except FileExistsError:
-        if target.read_bytes() != data:
-            os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)

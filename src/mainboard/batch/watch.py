@@ -5,6 +5,7 @@
 # cancelling ended rentals) and reports this batch's jobs out of what it settled, so a watched
 # batch settles exactly as an unwatched one does.
 
+from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime
 from time import sleep
 from typing import TYPE_CHECKING
@@ -12,17 +13,18 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..costs import Ledger, Observation
-from ..dispatch import vocabulary
+from ..dispatch.jobs import vocabulary
 from ..dispatch.shared import now
-from .estimate import platform
-from .receipts import OFFERED, Journal, Topic, latest, publish
+from . import receipts
+from .estimate.core import platform
+from .receipts import Journal, Topic, latest, publish
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from ..board import Board
     from ..dispatch.state import MonitorReport
-    from .receipts import Bus, Event
+    from ..fleet.board import Board
+    from .receipts import Event
 
 # Where the workspace keeps the observations a later estimate fits its setup times from.
 
@@ -30,7 +32,7 @@ if TYPE_CHECKING:
 _UNKNOWN = "unknown"
 
 # The verdicts a closing count must not read as a failure; a skipped job never ran.
-_UNFAILED = frozenset({vocabulary.OK, vocabulary.SKIPPED})
+_UNFAILED = frozenset({vocabulary.Word.OK, vocabulary.Word.SKIPPED})
 
 
 class JobStatus(FrozenModel):
@@ -74,12 +76,6 @@ class Watch:
     says what became of them, so any process can watch it, as a cron settles it.
     """
 
-    def __init__(self, board: Board, batch_id: str, *, bus: Bus | None = None) -> None:
-        self.board = board
-        self.id = batch_id
-        self.bus = bus or Journal(board.dispatcher.cache.session, batch_id)
-        self.ledger = Ledger(board.dispatcher.cache.session)
-
     @staticmethod
     def detail(handle: str, swept: MonitorReport) -> str:
         """What this pass's sweep said about `handle`, its results path or why it failed."""
@@ -89,9 +85,59 @@ class Watch:
         said += [failed.reason for failed in swept.failed if failed.handle == handle]
         return next(iter(said), "")
 
+    @staticmethod
+    def unselected(events: Sequence[Event], *, dispatched: AbstractSet[str]) -> list[JobStatus]:
+        """Every job a run left out and no later wave dispatched, as a row already over.
+
+        Shown so a wave is read against the plan, but settling nothing: an undispatched job has
+        nothing to pull back, release or bill.
+        """
+        return [
+            JobStatus(
+                job=job,
+                target=str(event.data["target"]),
+                verdict=vocabulary.Word.SKIPPED,
+                detail=str(event.data["reason"]),
+            )
+            for job, event in latest(events, Topic.SKIPPED).items()
+            if job not in dispatched
+        ]
+
+    def __init__(self, board: Board, batch_id: str, *, bus: Journal | None = None) -> None:
+        self.board = board
+        self.id = batch_id
+        self.bus = bus or Journal(board.dispatcher.cache.session, batch_id)
+        self.ledger = Ledger(board.dispatcher.cache.session)
+
+    def answered(self, job: str, answer: Event, swept: MonitorReport) -> JobStatus:
+        """One job's row from the newest of its `OFFERED` answers.
+
+        Ranking the answers by topic instead rendered a job taken and then refused as still flying.
+        """
+        target = str(answer.data["target"])
+        if answer.topic is Topic.REFUSED:
+            return JobStatus(
+                job=job,
+                target=target,
+                verdict=vocabulary.Word.VANISHED,
+                detail=str(answer.data["reason"]),
+            )
+        # A held job is still coming (the sweep asks again every pass), so it counts as in flight.
+        if answer.topic is Topic.HELD:
+            return JobStatus(
+                job=job,
+                target=target,
+                state=vocabulary.Word.HELD,
+                verdict=vocabulary.Word.HELD,
+                detail=f"waiting on the target's quota: {answer.data['reason']}",
+            )
+        return self.status(job, answer, swept)
+
     def close(self, status: BatchStatus, *, settled: bool) -> None:
-        """Announce the batch's end only on a pass that `settled` something and left none running,
-        keeping a quiet pass quiet while a re-dispatched batch can close again."""
+        """Announce the batch's end on a pass that settled something and left none running.
+
+        A quiet pass stays quiet, while a re-dispatched batch can close again.
+        """
         if not status.settled or not settled:
             return
         publish(
@@ -100,9 +146,9 @@ class Watch:
             Topic.CLOSED,
             data={
                 "jobs": len(status.jobs),
-                "ok": sum(job.verdict == vocabulary.OK for job in status.jobs),
+                "ok": sum(job.verdict == vocabulary.Word.OK for job in status.jobs),
                 "failed": sum(job.verdict not in _UNFAILED for job in status.jobs),
-                "skipped": sum(job.verdict == vocabulary.SKIPPED for job in status.jobs),
+                "skipped": sum(job.verdict == vocabulary.Word.SKIPPED for job in status.jobs),
             },
         )
 
@@ -134,7 +180,7 @@ class Watch:
         started = [
             event
             for event in mine
-            if event.topic is Topic.STATE and event.data.get("verdict") == vocabulary.RUNNING
+            if event.topic is Topic.STATE and event.data.get("verdict") == vocabulary.Word.RUNNING
         ]
         key = platform(alias=row.target, kind=str(submitted[0].data["kind"]) if submitted else "")
         ended = _epoch(now())
@@ -178,13 +224,13 @@ class Watch:
         swept = self.board.monitor().once()
         events = self.bus.replay()
         rows = [
-            self.answered(job, answer, swept) for job, answer in latest(events, *OFFERED).items()
+            self.answered(job, answer, swept) for job, answer in receipts.offered(events).items()
         ]
         landed = [self.record(row, events) for row in rows]
         status = BatchStatus(
             batch=self.id,
             jobs=(*rows, *self.unselected(events, dispatched={row.job for row in rows})),
-            running=sum(row.verdict not in vocabulary.TERMINAL for row in rows),
+            running=sum(row.verdict not in vocabulary.Word.settled() for row in rows),
             note=swept.busy.note if swept.busy else "",
         )
         self.close(status, settled=any(landed))
@@ -209,7 +255,7 @@ class Watch:
                 data={"handle": row.handle, "state": row.state, "verdict": row.verdict},
             )
         settled = latest(events, Topic.SETTLED).get(row.job)
-        if row.verdict not in vocabulary.TERMINAL or (
+        if row.verdict not in vocabulary.Word.settled() or (
             settled is not None and settled.data.get("handle") == row.handle
         ):
             return False
@@ -222,30 +268,6 @@ class Watch:
             data={"handle": row.handle, "verdict": row.verdict, "detail": row.detail},
         )
         return True
-
-    def answered(self, job: str, answer: Event, swept: MonitorReport) -> JobStatus:
-        """One job's row from the newest of its `OFFERED` answers.
-
-        Ranking the answers by topic instead rendered a job taken and then refused as still flying.
-        """
-        target = str(answer.data["target"])
-        if answer.topic is Topic.REFUSED:
-            return JobStatus(
-                job=job,
-                target=target,
-                verdict=vocabulary.VANISHED,
-                detail=str(answer.data["reason"]),
-            )
-        # A held job is still coming (the sweep asks again every pass), so it counts as in flight.
-        if answer.topic is Topic.HELD:
-            return JobStatus(
-                job=job,
-                target=target,
-                state=vocabulary.HELD,
-                verdict=vocabulary.HELD,
-                detail=f"waiting on the target's quota: {answer.data['reason']}",
-            )
-        return self.status(job, answer, swept)
 
     def status(self, job: str, submitted: Event, swept: MonitorReport) -> JobStatus:
         """One dispatched job's row, from the run registry and this pass's own sweep."""
@@ -266,27 +288,9 @@ class Watch:
             target=target,
             handle=handle,
             state=record.state or "",
-            verdict=record.verdict or vocabulary.RUNNING,
+            verdict=record.verdict or vocabulary.Word.RUNNING,
             detail=self.detail(handle, swept),
         )
-
-    @staticmethod
-    def unselected(events: Sequence[Event], *, dispatched: set[str]) -> list[JobStatus]:
-        """Every job a run left out and no later wave dispatched, as a row already over.
-
-        Shown so a wave is read against the plan, but settling nothing: an undispatched job has
-        nothing to pull back, release or bill.
-        """
-        return [
-            JobStatus(
-                job=job,
-                target=str(event.data["target"]),
-                verdict=vocabulary.SKIPPED,
-                detail=str(event.data["reason"]),
-            )
-            for job, event in latest(events, Topic.SKIPPED).items()
-            if job not in dispatched
-        ]
 
 
 def _epoch(stamp: str) -> float:
@@ -300,7 +304,9 @@ def _epoch(stamp: str) -> float:
 
 
 def _money(event: Event | None, field: str) -> float:
-    """A dollar figure off a free-form event payload, zero when absent or unreadable rather than
-    raising mid-settle."""
+    """A dollar figure off a free-form event payload.
+
+    It is zero when absent or unreadable rather than raising mid-settle.
+    """
     amount = event.data.get(field) if event is not None else None
     return float(amount) if isinstance(amount, int | float) else 0.0

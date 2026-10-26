@@ -20,7 +20,6 @@
 # annotation, because importing it pulls a dataframe engine into every pytest session.
 
 import json
-import sys
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from functools import cache
 from pathlib import Path
@@ -30,31 +29,33 @@ import pytest
 from pydantic import JsonValue
 
 from ..core.project import Project
-from ..jobs.declare import MARK
+from ..jobs import declare
+from ..log import logger
 from ..state.evidence import EvidenceTree
-from . import hookspecs
-from .adaptive import DRIVERS, driver
-from .flags import held
-from .lease import Busy
-from .lints import findings
-from .log import Log
-from .session import WORD, Session, Trial, lane_of, params_of
-from .stage import Stage
-from .vocabulary import Outcome
+from .contract import hookspecs
+from .contract.flags import held
+from .contract.vocabulary import Outcome
+from .lanes.adaptive import driver
+from .running.lease import Busy
+from .running.lints import findings
+from .running.log import Log
+from .running.stage import Stage
+from .session import Session, Trial, lane_of, params_of
+from .store.constants import DRIVERS, WORD
 
 if TYPE_CHECKING:
-    from .coverage import Cell, LaneStatus
-    from .declaration import Declaration
+    from .contract.declaration import Declaration
+    from .lanes.coverage import Cell, LaneStatus
 
 
 # The run this session is working under, minted once and read by every hook and fixture below.
-SESSION = pytest.StashKey[Session]()
+_SESSION = pytest.StashKey[Session]()
 
 # Whether one item's call phase passed, so a trial that already failed is never failed twice.
-PASSED = pytest.StashKey[bool]()
+_PASSED = pytest.StashKey[bool]()
 
 # The file in a node naming the evidence its settlement reads, by path and SHA-256.
-PINS = "receipts.json"
+_PINS = "receipts.json"
 
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
@@ -86,12 +87,12 @@ def pytest_configure(config: pytest.Config) -> None:
     # Collection identifies cases; it must not archive data, probe hardware, or open receipts.
     if config.option.collectonly:
         return
-    config.stash[SESSION] = Session(found)
+    config.stash[_SESSION] = Session(found)
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip what this host cannot run, what nobody asked to pay for, and what is already taken."""
-    session = config.stash.get(SESSION, None)
+    session = config.stash.get(_SESSION, None)
     if session is None:
         return
     root = session.declared.universe.root.resolve()
@@ -110,24 +111,26 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 def _restored(session: Session, items: Sequence[pytest.Item]) -> None:
-    """Bring back from the lake what the collected trials read by path and the tree no longer
-    holds: each `@job` resource a trial declares, and each file its node's `receipts.json` pins
-    (a list of `{path, sha256}` relative to the directory above the node tree). Data leaves the
-    tree once the lake keeps it, so a sealed settle test reading a pinned path still finds it."""
+    """Bring back from the lake what the collected trials read by path and the tree lacks.
+
+    That is each `@job` resource a trial declares, and each file its node's `receipts.json` pins (a
+    list of `{path, sha256}` relative to the directory above the node tree). Data leaves the tree
+    once the lake keeps it, so a sealed settle test reading a pinned path still finds it.
+    """
     universe = session.declared.universe
     workspace = Project().workspace(universe.root)
     wanted: set[Path] = set()
     for item in items:
-        declared = getattr(getattr(item, "function", None), MARK, None)
+        declared = getattr(getattr(item, "function", None), declare.Declaration.MARK, None)
         if declared is not None:
             wanted.update(workspace / resource for resource in declared.resources)
         node = universe.root / universe.node_of(Path(str(item.path)))
-        wanted.update(_pinned(node / PINS, universe.root.parent))
+        wanted.update(_pinned(node / _PINS, base=universe.root.parent))
     EvidenceTree(universe.root).restore(sorted(path for path in wanted if not path.exists()))
 
 
 @cache
-def _pinned(pins: Path, base: Path) -> tuple[Path, ...]:
+def _pinned(pins: Path, *, base: Path) -> tuple[Path, ...]:
     """The files `pins` names, resolved under `base`; none when the node pins nothing."""
     try:
         listed = json.loads(pins.read_text(encoding="utf-8"))
@@ -194,7 +197,7 @@ def _satisfied(session: Session, items: Sequence[pytest.Item]) -> None:
 
 def pytest_report_collectionfinish(config: pytest.Config) -> list[str]:
     """One line per lane before anything runs, under a heading naming the machine they cover."""
-    session = config.stash.get(SESSION, None)
+    session = config.stash.get(_SESSION, None)
     if session is None or not session.lanes:
         return []
     coverage = (
@@ -212,7 +215,7 @@ def pytest_runtest_makereport(
     """Record whether the call phase itself passed, which a settled-nothing check then reads."""
     report = yield
     if report.when == "call":
-        item.stash[PASSED] = report.passed
+        item.stash[_PASSED] = report.passed
     return report
 
 
@@ -224,11 +227,12 @@ def pytest_report_teststatus(
     The LAST word settled is printed: a search lane narrates a row per iteration before settling
     the study, and its first word would hide the outcome the budget was spent to reach.
     """
-    session = config.stash.get(SESSION, None)
+    session = config.stash.get(_SESSION, None)
     if session is None or report.when != "call" or not report.passed:
         return None
     settled = next(
-        (str(value) for name, value in reversed(report.user_properties) if name == WORD), ""
+        (str(value) for name, value in reversed(report.user_properties) if name == WORD),
+        "",
     )
     if settled not in session.declared.words:
         return None
@@ -244,7 +248,7 @@ def pytest_terminal_summary(
     After the session, because each lint asks about a whole store across its runs; never fatal,
     because a gate that could not have failed is a finding, not a broken instrument.
     """
-    run = config.stash.get(SESSION, None)
+    run = config.stash.get(_SESSION, None)
     if run is None or not run.writers:
         return
     universe, vocabulary = run.declared.universe, run.declared.words
@@ -262,18 +266,18 @@ def pytest_terminal_summary(
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
     """Close the run, failing the session on whatever refusal the close returns."""
-    run = session.config.stash.get(SESSION, None)
+    run = session.config.stash.get(_SESSION, None)
     if run is None:
         return
     refusal = run.close()
     if refusal:
-        sys.stderr.write(refusal + "\n")
+        logger.error(refusal)
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def _declared(config: pytest.Config) -> Session:
     """This session's run, refusing clearly where the workspace declared no trials at all."""
-    found = config.stash.get(SESSION, None)
+    found = config.stash.get(_SESSION, None)
     if found is None:
         raise pytest.UsageError(
             "this session declared no trials, so there is nothing to write a receipt into. "
@@ -296,7 +300,7 @@ def held_flags(request: pytest.FixtureRequest) -> Iterator[dict[str, JsonValue]]
     Autouse because a lane that had to remember isolation would one day forget. A session that
     declared no trials gets an empty hold.
     """
-    session = request.config.stash.get(SESSION, None)
+    session = request.config.stash.get(_SESSION, None)
     if session is None:
         yield {}
         return
@@ -321,7 +325,7 @@ def trial(request: pytest.FixtureRequest, held_flags: Mapping[str, JsonValue]) -
         measured={},
         outcome=Outcome.FAILED,
     )
-    if request.node.stash.get(PASSED, False):
+    if request.node.stash.get(_PASSED, False):
         pytest.fail("this trial passed without settling a receipt, so it measured nothing")
 
 
@@ -332,7 +336,7 @@ def log(trial: Trial, request: pytest.FixtureRequest) -> Iterator[Log]:
     try:
         yield bound
     finally:
-        bound.close(passed=request.node.stash.get(PASSED, False))
+        bound.close(passed=request.node.stash.get(_PASSED, False))
 
 
 @pytest.fixture

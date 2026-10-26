@@ -20,12 +20,12 @@ class RoctxTracer(Tracer):
     vendor: ClassVar[Vendor] = Vendor.AMD
     label: ClassVar[str] = "roctx"
 
-    def __init__(self) -> None:
-        self._ids: list[int] = []
-
     @classmethod
     def is_available(cls) -> bool:
         return roctx is not None
+
+    def __init__(self) -> None:
+        self._ids: list[int] = []
 
     def mark(self, name: str) -> None:
         assert roctx is not None  # noqa: S101  reason=see push() since=2026-08-16

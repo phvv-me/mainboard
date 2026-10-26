@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from functools import cached_property
 from typing import TYPE_CHECKING
 
@@ -6,18 +6,18 @@ from packaging.utils import canonicalize_name
 from patos import FrozenModel
 
 from ..core.errors import MissionError
-from ..engines.compile.lockfile import Lockfile
+from ..engines.compile.pixi.lockfile import Lockfile
 from ..engines.compile.provisioner import Provisioner
-from ..manifest.loading import composition
+from ..manifest.composing import composition
 from .editing import ManifestText
 from .indexes import Index
-from .slots import Slot, candidates, declared
+from .slots import Edit, Slot, Tables, declared
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Generator, Mapping, Sequence
     from pathlib import Path
 
-    from ..board import Board
+    from ..fleet.board import Board
     from ..manifest import Manifest
 
 _ABSENT = "absent"
@@ -29,6 +29,10 @@ _INDEX_URL = "index-url"
 # What separates a name from its constraint; a leading one belongs to the name, keeping a scoped
 # npm package (`@openai/codex`) whole while splitting npm's own `name@range`.
 _OPERATORS = "<>=!~^@ "
+
+
+# Every table, re-locked and installed: what an edit does unless its flags narrow it.
+_EDIT = Edit()
 
 
 class Change(FrozenModel):
@@ -52,63 +56,68 @@ class Dependencies:
     for the manifest alone, and reports every constraint and locked version that moved.
     """
 
-    def __init__(self, board: Board) -> None:
-        self.board = board
+    @cached_property
+    def _conda_names(self) -> dict[str, str]:
+        return Lockfile(self.board.root).conda_names()
+
+    @contextmanager
+    def _kept(self, *paths: Path) -> Generator[None]:
+        """Put `paths` back as they were when the block fails in any way.
+
+        Absent ones are removed, and the manifest is read again.
+        """
+        kept = {path: path.read_bytes() if path.is_file() else None for path in paths}
+        with ExitStack() as undo:
+            undo.callback(self._restore, kept)
+            yield
+            undo.pop_all()
 
     @property
     def path(self) -> Path:
         return self.board.project.manifest(self.board.root)
 
-    def add(
-        self,
-        spec: str,
-        *,
-        ecosystem: str = "conda",
-        env: str = "",
-        dev: bool = False,
-        install: bool = True,
-        frozen: bool = False,
-    ) -> list[Change]:
-        """Declare `spec` in the table its flags name, then re-lock and install, as `pixi add`.
+    @staticmethod
+    def _split(spec: str) -> tuple[str, str]:
+        """A requirement split into its name and constraint, npm's `@` separator dropped."""
+        cut = next((at for at, mark in enumerate(spec) if at and mark in _OPERATORS), len(spec))
+        return spec[:cut].strip(), spec[cut:].strip().removeprefix("@").strip()
 
-        A bare name is pinned to what the ecosystem's index publishes, as `upgrade` would.
+    def __init__(self, board: Board) -> None:
+        self.board = board
 
-        env: an environment name, the workspace-wide table when empty.
-        install: install what the new lock pins (`--no-install` leaves the environment).
-        frozen: edit the manifest alone, leaving the lock as it stands (`--frozen`).
-        """
-        self.environment(env)
-        name, constraint = Dependencies._split(spec)
-        slot = self.slot(ecosystem=ecosystem, env=env, dev=dev)
-        manifest = ManifestText(self.path.read_text(encoding="utf-8"))
-        before = manifest.constraint(slot.path, name) if manifest.declares(slot.path, name) else ""
-        after = constraint or self.pinned(name, slot)
-        manifest.put(slot.path, name, spec=after)
-        change = Change(name=name, where=slot.table, before=before or _ABSENT, after=after)
-        return self.settled(manifest, [change], env=env, install=install, frozen=frozen)
-
-    def environment(self, env: str) -> str:
+    def _environment(self, env: str) -> str:
         """`env` confirmed against the manifest, the default environment when empty."""
         if not env:
             return _DEFAULT
         self.board.manifest.environment(env)
         return env
 
-    def locate(self, name: str, *, ecosystem: str, env: str, dev: bool) -> Slot:
+    def _held(self, name: str, slot: Slot) -> bool:
+        """Whether a hold keeps `name` as written in `slot`.
+
+        That is the root's `[holds]`, or its environment's when `slot` is one of its tables.
+        """
+        manifest = self.board.manifest
+        holds = manifest.holds
+        if slot.path[0] == "envs" and (env := manifest.envs.get(slot.path[1])) is not None:
+            holds = holds | env.holds
+        return canonicalize_name(name) in {canonicalize_name(held) for held in holds}
+
+    def _locate(self, name: str, tables: Tables) -> Slot:
         """The one table declaring `name`, refusing none, and several rather than guessing."""
-        searched = self.searched(ecosystem=ecosystem, env=env, dev=dev)
+        searched = self._searched(tables)
         found = [slot for slot in searched if name in searched[slot]]
         if not found:
             where = ", ".join(sorted(slot.table for slot in searched)) or "no table"
             raise MissionError(f"nothing declares {name!r}. Searched {where}.")
         if len(found) > 1:
-            tables = ", ".join(sorted(slot.table for slot in found))
+            where = ", ".join(sorted(slot.table for slot in found))
             raise MissionError(
-                f"{name!r} is declared in {tables}. Name one with --lang, --env or --dev."
+                f"{name!r} is declared in {where}. Name one with --lang, --env or --dev."
             )
         return found[0]
 
-    def pinned(self, name: str, slot: Slot) -> str:
+    def _pinned(self, name: str, slot: Slot) -> str:
         """The requirement naming what `slot`'s ecosystem publishes as the newest `name`.
 
         A Python requirement for a package the lock takes from a conda channel follows the
@@ -120,14 +129,18 @@ class Dependencies:
         if ecosystem == "python" and (held := self._conda_names.get(canonicalize_name(name))):
             ecosystem, name = "conda", held
         index = Index.of(ecosystem)
-        index.sources = self.registries(ecosystem)
+        index.sources = self._registries(ecosystem)
         return index.pin(index.latest(name))
 
-    @cached_property
-    def _conda_names(self) -> dict[str, str]:
-        return Lockfile(self.board.root).conda_names()
+    def _raised(self, manifest: ManifestText, name: str, slot: Slot) -> Change:
+        """`name` raised in `manifest` to what its index publishes, unless already there."""
+        before = manifest.constraint(slot.path, name)
+        after = self._pinned(name, slot)
+        if after != before:
+            manifest.put(slot.path, name, spec=after)
+        return Change(name=name, where=slot.table, before=before, after=after)
 
-    def registries(self, ecosystem: str) -> tuple[str, ...]:
+    def _registries(self, ecosystem: str) -> tuple[str, ...]:
         """The conda channels, or a non-PyPI Python index, the manifest resolves from."""
         manifest = self.board.manifest
         if ecosystem == "conda":
@@ -137,32 +150,13 @@ class Dependencies:
         index = declared.get(_INDEX_URL)
         return (index,) if isinstance(index, str) else ()
 
-    def remove(
-        self,
-        name: str,
-        *,
-        ecosystem: str = "",
-        env: str = "",
-        dev: bool = False,
-        install: bool = True,
-        frozen: bool = False,
-    ) -> list[Change]:
-        """Drop `name` from the one table declaring it, then re-lock and install, as `pixi remove`.
+    def _reloaded(self) -> Manifest:
+        """The manifest read again from its file, everything the board derived from it dropped."""
+        self.board.shared.pop("manifest", None)
+        self.board.shared.pop("resolver", None)
+        return self.board.manifest
 
-        The whole manifest is searched unless the flags narrow it to the tables they name.
-        """
-        slot = self.locate(name, ecosystem=ecosystem, env=env, dev=dev)
-        manifest = ManifestText(self.path.read_text(encoding="utf-8"))
-        change = Change(
-            name=name,
-            where=slot.table,
-            before=manifest.constraint(slot.path, name),
-            after=_ABSENT,
-        )
-        manifest.drop(slot.path, name)
-        return self.settled(manifest, [change], env=env, install=install, frozen=frozen)
-
-    def resolved(
+    def _resolved(
         self,
         manifest: Manifest,
         *,
@@ -201,26 +195,34 @@ class Dependencies:
             ]
         return changes
 
-    def searched(self, *, ecosystem: str, env: str, dev: bool) -> dict[Slot, tuple[str, ...]]:
+    def _restore(self, kept: Mapping[Path, bytes | None]) -> None:
+        """Write each kept file back, remove those that did not exist, reload the manifest."""
+        for path, written in kept.items():
+            if written is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(written)
+        self._reloaded()
+
+    def _searched(self, tables: Tables) -> dict[Slot, tuple[str, ...]]:
         """The tables a lookup covers, every declared one until a flag narrows it."""
         found = declared(self.board.manifest)
-        if not ecosystem and not env and not dev:
+        if not tables.is_narrowed:
             return found
-        wanted = set(candidates(ecosystem=ecosystem or "conda", env=env, dev=dev))
+        wanted = set(tables.candidates())
         return {slot: names for slot, names in found.items() if slot in wanted}
 
-    def settled(
+    def _settled(
         self,
         manifest: ManifestText,
         changes: list[Change],
         *,
-        env: str,
-        install: bool,
-        frozen: bool = False,
+        edit: Edit,
         update: Sequence[str] | None = None,
     ) -> list[Change]:
-        """Write the edited manifest, reload it (failing fast on a bad edit), then re-lock,
-        unless `frozen` leaves the lock for a later solve.
+        """Write the edited manifest, reload it, then re-lock unless `edit` is frozen.
+
+        Reloading fails fast on a bad edit, and a frozen edit leaves the lock for a later solve.
 
         A bad edit or a failed solve or install puts the manifest and lock back as they were, as
         pixi does, so no `run` is left re-locking against a manifest that cannot solve.
@@ -231,116 +233,111 @@ class Dependencies:
         with self._kept(self.path, self.board.project.lock(self.board.root)):
             self.path.write_text(manifest.text(), encoding="utf-8", newline="\n")
             reloaded = self._reloaded()
+            env, install = edit.tables.env, not edit.relock.no_install
             moved = (
-                [] if frozen else self.resolved(reloaded, env=env, update=update, install=install)
+                []
+                if edit.relock.frozen
+                else self._resolved(reloaded, env=env, update=update, install=install)
             )
         return [*changes, *moved]
 
-    def slot(self, *, ecosystem: str, env: str, dev: bool) -> Slot:
+    def _slot(self, tables: Tables) -> Slot:
         """Where a new requirement of this shape belongs, preferring a table already there."""
-        options = candidates(ecosystem=ecosystem, env=env, dev=dev)
+        options = tables.candidates()
         present = declared(self.board.manifest)
         return next((slot for slot in options if slot in present), options[0])
 
-    @staticmethod
-    def _split(spec: str) -> tuple[str, str]:
-        """A requirement split into its name and constraint, npm's `@` separator dropped."""
-        cut = next((at for at, mark in enumerate(spec) if at and mark in _OPERATORS), len(spec))
-        return spec[:cut].strip(), spec[cut:].strip().removeprefix("@").strip()
+    def _targets(
+        self, names: Sequence[str], tables: Tables, *, exclude: Sequence[str]
+    ) -> list[tuple[str, Slot]]:
+        """What an upgrade raises: the named requirements, else every unheld one but `exclude`."""
+        if names:
+            return [(name, self._locate(name, tables)) for name in names]
+        return [
+            (name, slot)
+            for slot, declared_names in self._searched(tables).items()
+            for name in declared_names
+            if name not in exclude and not self._held(name, slot)
+        ]
+
+    def add(
+        self,
+        spec: str,
+        *,
+        edit: Edit = _EDIT,
+    ) -> list[Change]:
+        """Declare `spec` in the table `edit` names, then re-lock and install, as `pixi add`.
+
+        A bare name is pinned to what the ecosystem's index publishes, as `upgrade` would.
+        """
+        self._environment(edit.tables.env)
+        name, constraint = Dependencies._split(spec)
+        slot = self._slot(edit.tables)
+        manifest = ManifestText(self.path.read_text(encoding="utf-8"))
+        before = manifest.constraint(slot.path, name) if manifest.declares(slot.path, name) else ""
+        after = constraint or self._pinned(name, slot)
+        manifest.put(slot.path, name, spec=after)
+        change = Change(name=name, where=slot.table, before=before or _ABSENT, after=after)
+        return self._settled(manifest, [change], edit=edit)
+
+    def remove(
+        self,
+        name: str,
+        *,
+        edit: Edit = _EDIT,
+    ) -> list[Change]:
+        """Drop `name` from the one table declaring it, then re-lock and install, as `pixi remove`.
+
+        The whole manifest is searched unless `edit` narrows it.
+        """
+        slot = self._locate(name, edit.tables)
+        manifest = ManifestText(self.path.read_text(encoding="utf-8"))
+        change = Change(
+            name=name,
+            where=slot.table,
+            before=manifest.constraint(slot.path, name),
+            after=_ABSENT,
+        )
+        manifest.drop(slot.path, name)
+        return self._settled(manifest, [change], edit=edit)
 
     def update(
         self, names: Sequence[str] = (), *, env: str = "", install: bool = True
     ) -> list[Change]:
-        """Move the lock to the newest releases the manifest already allows, the named packages
-        alone when any are named, as `pixi update` does; the manifest is left as written."""
-        self.environment(env)
-        return self.resolved(self.board.manifest, env=env, update=tuple(names), install=install)
+        """Move the lock to the newest releases the manifest allows, as `pixi update` does.
+
+        Only the named packages move when any are named, and the manifest is left as written.
+        """
+        self._environment(env)
+        return self._resolved(self.board.manifest, env=env, update=tuple(names), install=install)
 
     def upgrade(
         self,
         names: Sequence[str] = (),
         *,
-        ecosystem: str = "",
-        env: str = "",
-        dev: bool = False,
+        edit: Edit = _EDIT,
         exclude: Sequence[str] = (),
-        install: bool = True,
-        frozen: bool = False,
     ) -> list[Change]:
-        """Raise requirements to the newest releases their ecosystems publish, then re-lock, as
-        `pixi upgrade` does: the named ones, or every declared one but `exclude` and the
-        manifest's `[holds]` when none is (a held one is raised only by naming it).
+        """Raise requirements to their newest releases and re-lock, as `pixi upgrade` does.
+
+        It raises the named ones, or every declared one but `exclude` and the manifest's `[holds]`
+        when none is named; a held one is raised only by naming it.
 
         A requirement with no version to raise (a path, git or url source, or a workspace member
         named by version) is left as written, and one written as a table keeps every field but
         its version.
-
-        frozen: edit the manifest alone, leaving the lock as it stands (`--frozen`).
         """
-        if names:
-            targets = [
-                (name, self.locate(name, ecosystem=ecosystem, env=env, dev=dev)) for name in names
-            ]
-        else:
-            targets = [
-                (name, slot)
-                for slot, declared_names in self.searched(
-                    ecosystem=ecosystem, env=env, dev=dev
-                ).items()
-                for name in declared_names
-                if name not in exclude and not self._held(name, slot)
-            ]
         manifest = ManifestText(self.path.read_text(encoding="utf-8"))
         # A member installs from its own directory wherever it is named, so no index speaks for it.
         members = {
             member.package.name for member in composition(self.path).members if member.package
         }
-        changes: list[Change] = []
-        for name, slot in targets:
-            if canonicalize_name(name) in members or not manifest.versioned(slot.path, name):
-                continue
-            before = manifest.constraint(slot.path, name)
-            after = self.pinned(name, slot)
-            if after != before:
-                manifest.put(slot.path, name, spec=after)
-                changes.append(Change(name=name, where=slot.table, before=before, after=after))
+        raised = [
+            self._raised(manifest, name, slot)
+            for name, slot in self._targets(names, edit.tables, exclude=exclude)
+            if canonicalize_name(name) not in members and manifest.versioned(slot.path, name)
+        ]
+        changes = [change for change in raised if change.before != change.after]
         # Freed as `pixi upgrade` frees them: a raised requirement locked where an older pin
         # still satisfies its other half (a conda build under a PyPI requirement) cannot solve.
-        return self.settled(
-            manifest, changes, env=env, install=install, frozen=frozen, update=tuple(names)
-        )
-
-    def _held(self, name: str, slot: Slot) -> bool:
-        """Whether a hold keeps `name` as written in `slot`.
-
-        That is the root's `[holds]`, or its environment's when `slot` is one of its tables.
-        """
-        manifest = self.board.manifest
-        holds = manifest.holds
-        if slot.path[0] == "envs" and (env := manifest.envs.get(slot.path[1])) is not None:
-            holds = holds | env.holds
-        return canonicalize_name(name) in {canonicalize_name(held) for held in holds}
-
-    @contextmanager
-    def _kept(self, *paths: Path) -> Generator[None]:
-        """Put `paths` back as they were, absent ones removed, when the block fails in any way,
-        and read the manifest again."""
-        kept = {path: path.read_bytes() if path.is_file() else None for path in paths}
-        finished = False
-        try:
-            yield
-            finished = True
-        finally:
-            if not finished:
-                for path, written in kept.items():
-                    if written is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        path.write_bytes(written)
-                self._reloaded()
-
-    def _reloaded(self) -> Manifest:
-        """The manifest read again from its file, everything the board derived from it dropped."""
-        self.board.shared.pop("manifest", None)
-        self.board.shared.pop("resolver", None)
-        return self.board.manifest
+        return self._settled(manifest, changes, edit=edit, update=tuple(names))

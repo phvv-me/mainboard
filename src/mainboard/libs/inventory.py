@@ -6,7 +6,7 @@ from pathlib import Path
 from packaging.utils import canonicalize_name
 from patos import FrozenModel, FrozenOpenModel
 
-from ..engines.compile.backend.repair import site_packages
+from ..engines.compile.backend.pixi.repair import site_packages
 
 # A shared library file, with or without the version suffixes the loader's names carry.
 _SHARED = re.compile(r"\.so(?:\.\d+)*$")
@@ -30,7 +30,7 @@ class Family(FrozenModel):
         return min(self.prefixes, key=len)
 
 
-FAMILIES = tuple(
+_FAMILIES = tuple(
     Family(name=name, prefixes=prefixes)
     for name, prefixes in {
         "cuDNN": ("libcudnn",),
@@ -58,7 +58,7 @@ def family_of(soname: str) -> Family | None:
     """The family `soname` belongs to, the one with the longest matching prefix."""
     matches = [
         (len(prefix), family)
-        for family in FAMILIES
+        for family in _FAMILIES
         for prefix in family.prefixes
         if soname.startswith(prefix)
     ]
@@ -109,13 +109,32 @@ class Inventory:
     prefix: the environment's directory.
     """
 
-    def __init__(self, prefix: Path) -> None:
-        self.prefix = prefix
-
     @cached_property
     def libraries(self) -> tuple[Provided, ...]:
         """Every family library the environment's wheels and conda packages installed."""
         return (*self._wheels(), *self._conda())
+
+    @cached_property
+    def torch(self) -> tuple[Path, ...]:
+        """torch's own libraries, which link the families and so decide what a process loads."""
+        return tuple(
+            library
+            for tree in site_packages(self.prefix)
+            for library in sorted((tree / "torch" / "lib").glob("lib*.so*"))
+            if library.is_file()
+        )
+
+    def __init__(self, prefix: Path) -> None:
+        self.prefix = prefix
+
+    def _conda(self) -> list[Provided]:
+        found: list[Provided | None] = []
+        for record in sorted((self.prefix / "conda-meta").glob("*.json")):
+            package = CondaPackage.model_validate_json(record.read_bytes())
+            if _CONDA_CUDA.match(package.name):
+                provider = Provider(name=package.name, version=package.version, ecosystem="conda")
+                found += [Provided.of(self.prefix / file, provider) for file in package.files]
+        return [library for library in found if library]
 
     def _wheels(self) -> list[Provided]:
         found: list[Provided | None] = []
@@ -129,25 +148,6 @@ class Inventory:
                         for file in dist.files or ()
                     ]
         return [library for library in found if library]
-
-    def _conda(self) -> list[Provided]:
-        found: list[Provided | None] = []
-        for record in sorted((self.prefix / "conda-meta").glob("*.json")):
-            package = CondaPackage.model_validate_json(record.read_bytes())
-            if _CONDA_CUDA.match(package.name):
-                provider = Provider(name=package.name, version=package.version, ecosystem="conda")
-                found += [Provided.of(self.prefix / file, provider) for file in package.files]
-        return [library for library in found if library]
-
-    @cached_property
-    def torch(self) -> tuple[Path, ...]:
-        """torch's own libraries, which link the families and so decide what a process loads."""
-        return tuple(
-            library
-            for tree in site_packages(self.prefix)
-            for library in sorted((tree / "torch" / "lib").glob("lib*.so*"))
-            if library.is_file()
-        )
 
     def owner(self, path: Path) -> Provider | None:
         """The package that installed `path`, else the one whose libraries sit beside it.

@@ -6,19 +6,31 @@
 import socket
 import subprocess
 import time
+from enum import IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import psutil
 
 from .core.errors import MissionError
-from .dispatch.transport import terminate_process_tree
+from .dispatch.transport.core import terminate_process_tree
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
+    from typing import IO
 
-# GNU `timeout`'s status for a command it had to stop, so scripts branching on it still work.
-TIMED_OUT = 124
+
+class Exit(IntEnum):
+    """The exit statuses a command did not choose, spelled as the shell spells them.
+
+    TIMED_OUT: GNU `timeout`'s status for a command it had to stop, so scripts branching on it
+        still work.
+    MISSING: the shell's status for a command it could not find.
+    """
+
+    TIMED_OUT = 124
+    MISSING = 127
+
 
 # Seconds a stopped tree gets to exit on its own before it is killed outright.
 _GRACE = 5.0
@@ -30,6 +42,18 @@ _POLL = 0.25
 class Processes:
     """Kill trees, bound commands and wait for conditions, the same on every operating system."""
 
+    @staticmethod
+    def _accepts(port: str) -> bool:
+        """Whether `host:port` accepts a TCP connection within a moment."""
+        host, _, number = port.rpartition(":")
+        if not number.isdigit():
+            raise MissionError(f"a port is written host:port, not {port!r}")
+        try:
+            with socket.create_connection((host or "localhost", int(number)), timeout=_POLL):
+                return True
+        except OSError:
+            return False
+
     def __init__(
         self,
         clock: Callable[[], float] = time.monotonic,
@@ -37,6 +61,26 @@ class Processes:
     ) -> None:
         self.clock = clock
         self.sleep = sleep
+
+    def _holds(self, file: Path | None, port: str, pid: int) -> bool:
+        return (
+            (file is None or file.exists())
+            and (not port or Processes._accepts(port))
+            and (not pid or not psutil.pid_exists(pid))
+        )
+
+    def kill(self, pids: Sequence[int], *, force: bool = False) -> list[int]:
+        """Stop each process and everything it started, children first, answering who was gone.
+
+        force: kill at once instead of asking each process to terminate.
+        """
+        gone = []
+        for pid in pids:
+            try:
+                terminate_process_tree(pid, force=force)
+            except psutil.NoSuchProcess:
+                gone.append(pid)
+        return gone
 
     def matching(self, pattern: str) -> list[dict[str, str | int | float]]:
         """Every process whose command line contains `pattern`, started by this tool or not.
@@ -69,19 +113,6 @@ class Processes:
             )
         return found
 
-    def kill(self, pids: Sequence[int], *, force: bool = False) -> list[int]:
-        """Stop each process and everything it started, children first, answering who was gone.
-
-        force: kill at once instead of asking each process to terminate.
-        """
-        gone = []
-        for pid in pids:
-            try:
-                terminate_process_tree(pid, force=force)
-            except psutil.NoSuchProcess:
-                gone.append(pid)
-        return gone
-
     def timeout(
         self,
         seconds: float,
@@ -89,17 +120,25 @@ class Processes:
         *,
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
+        output: IO[bytes] | None = None,
     ) -> int:
         """Run `command` with this terminal's stdio, stopping its whole tree after `seconds`.
 
-        Answers the command's own exit status, or `TIMED_OUT` when it had to be stopped. The
+        Answers the command's own exit status, or `Exit.TIMED_OUT` when it had to be stopped. The
         tree gets `_GRACE` to exit after it is asked to, then is killed, so a job that ignores
-        the request still ends. `command` runs without a shell.
+        the request still ends. `command` runs without a shell; with `output`, both its streams
+        go there instead of the terminal.
         """
         if not command:
             raise MissionError("proc timeout needs a command to run")
         try:
-            process = subprocess.Popen(list(command), cwd=cwd, env=env)  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the caller's own argv, run without a shell since=2026-09-25
+            process = subprocess.Popen(
+                list(command),
+                cwd=cwd,
+                env=env,
+                stdout=output,
+                stderr=subprocess.STDOUT if output else None,
+            )  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the caller's own argv, run without a shell since=2026-09-25
         except OSError as fault:
             raise MissionError(f"cannot start {command[0]}: {fault}") from fault
         try:
@@ -111,7 +150,7 @@ class Processes:
         except subprocess.TimeoutExpired:
             terminate_process_tree(process.pid, force=True)
             process.wait()
-        return TIMED_OUT
+        return Exit.TIMED_OUT
 
     def wait(
         self, *, file: Path | None = None, port: str = "", pid: int = 0, seconds: float = 0.0
@@ -131,22 +170,3 @@ class Processes:
                 return False
             self.sleep(_POLL)
         return True
-
-    def _holds(self, file: Path | None, port: str, pid: int) -> bool:
-        return (
-            (file is None or file.exists())
-            and (not port or _accepts(port))
-            and (not pid or not psutil.pid_exists(pid))
-        )
-
-
-def _accepts(port: str) -> bool:
-    """Whether `host:port` accepts a TCP connection within a moment."""
-    host, _, number = port.rpartition(":")
-    if not number.isdigit():
-        raise MissionError(f"a port is written host:port, not {port!r}")
-    try:
-        with socket.create_connection((host or "localhost", int(number)), timeout=_POLL):
-            return True
-    except OSError:
-        return False

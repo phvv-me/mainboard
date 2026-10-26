@@ -5,13 +5,14 @@
 import hashlib
 import tomllib
 from fnmatch import fnmatchcase
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 from pydantic import ValidationError, model_validator
 from pydantic_core import to_json
 
 from ..core.errors import MissionError
+from ..dispatch.jobs.vocabulary import Request
 from ..manifest.render.interpolate import Interpolator, Json
 
 if TYPE_CHECKING:
@@ -22,25 +23,6 @@ if TYPE_CHECKING:
 _INLINE = ":"
 # Job fields added after batches were first declared, digested only once set.
 _LATER_FIELDS = ("spot", "arch")
-
-
-class Submission(TypedDict, total=False):
-    """The `Board.submit` keywords a job declares, every unset one left to the host profile."""
-
-    queue: str
-    walltime: str
-    mem_gb: int
-    gpus: int
-    gpu_name: str
-    max_usd: float
-    spot: bool
-    arch: str
-    nodes: int
-    env: str
-    container: str
-    fetch: str | None
-    node: str
-    needs: tuple[str, ...]
 
 
 class BatchJob(FrozenModel):
@@ -75,9 +57,12 @@ class BatchJob(FrozenModel):
     fetch: str = ""
     node: str = ""
 
-    def submission(self) -> Submission:
-        """This job's `Board.submit` keywords."""
-        return Submission(
+    def request(self, name: str) -> Request:
+        """This job as the dispatch it asks for, labelled `name`."""
+        return Request(
+            target=self.target,
+            command=self.command,
+            name=name,
             queue=self.queue,
             walltime=self.walltime,
             mem_gb=self.mem_gb,
@@ -134,42 +119,12 @@ class Selection(FrozenModel):
         return not self.patterns or any(fnmatchcase(name, pattern) for pattern in self.patterns)
 
 
-def _table(value: Json, *, at: str) -> dict[str, Json]:
-    """`value` as the table a spec declares at `at`, refusing any other shape by name."""
-    if not isinstance(value, dict):
-        raise MissionError(f"[{at}] must be a table")
-    return value
-
-
-def _tables(value: Json, *, at: str) -> list[dict[str, Json]]:
-    """`value` as the array of tables a spec declares at `at`, refusing any other shape."""
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
-        raise MissionError(f"[[{at}]] must be an array of tables")
-    return [item for item in value if isinstance(item, dict)]
-
-
 class BatchSpec(FrozenModel):
     """A whole batch declared as data: a name and the jobs, in the order they are prepared,
     priced and dispatched."""
 
     name: str
     jobs: tuple[BatchJob, ...]
-
-    @property
-    def batch_id(self) -> str:
-        """This batch's name and a digest over every job it declares.
-
-        Content-addressed so `prepare`, `estimate` and `run` write one stream `watch` later finds
-        by id alone; changing what a job runs is a different batch. A field added since a job
-        was first declared counts only once set, so an upgrade keeps every batch's id.
-        """
-        dumped = self.model_dump(mode="json")
-        for job in dumped["jobs"]:
-            for field in _LATER_FIELDS:
-                if not job[field]:
-                    del job[field]
-        digest = hashlib.blake2s(to_json(dumped), digest_size=4).hexdigest()
-        return f"{self.name}-{digest}"
 
     @classmethod
     def inline(
@@ -213,8 +168,8 @@ class BatchSpec(FrozenModel):
             )
         document["vars"] = {**declared_vars, **(overrides or {})}
         rendered = Interpolator(path.parent).rendered(document)
-        defaults = _table(rendered.get("defaults", {}), at="defaults")
-        jobs = _tables(rendered.get("jobs", []), at="jobs")
+        defaults = BatchSpec._table(rendered.get("defaults", {}), at="defaults")
+        jobs = BatchSpec._tables(rendered.get("jobs", []), at="jobs")
         return cls.of(str(rendered.get("name", path.stem)), [{**defaults, **job} for job in jobs])
 
     @classmethod
@@ -241,3 +196,33 @@ class BatchSpec(FrozenModel):
         if not seen:
             raise ValueError(f"batch {self.name!r} declares no jobs")
         return self
+
+    @property
+    def batch_id(self) -> str:
+        """This batch's name and a digest over every job it declares.
+
+        Content-addressed so `prepare`, `estimate` and `run` write one stream `watch` later finds
+        by id alone; changing what a job runs is a different batch. A field added since a job
+        was first declared counts only once set, so an upgrade keeps every batch's id.
+        """
+        dumped = self.model_dump(mode="json")
+        for job in dumped["jobs"]:
+            for field in _LATER_FIELDS:
+                if not job[field]:
+                    del job[field]
+        digest = hashlib.blake2s(to_json(dumped), digest_size=4).hexdigest()
+        return f"{self.name}-{digest}"
+
+    @staticmethod
+    def _table(value: Json, *, at: str) -> dict[str, Json]:
+        """`value` as the table a spec declares at `at`, refusing any other shape by name."""
+        if not isinstance(value, dict):
+            raise MissionError(f"[{at}] must be a table")
+        return value
+
+    @staticmethod
+    def _tables(value: Json, *, at: str) -> list[dict[str, Json]]:
+        """`value` as the array of tables a spec declares at `at`, refusing any other shape."""
+        if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+            raise MissionError(f"[[{at}]] must be an array of tables")
+        return [item for item in value if isinstance(item, dict)]

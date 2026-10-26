@@ -6,12 +6,12 @@ from pathlib import Path
 
 import psutil
 
-from ..core.host import MACOS
+from ..core.execution import host
 from .enums import Vendor
-from .facts.cgroup_memory import CgroupMemory
-from .facts.host_disk import HostDisk
-from .facts.memory import Memory
-from .facts.scratch import Scratch
+from .facts.memory.cgroup import CgroupMemory
+from .facts.memory.core import Memory
+from .facts.storage.host_disk import HostDisk
+from .facts.storage.scratch import Scratch
 from .shell.sysctl import sysctl
 
 _CPU_MODEL_RE = re.compile(r"^(?:model name|hardware)\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
@@ -73,7 +73,7 @@ class Host:
     @cached_property
     def cpu(self) -> str:
         """CPU model name: macOS `sysctl`, the cpuinfo model line, the ARM core mix, `platform`."""
-        if MACOS and (brand := sysctl("machdep.cpu.brand_string")):
+        if host.is_macos() and (brand := sysctl("machdep.cpu.brand_string")):
             return brand
         if m := _CPU_MODEL_RE.search(self.cpuinfo_text):
             return m.group(1).strip()
@@ -81,20 +81,10 @@ class Host:
             return name
         return platform.processor() or "unknown"
 
-    @property
-    def cpu_freq_mhz(self) -> float | None:
-        """Current CPU frequency in MHz, or `None` if the platform cannot report it."""
-        try:
-            freq = psutil.cpu_freq()
-        except AttributeError, NotImplementedError, OSError:
-            return None
-        # pyrefly: ignore  reason=bundled psutil stub types this call as list[scpufreq] since=2026-08-16
-        return freq.current if freq else None
-
     @cached_property
     def cpu_vendor(self) -> Vendor:
         """CPU core vendor from the x86 `vendor_id` or the ARM MIDR implementer; Apple on macOS."""
-        if MACOS:
+        if host.is_macos():
             return Vendor.APPLE
         for record in self.cpuinfo_records:
             if vendor := _VENDOR_BY_VENDOR_ID.get(record.get("vendor_id", "")):
@@ -135,11 +125,6 @@ class Host:
         """Number of logical CPU threads (including hyperthreading)."""
         return psutil.cpu_count(logical=True) or 0
 
-    @property
-    def memory(self) -> Memory:
-        """Live system RAM usage sampled from psutil."""
-        return Memory.system()
-
     @cached_property
     def physical_cpus(self) -> int:
         """Number of physical CPU cores."""
@@ -149,3 +134,16 @@ class Host:
     def scratch(self) -> Scratch:
         """The fastest writable node-local scratch tier with its free space."""
         return Scratch.probe()
+
+    @property
+    def cpu_freq_mhz(self) -> float | None:
+        """Current CPU frequency in MHz, or `None` if the platform cannot report it."""
+        try:
+            return psutil.cpu_freq().current
+        except AttributeError, NotImplementedError, OSError:
+            return None
+
+    @property
+    def memory(self) -> Memory:
+        """Live system RAM usage sampled from psutil."""
+        return Memory.system()

@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..state.lake import Session
 
 
-def card(name: str) -> str:
+def _card(name: str) -> str:
     """`name` as the one key a card is matched under, whoever wrote it.
 
     Offers carry the market's `RTX 4090` while a request spells the provider's search form
@@ -65,9 +65,6 @@ class Catalog:
     and tail costs per job, the comparison static price tables cannot make.
     """
 
-    def __init__(self, offers: tuple[Offer, ...] = ()) -> None:
-        self.roster: list[Offer] = list(offers)
-
     @classmethod
     def load(cls, session: Session) -> Catalog:
         """The roster the lake's newest `save` kept, empty when none was ever saved."""
@@ -83,6 +80,9 @@ class Catalog:
             tuple(Offer.model_validate(dict(zip(fields, row, strict=True))) for row in rows)
         )
 
+    def __init__(self, offers: tuple[Offer, ...] = ()) -> None:
+        self.roster: list[Offer] = list(offers)
+
     def add(self, *offers: Offer) -> None:
         self.roster.extend(offers)
 
@@ -91,7 +91,7 @@ class Catalog:
         return [
             offer
             for offer in self.roster
-            if (not gpu or card(offer.gpu) == card(gpu))
+            if (not gpu or _card(offer.gpu) == _card(gpu))
             and (not provider or offer.provider == provider)
         ]
 

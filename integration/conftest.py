@@ -5,10 +5,8 @@ import importlib.util
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
-import sysconfig
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
@@ -16,14 +14,12 @@ import pytest
 from patos import FrozenModel
 
 import mainboard
+from mainboard import MissionError, logger
 from mainboard.cli import build
-from mainboard.core.errors import MissionError
 
+from .constants import MB, SCRIPTS
 from .legacy import LegacyRuntime
 
-_SCRIPTS = Path(sysconfig.get_path("scripts"))
-# The console script installed beside the interpreter running the tests.
-MB = shutil.which("mb", path=_SCRIPTS)
 _OUTCOMES: dict[str, dict[str, str]] = {}
 _CATALOG_TEST = "test_offers_list_every_cloud_and_mark_what_mb_rents"
 
@@ -35,9 +31,16 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.failed or report.skipped or report.when == "call":
         _OUTCOMES[report.nodeid] = {
             "outcome": "failed" if hasattr(report, "wasxfail") else report.outcome,
-            "phase": report.when,
+            "phase": report.when or "",
             "reason": str(report.longrepr) if report.failed or report.skipped else "",
         }
+
+
+# The skip reasons a fix mirror accounts for (see `pytest_sessionfinish`).
+_MIRROR_SKIPS = (
+    "the legacy archive needs the git history of this tree",
+    "not inside the monorepo",
+)
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
@@ -53,9 +56,9 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     }
     known_skips.update(
         {
-            "integration/test_lake.py::test_a_second_workspace_reads_and_writes_the_served_lake",
-            "integration/test_lake.py::test_a_served_lake_refuses_maintenance_and_strangers",
-            "integration/test_lake.py::test_a_blocking_served_query_obeys_the_server_timeout",
+            "integration/lake/test_core.py::test_a_second_workspace_reads_and_writes_the_served_lake",
+            "integration/lake/test_core.py::test_a_served_lake_refuses_maintenance_and_strangers",
+            "integration/lake/test_core.py::test_a_blocking_served_query_obeys_the_server_timeout",
             "integration/gates/test_harness.py::test_postgres_is_a_temporary_catalog",
         }
     )
@@ -63,10 +66,15 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
         known_skips.update(
             item.nodeid for item in session.items if item.get_closest_marker("swift_native")
         )
+    # In the mirror `mb refactor fix` proves a fix in, a test needing the tree's git history or its
+    # place in the monorepo cannot run, and its skip is the mirror's, not the code's.
+    mirrored = _MIRROR_SKIPS if os.environ.get("MB_FIX_MIRROR") else ()
     unexpected = [
         node
         for node, report in _OUTCOMES.items()
-        if report["outcome"] == "skipped" and node not in known_skips
+        if report["outcome"] == "skipped"
+        and node not in known_skips
+        and not any(reason in report["reason"] for reason in mirrored)
     ]
     failed = any(report["outcome"] == "failed" for report in _OUTCOMES.values())
     if unexpected or failed:
@@ -120,7 +128,11 @@ def pytest_collection_modifyitems(items: Sequence[pytest.Item]) -> None:
             item.add_marker(pytest.mark.skip(reason=f"{reason}: needs an offline native fixture"))
         if item.path.name == "test_remote.py":
             item.add_marker(pytest.mark.skip(reason="M00-FLEET/M17: real fleet always forbidden"))
-        if sys.platform != "linux" and "served" in item.fixturenames:
+        if (
+            sys.platform != "linux"
+            and isinstance(item, pytest.Function)
+            and "served" in item.fixturenames
+        ):
             item.add_marker(pytest.mark.skip(reason="M00-QUACK/M22: isolated Linux TCP lane"))
 
 
@@ -133,7 +145,7 @@ def _own_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _pg(name: str, *args: str) -> subprocess.CompletedProcess[str]:
     """Run the environment's PostgreSQL program `name`, never a system one."""
     return subprocess.run(
-        [str(_SCRIPTS / name), *args],
+        [str(SCRIPTS / name), *args],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -151,9 +163,7 @@ def _stop(data: Path) -> None:
 def postgres(tmp_path: Path, request: pytest.FixtureRequest) -> str:
     """A new catalog on a private Unix socket; never use a system PostgreSQL or TCP port."""
     missing = [
-        name
-        for name in ("postgres", "initdb", "pg_ctl", "psql")
-        if not (_SCRIPTS / name).is_file()
+        name for name in ("postgres", "initdb", "pg_ctl", "psql") if not (SCRIPTS / name).is_file()
     ]
     if missing:
         pytest.skip(f"M00-POSTGRES: conda-forge postgresql missing from environment: {missing}")
@@ -224,7 +234,7 @@ def _console(workspace: Path, extra: dict[str, str]) -> Callable[..., Ran]:
     return run
 
 
-def _in_process(workspace: Path) -> Callable[..., Ran]:
+def in_process(workspace: Path) -> Callable[..., Ran]:
     """`mb` called here, for the inspect lane where no child process may start."""
 
     def run(
@@ -245,7 +255,7 @@ def _in_process(workspace: Path) -> Callable[..., Ran]:
             except SystemExit as status:
                 code = status.code
             except MissionError as fault:
-                print(fault, file=err)
+                logger.error(str(fault))
                 code = 1
         return Ran(code=code or 0, out=out.getvalue(), err=err.getvalue())
 
@@ -256,7 +266,7 @@ def _in_process(workspace: Path) -> Callable[..., Ran]:
 def mb(workspace: Path, request: pytest.FixtureRequest) -> Iterator[Callable[..., Ran]]:
     """Run `mb` with `args` inside the workspace."""
     if os.environ.get("MB_GATE_INSPECT") == "1":
-        yield _in_process(workspace)
+        yield in_process(workspace)
         return
     if MB is None:
         pytest.skip("the mb console script is not installed beside this interpreter")

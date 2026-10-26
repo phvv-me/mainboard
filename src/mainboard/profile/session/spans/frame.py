@@ -4,7 +4,7 @@ from collections.abc import Callable
 from patos import Model
 from pydantic import Field
 
-from ...models import ProcessReading
+from ...result.models import ProcessReading
 
 
 class SpanFrame(Model):

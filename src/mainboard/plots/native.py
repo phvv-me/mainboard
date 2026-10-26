@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from matplotlib.legend import Legend
     from numpy.typing import NDArray
 
-    from ..manifest.schema.plot import PlotStyle
+    from ..manifest.schema.figures.plot import PlotStyle
 
 
 def load_style(config: str | Path) -> PlotStyle:

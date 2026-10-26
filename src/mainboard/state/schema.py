@@ -38,26 +38,22 @@ from sqlalchemy import (
 )
 from sqlalchemy.schema import CreateTable
 
-# The alias every attach uses, so view definitions and callers' SQL name one catalog.
-ALIAS = "lake"
+from .constants import ALIAS
 
 # The SQL every statement is compiled to: DuckDB's, binding `?` placeholders in order.
-DIALECT = Dialect(paramstyle="qmark")
+dialect = Dialect(paramstyle="qmark")
 
-# The schema's own version, recorded in `schema_log` by `Lake.create` beside the DuckLake spec
-# and by `Lake.evolve` when an older lake gains what this one added. 2 added `blobs`, 5 chunked
-# them (`ordinal`) and added `evidence_log`, 6 added `checksums`, 7 bounded the row groups of
-# blob files; 8 added artifact/operation-keyed reverse-engineering findings (`re_evidence`).
-VERSION = 8
 
 _BARE = MetaData()
-LAKE = MetaData()
+_LAKE = MetaData()
 
 
 def _table(name: str, *columns: Column) -> Table:
-    """`name` declared outside any schema, for its DDL and the views, and answered as its copy in
-    the `lake` schema, which a query names."""
-    return Table(name, _BARE, *columns).to_metadata(LAKE, schema=ALIAS)
+    """`name` declared outside any schema, answered as its copy in the `lake` schema.
+
+    The declaration serves its DDL and the views, and a query names the copy.
+    """
+    return Table(name, _BARE, *columns).to_metadata(_LAKE, schema=ALIAS)
 
 
 def _stamped(name: str, *columns: Column) -> Table:
@@ -214,8 +210,10 @@ _bare = _BARE.tables
 
 
 def latest(log: Table, *key: str, where: tuple[ColumnElement[bool], ...] = ()) -> Select:
-    """The last record appended per `key` in `log` among those `where` keeps, unless that record
-    is a drop."""
+    """The last record appended per `key` in `log` among those `where` keeps.
+
+    A key whose last record is a drop is left out.
+    """
     ranked = (
         select(
             log,
@@ -235,8 +233,10 @@ def latest(log: Table, *key: str, where: tuple[ColumnElement[bool], ...] = ()) -
 
 
 def _runs() -> Select:
-    """The current runs with the record's everyday fields as columns, so a query filters by
-    project or verdict without reaching into its JSON."""
+    """The current runs with the record's everyday fields as columns.
+
+    A query then filters by project or verdict without reaching into its JSON.
+    """
     current = latest(_bare["runs_log"], "target", "handle", "submitted_at").subquery()
     record = current.c.record
     return select(
@@ -258,20 +258,20 @@ class View:
     """One view over the tables, the current state a log of appends adds up to, and the table a
     query reads it as."""
 
+    @property
+    def ddl(self) -> str:
+        """The CREATE OR REPLACE VIEW statement, its constants written inline."""
+        body = self.definition.compile(dialect=dialect, compile_kwargs={"literal_binds": True})
+        return f"CREATE OR REPLACE VIEW {self.name} AS {body}"
+
     def __init__(self, name: str, definition: Select) -> None:
         self.name = name
         self.definition = definition
         columns = (Column(column.name, column.type) for column in definition.selected_columns)
-        self.table = Table(name, LAKE, *columns, schema=ALIAS)
-
-    @property
-    def ddl(self) -> str:
-        """The CREATE OR REPLACE VIEW statement, its constants written inline."""
-        body = self.definition.compile(dialect=DIALECT, compile_kwargs={"literal_binds": True})
-        return f"CREATE OR REPLACE VIEW {self.name} AS {body}"
+        self.table = Table(name, _LAKE, *columns, schema=ALIAS)
 
 
-VIEWS = (
+views = (
     View("runs", _runs()),
     View("hosts", latest(_bare["host_facts"], "alias")),
     View("holds", latest(_bare["holds_log"], "alias")),
@@ -279,17 +279,17 @@ VIEWS = (
     View("offers", _offers()),
     View("re_evidence_current", latest(_bare["re_evidence"], "evidence_id")),
 )
-runs, hosts, holds, evidence, offers, re_evidence_current = (view.table for view in VIEWS)
+runs, hosts, holds, evidence, offers, re_evidence_current = (view.table for view in views)
 
 # Every table, in the order a new lake creates them.
-TABLES = tuple(table for table in LAKE.sorted_tables if table.name in _bare)
+tables = tuple(table for table in _LAKE.sorted_tables if table.name in _bare)
 
 
 def ddl(table: Table) -> str:
     """The CREATE TABLE statement, outside any schema so it lands in the attached catalog."""
-    return str(CreateTable(_bare[table.name]).compile(dialect=DIALECT)).strip()
+    return str(CreateTable(_bare[table.name]).compile(dialect=dialect)).strip()
 
 
 def kind(column: Column) -> str:
     """`column`'s DuckDB type as SQL spells it."""
-    return column.type.compile(dialect=DIALECT)
+    return column.type.compile(dialect=dialect)

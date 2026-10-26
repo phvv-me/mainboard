@@ -1,5 +1,9 @@
 """mcmr's DependencyFact: the release evidence of a project's direct dependencies.
 
+Online dependency auditing (ALL-DEPE: yanked, stale and archived pins, from PyPI and GitHub) is
+kept apart from `check`, which stays offline: the seed of mainboard's separate dependency
+checker, which nothing loads into the lint catalog yet.
+
 No syntax tree holds that evidence. mcmr's refresher asks the package index and the source host
 for each dependency's resolved and latest compatible release day and standardized states, and its
 stored baselines ran without one, so their ALL-DEPE rules never executed. `ReleaseEvidence` is
@@ -10,7 +14,7 @@ disk), and without a network answer it loads them empty, leaving this family wit
 from pathlib import Path
 
 from ..catalog import Family
-from ..facts import Facts
+from ..engine.facts import Facts
 from .releases import ReleaseEvidence
 
 _FACTS = """

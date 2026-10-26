@@ -18,7 +18,7 @@ import yaml
 from patos import Registry
 
 from ..core.errors import MissionError
-from .source import FOLDER, REFERENCE, Server, Source
+from .source import Server, Source
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -120,17 +120,17 @@ class Harness(Registry, ABC):
     def server(self, name: str, server: Server) -> dict[str, Json]:
         """One server as this harness's configuration spells it."""
 
+    def logged_in(self, home: Path, environment: Mapping[str, str]) -> bool:
+        return any((home / path).is_file() for path in self.credentials) or any(
+            key in environment for key in self.keys
+        )
+
     def servers(self, source: Source) -> dict[str, Json]:
         """Every server, each with its overrides for this harness laid over it."""
         return {
             name: self.server(name, server) | server.overrides.get(self.name, {})
             for name, server in source.servers.items()
         }
-
-    def logged_in(self, home: Path, environment: Mapping[str, str]) -> bool:
-        return any((home / path).is_file() for path in self.credentials) or any(
-            key in environment for key in self.keys
-        )
 
 
 class Claude(Harness):
@@ -143,16 +143,11 @@ class Claude(Harness):
     credentials = (".claude/.credentials.json",)
     keys = ("ANTHROPIC_API_KEY",)
     login = "claude, then /login"
-    links = {".claude": FOLDER}
+    links = {".claude": Source.FOLDER}
     managed = (".mcp.json",)
 
     def files(self, source: Source) -> dict[str, str]:
         return {".mcp.json": _json({"mcpServers": self.servers(source)})}
-
-    def server(self, name: str, server: Server) -> dict[str, Json]:
-        if server.remote:
-            return _present(type=server.type, url=server.url, headers=server.headers)
-        return _present(command=server.command, args=list(server.args), env=server.env)
 
     def logged_in(self, home: Path, environment: Mapping[str, str]) -> bool:
         """The macOS login lives in the keychain, every other one in its credentials file."""
@@ -164,6 +159,11 @@ class Claude(Harness):
             check=False,
         )
         return found.returncode == 0 or any(key in environment for key in self.keys)
+
+    def server(self, name: str, server: Server) -> dict[str, Json]:
+        if server.remote:
+            return _present(type=server.type, url=server.url, headers=server.headers)
+        return _present(command=server.command, args=list(server.args), env=server.env)
 
 
 # The hook events Codex runs, by Claude Code's names, which it shares.
@@ -193,6 +193,39 @@ class Codex(Harness):
     login = "codex login"
     managed = (".codex/config.toml", ".codex/hooks.json", ".codex/agents/*.toml")
 
+    @staticmethod
+    def _local(name: str, server: Server) -> dict[str, Json]:
+        literal = {
+            key: value for key, value in server.env.items() if not Server.REFERENCE.search(value)
+        }
+        forwarded = [key for key in server.env if key not in literal]
+        if renamed := [key for key in forwarded if server.env[key] != f"${{{key}}}"]:
+            raise MissionError(
+                f"MCP server {name!r}: Codex forwards a variable under its own name only, so "
+                f"{', '.join(renamed)} must reference itself"
+            )
+        return _present(
+            command=server.command, args=list(server.args), env=literal, env_vars=forwarded
+        )
+
+    @staticmethod
+    def _remote(name: str, server: Server) -> dict[str, Json]:
+        literal, named, bearer = {}, {}, {}
+        for header, value in server.headers.items():
+            referenced = Server.REFERENCE.fullmatch(value.removeprefix("Bearer "))
+            if not Server.REFERENCE.search(value):
+                literal[header] = value
+            elif referenced and value.startswith("Bearer ") and header.lower() == "authorization":
+                bearer["bearer_token_env_var"] = referenced[1]
+            elif referenced and referenced[0] == value:
+                named[header] = referenced[1]
+            else:
+                raise MissionError(
+                    f"MCP server {name!r}: Codex sends header {header} only as a literal, a "
+                    "whole `${NAME}` or `Bearer ${NAME}`"
+                )
+        return _present(url=server.url, http_headers=literal, env_http_headers=named) | bearer
+
     def files(self, source: Source) -> dict[str, str]:
         config = tomlkit.parse(source.own("codex.toml"))
         config["mcp_servers"] = self.servers(source)
@@ -219,37 +252,6 @@ class Codex(Harness):
             )
         return self._remote(name, server) if server.remote else self._local(name, server)
 
-    @staticmethod
-    def _local(name: str, server: Server) -> dict[str, Json]:
-        literal = {key: value for key, value in server.env.items() if not REFERENCE.search(value)}
-        forwarded = [key for key in server.env if key not in literal]
-        if renamed := [key for key in forwarded if server.env[key] != f"${{{key}}}"]:
-            raise MissionError(
-                f"MCP server {name!r}: Codex forwards a variable under its own name only, so "
-                f"{', '.join(renamed)} must reference itself"
-            )
-        return _present(
-            command=server.command, args=list(server.args), env=literal, env_vars=forwarded
-        )
-
-    @staticmethod
-    def _remote(name: str, server: Server) -> dict[str, Json]:
-        literal, named, bearer = {}, {}, {}
-        for header, value in server.headers.items():
-            referenced = REFERENCE.fullmatch(value.removeprefix("Bearer "))
-            if not REFERENCE.search(value):
-                literal[header] = value
-            elif referenced and value.startswith("Bearer ") and header.lower() == "authorization":
-                bearer["bearer_token_env_var"] = referenced[1]
-            elif referenced and referenced[0] == value:
-                named[header] = referenced[1]
-            else:
-                raise MissionError(
-                    f"MCP server {name!r}: Codex sends header {header} only as a literal, a "
-                    "whole `${NAME}` or `Bearer ${NAME}`"
-                )
-        return _present(url=server.url, http_headers=literal, env_http_headers=named) | bearer
-
 
 class OpenCode(Harness):
     """opencode, reading `opencode.json`, AGENTS.md and `.agents/skills`; it runs no hooks,
@@ -264,11 +266,17 @@ class OpenCode(Harness):
     managed = ("opencode.json", ".opencode/agents/*.md")
     hooked = False
 
+    @staticmethod
+    def _markdown(front: Mapping[str, Json], body: str) -> str:
+        """A Markdown card under YAML front matter, one line per field as Claude writes it."""
+        fields = yaml.safe_dump(dict(front), sort_keys=False, allow_unicode=True, width=1 << 20)
+        return f"---\n{fields}---\n\n{body}"
+
     def files(self, source: Source) -> dict[str, str]:
         settings = json.loads(source.own("opencode.json") or "{}") | {"mcp": self.servers(source)}
         files = {"opencode.json": _json(settings)}
         for agent in source.subagents:
-            files[f".opencode/agents/{agent.name}.md"] = _markdown(
+            files[f".opencode/agents/{agent.name}.md"] = OpenCode._markdown(
                 {"description": agent.description, "mode": "subagent"}, agent.body
             )
         return files
@@ -311,15 +319,10 @@ def _present(**fields: Json) -> dict[str, Json]:
 def _spelled(values: Mapping[str, str], form: str) -> dict[str, str]:
     """`values` with every `${NAME}` written in a harness's own form, `{env:%s}` say."""
     return {
-        key: REFERENCE.sub(lambda found: form % found[1], value) for key, value in values.items()
+        key: Server.REFERENCE.sub(lambda found: form % found[1], value)
+        for key, value in values.items()
     }
 
 
 def _json(document: Mapping[str, Json]) -> str:
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
-
-
-def _markdown(front: Mapping[str, Json], body: str) -> str:
-    """A Markdown card under YAML front matter, each field kept on one line as Claude writes it."""
-    fields = yaml.safe_dump(dict(front), sort_keys=False, allow_unicode=True, width=1 << 20)
-    return f"---\n{fields}---\n\n{body}"

@@ -8,28 +8,22 @@ import shlex
 from typing import TYPE_CHECKING
 
 from ...log import logger
-from ..vocabulary import JobState, Resources
-from .base import read_log, within, workspace_session
+from ..jobs.vocabulary import JobState, Resources
+from .base import Scheduler, within
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ..transport import Machine
+    from ..transport.core import Machine
 
 
-class Local:
+class Local(Scheduler):
     """Run job scripts directly through `sh` on the host (no scheduler, no queue)."""
 
     name = "local"
 
     def cancel(self, remote: Machine, root: str, *, handle: str) -> None:
         logger.info("local backend has no queue; cannot cancel {}", handle)
-
-    def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
-        return workspace_session(env=env, command=command, resources=resources)
-
-    def logs(self, remote: Machine, root: str, *, handle: str) -> str:
-        return read_log(remote, root, handle=handle)
 
     def state(self, remote: Machine, root: str, *, handle: str) -> JobState:
         return JobState(handle=handle, verdict="vanished")
@@ -44,8 +38,7 @@ class Local:
         root: str,
         *,
         script: str,
-        args: Sequence[str],
         resources: Resources,
     ) -> str:
-        remote["bash"][["-lc", within(root, shlex.join(["sh", script, *args]))]]()
+        remote["bash"][["-lc", within(root, command=shlex.join(["sh", script]))]]()
         return script

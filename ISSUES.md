@@ -4,6 +4,153 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found drawing the MLSys kernel figure in the plot language, 2026-10-25
+
+The two RTX 4090 panels of the paper's kernel figure (a Range and a Dot layer per series, Dodge,
+log axes, one SQL file per panel) render from a `[figures.*]` specification and two SQL files, but
+only after the workarounds below. The paper's generators draw the figure in plain matplotlib
+instead, so every item here is open.
+
+1. **`--config` replaces the project style where it should extend it.** A config that adds a
+   few markers made `gpt2` and `qwen3` vanish ("style has no explicit colors for ..."), so the
+   palette of `research/cuda-tokenization/plots.toml` had to be copied into the overlay.
+2. **Legends duplicate and can collapse the layout.** A mapped `marker` or `fill` draws a
+   panel key and a figure-level key, `fill` lists the values `True`/`False`, and at column width
+   (3.25 in) the figure legend made constrained layout fail ("axes sizes collapsed to zero").
+   `legend = false` on every panel is the only way out, which leaves no key.
+3. **No reference line.** A dashed line at 1 (a ratio, a shipped baseline) needs a fake series
+   with its own marker. A `Rule`/`HLine` mark with a legend entry would do.
+4. **Panels are subfigures, so nothing is shared and nothing is lettered.** Stacked panels
+   cannot share an x axis (tick labels repeat, or are blanked by hand with `xticklabels = []`),
+   and there is no panel-letter option.
+5. **`Range` has no caps**, which the paper's other plots use for error bars.
+6. **Display names of categories live in the shared `labels` table**, so a one-figure
+   rename (`doc4k` to `1 doc`) is a global style change.
+7. **Numbers the text quotes cannot come from the same query.** The paper prints values read
+   off these plots (`\MergeBlockCrawl`) and guards claims (pooled values equal a sealed table).
+   A figure spec has no `macros` or `guards` table, so the generators keep figure and macros
+   apart and they can drift. A `[figures.NAME.macros]` of scalar SQL, digests written beside the
+   figure's own `.metadata.json`, and SQL `error()` guards would close that.
+
+## Found cleaning mainboard with `mb rules fix`, 2026-10-23
+
+1. **A `safe` fix is proven only by the type checkers, which a semantic change slips past.**
+   PY-PYDA0004 rewrote `Scope.model_validate({_PYTHON: {...}})` in `manifest/members.py` as
+   `Scope(_PYTHON=...)`: the key was a variable holding `"python"`, the keyword is a field named
+   `_PYTHON` the model ignores. Type diagnostics stayed at 94, the run wrote it, and the next
+   `mainboard run` composed a manifest without the members nothing else required (aizk,
+   rlsalchemy, research-compression, cutoken), relocked without them and uninstalled them, which
+   the gate then failed on. Fixed: the rule takes string keys only (`is_string_key` in
+   `call_mapping_entries`), its example keeps a name-keyed call; the lock was restored and the
+   environment reinstalled frozen. Still open: a written fix's proof should include the package's
+   tests (or at least an import and manifest-compose smoke), not only the diagnostics count.
+2. **ALL-FUNC0003's fix moves a helper into its class without rewrapping it.** The added indent
+   pushed 20 docstring and string lines past 99 columns, rewrapped by hand. The fix should rewrap
+   what it indents (or `mb rules fix` should run the formatter on the files it wrote).
+3. **Three rule false positives, fixed in their rules.** PY-DOCU0001 flagged a cyclopts command's
+   `Args:` heading, which cyclopts needs for parameter help (exempted for `*.command`/`*.default`),
+   and read any prose line ending in a colon as a label (a label is now at most three words).
+   PY-PYDA0004's string-key fix is above.
+5. **PY-MODU0002's fix deleted empty initializers, and the rule catalog stopped loading.**
+   `load_catalog` walked `mainboard.analysis.rules` with `pkgutil.walk_packages`, which does not
+   descend into namespace portions, so after the fix only 16 of 244 rules registered and `mb
+   rules check` reported 355 findings as if the code were nearly clean. The gate passed, and the
+   fix's proof had failed its baseline, so nothing judged it. Fixed: `core.modules.submodules`
+   lists module files on disk (catalog and the CLI profiler), and `test_catalog_modules` fails
+   when a rule file is not imported.
+4. **`mb rules` has no inline waiver.** A finding the code is right to keep (a remote verb called
+   by name, `census`) can only be excluded per file in `[tool.mcmr.rules."ID"] exclude`, which
+   also hides every later finding of that rule in the file.
+6. **The route table hid the verbs from PY-DOCU0001, and dropped `mb ci`.** `cli.build` now
+   registers every verb from one `_ROUTES` table of unbound methods, so no verb is passed to
+   `.command(` by name and the rule flagged every `Args:` heading. The rule now also counts a
+   method named through its class (`JobVerbs.show`) in a module that calls `.command(`. The first
+   table also left out `ci`'s default (`ci.default`, not `.command`), and `test_every_command`
+   did not notice: `mb ci` answered with no command until `_DEFAULTS` put it back. That test
+   should compare the registered verbs against the previous set.
+7. **`cli.py` imports `mainboard.verbs` from the root package (ALL-ARCH0003).** The fix is moving
+   the module into `mainboard.verbs`, which changes the console scripts (`mainboard.cli:main` in
+   `pyproject.toml` and the generated `mb`/`mainboard` scripts) and twelve test imports. It needs
+   the editable tool reinstalled in a quiet window, so it waits for the end of this pass.
+8. **Fact materialization, not rule evaluation, is what makes `mb rules check` slower than mcmr.**
+   On one 733-file copy of this package, mcmr took 6.5 s and `mb rules check` 17.4 s. The 17 s
+   split into 1.8 s parsing trees, 11.5 s creating 445 derived relations one `CREATE TABLE`
+   after another (`CommentFact/groups` alone 1.8 s), and 1.9 s running 231 rules. Remedies,
+   fastest first: a per-file fact cache keyed by content hash, materializing independent
+   relations concurrently along their dependency graph, building only what the selected rules
+   read, and fixing the outlier. The minutes a cleanup loop costs come from the fix proof,
+   which runs the whole gate (7.5 min) where only the affected tests are owed. Done: relations
+   are now adopted concurrently, one dependency wave at a time (adoption 11.5 s -> 7.0 s, same
+   findings). Open: the fact cache, building only what the selected rules read, the outlier,
+   and a proof that runs only the affected tests.
+9. **`mb rules fix` cannot apply PY-NAMI0001 across files.** A rename leaves another module's
+   import of the old name in place, ty reports it unresolved, and the whole component is
+   withheld; 15 renames were withheld this way. The fixer now says which rules grew in each
+   withheld file, and the fix now leaves alone a name another module imports or reaches as an
+   attribute. Open: renaming the importers too.
+10. **PY-EXCE0002 and PY-INTE0001 reported a whole file at `1:0`.** The port kept mcmr's value
+    but dropped the location, so a finding named `tryblockfact:<path>` with no line. Both now
+    report each site: EXCE0002 each clause with its kind and count, INTE0001 each `isinstance`
+    call with the subject, the concrete types and the capability; INTE0001 also reads a tuple of
+    types now (`plots/panel.py:101` was missed). EXCE0002 bounded every clause at 1, so a
+    handler that logs and re-raises failed; the `try` clause keeps 1 and the handler clauses 3.
+11. **ALL-CONT0004 and ALL-FUNC0009 measured the same nesting.** Both fired at the fourth level,
+    reporting 39 of FUNC0009's 40 functions twice; FUNC0009 also called four levels "depth 3"
+    and skipped `with`, which Pylint's PLR1702 counts. FUNC0009 is gone and PLR1702 maps to
+    CONT0004.
+12. **ALL-PARA0001 repeated one signature on every override.** `Image.request` and its two
+    overrides were three findings. An override of a project base method is now exempt, so the
+    finding stands once at the base.
+13. **PY-CONS0001 with PY-CONS0002 leaves a shared constant no compliant form.** CONS0002 flags
+    `from .schema import ALIAS` but not `schema.ALIAS`, which CONS0001 still flags as public.
+    Spelling the access module-qualified only moved the finding. Owner's rule (2026-10-24): a
+    shared constant lives in a `constants.py`, or a module of a `constants/` package, and only
+    those are imported. CONS0002 now reads attribute access as well, and both rules exempt those
+    modules. The 162 shared constants moved:
+    - Pure SQL modules went into `rules/{core,families,python}/constants/`.
+    - Mixed modules gave up their shared constants, with any private builders.
+    - The dispatch states became the `vocabulary.Word` enum.
+    - The schema's `tables`/`views`/`dialect` and the scheduler registry are objects, so they
+      are lowercase.
+    - The agent offers `closure_path`/`wrapper_path`.
+
+    The waivers that hid 24 more were removed.
+14. **Alphabetical member order and mypy's attribute inference disagree.** With `__enter__`
+    before `__init__`, mypy takes an attribute's type from its first assignment in `__enter__`
+    and reports the declaration in `__init__` as a redefinition (`profile/spans.py`,
+    `profiler.py`, `providers/nvidia/tracer.py`). Fixed by declaring the attributes in the
+    class body.
+15. **The type checkers disagree on a function's `__name__`.** ty allows it only on
+    `FunctionType` (its FAQ suggests a Protocol), and mypy refuses a `def` passed where a
+    `FunctionType` is expected. `cli._route` and `lab.board_surface.experiment` take a
+    `Callable` and narrow it with `isinstance(..., FunctionType)`, which all three accept.
+16. **mypy had never checked the integration tests.** `mb lint` hands it those files, and the
+    first one with a relative import stopped mypy before it checked any other. With
+    `explicit_package_bases` and `mypy_path` set it checks them all: 93 errors in 30 files,
+    mostly `SimpleNamespace` doubles passed where a real type is declared. Open.
+17. **37 Protocols describe foreign libraries** (cuda-python, NVML, CUPTI, nvtx, roctx,
+    os_signpost, the Arrow stream interface), which no ABC can stand for since their objects
+    never subclass ours. Open, the owner's call: adapters at each boundary, or the libraries'
+    own types, which a platform without them cannot check. PY-INTE0003 now refuses a Protocol
+    in a `.py` file. Proposed: a stub (`stubs/<library>.pyi`) per library, the standard way to
+    type a module a platform may lack, then top-level guarded imports instead of casts. Needs
+    the 4090 to verify the NVIDIA paths.
+18. **PY-INTE0001's five remaining findings are all JSON and TOML boundaries**
+    (`monitor.py:192`, `project_configuration.py:65`, `panel.py:101`, `render/query.py:45,47`),
+    which mcmr's own text exempts. Fixed in the code: the JSON reads check `Mapping`, the
+    rotation `numbers.Real` (`numbers.Rational` excludes `float`), and the normalizer of
+    DuckDB's closed value union dispatches with `match`, since `Sequence` would also take
+    `str`.
+19. **PY-PYDA0004 rewrote `model_validate` of computed values into a constructor call** that
+    mypy and pyrefly refuse, while ty, the fix proof's only checker, accepted it. The rule now
+    fires only when every value is a literal or a name. Open: the proof should run all three
+    checkers.
+20. **PY-NAMI0001 read only five prefixes.** It flagged `fits`, `failed`, `locked` and
+    `_recoverable`. It now takes auxiliaries (`is_`, `has_`, `can_`, `needs_`, ...) and a
+    first word ending like a third-person verb, a participle or `-able`, minus nouns such as
+    `status`. Four true findings remained and were renamed (`is_under`, `is_unsafe`,
+    `is_execution_timeout`, `_is_hex_sha256`).
+
 ## Found hardening `mb query` (streaming, result hash, read-only lake), 2026-10-13
 
 1. **A served lake is writable from `mb query`.** A local lake is protected by DuckLake's own
@@ -13,9 +160,9 @@ campaign first; move an entry to the bottom section once fixed and verified.
    lake during review. The server is where this belongs: serve a second, read-only endpoint (a
    `quack_serve` from a read-only attach) for queries, beside the writable one mb's writers append
    through. Meanwhile DuckLake time travel can recover such a delete only until `lake compact` expires
-   snapshots older than 30 days (`expire_older_than`; files go 7 days after that, `delete_older_than`).
+   snapshots older than 30 days (`expire_older_than`; files go 7 days after that, `delete_older_than`). Fixed 2026-10-25: read access attaches a READ_ONLY endpoint.
 2. **`integration/gates/baseline.json` names a renamed test.** It still lists
-   `integration/test_evidence.py::test_check_records_the_checksums_of_chunks_kept_before_them`, so the
+   `integration/evidence/test_core.py::test_check_records_the_checksums_of_chunks_kept_before_them`, so the
    gate's inspect lane fails its baseline accounting (the suite lane is unaffected). Present on `main`
    before this work. Refresh the nodeid when the baseline is next re-measured.
 
@@ -752,11 +899,11 @@ root unit files, no `/etc` edits.
 ## 2026-10-12 — RESOLVED on refactor/mb-envfix: per-env overrides + update with editable members
 
 - **Per-env PyPI dependency-overrides** now reach a `no-default` environment. `pypi_options`
-  (`engines/compile/pixi_manifest.py`) reads the raw `[python]` table instead of a validated
+  (`engines/compile/pixi/manifest.py`) reads the raw `[python]` table instead of a validated
   toolchain, so an env declaring only a `dependency-overrides` (no `deps`/`dev`) still carries it;
   `members._alone` carries the env's own pypi-options through composition so the member path-pins no
   longer overwrite them. A `[envs.<name>.python.dependency-overrides]` now lands in
-  `[feature.<name>.pypi-options]`. Test: `integration/test_env_overrides.py`.
+  `[feature.<name>.pypi-options]`. Test: `integration/environments/test_env_overrides.py`.
 - **`mb update`/`mb upgrade` with editable members** now work. `Pixi.update`
   (`engines/compile/backend/pixi.py`) drops pixi's `--no-install` when `_has_editable_paths()` is
   true, so pixi builds the env to read the editable sources' metadata instead of failing
@@ -939,7 +1086,7 @@ What was missing was the check that would have named this before a kernel failed
 
 1. **Lean environments skip the workspace activation scripts.** `[workspace] scripts` is documented as sourced after the dotenv
    loader on every entry, but pixi's `no-default` drops the workspace `[activation]` table, and `declared_feature` re-adds only
-   the unset script (`pixi_manifest.py`, for a clearing manifest). So `cutok`, `toktier`, `repro` and `tl` never source
+   the unset script (`pixi/manifest.py`, for a clearing manifest). So `cutok`, `toktier`, `repro` and `tl` never source
    `scripts/activate.sh`: no `.env` loading, no wheel library paths, no nvJitLink link, and (what showed it) no cuDNN versioned
    links, so job 1082 on `repro` failed until the links became a runtime step. Not fixed: the script also exports
    `PYTHONPATH=<repo>:<research>` and loads every `.env`, which lean environments are lean to avoid, so sourcing it there changes
@@ -969,9 +1116,9 @@ it now settles with evidence `unverified` (`Unverifiable`). A full `job list` we
 `FileNotFoundError`, so those runs stayed pending; it is an empty selection now, and a run whose receipts name artifacts the host no
 longer holds settles unverified. The steady-state `job list` over 2,385 runs takes 2 seconds.
 
-Tested 2026-10-23: the empty selection (`test_evidence.py::test_a_results_path_never_written_packs_nothing`) and the
-events stream (`test_events.py`); `Collector._divert` by `test_evidence.py::test_collection_keeps_transfers_in_the_lake_never_the_tree`.
-`Unverifiable` by `test_evidence.py::test_a_native_run_claiming_results_without_a_receipt_is_unverified`.
+Tested 2026-10-23: the empty selection (`evidence/test_core.py::test_a_results_path_never_written_packs_nothing`) and the
+events stream (`test_events.py`); `Collector._divert` by `evidence/test_core.py::test_collection_keeps_transfers_in_the_lake_never_the_tree`.
+`Unverifiable` by `evidence/test_core.py::test_a_native_run_claiming_results_without_a_receipt_is_unverified`.
 
 ## 2026-10-22: DuckDB 2.0.0 stable
 
@@ -1114,3 +1261,818 @@ Later on 2026-10-23:
 - On mainboard's own code, ALL-REAC0001 called 505 registered rules dead, and its review fix would have deleted them; a class
   an ancestor's `__init_subclass__` registers is reached through that hook now, and a name a string literal carries is
   reached as the fix already assumed (539 -> 4 findings). PY-MODE0006 exempts hook-registered classes the same way (273 -> 0).
+
+## 2026-10-24: the package files itself into folders
+
+No folder of mainboard holds more than five modules directly now (ALL-FILE0003), at most six levels deep
+(ALL-FILE0002, PY-IMPO0005), so `mb rules check --rule ALL-FILE0002 --rule ALL-FILE0003 --rule ALL-FILE0005
+--rule PY-IMPO0005` reports nothing on src or integration.
+- ALL-FILE0005 (review fix) moves modules sharing a prefix into a folder of it and respells every import of them. The
+  module the prefix names becomes the folder's `core.py`, and each member keeps its own leading word, so
+  `test_apple.py` becomes `apple/test_core.py` and `reverse_fixtures.py` beside the tests becomes `reverse/fixtures.py`.
+  It moved 34 groups.
+- PY-IMPO0008 (safe fix) exports from a package's `__init__.py` the names modules outside it import, so PY-IMPO0006
+  can route them to the shorter path.
+- The rest had no shared prefix and was grouped by hand, by subsystem: 320 modules in src and integration. Modules
+  research imports stayed where they were, since research is sealed. `mainboard.log` and `mainboard.profile.result`
+  became packages that re-export what is imported from them.
+- The gate baseline is re-based. `case_rebaselines` in `integration/gates/baseline.json` records every old and new path.
+
+Found on the way, fixed:
+1. Respelling an import dropped an explicit `NAME as NAME`, and F401 then deleted the re-export.
+   - It lost `dispatch.shared.CLOSURE_VAR`/`DIGEST_VAR` and `trials.artifacts.NO_TABLE`, which research imports; they
+     are back, declared by `__all__`, since PY-RUFF0002 (PLC0414) flags a self-alias outside an initializer.
+   - FILE0005's example now covers it.
+2. The Swift syntax provider was registered only by a re-export in `rules/families/swift.py`. That re-export was lost
+   the same way, so `mb rules` ran no Swift family outside the tests, which import the provider themselves.
+   `load_catalog` imports every provider module now, and the empty module is gone.
+3. FILE0005 dropped a whole group's fix when one importer sat under the rule's excluded paths (the `pixi_*` group,
+   whose importers include two integration tests).
+4. The inspect lane failed inside the monorepo. The baseline holds `test_consumers.py::...[NOTSET]`, the id an empty
+   parametrization gets outside it. The test is one case now, listing every missing name, so its id is the same
+   everywhere.
+5. `ProjectConfig` and PY-IMPO0007 built pathspec's deprecated `gitwildmatch` patterns; they take `GitIgnoreSpec`, as
+   the rest of the package does.
+
+Open:
+- `mb rules fix` writes import blocks unsorted and unformatted, and `mb lint` puts them right afterwards. A fix could
+  run ruff on the files it touches before its proof.
+- Grouping modules without a shared prefix needs someone to name the folders, so no rule fixes it. ALL-FILE0003 stays
+  report-only.
+
+## 2026-10-25: smaller dispatch API, and cuts three Haiku reviews found
+
+`Dispatcher` takes one `Order` (plan, shipment, resources, name, node, watch, root, prefix, artifact,
+sampler, attestation, containerize) instead of up to fifteen arguments; `Board.rented`, `Landing` and
+`allocating` take it too. `dispatch/dispatcher/` is a package: `order.py` (`Order`, `Handle`, `Verdict`),
+`shipping.py` (`Shipper`: mirror, stage, pin) and `core.py` (`Dispatcher(Shipper)`). Polling moved onto the
+fleet's `Job` (`poll`, `state`, `wait`, `pull`, `Job.states`), which already wrapped it; `fleet/board/` is a
+package with `Job`/`ProviderJob` in `runs.py`.
+
+Removed because no caller used them (checked across src, integration and research):
+- `run`'s `verify`, `fetch` (it was `shipment.fetch`) and `gpu_in_select`, `Scheduler.submit`'s `args`, and
+  `_prepare_script`, which staged a script `run` had already staged.
+- `smallest_fit`, `Facts.fits`/`vram_gb` and the memory fields only they read (the host probe stops asking
+  for them; old host records still load, read with `extra="ignore"`).
+- `ReconcileRow`, `verdict_line`, `log_excerpt`, `SshTransport.batch_mode`, `isolate_pythonpath`, the
+  `Link` ABC with one implementation, `profile.bottleneck.wait_for_idle`, `profile.tracer.Vendor` (the
+  probe's enum serves), `Readiness` (the workstation checks answer `Section` rows).
+- 36 `verified = True` lines: a family is verified by default, and the two that are not say so.
+
+Shared instead of repeated: `Credentials.key` reads every provider key; the rental key checks run through
+`ToolRunner`; a `_Membership` base replaces 11 eight-line `Function` classes; the collector uses
+`provenance.blob_of`; `Scheduler.interactive` defaults to the workspace session.
+
+How the review ran: three Haiku 5.5 agents read a signature skeleton of the package (outside `analysis/`),
+one of `analysis/`, and every file of `dispatch/`. Their high-confidence dead-code claims all held. Two
+claims did not: `census.py` and `migration/remote.py` keep their own `subprocess.run` because they are
+stdlib-only scripts sent to a remote Python, and removing `verified` outright would have started the
+unverified TypeScript `ModuleSurfaceFact` rules.
+
+Open:
+- `load_catalog` prints `skipped <module>: <error>` and keeps going when a rule module fails to import, so
+  a broken rule file silently drops its rules from `mb rules check`. It should fail.
+- Candidates not done (small or needing a decision): the mcmr parity harness (`compare`, about 60 lines)
+  once the port is judged complete; the provider JSON clients and "no key" `Standing` rows; the
+  wait-for-address loops across backends; process-tree kills in five places.
+
+### Later the same day: four large modules split by responsibility
+
+- `fleet/board.py` (1,308 lines, 43 public methods) is `fleet/board/` in four layers below `Board`:
+  `Workspace` (manifest, plans, shared caches), `Environments` (install, provide, pack, shell),
+  `Tracking` (receipts, samples, facts) and `Dispatching` (rent, run, job). `Board` keeps only the
+  ten verbs that hand `self` to a subsystem, so its `ALL-CLAS0003` waiver is gone. `install` is
+  this machine only; onboarding a host is `setup(onboard=Onboard.MINIMAL | DOTFILES | SYNC)`,
+  replacing the `sync_only` and `dotfiles` flags. `Job`/`ProviderJob` live in `fleet/runs.py`.
+- `dispatch/agent/program.py` (1,156 lines, shipped to hosts) is the package
+  `dispatch/agent/program/` (`constants`, `exceptions`, `walking`, `snapshot`, `transfer`). The
+  host still receives one framed source: `runner._bundled` frames a loader that registers each
+  module under one package, so their relative imports resolve there as here. Checked by running
+  the real bootstrap in a fresh interpreter. `Entry` is a `NamedTuple`; the ignore-literal parser
+  is one regular expression, equal to the old loop on 600,000 generated patterns.
+- `dispatch/backends/vast.py` (763 lines, 23 public methods) is `dispatch/backends/vast/`: `api`
+  (`VastApi`), `market` (`VastMarket`, searches by an `Ask`) and `core` (`VastBackend`, its nine
+  capability methods). Equal to the old module on 240 market cases (picks, refusal messages and
+  the request bodies sent) and on the catalog.
+- `analysis/commands/swift_inventory.py` is `analysis/commands/swift/` (`constants`, `models`,
+  `inventory`, `comparison`). Equal to the old module on `packages/dataclass` and
+  `apps/usagiunagi` (inventory JSON and comparison) and on ten tampered-inventory refusals; no
+  test covers these commands, which is worth adding.
+- `analysis/engine/fixing.py`: `Fixpoint.run` (complexity 29, a 42-statement `try`) is
+  `_fixed`/`_pass`/`_judged`/`_closing` under `contextlib.closing` mirrors; proven by running the
+  fixer itself over the package.
+
+Waivers that named moved files were re-pointed or dropped once nothing they covered still fired.
+A moved file silently lost its waiver: the entry still named a path that no longer existed, and
+nothing reported it (four did after these splits). Fixed: ALL-CONF0002 reports any rule exclude
+matching no file of the project, at the line quoting it (`manifest_rule_excludes`, matched by the
+same gitignore spec `RuleConfig.accepts` uses).
+
+### Later still: rendering, settlement, consumers, evidence
+
+- `render/query.py`: `Query.render` (complexity 46) prints through one of two sinks, `_Streamed`
+  (every row as it arrives) or `_Windowed` (a capped prefix and suffix); how a scan ended is an
+  `Ending` enum behind the unchanged `Stamp` fields. Byte-identical to the old renderer on 135
+  cases (9 queries x 3 modes x 5 caps, stdout, stderr and stamp).
+- `waiting/verdicts.py`: `_stop` settles a run with no machine to contact through a verdict-keyed
+  table, then preserves, releases and records a live one; `wait` passes a small `_Watched` state
+  through `__pass`/`__looked`. `conclude`, `handled`, `harvest`, `swept` are private (no caller
+  outside), so `Verdicts` has seven public verbs. `_parsed` equal to the old on 500 random inputs.
+- `analysis/project/consumers.py`: `_surface` is one `singledispatch` on statement type; equal to
+  the old on all 14,112 parseable Python files of the monorepo. Found on the way: the consumer
+  index named a different consumer file for a module from run to run (its queries had no
+  `ORDER BY`), so a refusal's message changed between identical runs. Fixed by ordering both.
+- `state/evidence.py` (948 lines) is `state/evidence/` (`models`, `keeping`, `core`, `tree`,
+  `replica`): `Evidence(Keeping)`, the write side below the read side, each under the class-size
+  limit. `Replica`, an abstract base with one implementation, is gone; `DirectoryReplica` stays.
+  `READERS` and `WINDOW_BYTES` moved to `state/constants.py`. Tests that patched module globals
+  patch the submodule that reads them.
+- `Profiler` keeps its public surface: research calls it, and its method names are too common to
+  prove unused by search.
+- `analysis/engine/facts.py`: narrowing a family per language (`_narrow`, complexity 20, and its
+  seven-argument `_clause`) is a `_Narrowing` model whose `views` yields each relation once its
+  parent is narrowed. Every finding `mb rules check` reports outside `facts.py` itself was the same
+  before and after.
+- `probe/reverse/device/parsers.py`: the cuobjdump/nvdisasm line parsers are three reader classes
+  (`_Entries`, `_Listings`, `_Resources`), each holding its parse state instead of threading it
+  through branchy functions. Equal to the old parsers on 120,000 fuzzed listings.
+- `dispatch/backends/cloud/`: `CloudBackend` had 19 public methods. A provider's four calls
+  (`create`, `machine`, `machines`, `terminate`) and its keyed JSON request are now a `CloudApi`
+  (`LambdaApi`, `RunPodApi`) the backend composes, as vast's `VastApi` is; the backend keeps the
+  nine verbs its contracts name. `Machine` is a `Rented`, so `rentals` hands machines back as they
+  are. gpuhunt is one adapter module (`offers.py`), the one module allowed its private
+  `OFFLINE_PROVIDERS` (a `PY-IMPO0007` fence), and asks gpuhunt with typed keywords instead of a
+  `dict[str, Any]`. `CapacityGone` moved to `backends/exceptions.py`; the two providers' capacity
+  refusals share `CloudApi._launched`. The module function `keyed(kind)` was one caller's helper
+  and is now `RentalVerbs._keyed`. API answers are read through a pydantic `TypeAdapter` of the
+  shape each call expects rather than `Any`.
+- Found on the way: `host offers` would crash on a gpuhunt row with no GPU name (a CPU offer when
+  no card is asked), since `capability(None)` calls `card(None)`; such a row is now listed as `cpu`.
+  The key hint for a missing cloud key now says where a key comes from instead of repeating the
+  cloud's name, which the variable names already say.
+- PY-LOGG0001 flagged `logging.getLogger("gpuhunt").setLevel(...)`, which tells a library's logger
+  to be quiet and logs nothing; configuring calls (`setLevel`, `addHandler`, `removeHandler`,
+  `addFilter`) chained on `getLogger` are no longer findings. A second example pins this.
+- `dispatch/backends/hpcai.py` is `dispatch/backends/hpcai/` (`api`, `core`), the shape vast and
+  the clouds have: `HpcAiApi` holds the calls (`request`, `instances`, `instance`, `types`,
+  `balance`), and listed rows are models, `Instance` (a `Rented` carrying its ssh address and why
+  its start is stuck) and `InstanceType` (with `card` and `fits`), instead of dicts read by key in
+  four places. `HpcAiBackend` keeps nine public verbs, down from fifteen; `chosen` answers an
+  `InstanceType`. `rent` ends a rental it cannot open through `except BaseException` rather than a
+  flag read in `finally`.
+- Found on the way: the bare `CloudBackend` stayed abstract only through its four abstract
+  primitives; once those moved to `CloudApi`, `ProviderBackend.implementations()` listed it and
+  `doctor` failed constructing it. Its `client` is now an abstract property, so the base stays out
+  of the registry's concrete set.
+- `upkeep/doctor.py`: `Doctor` answers four public verbs (`sections`, `repair`, `library_rows`,
+  `hosts`); every other section is private, being the report's own. Its `survey`, `probe` and
+  `settler` constructor seams had no caller and are gone. The `environment` row's findings are
+  `_drift`, one (finding, holds) list in the order the row prints them. Equal to the old rows on
+  the workspace and under all 128 combinations of forced drift (pixi version, no committed lock,
+  a moved sync state, damaged wheels, a stale compile, not installed, no pixi).
+- The doctor's `layout` section is gone: it found environments under the root every pixi prefix
+  left on 2026-09-04, and no machine has had one since the 2026-10-07 re-setup of every node.
+- `analysis/audit/releases.py` (the parked seed of the dependency checker, 268 statements) is
+  `analysis/audit/releases/` (`models`, `manifests`, `web`, `exceptions`, `core`). `Web._download`
+  raises `Unreachable` itself, so `get` reads a fresh copy, the network's, or a stale copy without
+  telling a server's refusal from a silent network; the three tables are one DDL; an unparsable
+  index version is skipped through `_version` instead of `except: continue`. Equal to the old
+  evidence for patos and mainboard, live into a scratch cache and served stale with the network
+  cut. The package's docstring-only `__init__.py` folded into `family.py`. The four defects the
+  2026-10-15 review listed still wait for that checker.
+- `dispatch/backends/modal.py`: the warnings filter sits before the `try` that imports modal.
+- `engines/compile/pixi/manifest.py` (593 lines): how a generated Pixi file spells workspace
+  locations (`rerooted`, `anchored`, `normalized`, `self_installed`, `local_sources`, and the
+  rerooting of dependency `path` sources) is `pixi/paths.py`, and `GENERATED_DIR` sits in
+  `compile/constants.py`. `PixiManifest` keeps `from_manifest` and `to_toml` public, the two any
+  caller reads; its table builders are private, and `m` is `manifest`. `_source_specs` walks a
+  list's items the way it walks a table's values. Equal to the old compiler on every environment
+  shard of the workspace at three generated depths, and the respelling on 50,000 fuzzed texts.
+- PY-INTE0001 would suggest `Sequence` for `isinstance(value, list)` on a TOML value, which a
+  `str` also satisfies, so the recursion would walk strings forever; the rule already leaves TOML
+  boundaries to its `exclude`, which now names `pixi/paths.py` beside `pixi/manifest.py`.
+- `analysis/catalog.py` is `analysis/catalog/` (`rules`, `relations`), its names re-exported, so
+  no rule module's import changed. A relation installs itself (`Relation.install`, its stored
+  rows in `_stored`), which leaves `install` a loop over the relations the rules need instead of
+  a seven-statement `try` at complexity 17. `Rule.repair` answers `list[Edit] | None`, the shape
+  every override already returned, so the `repairs` wrapper is gone; how a repair is worded
+  (`describe`, `_KINDS`) moved beside `placed`, its one reader; `rows` and `edits` bind their
+  parameters through one `_bound`. Every rule example passes.
+- `dispatch/state/cache.py`: `Cache` had 26 public methods over two logs. Host onboarding is
+  `cache.hosts` (`Hosts`: `recorded`, `all`, `save`, `synced`, `drop`), provider creation intents
+  are `cache.creations` (`Creations`: `reserve`, `bind`, `prepared`, `reopen`, `named`), both on
+  the one session through a shared `Log` base in `state/registry.py`, with `RunRecord` (still
+  importable from `cache`, as research reads it). The five run listings are one
+  `listed(only=..., project=, limit=, since=)` and the two counts one `count(name=, target=)`,
+  leaving `Cache` nine verbs. `Cache.private()` and its finalizer are gone: the two tests that
+  used it build a cache on their own `tmp_path`. One-line wrappers over the session
+  (`_append`, `_rows`) are gone, and so is their `Any`.
+- `jobs/closure.py`: `Closure.of` (24 statements, complexity 18) reads as its phases,
+  `__reached` (the import walk and a pytest target's harness), `__shipped` (what each reached
+  package ships, or defers), `__needed` (needs and pins, checked and restored); the static walk
+  (`Module`, `Walker`) is `jobs/walker.py`, still importable from `closure`, where research reads
+  `Walker`. `Walker.imported` is one `match` per syntax node (`_named`) and `reach` one
+  comprehension per module. Old and new closures equal on real pytest targets of the workspace.
+- `center/standalone.py`: `uv` is looked up apart from running it, so a missing tool and a silent
+  install are refused by their own `try`; a manifest that is not there reads as empty instead of
+  `except: continue`; `root` is a property over the composition's instead of a copy; the
+  `PYTHONPATH` sources, the root mentions and the shape rows are comprehensions. Equal to the old
+  member checks on the workspace (21 rows), the clone-and-install step left out of the comparison.
+- `engines/compile/compiler.py`: `Compiler(stage, vendor, *, environment)` reads the root, the
+  projected manifest, its directory and pixi from the second stage it was already handed (they
+  were passed twice, and the manifest projected twice), down from seven arguments; `install` was
+  `pixi.install` under another name, and the provisioner calls pixi. The dotenv loader is the
+  compile's own static method. Equal digests, resolution digests, `resolution_moved` and `stale`
+  on all six workspace environments.
+- A hazard met on the way: moving a function into a class by indenting it also indents a
+  multi-line string inside it, here the generated `dotenv.sh`, whose bytes enter every
+  environment's address. Caught by comparing the loaders byte for byte; the loader is now
+  concatenated lines, indentation-proof. The FUNC0003 autofix already refuses a helper with such
+  a string.
+- `analysis/rules/python/imports/hygiene.py` (541 lines, 13 classes): the package-surface rules
+  (`ImportsFacades`, PY-IMPO0006, PY-IMPO0008) are `imports/surface.py`. PY-IMPO0008's `repair`
+  (13 statements, complexity 11) makes its three edits through `_joined` (an existing import),
+  `_appended` (a new one, placed) and `_relisted` (`__all__`), with one `_span` for a node's
+  place. The three rules' examples pass.
+- REGRESSIONS FOUND AND FIXED, both from this round's autofixes and neither seen by the suite:
+  `dispatch/collection/pack.py` is sent to a host as its own text and run by `python -`, but a
+  CONS0001/0002 fix had moved `HELD` into a new `collection/constants.py` and given the script
+  `from .constants import HELD`, so every collection would have died on the host with an
+  ImportError; and PY-LOGG0002 had rewritten the migration agent's census
+  (`probe/census.py`, shipped by the carrier into an interpreter without mainboard) to print
+  through `from ..log import logger` (and, on a later lint, `from mb import logger`, which even
+  broke `mb` locally with a circular import). Both are standard-library-only again, with waivers
+  saying why (PY-CONS0001/0002 for `pack.py`, PY-LOGG0002 for `census.py`).
+- The guard: `integration/test_standalone_programs.py` runs the collection script and the
+  migration agent the way a host meets them, in `python -I -S` with nothing of mainboard
+  importable (the agent through the real loader, via a new public `Carrier.preamble`). Both
+  broken variants fail it, so the fixer's proof now withholds any fix that hands those programs an
+  import. Worth a rule some day: a module read as text and shipped (`with_name("x.py")
+  .read_text()`, the carrier's `_modules`) must import nothing first-party.
+- `link`, the duplicate linker, is `collection/linking.py`: it runs on the center, so it imports
+  the walker, digests and exclusions from `pack` (now public `walked`, `excluded`, `sha256`);
+  `pack.py` keeps only what the host runs. `link` reads as its phases in `_Linking`
+  (`grouped`: settled same-size inodes hashed and grouped by digest, damaged ones apart;
+  `linked`: one digest's names moved onto its copy). Equal to the committed `link` on 120
+  generated trees (duplicates, digest-named and damaged files, fresh runs, dry runs).
+- ALL-FILE0005 BUG, found by its own fix: with three `test_` modules among six in
+  `integration/`, `test_` was not a majority prefix, so `test` became a group and the fix moved
+  `test_clouds.py`, `test_consumers.py` and `test_standalone_programs.py` to
+  `integration/test/clouds.py` and the like, which pytest no longer collected; the proof passed
+  because a suite that runs fewer tests still exits 0. Moved back; `test_` now always counts as a
+  shared prefix, so the next word groups and every moved module keeps it.
+- OPEN, the gap that let it through: the fixer's proof judges by exit status, and the gate's
+  `suite` lane never checks what it collected (baseline accounting runs only in `inspect`,
+  against 392 historical cases). A fix that drops tests from collection passes. Proposal: the
+  `suite` lane records its collected count in its report, and the proof refuses a fix set whose
+  run collects fewer tests than the run on the project as it stands (one `--collect-only`, a few
+  seconds). Needs a design choice on where the comparison lives (the generic Fixpoint or the
+  project's gate), so left for the owner.
+- `_Relocation(..., package=)` is keyword-only (FBT001).
+- `analysis/project/consumers.py` (537 lines, 19 members): what a module offers its importers
+  (`surface`, `positional`, the statement bindings as a `_Bindings` single-dispatch class) is
+  `project/surface.py`, and where the consumers live (`Workspace`, `module_key`) is
+  `project/workspace.py`; `consumers.py` keeps the index and its build. `_build` hands the timed
+  search and read to `_indexed`, `_read` leaves its `with` blocks before indexing the rows,
+  `_narrowed` words both reasons from one list, and `add_import` takes `name` by keyword. Equal
+  surfaces and positions on 2,373 files of every house package, and equal consumer indexes for
+  mainboard and patos.
+- ALL-CLAS0001 asked for an order Python refuses: implementations registered with
+  `@x.register` on a single-dispatch `x` were ranked by their own decorators, so the rule wanted
+  them above `x`, where the decorator cannot yet name it (its fix already declined such a class,
+  leaving the finding unfixable). They now take `x`'s key, as a property's setter takes the
+  property's, and stay beside it.
+- `verbs/help.py`: the README scan (`_docs`, complexity 21) is a `_Readme` reader holding its
+  heading, fence and paragraph; `show` matches (`_matches`) and prints (`_listed`) apart, and
+  `_definitions` filters the public declarations up front. Equal README pieces (378), Python
+  declarations (3,888) and `show` output on eight queries. Found on the way: plain `mb help`
+  lists a lazily loaded group (`rules`) without its description, since the group is not loaded
+  yet; a walk of the commands first would show it, at the cost of loading every group. Left as
+  is (OPEN, cosmetic).
+- PY-CLAS0009 counted `self.heading = path.name` in `__init__` as a copy of a component's
+  attribute, though another method reassigns `heading`; an attribute assigned again outside
+  `__init__` is state that starts from the component's value and no longer counts.
+- `_PASS_THROUGH` (a SQL fragment) is `_FORWARDED`: ruff's S105 read it as a password.
+- `agents/workspace.py`: `Agents` keeps the six verbs its callers use (`at`, `sections`, `sync`,
+  `update`, `drift`, `rendered`); the section builders are private. The harnesses are built once
+  in `__init__` (a cached property computed the same for every instance); `sync` hands its
+  writes to `_written`, and `_server` and `_stale` are comprehensions. Equal `rendered`, `drift`
+  and `sections` on the workspace; the agents tests pass.
+- `plots/table/core.py`: `_publish` (complexity 17) stages each format through `_staged` (the
+  figure, its provenance in the file's metadata field and in a sidecar) and links each through
+  `_linked`; `_draw` takes the `Chart` instead of its four fields, the hue colors are `_colors`,
+  and `_outputs` finds an existing target in one comprehension. Byte-identical PNGs over every
+  kind, hue and named-color style, and identical files with provenance across PNG, SVG, PDF and
+  EPS.
+- `engines/compile/ecosystems/binary.py`: the curl version check is `_curl_checked`, the ZIP
+  member's checks `_member` (still read inside the one `try`, so its refusals are worded as
+  before: `MissionError` is a `RuntimeError` the `except` rewraps), `_satisfied` parses its
+  receipt alone in its `try`, and `sync` prunes (`_pruned`) and installs (`_installed`) apart.
+  The binary-tool tests pass.
+- `analysis/providers/swift.py`: finding the toolchain, the helper's identity, its provenance
+  record and its compile are a `_Build` model (`found`, `digest`, `recorded`, `compiled`), so
+  `_helper` (21 statements, complexity 14) reads as five steps; `_validate` is typed rows,
+  covered files and placed rows, and `run` hands the helper's call to `_analyzed`. Equal tables
+  on two real Swift projects (dataclass, and usagiunagi's ~120,000 rows); the Swift tests pass.
+- `center/migration/remote.py` (shipped to the destination, standard library only): `_write`
+  compares and backs up inside `suppress(FileNotFoundError)` instead of `except: pass`, and
+  `_checkout` hands its preconditions to `_unfit` (an existing repository: another remote, or
+  commits the target lacks) and `_cloned` (a fresh clone into an empty root). Equal to the old
+  on throwaway repositories (fresh clone on a branch and detached, a non-empty root, an ancestor
+  head, a divergent head, another repository, an unreachable remote) and in every `_write` case;
+  the standalone-programs test still loads it into a bare interpreter. No test covered these
+  verbs before; the module's member count (21) waits for a regrouping.
+- `probe/reverse/device/core.py`: `_evidence` narrows through `_narrowed` (one `match` per result
+  type) and assesses each tool run through `_assessed`; cuobjdump runs one method per operation
+  (`_sass`, `_resource`, `_listed`, `_inventory`) from a table, and nvdisasm's extraction path is
+  `_extracted`, `_disassembled` per image and `_joined`. Equal evidence over 1,575 cases: every
+  operation and artifact kind, every architecture and function selector, and each tool run made
+  truncated, failing or noisy.
+- `probe/reverse/device/parsers.py`, second round: each reader's `read` dispatches to small steps
+  (`_flagged` and `_unrecognized` for listings, `_headed` and `_counted` for resources), the
+  repeated question is one `_WHICH_TARGET`, and `_entries(text)` is `_Entries.of`. Equal to the
+  first round's parsers on 160,000 generated outputs across the four parse functions.
+- `render/query.py` (299 statements) is three places: `render/stamps.py` (the printed cell,
+  `canonical` and `normalized`, and the multiset stamp `ResultHash`/`Stamp`/`Ending`), and a
+  `render/query/` package with `core` (`Query`, reading chunks through `_fetched` and `_fed`,
+  the footer through `_footed`) and `sinks` (`Window`, its byte check `_overfull` and suffix
+  reservation `_reserved` apart, and the streamed and windowed sinks). `render/tabular.py` folded
+  into `values.py`, and its `decode`, read by nothing, is gone. Byte-identical stdout, stderr and
+  stamp over 162 renders (9 statements, 3 modes, 6 cap settings, a zero-column statement among
+  them).
+- `center/migration/migrate.py`: `Migration` takes the board, the destination, `root` and
+  `watch`, the only arguments its one caller passes; its transport, home and GitHub readers were
+  injection seams nothing used, and are now its own (the two GitHub one-liners inlined where
+  they are read). Every step is private, `run` the one verb; `run` (27 statements) reads as
+  preflight, `_landed` (the destination reached and judged, a `_Landing`) and `_moved` (sign in,
+  carry, clone, install, verify); `extras` is a comprehension over `_installed`. Equal step
+  sequences and reports with every step stubbed and recorded, on four paths (unpublished work, a
+  blocking finding, a failed clone, a full move). OPEN: the module is still past 200
+  statements.
+- `dispatch/schedulers/pbs/held.py`: the spool's tagged answer is parsed by `_parsed`, one
+  comprehension per tag where a six-way `if` chain stood (ALL-BRAN0001), a claimed job is judged
+  by `_claimed`, and `_publish`'s retry reads as refuse, else return once queued or confirmed.
+  Equal facts and job states over 3,000 generated spool answers (every tag, repeats, junk rows);
+  the held-line tests cover the publish path.
+- `fleet/fitness.py`: `Fitness` answers `judge`, the one verb its callers use; its twelve checks
+  are private. `engines/compile/ecosystems/stage.py`: `SecondStage`'s scope helpers (`merged`,
+  `scopes`, `toolchains`, `overlays`, `shared_scopes`) are private, read by nothing outside.
+- ALL-FUNC0002's inliner (`functions_inlined()`) fixed none of mainboard's 15 single-use trivial
+  helpers. Four gaps, each now closed: (1) a call naming arguments by keyword was refused
+  outright; keywords now map to their parameters by name, when their values are atomic, so
+  evaluation order cannot change; (2) `def f(a, *, b)` read as variadic (`, *`), so every helper
+  with keyword-only parameters was refused; only `*name` and `**name` count now; (3) a
+  zero-parameter helper had no reading to judge and so never counted as sound; (4) any read of a
+  parameter inside a comprehension counted as shadowed; now only a comprehension whose own `for`
+  targets bind the parameter's name, or a name the argument reads, shadows it (a nested
+  function still always does). The fix then inlined 12 of the 15, proven by the suite; the
+  other three it rightly refuses (a non-atomic argument read twice, a dict argument with `**`
+  read as starred) and were inlined by hand, binding the argument once where needed.
+- ALL-ERRO0001 (a handler answering a failure with nothing): the eleven `except ...: continue`
+  and `pass` guards are `with suppress(...)` now, each scoping exactly what the `continue` used
+  to skip (`return` or `break` moved inside the block where the old code fell through after the
+  `try`). `Lockfile.pins` reads a wheel's or an sdist's name by its suffix inside one
+  suppression instead of a nested `try`. `Portability.found` and the consumers test grew too
+  deep under the new block, so each reads its lines through a private helper (`_code`,
+  `_imported`) and filters in a comprehension. `FileBudget` restores through `_release`, and
+  `ProcessTree._members` and `Lease._holder` suppress instead of catching (PY-EXCE0002). The
+  full suite passed (1123 passed, 11 skipped), proving these and the three hand inlines above.
+- `dispatch/hosts/onboard.py` (763 lines, 338 statements) is a package now: `constants` (`TOOL`,
+  `SOURCE`), `bootstrap` (the install routes and `Bootstrap`), `record` (`HostSetup`,
+  `read_facts`, the facts and GPU commands) and `core` (`Onboarding`), re-exported from its
+  `__init__`. `Onboarding.run` reads as undisturbed, then `_onboard` or `_sync`, which share
+  `_prepared` (uv's CPython, the mirror) and `_provisioned` (pixi, environment, lake, queue,
+  dotfiles); a sync now also announces its pixi and queue checks. `installers()` (seven
+  parameters, `source` never passed) is `Bootstrap.routes(vendored=)`, reading the bootstrap's
+  own request, floor, extras and constraints. BUG FIXED: the `present` route compared the kept
+  tool's interpreter minor (`3.14`) with the whole interpreter request (`>=3.14.0,<3.15`) since
+  2026-10-23, so it never held and an index-consuming host reinstalled a tool that already
+  satisfied it on every setup; `Existing` now takes the minor from the request, guarded by
+  `test_a_satisfying_tool_on_the_solved_minor_is_kept`. OPEN: `Onboarding.__init__` keeps eight
+  parameters (PLR0913).
+- `profile/providers/nvidia/tracer.py` (529 lines, 351 statements) is five modules now:
+  `bindings` (the optional nvtx and CUPTI handles, the CUDA Runtime loaded once through
+  `functools.cache` instead of two `global` flags, `synchronize`, and the binding Protocols that
+  were `protocols.py`), `constants` (the Activity-to-CUPTI kind table and the two typed kinds),
+  `delivery` (`Delivery`, the process's one buffer subscription, whose class attributes replace
+  four module globals and a `global _registered`, with `RawGeneric`), `collector`
+  (`CuptiCollector`) and `tracer` (`CuptiCallbackSession`, `NvtxTracer`). The buffer callback
+  marks its collector tainted before converting and restores it after, which a raising
+  conversion leaves set, instead of a `try`/`finally` around the loop; the window check is
+  `_checked`, and `_records` takes `since` and `until` by keyword. `CuptiCollector` lost the
+  `max_records` knob no caller passed. The probe of supported kinds suppresses
+  `NotImplementedError`, so its ALL-ERRO0001 waiver is gone; the other waivers follow the
+  moved code.
+- `settling/durable.py` (535 lines, 255 statements, no tests) is a package: `base` (`locally`,
+  `Every`, `Settling`, `Settler`, `Unsupported`, `complaint`), `systemd`, `launchd`, and `core`
+  (the settler registry, `settler`, `schedule`). What both settlers repeated is the base's now:
+  the not-installed answer (`_absent`), the pass's command line with the tool's path or the
+  refusal naming the runner (`_pass`), and the root stamp (`stamp`); the tool's name is a
+  `Settler.tool` class attribute instead of a constant three modules would share. The refusal
+  for a missing tool now says "install the tool first" for both (systemd said "the snapshot").
+  Equal answers, unit files, plists and command logs to the old module over 96 generated cases
+  (systemd active or not, lingering or not, refused or not, three periods; launchd loaded or
+  not, bootstrap and ssh refused or not, four periods, a log or none; eight period spellings).
+- `manifest/members.py` (557 lines, 253 statements) is a package: `models` (`Package`,
+  `Member`), `rebasing` (the path and name rebasing a member goes through: `rebased`,
+  `sources_rebased`, `moved`, `namespaced`, `anchored`) and `core` (`Composition`), re-exported
+  from its `__init__`. `composed` merges its eight composed tables in one `body |= {...}` instead
+  of eight assignments (ALL-FUNC0001, 14 statements to 7). Equal members and composed manifests
+  to the old module for the workspace and its five member manifests; the composition tests
+  pass. On the way, the move turned a local `moved` into a shadow of the imported function and
+  `mb` failed on its first composition until the local was renamed. Ruff's F823 names exactly
+  that, but `mb lint` composes the manifest before running any tool, so a broken composition
+  cannot be linted by the linter it breaks; OPEN: lint could fall back to the root manifest
+  alone when composing fails.
+- FIXED, the proof's blindness to dropped tests (OPEN above, from ALL-FILE0005): the fixer now
+  hands its proof `MB_FIX_ROOT`, the project as it stands, beside `MB_FIX_MIRROR`, and the gate's
+  `suite` lane, when it is set, first counts what pytest collects from both trees
+  (`Gate._counted`, a collection-only run in inspect mode, seconds) and refuses a mirror that
+  collects fewer, before running anything (`Gate._shrunk`; the counts land in the report as
+  `collected`). The comparison lives in the project's gate, since only it knows what a test is;
+  the generic `Fixpoint` only names the root. Shown on a copy with `test_clouds.py` moved to
+  `integration/moved/clouds.py`: "the fix collects 1117 tests where the project collects 1135",
+  exit 1 in seconds, where the same tree passed the suite before (1104 passed). A copy outside
+  the monorepo collects the same tests as the workspace's own tree otherwise, so the check does
+  not refuse a mirror for where it sits.
+- `analysis/engine/fixing.py` (538 lines, 326 statements) is a package: `components` (`Applied`,
+  `Components`), `tallies` (the finding counts a fix is judged by: `by_file`, `by_rule`,
+  `holding`, `places`, `split`, `typed_growth`, and the three judgments that were `Fixpoint`
+  statics, `grown`, `progressed`, `cleared`), `proof` (`Proof`: the project's proof command,
+  `passes` and the bisecting `culprit`, and what its last run `said`), `planning` (`Planner`:
+  one pass's taken fixes, the files a pass would break joining the shared `held`, the refused
+  removals of names other repositories import) and `core` (`Fixpoint`, 218 statements down to
+  under 200). The analysis tests and the CLI command tests pass (63). Two more shadowing slips on
+  the way (`holding = holding(files)`, `gone := gone(...)`), caught by pyrefly and ty this time
+  since the fixer is not on `mb lint`'s own path.
+- `analysis/engine/facts.py` (611 lines, 278 statements) is a package: `files` (`listed`,
+  `project_files` with its walk fallback as `_walked` (PY-EXCE0002), `lint_excludes`,
+  `vendored`, `marked`), `sql` (`Setting`, `SqlNames`, `snake`, `Query`), `budget` (`Budget`)
+  and `core` (`Facts`, `_Narrowing`), every public name re-exported, so its forty importers are
+  unchanged. The findings over mainboard before and after differ only in moved paths and the
+  size findings the splits removed, and `rules check research/reproducibility` runs.
+- `analysis/rules/families/calls/core.py` (775 lines): the CallFact family's name resolution SQL
+  (symbols, bindings, types, links, reach, resolved) is `calls/resolution.py` and its
+  expression-tree SQL (spine, roots, edges, tree, keys, bools, expressions, ancestry, mapping
+  entries) `calls/expressions.py`, each a function answering its relations by name, so no SQL
+  text becomes a shared constant; `core.py` (332 lines) composes them in the old order. The
+  family's 33 relations are equal, in order, to the old module's.
+- PLR0912 and EXCE0002 in `manifest/render/interpolate.py`: a template's evaluation reads as a
+  call (`_called`) or a dotted lookup (`_looked_up`) instead of one ten-branch method; a `{% %}`
+  statement is refused before the `try` and `_exec` returns the run's stripped output in one
+  statement. Equal renders and refusals to the old module over 25 templates (names, nested
+  tables, calls, unknown names, functions named without a call, statements, `exec` failures).
+- ALL-PARA0001's fix (`parameters_design.py`): `_argument_starts` finds the call's own bracket
+  through `_opening` and moves its depth by booleans (PLR0912, 8 branches); equal starts to the
+  old one over 20,000 generated calls. The repair is `repair` itself now, its two halves
+  `_declared` (the empty edit at the `def` and the `*, `) and `_named` (one call's `name=` edits),
+  both on a module `_point`, the empty span an insertion takes; it still stops at the first
+  call that cannot take the names. Every rule's examples pass (`mb rules test`), PARA0001's fix
+  among them. `PythonBase.module_files` is public, the one src private access (SLF001) gone.
+- PLR0912 batch: `Line._status` reads the spool's tags into a dict and names its state through
+  the statics `_beat` (the serving allocation's fresh beat) and `_state` (equal statuses to the
+  old method over 5,000 generated spool answers); `Line.open` builds its spec in `_spec`, and
+  `_start` writes its three files in one loop and takes the account from the spec it was handed
+  (ALL-FUNC0001). `Syntax.broken` is `_unparsed` (Python and TOML) plus `_grown` (tree-sitter's
+  error counts). `resolve` (`dispatch/transport/targets.py`) fills a profile's gaps from a
+  table of (needed, value) per field, its root kept by `_kept_root`; equal profiles over 6,912
+  combinations of profile, probe, recorded root and home.
+- PLR0912 in `git/operations`: each push, pull and check judgment is a function answering one
+  question. `push`: `_detached`, `_delivered` (which first sees a commit already waiting on the
+  fallback branch), `_diverted`. `pull`: `_following`, `_reattached` and `_levelled` each answer
+  a held step or the note of what they did. `check`: `_distance` and `_line`, and `_pointer`
+  per submodule. `commit`: `_holder` resolves and refuses one named path, `_given` commits named
+  paths, `_merging` merges after a done sweep, and `Intake` is `operations/intake.py`. Equal
+  steps, details (commit ids aside), remote refs and checkouts to the old code over real git
+  worlds: push in 8 situations (level, ahead, behind, both detached cases, protected, protected
+  and already waiting, an untracked branch), pull in 10 (a clean and a conflicting divergence,
+  fast-forward, both detached cases, following a parent's pointer on a branch and detached, no
+  upstream, an unfetched remote), check in 9 with a submodule (moved, unpushed, not checked
+  out). Nothing tested push before; the workspace tests pass.
+- `Scheduler.logs` reads the job's log file by default (`read_log`), so the local, Slurm and PBS
+  schedulers no longer repeat it (ALL-DUPL0001); pueue keeps its own. `build_qsub_flags` is a
+  table of (needed, flags) and `qstat -f` parses block by block (`Pbs._attributes`), the
+  module's helpers now `Pbs` statics (ALL-FUNC0003); equal flags and records to the old module
+  over 64 resource combinations and 5,000 generated `qstat -f` answers.
+- UNVERIFIED (2026-10-25, the shell's permission check was down): `profile/profiler.py`
+  (`_armed`, `_capturable`, `_measured`, `_windowed`), `verbs/delimiter.py` (`_command_at`,
+  `_skipped`) and `trials/store/dataset.py` (`Dataset._tagged`) were edited by hand; lint, an
+  old-against-new comparison and the suite are owed before anything else lands.
+
+## Planned: `.plot.sql`, one figure per file (owner, 2026-10-25)
+
+Make `mb query` and the plot extensions easier, more powerful, reproducible and consistent.
+
+- A `.plot.sql` file is one figure: plain SQL whose leading `--` comments carry the whole
+  specification, so the query, the marks and the numbers the text quotes live in one diffable
+  file. `mb plot fig.plot.sql` renders it; `--watch` previews live, `--set key=value` tries a
+  limit, `--panel a` draws one panel, `--check` fails when any recorded input changed.
+- `-- figure:` gives the output paths, size and style name; the style extends the project's
+  `plots.toml` (itself over the root `mainboard.toml` styles), never replaces it.
+- `-- with <name>` blocks are shared relations, defined once and visible to every panel, so a
+  rule such as "three repetitions with controls within 10%" is written once.
+- `-- panel a` blocks are each a `SELECT` returning tidy columns, then `--` lines naming the
+  layers (`Range`, `Dot`, `Line`, `Rule`) and the columns mapped to x, y, color, marker, fill and
+  the interval bounds; category order, per-figure display labels, axis scale, limits, ticks, and
+  one legend entry list that also covers reference lines and says what a hollow fill means.
+  Panel letters and shared axes are automatic.
+- `-- guard:` lines are selects that must return no rows, or the render fails.
+- `-- macro Name digits=2 bound=lower:` lines are scalar selects written to the LaTeX numbers
+  file, so figure and text read the same relations.
+- Every render writes a sidecar: the SHA-256 of each input file and of the `.plot.sql` itself,
+  the lake snapshot, row counts and the resolved style; `--check` compares against it.
+- `-- draw: module:function` hands one panel to Python for what the marks cannot express.
+- Acceptance: re-render the two merge-kernel panels (Fig 6, cutok MLSys) and one ICLR figure
+  from `.plot.sql` files, with identical macros and visually identical output.
+- Build on what exists: `mb paper plot`, `plots/table` (staged/linked/sidecar), the `Query`
+  render layer and the DuckDB `Results` relations; DuckDB SQL only, no pandas.
+
+## Planned: a structural edit language for fixes (2026-10-25)
+
+Most refactors done by hand this session were the same few structural operations, spelled as raw
+text edits or not automated at all. Proposal: rules emit typed operations over the symbol facts,
+and per-language adapters render them, so one grammar fixes Python, Swift, Rust and TypeScript
+alike and the codebases come out uniform.
+
+- Operations: `Move(symbol, to=module)` (references and imports respelled, re-export left when
+  the old path is a consumer surface), `Rename(symbol, to)` (refused when the new name is bound
+  in any scope a reference sits in: the `moved = moved(...)` and `holding = holding(...)`
+  slips), `Privatize(symbol)`, `Split(module, groups)` into a package with a re-exporting
+  facade, `Hoist(method, to=base)` for identical overrides, `Extract(span, name)`,
+  `Inline(helper)`, `Reorder(class)`, `CreateFile(path, header)`, `AddImport`/`DropImport`.
+- Language adapters own what differs: import syntax, visibility (`_name`, `private`, `pub`,
+  `export`), file layout (`pkg/__init__.py`, `mod.rs`, Swift targets), and where a module's
+  shared constants live.
+- New autofixes that become cheap with it: ALL-ERRO0001 (`try/except: pass|continue` as the
+  last statement to `with suppress`), ALL-FUNC0003 (module helper into its one class as a
+  static), ALL-DUPL0001 (hoist an override repeated in every subclass), ALL-REAC0002 and
+  PY-CONS0001/0002 (privatize, or move to `constants.py`), ALL-MODU0001/0006 and ALL-FILE0003
+  (split a module or folder along its call graph, review applicability), PY-EXCE0002 (move a
+  `try`'s trailing statements to `else`, unsafe applicability).
+- Safety the engine adds once, for every operation: the scope-collision check above, the
+  proof's collected-test count (done), and a generated old-against-new harness over the moved
+  callables where the facts know their inputs.
+
+## Structural operations in the fix language (2026-10-25, started)
+
+- Verified the three hand edits from when the shell was down: `Delimiter._command_at` (equal to
+  the original scan over 150,000 generated argvs, its branches flattened to three),
+  `Dataset._tagged` and the profiler's `_armed`/`_capturable`/`_measured`/`_windowed`; the suite
+  passed (1124 passed, 11 skipped).
+- ALL-FUNC0003 flagged five helpers whose one call sits in the class body itself
+  (`relations = _relations()`), which runs while the class is being built, when no static
+  method of it can be called; its fix rightly refused them. The rule now asks for a call inside a
+  method (`sole_reference_owner_definition_start_line IS NOT NULL`): 5 findings to 0.
+- Two new file edits. `Create(path, text)` writes a new file, refused when the path is taken.
+  `Append(path, text)` adds to the end of a file, creating it when missing; appends to one file
+  stack in the order taken (`TextEdit.stacks`), so many fixes may add definitions to one shared
+  module in a single pass. A fix row states them with `operation` `create` or `append`. `Plan`
+  reads a missing file as empty, `Mirror.apply` makes the parents, and `Source`/`TextEdit` moved
+  to `engine/sources.py` (apply.py was past 200 statements).
+- Structural operations (`analysis/operations/`): a fix row naming any other `operation` is
+  handed to a registered `Operation` (patos `Registry`, keyed by kebab name), which renders the
+  edits from the row's columns or refuses, a refusal withholding the row's whole group. The SQL
+  gathers what moves and its context; Python, per language, writes it. Two so far:
+  - `move-constants` (PY-CONS0002, now `review`): one row per defining module. Every literal
+    constant other modules use goes, with the comments above it, to the `constants.py` beside its
+    module (inside a package); every `from ... import NAME` is respelled (a mixed statement split
+    in two), every `module.NAME` reads `constants.NAME` and the old import is respelled once
+    nothing else reads the module through it; the old module imports back what it still reads
+    (identifier nodes and `__all__` entries, not comments). Refused: non-literal values, a name
+    the destination holds otherwise, an importer binding `constants` already, a module someone
+    star-imports or that sits beside a `constants/` package, a constant some use of which the
+    facts did not count.
+  - `raise-constants` (PY-CONS0003, now `review`): each late constant moves, with its comments,
+    to just below the last import or the last statement binding a name its value reads.
+- Tried on a scratch git copy of research/reproducibility (1681 tracked sources): one pass moved
+  the shared constants of 47 modules and raised 102 late ones; findings 2264 -> 1563 over 240
+  files, type diagnostics 1362 -> 1362, ruff's pyflakes findings identical before and after, and
+  of the 240 changed modules none that imported before fails now (each imported in its own
+  process; six test modules that died on `triton` now import their constants without it). 129
+  groups stay deferred every pass: files sealed by registrations, which no fix may touch.
+- The first version moved one constant per row and judged uses by regex: a docstring mention
+  re-imported a constant nobody read, and constants reached through one `import` could never
+  drop it, each seeing the others' uses. Grouping by defining module and counting `ast` reads
+  fixed both.
+- BUG (mine, from the fixer split): `mb rules gate --fix`, which `mb lint` runs over changed
+  files, read `Fixpoint.refusals`, which had moved to the planner; `mb lint` died with an
+  AttributeError once a safe fix applied. `Fixpoint.refusals` is a property again. OPEN: no test
+  runs `rules gate --fix` with a fix that applies, which is why the suite passed.
+- Two more operations, and the operations split into a package (`operations/base.py`,
+  `operations/python/` with `source`, `imports`, `moves`, `classes` and `constants`, and
+  `operations/toml.py`):
+  - `pull-up` (ALL-DUPL0001): a base declaring the repeated method only as an `@abstractmethod`
+    placeholder takes the first copy in its place, the stub's docstring kept when the copy has
+    none, and the copies go with the blank lines above them. A base defining the method for real
+    is still left to an intermediate class. The engine's type check is the guard: on mainboard
+    the pull-up of `Edit.file` reads `self.path`, which `Edit` does not declare, and ty and
+    pyrefly refused it.
+  - `drop-exclude` (ALL-CONF0002, `safe`): a rule exclude matching no file leaves its array, with
+    its line when it stands alone there, cut from a one-line array otherwise. The first TOML
+    operation.
+- BUG: `manifest_rule_excludes` placed each stale exclude on the first line quoting its pattern
+  anywhere, so the 74 stale `datasets/**` of cuda-tokenization's 74 rule tables all read line
+  11, and a fix of each collided with every other: one per pass, 74 passes. It is now the line
+  quoting the pattern inside the rule's own table (`ProjectManifest._place`); one pass.
+- BUG: `Mirror` linked the Ruff configuration a project `extend`s even when no file stands there
+  (a project copied out of its workspace), and the fixer died with FileNotFoundError before its
+  first pass. An extension naming no file is none (`Mirror._extension`).
+- `raise-constants` now lays out what it moves as a formatter would: the blank lines above the
+  constant leave with it (`Module.cleared`, shared with `pull-up` and `move-constants`), and it
+  arrives a blank line below an import, two below a function or a class.
+- Tried on a scratch copy of research/cuda-tokenization: one pass dropped all 74 stale excludes
+  and moved `COMPACT_READBACK_BYTES` into `cutoken/tokenizer/constants.py`, respelling its
+  importer; findings 973 -> 898, type diagnostics 1638 -> 1638. On mainboard the full fixer kept
+  one `raise-constants` move (`rules/core/constants/calls.py`) with the suite proof passing, and
+  withheld the `Edit.file` pull-up on its type error. Every rule example passes; the suite passed
+  (1124 passed, 11 skipped).
+- ALL-DUPL0005's fix takes any plain string of word, path and flag characters, not only
+  lowercase identifiers (`staged.txt`, `/usr/bin/xcrun`, `--version`, `runtimeWarnings`), named
+  by its words in capitals (`_USR_BIN_XCRUN`, `_RUNTIME_WARNINGS`); a capitalized word or a
+  dotted name ending in one stays out, being most often a string annotation. On mainboard the
+  fixer kept four (test_launch, evidence/test_core, lake/test_query_stream, swift/test_analysis)
+  with the suite proof passing.
+- PY-CONS0001 at scale (scratch copy of research/reproducibility): its existing rename fix took
+  596 of 2994 findings in one pass; with PY-CONS0002 and PY-CONS0003 alongside, 5093 -> 3433.
+  Of the 1330 PY-CONS0002 left, 1202 sit in registration-sealed files, 104 are no lone literal
+  (`HERE = Path(__file__).parent`, which a move would change), 17 are imported from a module
+  outside the project and 7 are unexplained.
+
+## 2026-10-25: `mb refactor` tools, constants by depth, long literals, model naming
+
+- `mainboard rules` is now `mainboard refactor`: the rules (`check`, `fix`, `gate`, `catalog`,
+  `explain`, `test`) and the tools beside them. New tools:
+  - `refactor sql QUERY [ROOT]`: rows of any fact view, relation or table macro, those only a fix
+    reads included (`imported_names()`, `long_literals()`).
+  - `refactor proof [ROOT]`: the project's own proof over a copy of it as it stands. Its first
+    run caught a real failure the `rules` -> `refactor` rename left (test_analysis_explain
+    expected "rules catalog"), fixed.
+  - `refactor trial [ROOT] --rule ... [--unsafe] [--imports] [--patch FILE]`: the fixer on a
+    git copy, ROOT untouched; reports the fixer's lines, the files changed, the pyflakes and
+    syntax findings added or removed, and with `--imports` every changed module that imported
+    before and no longer does (each in its own process, the "before" from a worktree of the
+    copy). Exit 1 on an added finding or a broken import. `--patch` writes a `git apply` patch.
+  - `refactor move PATH::NAME... --to MODULE [--write]`: moves top-level definitions (functions,
+    classes, assignments, with decorators and the comments above) into another module, created
+    when missing; the imports they read come along respelled from there, every importer is
+    respelled (`from ... import` and `module.NAME`), the old module imports back what it still
+    reads. Refusals say why (a read of a name of the module that stays, a type-checking-only
+    project import, an aliased `import`, a cycle). Without `--write` it prints a diff.
+  - `refactor check --new` and `refactor gate --new`: only what each file gained since it was
+    last checked (`Seen`, in the project's state folder). After the first check a file never
+    recorded is new and all its findings are.
+- The mirror copies files instead of hard-linking them: an in-place edit made while a proof ran
+  reached the proof through the shared inode (`Mirror._copied`; 0.3 s for mainboard).
+- PY-CONS0002's `move-constants` picks the depth: a constant goes to the `constants.py` of the
+  lowest package holding its module and every user of it in its own top package (beside the
+  module when nothing else shares it), and every import is respelled from the importer's place,
+  relatively when it was relative (`Place.spelled`). A user in another top package (a test
+  suite) keeps its full name. On a scratch copy of research/reproducibility: 184 files changed,
+  2040 -> 1415 findings, no pyflakes finding added, no type diagnostic added, no import broken.
+- `move-constants` is now `move-definitions` restricted to literals (`MoveConstants.literal`):
+  one operation moves any top-level definition, the constants' move being its special case.
+  `Module.block` reads functions and classes with their decorators; `Module.binds` is scoped (a
+  method's locals no longer count as module names, which also made `raise-constants` anchor a
+  constant lower than it could stand).
+- The importer queries are relations of their own (`imported_names()`, `reached_names()`), read
+  by PY-CONS0002's fix and by `refactor move`.
+- PY-CONS0004 (review): a long literal inside a function: code-shaped text from 40 characters (SQL,
+  a pattern, a shell line, one token such as a flag list) or a number from 1000 or from four
+  significant digits; prose messages and file modes stay. Its `name-constants` operation lifts a
+  module's literals to module constants after the last import, every occurrence of a literal
+  reading one constant. The name comes from where the literal stands (the keyword, parameter
+  or variable it is the whole value of) or else from Claude Haiku 5.5 through `claude --print`
+  under a JSON schema (`operations/model.py`, ~6 s and under $0.001 a module), which only ever
+  chooses the identifier; answers are cached by question in
+  `~/.cache/mainboard/analysis/names.json` with the names already given to each literal, which
+  the next question lists so a value keeps one name across the project.
+- PY-CONS0005 (review): one private constant defined the same way in several modules of one top
+  package; its `share-constants` operation defines it once, public, in the `constants.py` of the
+  lowest package holding them all, and each module imports it.
+- On mainboard, PY-CONS0004 alone: 62 files, 185 -> 69 findings, no pyflakes finding or type
+  diagnostic added, every changed module still imports. Before the vocabulary, 1024 came out as
+  `_BYTES_PER_KIB`, `_BYTES_PER_KB`, `_BYTES_PER_KIBIBYTE` and `_BINARY_UNIT_BASE`.
+- A Stop hook (`.agents/hooks/refactor_new.py`, in `.agents/settings.json`): when a turn ends,
+  each `[tool.mcmr]` project holding a Python file modified since the hook last ran checks
+  `--new`, and new findings hold the turn with the report; a held turn stops the second time.
+- `mb agents sync` rendered `.codex/hooks.json` for the first time, and its commands read
+  `$CLAUDE_PROJECT_DIR`, which Codex does not set; both hooks now fall back to the git root
+  (`${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}`), checked with the variable unset.
+- OPEN: PY-CONS0004 classifies a prose message with `${NAME}` in it as shell
+  (`_PLAIN_REFERENCE_REQUIRED_MESSAGE`).
+- OPEN: `move` leaves import order and unused imports to `mainboard lint`.
+- `refactor preview ROOT --rule ... [--unsafe] [--only FILE]`: one pass of fixes as a diff, before
+  any proof (what the fixer would try, a fix it would withhold included). It found the next
+  three defects in minutes.
+- BUG (found by the fixer's own guards on the combined constants trial, mainboard copy): an
+  implicitly concatenated string spanning lines, lifted to module level, kept its continuation
+  indent (`unexpected indent`); `name-constants` now parenthesizes a multi-line value of more
+  than one string token (`NameConstants._spelled`).
+- BUG: `share-constants` dropped a `Final` annotation's import (`unknown-name` in the
+  `constants.py`; the type checkers narrow `destination != SSH_FAMILY` through `Final`, so it must
+  move). The arrival now goes through `Relocation.carried`, the same import carrying as
+  `move-definitions`.
+- BUG: `_SECONDS_PER_HOUR = 3600` and `= 3600.0` formed two groups claiming one public name; the
+  float won and a function returning `int` broke. A public name two values of a package claim is
+  now left alone.
+- BUG: a module reading `_SPACE` only inside `'{_SPACE}'` templates `.format` fills got an unused
+  import and lost the definition its template needs; a module spelling the private name more
+  often than its syntax tree reads it is refused.
+- PY-CONS0005 needs a name of two words or more and no `VERSION`: `_BATCH`, `_JSON`, `_VERSION = 1`
+  in two modules are as often two things (two schema versions merged would bump together).
+- `refactor trial` settles the imports a fix leaves unused or unsorted as `mainboard lint` would
+  (`ruff --fix --select F401,I001` on the changed files) before counting, and always checks
+  imports (no flag).
+- After those fixes, PY-CONS0005 on the mainboard copy carrying PY-CONS0004's constants: 24 fixes
+  kept, none withheld, 151 -> 85 findings, 63 files, no type diagnostic, pyflakes finding or
+  broken import added. Depth as intended: `dispatch/backends/constants.py` (vast and runpod),
+  `probe/facts/constants.py`, `profile/constants.py`, cross-package names in
+  `mainboard/constants.py`.
+- Model naming quality: the vocabulary converges (1024 -> mostly `BYTES_PER_KIBIBYTE`), but some
+  names are wrong (`BYTES_PER_GIBIBYTE = 1024`); PY-CONS0004 stays `review` for that reason.
+- PY-DOCU0001 treats a function listed bare in a tuple or list of a module registering cyclopts
+  commands (`_COMMANDS = (sql, move)`) as a command, so its `Args:` heading stands.
+- ALL-CLAS0001 stays `review`: reordering can swap two `@field_validator`s of one field, which
+  pydantic runs in definition order.
+
+## 2026-10-25 (evening): DuckDB 2.0 / DuckLake 1.1 adoption (Haiku surveys, Sonnet reviews)
+
+Five Haiku 5.5 surveys, each reviewed by a Sonnet 5.5 agent; reports in the session scratchpad
+`duckdb2/{A..E}-*.md` and `*-review.md`.
+- BUG (fixed): on DuckDB 2.0 `get_table_names(qualified=True)` answers `runs AS r` for an aliased
+  table, so `mb query "SELECT count(*) FROM runs r"` failed (Catalog Error) while `FROM runs`
+  worked. `state/storage/parsed.py` `names(sql)` reads tables and table macros off DuckDB's own
+  `json_serialize_sql` tree; `Views._needed` and the analysis `SqlNames._parse` both use it. It
+  matched sqlglot on 1145/1145 catalog SQL texts (cold 1.0-1.2 s vs 1.44 s). sqlglot is no longer
+  imported by mainboard; drop `"sqlglot>=30.0"` from pyproject in a quiet window (a member
+  manifest edit reinstalls the live env), then `uv lock` + `mb ci packages/mainboard`.
+- `Seen` and `Namer` load tolerantly (`json.JSONDecodeError`) and write atomically (staged file +
+  `os.replace`): a reader racing a `write_text` writer failed on 31% of reads in the review's test.
+  A DuckDB file for `Seen` was rejected: a second process fails on the file lock.
+- Rule settings: `Rule.constants` (ClassVar) replaces six `parameters()` overrides; three counts
+  moved into SQL (`len(list_distinct($x::VARCHAR[]))`, `$discovery = 'explicit'`); net -37 lines,
+  bindings verified identical by a reviewer.
+- One role-tagged recursive closure in `symbols/reach.py` (was two); `UNION` instead of
+  `UNION ALL` + `DISTINCT` in the CUDA class ancestors.
+- A rule's failing query now carries `in the query of rule <id>` (DuckDB 2.0 errors carry a
+  caret snippet but no rule name).
+- SECURITY (implementing): the lake served over Quack is writable by any holder of the one token,
+  over the `ssh -R` tunnels too; a client's READ_ONLY attach is not enforced (a client dropped
+  tables and expired snapshots, erasing time travel, in the review's scratch test). Fix: a second
+  endpoint on port+1 whose server opens the DuckLake READ_ONLY (enforced), its own token, plus
+  `allowed_directories`/`enable_external_access=false`/`lock_configuration`; read access attaches
+  it (`MB_LAKE_READ`, `MB_LAKE_READ_TOKEN`). The writer token keeps full power (narrowing it needs
+  SQL parsing, ruled out). Deployment (restart `mb lake serve`, second `-R`, host env) is the
+  owner's.
+- DuckLake 1.1: the center lake is already 1.1 (since 2026-10-22). OPEN (owner): the
+  research/cuda-tokenization project lake is `1.1-dev1`, which DuckDB 2.0.0 refuses even READ_ONLY;
+  migration is one-way (backup steps in `B-review.md`). OPEN (owner): the `gpu` env in mb.lock pins
+  `duckdb 2.0.0.dev2609250715`; check hosts and re-lock.
+- Maintenance: `upgrade()` gets the maintenance lock; `_set_apart` becomes `ALTER TABLE SET`
+  inside the creating transaction (implementing).
+- Not adopted, with reasons: triggers and RETURNING (unsupported on DuckLake tables), VARIANT for
+  trial columns (no gain over `->>`, frozen papers read the trees), nested schemas (rejected in
+  `search_path`), `SET VARIABLE` (per connection), `USING KEY` for min-depth closures (keeps the
+  latest row), data-modifying CTEs on the lake (no RETURNING).
+- BUG (fixed): `Seen` recorded a check of a few rules as if they were all, so the next full check
+  reported every other rule's findings as new (808 at once). It now records only the rules a
+  check ran.
+- BUG (fixed): the Stop hook checked every Python file modified since it last ran, so concurrent
+  sessions received each other's findings (the MLSys session was handed `state/storage/parsed.py`
+  and fixed it), and one session's check consumed another's new findings. The hook now gates
+  only the files its own transcript's Edit/Write calls name, through `refactor gate --new` under a
+  per-session record (`MB_REFACTOR_SESSION` -> `.mainboard/refactor/sessions/<id>.json`, started
+  from the project's `seen.json`). Verified: a never-seen probe file edited in a synthetic
+  transcript is reported; this session's own files with nothing new pass.
+- Lake serving after review: a host with only the read pair reads the served lake (it silently
+  read a local lake before); token files are 0600; the served connections get a real
+  `temp_directory` (a spilling server-side query failed before, pre-existing); the served-lake
+  fixture provides both pairs. Gate on this Mac: lake/test_core.py 4 passed, 3 skipped (the served
+  tests run only on the Linux TCP lane), so the served path is proven by scratch scripts only.
+  OPEN: run the Linux lane; the owner deploys (restart `mb lake serve`, second `ssh -R` for
+  port+1, `MB_LAKE_READ`/`MB_LAKE_READ_TOKEN` on hosts that read). Quack PR #329 (merged
+  2026-10-22) will reject client READ_ONLY attaches; ours sends only TOKEN, unaffected.
+- Upstream: `get_table_names` alias form is by design (asserted in duckdb's tests); Quack ignoring
+  a client READ_ONLY attach is duckdb-quack #327 (fixed by #329). Drafted for duckdb-web, awaiting
+  the owner: the Quack security page's read-only authorization examples refuse every client.
+
+## 2026-10-25 (night): every lake on DuckLake 1.1, every dependency on its latest release
+
+- Lakes: the center lake (/Volumes/PORTABLE/mainboard-lake) and research/reproducibility's were
+  already 1.1. research/cuda-tokenization/.mb/lake.sqlite (1.1-dev1, unreadable by DuckDB 2.0.0,
+  last written 2026-10-11) is now 1.1: catalog backed up to
+  /Volumes/PORTABLE/lake-backups/cuda-tokenization-pre11-2026-10-25.sqlite (no data files), then
+  `Lake(...).upgrade()`; 17 tables and 3 snapshots read back. Left as they were on purpose: the
+  2026-10-22 backups and the old workspace copy under /Volumes/PORTABLE/projects (1.1-dev1).
+  Hosts' staging lakes migrate at their next `mb host sync` (CVLAB hosts are down in an outage).
+- BUG: `mb lake upgrade` never reached cuda-tokenization's lake: it walks `nested_projects`, and
+  that project lost its own manifest on 2026-10-07, so its `.mb` lake is an orphan nothing reads.
+  Its docstring named it as the example; fixed to name reproducibility. The orphan lake was
+  deleted on the owner's word (catalog backup kept in /Volumes/PORTABLE/lake-backups/).
+- `mainboard upgrade`: every requirement raised (harfbuzz 15, starlette 1.10, kornia 0.9,
+  importlib_metadata 10, fastapi 0.162, ...); `sqlglot` dropped from mainboard's pyproject. The
+  proof suite passes on the new lock; `mb lock --check` is clean.
+- BUG (fixed): mb.lock kept `[environments.gpu]`, an environment the manifest no longer declares,
+  pinning `duckdb==2.0.0.dev2609250715` through a stale editable-mainboard record; nothing pruned
+  sections of retired environments. `Lockfile.put` keeps only declared environments, and
+  `mb lock` drops undeclared sections (`Lockfile.retain`). The section is gone.

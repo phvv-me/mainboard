@@ -8,7 +8,7 @@ from types import TracebackType
 
 from patos import FrozenModel
 
-from .protocols import KernelActivity, MemcpyActivity
+from .formats.protocols import KernelActivity, MemcpyActivity
 
 
 class Activity(Flag):
@@ -36,7 +36,7 @@ class Activity(Flag):
     @property
     def label(self) -> str:
         """The lowercase name used in records and on the Perfetto timeline."""
-        return self.name.lower() if self.name else "activity"
+        return (self.name or "activity").lower()
 
 
 _MEMCPY_KIND = dict(
@@ -45,11 +45,6 @@ _MEMCPY_KIND = dict(
     )
 )
 _MAX_THREADS_PER_BLOCK = 1024  # the hardware cap, the occupancy-proxy denominator
-
-
-def memcpy_kind(code: int) -> str:
-    """A CUPTI copy-kind code's direction, `kind_<code>` outside the known table."""
-    return _MEMCPY_KIND.get(code, f"kind_{code}")
 
 
 class KernelTrace(FrozenModel):
@@ -71,6 +66,24 @@ class KernelTrace(FrozenModel):
     device_id: int | None = None
     context_id: int | None = None
     stream_id: int | None = None
+
+    @classmethod
+    def from_activity(cls, act: KernelActivity) -> KernelTrace:
+        """Build from a CUPTI CONCURRENT_KERNEL activity (snake_case attributes)."""
+        return cls(
+            name=act.name,
+            start_ns=act.start,
+            end_ns=act.end,
+            grid=f"{act.grid_x}x{act.grid_y}x{act.grid_z}",
+            block=f"{act.block_x}x{act.block_y}x{act.block_z}",
+            static_shared_mem=act.static_shared_memory,
+            dynamic_shared_mem=act.dynamic_shared_memory,
+            registers=act.registers_per_thread,
+            correlation_id=getattr(act, "correlation_id", 0),
+            device_id=getattr(act, "device_id", None),
+            context_id=getattr(act, "context_id", None),
+            stream_id=getattr(act, "stream_id", None),
+        )
 
     @property
     def duration_ns(self) -> int:
@@ -98,24 +111,6 @@ class KernelTrace(FrozenModel):
         """The product of the block dimensions, a non-numeric one counting as 1."""
         return math.prod(int(dim) if dim.isdigit() else 1 for dim in self.block.split("x"))
 
-    @classmethod
-    def from_activity(cls, act: KernelActivity) -> KernelTrace:
-        """Build from a CUPTI CONCURRENT_KERNEL activity (snake_case attributes)."""
-        return cls(
-            name=act.name,
-            start_ns=act.start,
-            end_ns=act.end,
-            grid=f"{act.grid_x}x{act.grid_y}x{act.grid_z}",
-            block=f"{act.block_x}x{act.block_y}x{act.block_z}",
-            static_shared_mem=act.static_shared_memory,
-            dynamic_shared_mem=act.dynamic_shared_memory,
-            registers=act.registers_per_thread,
-            correlation_id=getattr(act, "correlation_id", 0),
-            device_id=getattr(act, "device_id", None),
-            context_id=getattr(act, "context_id", None),
-            stream_id=getattr(act, "stream_id", None),
-        )
-
 
 class MemcpyTrace(FrozenModel):
     """One memory copy in device-clock nanoseconds, with its direction and bytes moved.
@@ -132,19 +127,11 @@ class MemcpyTrace(FrozenModel):
     context_id: int | None = None
     stream_id: int | None = None
 
-    @property
-    def bandwidth_gbps(self) -> float:
-        return self.bytes_moved / self.duration_ns if self.duration_ns > 0 else 0.0
-
-    @property
-    def duration_ns(self) -> int:
-        return self.end_ns - self.start_ns
-
     @classmethod
     def from_activity(cls, act: MemcpyActivity) -> MemcpyTrace:
         """Build from a CUPTI MEMCPY activity (snake_case attributes)."""
         return cls(
-            kind=memcpy_kind(act.copy_kind),
+            kind=_MEMCPY_KIND.get(act.copy_kind, f"kind_{act.copy_kind}"),
             start_ns=act.start,
             end_ns=act.end,
             bytes_moved=getattr(act, "bytes", 0),
@@ -153,6 +140,14 @@ class MemcpyTrace(FrozenModel):
             context_id=getattr(act, "context_id", None),
             stream_id=getattr(act, "stream_id", None),
         )
+
+    @property
+    def bandwidth_gbps(self) -> float:
+        return self.bytes_moved / self.duration_ns if self.duration_ns > 0 else 0.0
+
+    @property
+    def duration_ns(self) -> int:
+        return self.end_ns - self.start_ns
 
 
 class ActivityRecord(FrozenModel):
@@ -189,6 +184,11 @@ class TraceCollector:
     regions afterwards.
     """
 
+    @property
+    def device_index(self) -> int:
+        """Return the captured CUDA-visible ordinal, not a physical NVML index."""
+        raise RuntimeError("this collector has no synchronized CUDA device")
+
     def __enter__(self) -> TraceCollector:
         return self
 
@@ -210,11 +210,6 @@ class TraceCollector:
         The requested kinds must actually be enabled; a collector without windows refuses.
         """
         raise RuntimeError("synchronized activity windows are unavailable on this backend")
-
-    @property
-    def device_index(self) -> int:
-        """Return the captured CUDA-visible ordinal, not a physical NVML index."""
-        raise RuntimeError("this collector has no synchronized CUDA device")
 
     def dropped(self) -> int:
         """Number of native records discarded by a bounded capture buffer."""

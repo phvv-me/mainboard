@@ -1,8 +1,8 @@
 from patos import FrozenModel
 
 from ..core.project import Project
-from ..manifest.schema.container import Container
-from ..manifest.schema.host import HostProfile
+from ..manifest.schema.compute.container import Container
+from ..manifest.schema.compute.host import HostProfile
 
 
 class ExecutionPlan(FrozenModel):
@@ -29,10 +29,10 @@ class ExecutionPlan(FrozenModel):
         Always a bound host path outside any image, which lets a fixed off-the-shelf image serve
         every dependency change.
         """
-        return environment_prefix(root, self.env)
+        return environment_prefix(root, env=self.env)
 
 
-def environment_prefix(root: str, env: str) -> str:
+def environment_prefix(root: str, *, env: str) -> str:
     """Where the workspace environment `env` lives under a machine's workspace `root`.
 
     Its state directory is the name this workspace keeps, which a host's mirror of it keeps too.

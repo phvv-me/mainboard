@@ -3,6 +3,6 @@
 Importing the package registers the relations they share (`modules`, `experiments`).
 """
 
-from . import experiments as experiments
 from . import gate as gate
-from . import modules as modules
+from .graphs import modules as modules
+from .papers import experiments as experiments

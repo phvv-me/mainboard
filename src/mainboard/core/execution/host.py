@@ -1,0 +1,55 @@
+import platform
+import sys
+
+
+def is_linux() -> bool:
+    """Whether this machine runs Linux.
+
+    The one spelling every branch on this machine's system uses. A host's system, probed or
+    recorded, is data and stays a string compared where it is read.
+    """
+    return sys.platform.startswith("linux")
+
+
+def is_macos() -> bool:
+    """Whether this machine runs macOS."""
+    return sys.platform == "darwin"
+
+
+def platform_family(platform_name: str) -> str:
+    """The operating-system half of a pixi platform string (`linux-aarch64` -> `linux`).
+
+    A bare family (`linux`) answers itself.
+
+    The one place the family is read, so an overlay key and a virtual package floor always agree
+    about which machines a platform stands for.
+    """
+    return platform_name.split("-", maxsplit=1)[0]
+
+
+def platform_selectors(platform_name: str) -> tuple[str, ...]:
+    """The `[on.*]` overlay keys covering a pixi platform or family, most specific first.
+
+    `linux-64` is covered by `linux-64`, `linux` and `unix`; a bare family `linux` by itself and
+    `unix`.
+    """
+    family = platform_family(platform_name)
+    selectors = (platform_name,) if family == platform_name else (platform_name, family)
+    return (*selectors, "unix")
+
+
+def pixi_platform(system: str, *, machine: str) -> str:
+    """The pixi platform string (`linux-64` style) for one kernel and machine pair.
+
+    system: the kernel as `uname -s`, `platform.system()` or a probe spells it.
+    machine: the architecture as `uname -m` spells it.
+    """
+    arm = machine.lower() in {"arm64", "aarch64"}
+    if system.lower() == "darwin":
+        return "osx-arm64" if arm else "osx-64"
+    return "linux-aarch64" if arm else "linux-64"
+
+
+def current_platform() -> str:
+    """This machine as a pixi platform string, the solve surface of a manifest declaring none."""
+    return pixi_platform(platform.system(), machine=platform.machine())

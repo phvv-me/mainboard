@@ -42,7 +42,7 @@
 
 import json
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 from pydantic import JsonValue, ValidationError
@@ -78,7 +78,6 @@ class Topic(StrEnum):
 
 # The three answers a target gives about one offered job, read together since a row asks only
 # for the last word (`latest` over the three).
-OFFERED = (Topic.SUBMITTED, Topic.REFUSED, Topic.HELD)
 
 
 class Event(FrozenModel):
@@ -97,18 +96,9 @@ class Event(FrozenModel):
     data: dict[str, JsonValue] = {}
 
 
-class Bus(Protocol):
-    """Where a batch's receipts go: the lake now, a broker later, the same two verbs either way."""
-
-    def publish(self, event: Event) -> None:
-        """Hand one event to the transport."""
-
-    def replay(self) -> list[Event]:
-        """Every event this batch has published, oldest first."""
-
-
 class Journal:
-    """The lake transport: the workspace lake's `events`, one batch's lines selected by its id.
+    """Where a batch's receipts go: the workspace lake's `events`, one batch's lines selected by
+    its id.
 
     Replayed in commit order, the order a file would have been appended in. A row whose topic
     this release no longer knows is skipped rather than fatal, the tolerance a torn file gets.
@@ -164,25 +154,16 @@ class SettlementReceipts:
     never borrows another run's line. A line joins the index only once the bus took it.
     """
 
-    def __init__(self, bus: Bus, stream: str) -> None:
+    @staticmethod
+    def _run(data: Mapping[str, JsonValue]) -> str:
+        return json.dumps([data.get(key) for key in ("handle", "target", "submitted_at")])
+
+    def __init__(self, bus: Journal, stream: str) -> None:
         self.bus = bus
         self.stream = stream
         self.newest: dict[tuple[Topic, str, str], Event] = {}
         for event in bus.replay():
             self._keep(event)
-
-    def get(
-        self, topic: Topic, job: str, *, submission: Mapping[str, JsonValue] | None = None
-    ) -> Event | None:
-        """The newest `topic` line of `job`, of the one submission `submission` names if given."""
-        return self.newest.get((topic, job, "" if submission is None else self._run(submission)))
-
-    def publish(self, topic: Topic, *, job: str, data: Mapping[str, JsonValue]) -> None:
-        self._keep(publish(self.bus, self.stream, topic, job=job, data=data))
-
-    @staticmethod
-    def _run(data: Mapping[str, JsonValue]) -> str:
-        return json.dumps([data.get(key) for key in ("handle", "target", "submitted_at")])
 
     def _keep(self, event: Event) -> None:
         if event.topic not in {Topic.STATE, Topic.EVIDENCE}:
@@ -193,9 +174,18 @@ class SettlementReceipts:
             if held is None or event.at >= held.at:
                 self.newest[key] = event
 
+    def get(
+        self, topic: Topic, job: str, *, submission: Mapping[str, JsonValue] | None = None
+    ) -> Event | None:
+        """The newest `topic` line of `job`, of the one submission `submission` names if given."""
+        return self.newest.get((topic, job, "" if submission is None else self._run(submission)))
+
+    def publish(self, topic: Topic, *, job: str, data: Mapping[str, JsonValue]) -> None:
+        self._keep(publish(self.bus, self.stream, topic, job=job, data=data))
+
 
 def publish(
-    bus: Bus, batch: str, topic: Topic, *, job: str = "", data: Mapping[str, JsonValue]
+    bus: Journal, batch: str, topic: Topic, *, job: str = "", data: Mapping[str, JsonValue]
 ) -> Event:
     """Stamp `data` as one event of `topic` and hand it to `bus` (events are built only here)."""
     event = Event(at=now(), batch=batch, topic=topic, job=job, data=dict(data))
@@ -222,3 +212,8 @@ def latest(events: Iterable[Event], *topics: Topic) -> dict[str, Event]:
         if event.topic in wanted and (held is None or event.at >= held.at):
             newest[event.job] = event
     return newest
+
+
+def offered(events: Iterable[Event]) -> dict[str, Event]:
+    """Every job's newest answer to being offered: submitted, refused or held."""
+    return latest(events, Topic.SUBMITTED, Topic.REFUSED, Topic.HELD)

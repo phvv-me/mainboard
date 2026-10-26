@@ -18,11 +18,11 @@ from sqlalchemy import select
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..manifest.loading import load
-from ..manifest.schema.workspace import DATA
+from ..manifest.schema.constants import DATA
 from ..state import schema
-from ..state.blobs import Blobs
 from ..state.lake import Lake, insert
-from .sync import GitignoreFilter
+from ..state.storage.blobs import Blobs
+from .mirroring.sync import GitignoreFilter
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -85,14 +85,6 @@ def registered(node: Path, rows: Sequence[Row], *, root: Path) -> None:
         raise MissionError(f"{relative} changed after Mainboard prepared the job")
 
 
-def parsed(manifest: str) -> list[Row]:
-    """The rows of a listing `listing` wrote."""
-    return [
-        Row(path=path, blob=blob, status=Status(status))
-        for path, blob, status in (line.split("\t") for line in manifest.splitlines() if line)
-    ]
-
-
 def named(identity: str) -> str:
     """A safe snapshot-directory component."""
     return _UNSAFE.sub("-", identity)[:96].lstrip(".") or "source"
@@ -101,63 +93,29 @@ def named(identity: str) -> str:
 class SourceTree:
     """Discover, fingerprint and preserve source without consulting version control."""
 
+    @staticmethod
+    def _parsed(manifest: str) -> list[Row]:
+        """The rows of a listing `listing` wrote."""
+        return [
+            Row(path=path, blob=blob, status=Status(status))
+            for path, blob, status in (line.split("\t") for line in manifest.splitlines() if line)
+        ]
+
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self.filter = GitignoreFilter(root)
 
-    def kept(self, directory: str) -> list[str]:
-        """Files under an explicit source root, honoring optional ignore files and secrets."""
-        return self.filter.files([directory])
-
-    def sources(self) -> list[str]:
-        """The workspace's source: every file a host could be sent, less its `[workspace] data`.
-
-        A dataset a trial reads is pinned through `needs` or `resources`, never archived as
-        source; a host mirror still ships whatever its own sync include names.
-        """
-        manifest = Project().manifest(self.root)
-        data = load(manifest).workspace.data if manifest.is_file() else DATA
-        return self.filter.files(
-            sorted(entry.name for entry in self.root.iterdir()), excluded=data
-        )
-
-    def seal(self, files: Sequence[str], *, built: Sequence[str] = ()) -> tuple[Source, list[Row]]:
-        """Identify exactly these files as they stand on disk, including newly created files."""
-        self.filter.validate_sources(files)
-        marked = frozenset(built)
-        rows = []
-        for path in sorted(set(files)):
-            relative = PurePosixPath(path)
-            if (
-                relative.is_absolute()
-                or ".." in relative.parts
-                or any(c in path for c in "\t\r\n")
-            ):
-                raise MissionError(f"invalid source path: {path!r}")
-            if any(part in {".git", ".env"} for part in relative.parts):
-                raise MissionError(f"private control file cannot be source: {path}")
-            if not (self.root / path).resolve().is_relative_to(self.root):
-                raise MissionError(f"source escapes workspace: {path}")
-            rows.append(
-                Row(
-                    path=path,
-                    blob=blob_of(self.root / path),
-                    status=Status.BUILT if path in marked else Status.SOURCE,
-                )
-            )
-        digest = hashlib.sha256(listing(rows).encode()).hexdigest()
-        return Source(identity=f"sha256:{digest}", key=f"sha256-{digest}", digest=digest), rows
-
     def archive(self, manifest: str) -> str:
-        """Keep retrievable source bytes before dispatch, not merely their hashes; return the
-        listing's digest.
+        """Keep retrievable source bytes before dispatch, answering the listing's digest.
+
+        The bytes are kept, not merely their hashes.
 
         Each listed file's bytes land in the lake's `blobs` once per content, a file unchanged
         since any earlier dispatch costing nothing, and the listing in `closures`, all in one
         commit. A file that changed since it was listed is refused rather than kept under the
         wrong digest.
         """
-        rows = parsed(manifest)
+        rows = SourceTree._parsed(manifest)
         digest = hashlib.sha256(manifest.encode()).hexdigest()
         lake = Lake.at(self.root).ready()
         blobs = Blobs(lake)
@@ -193,6 +151,10 @@ class SourceTree:
         lake.transact(keep)
         return digest
 
+    def kept(self, directory: str) -> list[str]:
+        """Files under an explicit source root, honoring optional ignore files and secrets."""
+        return self.filter.files([directory])
+
     def restore(self, digest: str, into: Path) -> list[Path]:
         """Write the tree whose listing has `digest` under `into`, byte for byte, from the lake.
 
@@ -219,3 +181,42 @@ class SourceTree:
             target.write_bytes(payloads[blob])
             written.append(target)
         return written
+
+    def seal(self, files: Sequence[str], *, built: Sequence[str] = ()) -> tuple[Source, list[Row]]:
+        """Identify exactly these files as they stand on disk, including newly created files."""
+        self.filter.validate_sources(files)
+        marked = frozenset(built)
+        rows = []
+        for path in sorted(set(files)):
+            relative = PurePosixPath(path)
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or any(c in path for c in "\t\r\n")
+            ):
+                raise MissionError(f"invalid source path: {path!r}")
+            if any(part in {".git", ".env"} for part in relative.parts):
+                raise MissionError(f"private control file cannot be source: {path}")
+            if not (self.root / path).resolve().is_relative_to(self.root):
+                raise MissionError(f"source escapes workspace: {path}")
+            rows.append(
+                Row(
+                    path=path,
+                    blob=blob_of(self.root / path),
+                    status=Status.BUILT if path in marked else Status.SOURCE,
+                )
+            )
+        digest = hashlib.sha256(listing(rows).encode()).hexdigest()
+        return Source(identity=f"sha256:{digest}", key=f"sha256-{digest}", digest=digest), rows
+
+    def sources(self) -> list[str]:
+        """The workspace's source: every file a host could be sent, less its `[workspace] data`.
+
+        A dataset a trial reads is pinned through `needs` or `resources`, never archived as
+        source; a host mirror still ships whatever its own sync include names.
+        """
+        manifest = Project().manifest(self.root)
+        data = load(manifest).workspace.data if manifest.is_file() else DATA
+        return self.filter.files(
+            sorted(entry.name for entry in self.root.iterdir()), excluded=data
+        )

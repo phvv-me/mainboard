@@ -69,7 +69,6 @@ class QuerySession(Function):
 
 class Query(Family):
     family = "QueryFact"
-    verified = True
     relations = {
         "facts": r"""
             SELECT row_number() OVER (ORDER BY f.path) - 1 AS fact_order,

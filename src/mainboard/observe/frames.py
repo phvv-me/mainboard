@@ -53,8 +53,10 @@ decode = Frame.model_validate_json
 
 
 def parse_tail(text: str) -> list[Frame]:
-    """Every complete frame in NDJSON `text`, tolerating a final line a concurrent writer or a
-    partial network read cut short."""
+    """Every complete frame in NDJSON `text`.
+
+    A final line that a concurrent writer or a partial network read cut short is tolerated.
+    """
     # The literal "\n" `encode` writes, never `str.splitlines`, which also breaks on unicode line
     # separators (NEL, U+2028...) a payload string may legally embed.
     complete = text if text.endswith("\n") else text.rpartition("\n")[0]

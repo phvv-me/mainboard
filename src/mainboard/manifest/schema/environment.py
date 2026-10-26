@@ -31,9 +31,12 @@ class Env(Scope):
     holds: dict[str, str] = {}
 
     def merged(self, over: Self) -> Self:
-        """This environment layered over `over`, another manifest's of the same name: requirements,
-        overlays, tasks, channels and sources joined, this one's settings and bounds winning where
-        both set them, so a project's contribution never loosens what the root declares."""
+        """This environment layered over `over`, another manifest's of the same name.
+
+        Requirements, overlays, tasks, channels and sources are joined, and this one's settings and
+        bounds win where both set them, so a project's contribution never loosens what the root
+        declares.
+        """
         merged = super().merged(over)
         on = {
             platform: self.on[platform].merged(over.on[platform])

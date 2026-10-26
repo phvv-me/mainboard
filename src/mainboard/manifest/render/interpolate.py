@@ -35,6 +35,41 @@ class Interpolator:
     expressions (`mem_gb = "attempt * 50"`) out of load time.
     """
 
+    @staticmethod
+    def _called(name: str, arguments: str, scope: Scope) -> Json:
+        """The scope function `name` called with the literal `arguments` a template wrote."""
+        match scope.get(name):
+            case Callable() as function:
+                return function(
+                    *(ast.literal_eval(f"({arguments},)") if arguments.strip() else ())
+                )
+            case _:
+                raise ValueError(f"{name!r} is not a function a template can call")
+
+    @staticmethod
+    def _evaluated(expression: str, scope: Scope) -> Json:
+        """What one template's `expression` names: a scope value by dotted name, or a call."""
+        if call := _CALL.fullmatch(expression):
+            return Interpolator._called(call[1], call[2], scope)
+        if not _NAME.fullmatch(expression):
+            raise ValueError(f"{expression!r} is not a name or a call a template evaluates")
+        return Interpolator._looked_up(expression, scope)
+
+    @staticmethod
+    def _looked_up(expression: str, scope: Scope) -> Json:
+        """The scope value the dotted name `expression` reaches, table by table."""
+        head, *rest = expression.split(".")
+        if head not in scope:
+            raise ValueError(f"{expression!r} is undefined")
+        value = scope[head]
+        if callable(value):
+            raise ValueError(f"{expression!r} is a function; call it as {expression}()")
+        for part in rest:
+            if not isinstance(value, dict) or part not in value:
+                raise ValueError(f"{expression!r} is undefined")
+            value = value[part]
+        return value
+
     def __init__(self, root: Path) -> None:
         """root: the directory holding the manifest, exposed as `config_root`."""
         self.root = root
@@ -47,22 +82,16 @@ class Interpolator:
             "exec": _exec,
         }
 
-    def rendered(self, tree: dict[str, Json]) -> dict[str, Json]:
-        """The parsed manifest tree with every template string rendered."""
-        scope = dict(self.globals)
-        variables = self.__rendered_vars(tree, scope)
-        scope["vars"] = variables
-        rendered = {key: self.__walk(value, scope, at=key) for key, value in tree.items()}
-        rendered["vars"] = variables
-        return rendered
-
     def __render(self, text: str, scope: Scope, *, at: str) -> str:
         if "{{" not in text and "{%" not in text:
             return text
+        if "{%" in text:
+            raise MissionError(
+                f"template at {at} failed: "
+                "`{% %}` statements are not evaluated; use `{{ name }}`"
+            )
         try:
-            if "{%" in text:
-                raise ValueError("`{% %}` statements are not evaluated; use `{{ name }}`")
-            return _TEMPLATE.sub(lambda found: str(_evaluated(found[1], scope)), text)
+            return _TEMPLATE.sub(lambda found: str(Interpolator._evaluated(found[1], scope)), text)
         except Exception as error:
             raise MissionError(f"template at {at} failed: {error}") from error
 
@@ -85,25 +114,14 @@ class Interpolator:
             return [self.__walk(item, scope, at=f"{at}[]") for item in value]
         return value
 
-
-def _evaluated(expression: str, scope: Scope) -> Json:
-    """What one template's `expression` names: a scope value by dotted name, or a call."""
-    if call := _CALL.fullmatch(expression):
-        function = scope.get(call[1])
-        if not callable(function):
-            raise ValueError(f"{call[1]!r} is not a function a template can call")
-        arguments = ast.literal_eval(f"({call[2]},)") if call[2].strip() else ()
-        return function(*arguments)
-    if not _NAME.fullmatch(expression):
-        raise ValueError(f"{expression!r} is not a name or a call a template evaluates")
-    value: object = scope
-    for part in expression.split("."):
-        if not isinstance(value, Mapping) or part not in value:
-            raise ValueError(f"{expression!r} is undefined")
-        value = value[part]
-    if callable(value):
-        raise ValueError(f"{expression!r} is a function; call it as {expression}()")
-    return value  # type: ignore[return-value]
+    def rendered(self, tree: dict[str, Json]) -> dict[str, Json]:
+        """The parsed manifest tree with every template string rendered."""
+        scope = dict(self.globals)
+        variables = self.__rendered_vars(tree, scope)
+        scope["vars"] = variables
+        rendered = {key: self.__walk(value, scope, at=key) for key, value in tree.items()}
+        rendered["vars"] = variables
+        return rendered
 
 
 def _env(name: str, default: str = "") -> str:
@@ -119,7 +137,7 @@ def _os_name() -> str:
 def _exec(command: str) -> str:
     """The stripped stdout of `command`, parsed consistently and run without a shell."""
     try:
-        result = subprocess.run(
+        return subprocess.run(
             shlex.split(command),
             capture_output=True,
             text=True,
@@ -127,7 +145,6 @@ def _exec(command: str) -> str:
             errors="replace",
             timeout=_EXEC_TIMEOUT,
             check=True,
-        )
-        return result.stdout.strip()
+        ).stdout.strip()
     except (OSError, subprocess.SubprocessError) as error:
         raise MissionError(f"exec({command!r}) failed: {error}") from error

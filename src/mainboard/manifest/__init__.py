@@ -1,33 +1,34 @@
-from .loading import load
-from .schema.container import Container, Guardrail
+from .composing import composition
+from .loading import load, load_plot_config
+from .schema.compute.container import Container, Guardrail
+from .schema.compute.host import HostProfile, Sync
+from .schema.compute.queue import Defaults, QueuePolicy
+from .schema.compute.toolchain import Toolchain
 from .schema.environment import Env
 from .schema.figures.figure import FigureSpec
 from .schema.figures.layer import Layer
 from .schema.figures.panel import Panel
-from .schema.host import HostProfile, Sync
-from .schema.lint import Lint, LintTool
-from .schema.paper import Paper
-from .schema.queue import Defaults, QueuePolicy
+from .schema.figures.paper import Paper
+from .schema.project.lint import Lint, LintTool
+from .schema.project.workspace import Header
 from .schema.root import Manifest
 from .schema.scope import PlatformScope, Scope
+from .schema.services.tracking import Tracking
 from .schema.spec import Spec
-from .schema.toolchain import Toolchain
-from .schema.tracking import Tracking
-from .schema.workspace import Header
 
 __all__ = [
     "Container",
     "Defaults",
     "Env",
-    "Guardrail",
     "FigureSpec",
-    "Layer",
-    "Panel",
+    "Guardrail",
     "Header",
     "HostProfile",
+    "Layer",
     "Lint",
     "LintTool",
     "Manifest",
+    "Panel",
     "Paper",
     "PlatformScope",
     "QueuePolicy",
@@ -36,5 +37,7 @@ __all__ = [
     "Sync",
     "Toolchain",
     "Tracking",
+    "composition",
     "load",
+    "load_plot_config",
 ]

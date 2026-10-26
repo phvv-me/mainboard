@@ -1,7 +1,7 @@
 """Edits a fix returns: plain values the engine expands, applies and verifies (AUTOFIX.md).
 
-This first slice holds the span tier; the structural (`rewrite`) and semantic (`rename`,
-`move_module`, `extract`) tiers follow on the same base.
+Span edits change bytes inside a file; file edits create, rename or remove whole files; an import
+names what a file needs and the plan adds it once.
 """
 
 from abc import ABC, abstractmethod
@@ -69,16 +69,30 @@ def replace(span: Span, text: str) -> Replace:
     return Replace(span=span, text=text)
 
 
-def insert(text: str, *, before: Span | None = None, after: Span | None = None) -> Insert:
-    return Insert(text=text, before=before, after=after)
+class Append(Edit):
+    """Add `text` at the end of the file at `path`, creating it when missing.
+
+    Appends to one file stack in the order the plan takes them, so several fixes may each add a
+    definition to one shared module (a `constants.py`) in a single pass.
+    """
+
+    kind: Literal["append"] = "append"
+    path: str
+    text: str
+
+    def file(self) -> str:
+        return self.path
 
 
-def delete(span: Span) -> Delete:
-    return Delete(span=span)
+class Create(Edit):
+    """Write a new file at `path` holding `text`, refused when something already stands there."""
 
+    kind: Literal["create"] = "create"
+    path: str
+    text: str
 
-def move(span: Span, *, before: Span | None = None, after: Span | None = None) -> Move:
-    return Move(span=span, before=before, after=after)
+    def file(self) -> str:
+        return self.path
 
 
 class Remove(Edit):
@@ -89,10 +103,6 @@ class Remove(Edit):
 
     def file(self) -> str:
         return self.path
-
-
-def remove(path: str) -> Remove:
-    return Remove(path=path)
 
 
 class Rename(Edit):
@@ -106,7 +116,7 @@ class Rename(Edit):
         return self.path
 
 
-def rename(path: str, target: str) -> Rename:
+def rename(path: str, *, target: str) -> Rename:
     return Rename(path=path, target=target)
 
 
@@ -122,7 +132,3 @@ class Import(Edit):
 
     def file(self) -> str:
         return self.path
-
-
-def require(path: str, statement: str) -> Import:
-    return Import(path=path, statement=statement)

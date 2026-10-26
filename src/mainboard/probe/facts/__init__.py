@@ -1,12 +1,14 @@
-from .cgroup_memory import CgroupMemory
 from .compilers import Compiler, Compilers
-from .drive_info import DriveInfo
+from .devices.fabric import Fabric, FabricPort
+from .devices.telemetry import Telemetry
+from .devices.utilization import Utilization
 from .environment import Environment
-from .fabric import Fabric, FabricPort
-from .host_disk import HostDisk
-from .memory import Memory
-from .partition_info import PartitionInfo
-from .scratch import Scratch
+from .memory.cgroup import CgroupMemory
+from .memory.core import Memory
+from .storage.drive_info import DriveInfo
+from .storage.host_disk import HostDisk
+from .storage.partition_info import PartitionInfo
+from .storage.scratch import Scratch
 
 __all__ = [
     "CgroupMemory",
@@ -20,4 +22,6 @@ __all__ = [
     "Memory",
     "PartitionInfo",
     "Scratch",
+    "Telemetry",
+    "Utilization",
 ]

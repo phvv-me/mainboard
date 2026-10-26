@@ -3,16 +3,12 @@ import re
 from functools import cached_property
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 from .process import Git, said
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-
-# Every repository in the tree answers to `origin`: a submodule is cloned with that name and the
-# workspace root is a clone too, so there is no second remote to choose between.
-REMOTE = "origin"
 
 # The branch a repository with no declared branch and no remote HEAD is assumed to follow.
 _DEFAULT_TRUNK = "main"
@@ -40,11 +36,6 @@ class Change(NamedTuple):
     path: str
 
     @property
-    def untracked(self) -> bool:
-        """Whether git does not track this path yet."""
-        return self.code == _UNTRACKED
-
-    @property
     def deleted(self) -> bool:
         """Whether the change removes the path, in the index or in the worktree."""
         return _DELETED in self.code
@@ -55,22 +46,10 @@ class Change(NamedTuple):
         # Git refuses such a path as a pathspec to `add`: neither index nor worktree holds it.
         return self.code == f"{_DELETED} "
 
-
-def owner_of(url: str) -> str:
-    """The owner a remote URL names: the path segment above the repository itself.
-
-    `https://github.com/phvv-me/aizk.git`, `git@github.com:phvv-me/aizk.git` and a local
-    `/srv/remotes/phvv-me/aizk.git` all name `phvv-me`; a URL with no such segment names nobody.
-    """
-    parts = [part for part in _URL_PARTS.split(url) if part]
-    return parts[-2] if len(parts) > 1 else ""
-
-
-def resolved(url: str, base: str) -> str:
-    """A `.gitmodules` URL made absolute, a `./` or `../` one against the parent remote `base`."""
-    if not url.startswith(("./", "../")):
-        return url
-    return posixpath.normpath(posixpath.join(base, url))
+    @property
+    def untracked(self) -> bool:
+        """Whether git does not track this path yet."""
+        return self.code == _UNTRACKED
 
 
 class Repo:
@@ -86,80 +65,9 @@ class Repo:
     owns: whether a remote owner is this workspace's own.
     """
 
-    def __init__(
-        self,
-        path: Path,
-        *,
-        name: str = ".",
-        declared: str = "",
-        branch: str = "",
-        owns: Callable[[str], bool],
-    ) -> None:
-        self.path = path
-        self.name = name
-        self.declared = declared
-        self.declared_branch = branch
-        self.owns = owns
-        self.git = Git(path)
-
-    @property
-    def initialized(self) -> bool:
-        """Whether the working tree is checked out, a `.git` file or directory present."""
-        return (self.path / ".git").exists()
-
-    @cached_property
-    def url(self) -> str:
-        """Where this repository pushes: its own `origin` once checked out, else the declared one.
-
-        A checkout whose `origin` was pointed at a fork pushes to the fork, so ownership follows
-        the remote a push would really reach rather than what the parent once declared.
-        """
-        if not self.initialized:
-            return self.declared
-        found = self.git.run("remote", "get-url", REMOTE)
-        return found.stdout.strip() if found.succeeded else self.declared
-
-    @cached_property
-    def owner(self) -> str:
-        """The owner the remote URL names."""
-        return owner_of(self.url)
-
-    @property
-    def owned(self) -> bool:
-        """Whether this is the workspace's own repository, one the writing verbs may touch."""
-        return self.owns(self.owner)
-
-    @cached_property
-    def children(self) -> list[Repo]:
-        """Every submodule the index records a gitlink for, checked out or not, in declared order.
-
-        `.gitmodules` only names each one's URL and branch: an entry there with no gitlink is
-        stale, answered by `stale` and walked by no verb, since git itself refuses it as a
-        pathspec (`packages/cunicode`, 2026-09-26).
-        """
-        linked = self._gitlinks
-        return [
-            Repo(
-                self.path / entry["path"],
-                name=posixpath.join(self.name, entry["path"]).removeprefix("./"),
-                declared=resolved(entry.get("url", ""), self.url),
-                branch=entry.get("branch", ""),
-                owns=self.owns,
-            )
-            for entry in self._declared
-            if entry["path"] in linked
-        ]
-
-    @property
-    def stale(self) -> list[str]:
-        """Every path `.gitmodules` declares a submodule at with no gitlink in the index."""
-        linked = self._gitlinks
-        return [path for path in self.submodule_paths if path not in linked]
-
-    @property
-    def submodule_paths(self) -> list[str]:
-        """Every path `.gitmodules` declares a submodule at, recorded in the index or not."""
-        return [entry["path"] for entry in self._declared]
+    # Every repository in the tree answers to `origin`: a submodule is cloned with that name and
+    # the workspace root is a clone too, so there is no second remote to choose between.
+    REMOTE: ClassVar[str] = "origin"
 
     @cached_property
     def _declared(self) -> list[dict[str, str]]:
@@ -185,36 +93,114 @@ class Repo:
         entries = (entry.partition("\t") for entry in listing.split("\0") if entry)
         return frozenset(path for meta, _, path in entries if meta.startswith(_GITLINK))
 
-    def relative(self, child: Repo) -> str:
-        """`child`'s path inside this repository, the way this repository's index names it."""
-        return child.path.relative_to(self.path).as_posix()
+    @cached_property
+    def children(self) -> list[Repo]:
+        """Every submodule the index records a gitlink for, checked out or not, in declared order.
 
-    def head(self) -> str:
-        """The commit HEAD is on."""
-        return self.git.line("rev-parse", "HEAD")
+        `.gitmodules` only names each one's URL and branch: an entry there with no gitlink is
+        stale, answered by `stale` and walked by no verb, since git itself refuses it as a
+        pathspec (`packages/cunicode`, 2026-09-26).
+        """
+        linked = self._gitlinks
+        return [
+            Repo(
+                self.path / entry["path"],
+                name=posixpath.join(self.name, entry["path"]).removeprefix("./"),
+                declared=Repo._resolved(entry.get("url", ""), base=self.url),
+                branch=entry.get("branch", ""),
+                owns=self.owns,
+            )
+            for entry in self._declared
+            if entry["path"] in linked
+        ]
 
-    def short(self, commit: str) -> str:
-        """`commit` abbreviated the way git would print it here."""
-        return self.git.line("rev-parse", "--short", commit)
+    @cached_property
+    def owner(self) -> str:
+        """The owner the remote URL names."""
+        return Repo._owner_of(self.url)
 
-    def identified(self) -> bool:
-        """Whether git knows who authors a commit here (`user.name` and `user.email`), which a
-        freshly set-up machine does not."""
-        return self.git.ok("var", "GIT_AUTHOR_IDENT")
+    @cached_property
+    def url(self) -> str:
+        """Where this repository pushes: its own `origin` once checked out, else the declared one.
 
-    def branch(self) -> str:
-        """The checked-out branch, empty when HEAD is detached."""
-        found = self.git.run("symbolic-ref", "-q", "--short", "HEAD")
-        return found.stdout.strip() if found.succeeded else ""
+        A checkout whose `origin` was pointed at a fork pushes to the fork, so ownership follows
+        the remote a push would really reach rather than what the parent once declared.
+        """
+        if not self.initialized:
+            return self.declared
+        found = self.git.run("remote", "get-url", Repo.REMOTE)
+        return found.stdout.strip() if found.succeeded else self.declared
 
-    def trunk(self) -> str:
-        """The branch this repository follows: declared by the parent, else the remote's HEAD."""
-        if self.declared_branch:
-            return self.declared_branch
-        found = self.git.run("symbolic-ref", "-q", "--short", f"refs/remotes/{REMOTE}/HEAD")
-        if not found.succeeded:
-            return _DEFAULT_TRUNK
-        return found.stdout.strip().removeprefix(f"{REMOTE}/")
+    @property
+    def initialized(self) -> bool:
+        """Whether the working tree is checked out, a `.git` file or directory present."""
+        return (self.path / ".git").exists()
+
+    @property
+    def owned(self) -> bool:
+        """Whether this is the workspace's own repository, one the writing verbs may touch."""
+        return self.owns(self.owner)
+
+    @property
+    def stale(self) -> list[str]:
+        """Every path `.gitmodules` declares a submodule at with no gitlink in the index."""
+        linked = self._gitlinks
+        return [path for path in self.submodule_paths if path not in linked]
+
+    @property
+    def submodule_paths(self) -> list[str]:
+        """Every path `.gitmodules` declares a submodule at, recorded in the index or not."""
+        return [entry["path"] for entry in self._declared]
+
+    @staticmethod
+    def _owner_of(url: str) -> str:
+        """The owner a remote URL names: the path segment above the repository itself.
+
+        `https://github.com/phvv-me/aizk.git`, `git@github.com:phvv-me/aizk.git` and a local
+        `/srv/remotes/phvv-me/aizk.git` all name `phvv-me`; a URL with no such segment names
+        nobody.
+        """
+        parts = [part for part in _URL_PARTS.split(url) if part]
+        return parts[-2] if len(parts) > 1 else ""
+
+    @staticmethod
+    def _resolved(url: str, *, base: str) -> str:
+        """A `.gitmodules` URL made absolute, a relative one against the parent remote `base`."""
+        if not url.startswith(("./", "../")):
+            return url
+        return posixpath.normpath(posixpath.join(base, url))
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        name: str = ".",
+        declared: str = "",
+        branch: str = "",
+        owns: Callable[[str], bool],
+    ) -> None:
+        self.path = path
+        self.name = name
+        self.declared = declared
+        self.declared_branch = branch
+        self.owns = owns
+        self.git = Git(path)
+
+    def _offered(self, commit: str) -> bool:
+        """Whether `origin` serves `commit` when asked for it alone, without its history or tree.
+
+        The fetch lands in a scratch repository, so this clone's objects and shallow boundary
+        stay as they were; a remote that ignores the tree filter sends one snapshot at most.
+        """
+        with TemporaryDirectory() as scratch:
+            probe = Git(Path(scratch))
+            probe.out("init", "--quiet", "--bare")
+            asked = ("fetch", "--quiet", "--depth=1", "--filter=tree:0", self.url, commit)
+            return probe.run(*asked, network=True).succeeded
+
+    def ancestor(self, older: str, *, newer: str) -> bool:
+        """Whether `older` is `newer` or an ancestor of it, so one fast-forwards to the other."""
+        return self.git.ok("merge-base", "--is-ancestor", older, newer)
 
     def attach(self) -> str:
         """Put a detached HEAD back on its trunk where that moves no commit, returning the branch.
@@ -227,40 +213,25 @@ class Repo:
         trunk = self.trunk()
         head = self.head()
         local = f"refs/heads/{trunk}"
-        remote = f"{REMOTE}/{trunk}"
-        if self.exists(local) and not self.ancestor(local, head):
+        remote = f"{Repo.REMOTE}/{trunk}"
+        if self.exists(local) and not self.ancestor(local, newer=head):
             return ""
         tracked = self.exists(remote)
-        if tracked and not (self.ancestor(remote, head) or self.ancestor(head, remote)):
+        if tracked and not (
+            self.ancestor(remote, newer=head) or self.ancestor(head, newer=remote)
+        ):
             return ""
         self.git.out("checkout", "-q", "-B", trunk)
         if tracked:
             self.git.out("branch", "-q", f"--set-upstream-to={remote}")
         return trunk
 
-    def upstream(self) -> str:
-        """The remote branch HEAD is counted against, empty when there is none to count.
+    def branch(self) -> str:
+        """The checked-out branch, empty when HEAD is detached."""
+        found = self.git.run("symbolic-ref", "-q", "--short", "HEAD")
+        return found.stdout.strip() if found.succeeded else ""
 
-        A branch answers with the upstream it is configured to track and nothing when it tracks
-        none, since guessing one would count against a branch it never meant to follow. A
-        detached HEAD answers with its trunk on the remote, which is the branch it is attached to
-        the first time a commit or a pull puts it back on one.
-        """
-        if self.branch():
-            found = self.git.run("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-            return found.stdout.strip() if found.succeeded else ""
-        remote = f"{REMOTE}/{self.trunk()}"
-        return remote if self.exists(remote) else ""
-
-    def counts(self, upstream: str) -> tuple[int, int]:
-        """How many commits HEAD is ahead of and behind `upstream`, zero both without one."""
-        if not upstream:
-            return 0, 0
-        counted = self.git.line("rev-list", "--left-right", "--count", f"HEAD...{upstream}")
-        ahead, behind = counted.split()
-        return int(ahead), int(behind)
-
-    def changes(self, outside: Sequence[str] = (), within: Sequence[str] = ()) -> list[Change]:
+    def changes(self, outside: Sequence[str] = (), *, within: Sequence[str] = ()) -> list[Change]:
         """Every changed, staged or untracked path, a submodule counted only when its commit moved.
 
         A submodule with edits of its own is that submodule's business, reported on its own row,
@@ -283,6 +254,126 @@ class Repo:
         )
         return [Change(entry[:2], entry[3:]) for entry in listing.split("\0") if entry]
 
+    def counts(self, upstream: str) -> tuple[int, int]:
+        """How many commits HEAD is ahead of and behind `upstream`, zero both without one."""
+        if not upstream:
+            return 0, 0
+        counted = self.git.line("rev-list", "--left-right", "--count", f"HEAD...{upstream}")
+        ahead, behind = counted.split()
+        return int(ahead), int(behind)
+
+    def exists(self, ref: str) -> bool:
+        """Whether `ref` names a commit this repository has."""
+        return self.git.ok("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+
+    def faithful(self, path: str) -> bool:
+        """Whether the file at `path` is only its link written out.
+
+        It is when it holds the link's own target path as text, or the very bytes of the file the
+        link points at.
+        """
+        target = self.git.out("cat-file", "blob", f":{path}")
+        written = (self.path / path).read_bytes()
+        if written == target.encode():
+            return True
+        try:
+            return written == ((self.path / path).parent / target).read_bytes()
+        except OSError:
+            return False
+
+    def fetch(self) -> str:
+        """Fetch from `origin`, pruning branches it deleted, and return git's complaint if any."""
+        found = self.git.run("fetch", "--prune", "--quiet", Repo.REMOTE, network=True)
+        return "" if found.succeeded else found.stderr.strip()
+
+    def head(self) -> str:
+        """The commit HEAD is on."""
+        return self.git.line("rev-parse", "HEAD")
+
+    def homes(self, commit: str) -> list[str]:
+        """The remote branches holding `commit`, empty when none does or it is unknown here.
+
+        This is what decides whether a parent pointer at `commit` can be cloned: a commit no
+        remote branch reaches is one the remote may refuse to serve.
+        """
+        found = self.git.run(
+            "for-each-ref",
+            "--format=%(if)%(symref)%(then)%(else)%(refname:short)%(end)",
+            "--contains",
+            commit,
+            f"refs/remotes/{Repo.REMOTE}/",
+        )
+        return found.stdout.split() if found.succeeded else []
+
+    def identified(self) -> bool:
+        """Whether git knows who authors a commit here (`user.name` and `user.email`).
+
+        A freshly set-up machine does not.
+        """
+        return self.git.ok("var", "GIT_AUTHOR_IDENT")
+
+    def lfs(self) -> bool:
+        """Whether this repository keeps files in Git LFS, which a push has to upload first."""
+        try:
+            attributes = (self.path / ".gitattributes").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return False
+        return "filter=lfs" in attributes
+
+    def merge(self, upstream: str) -> str:
+        """Merge `upstream` into the checked-out branch, returning what stopped it, or nothing.
+
+        A merge that conflicts is aborted rather than left half done, so the working tree is as
+        it was and the conflicting paths are named for one `git merge` by hand.
+        """
+        merged = self.git.run("merge", "--no-edit", "-q", upstream)
+        if merged.succeeded:
+            return ""
+        listing = self.git.run("diff", "--name-only", "-z", "--diff-filter=U").stdout
+        conflicts = [path for path in listing.split("\0") if path]
+        self.git.run("merge", "--abort")
+        return f"conflicts in {', '.join(conflicts)}" if conflicts else said(merged)
+
+    def pointers(self) -> dict[str, str]:
+        """The commit HEAD records for every submodule path, keyed by that path."""
+        paths = [self.relative(child) for child in self.children]
+        if not paths:
+            return {}
+        listing = self.git.out("ls-tree", "-z", "HEAD", "--", *paths)
+        entries = (entry.partition("\t") for entry in listing.split("\0") if entry)
+        return {path: meta.split()[2] for meta, _, path in entries if meta.startswith(_GITLINK)}
+
+    def relative(self, child: Repo) -> str:
+        """`child`'s path inside this repository, the way this repository's index names it."""
+        return child.path.relative_to(self.path).as_posix()
+
+    def serves(self, commit: str) -> bool:
+        """Whether `origin` hands out `commit`, which a clone of a parent pointing at it needs.
+
+        A remote branch this clone knows holding it answers without the network. Otherwise the
+        remote itself is asked for that one commit, since a clone's refs see only part of it: a
+        shallow clone cannot trace a branch past its boundary, and a single-branch clone never
+        tracks the other branches that may hold it.
+        """
+        return bool(self.homes(commit)) or self._offered(commit)
+
+    def short(self, commit: str) -> str:
+        """`commit` abbreviated the way git would print it here."""
+        return self.git.line("rev-parse", "--short", commit)
+
+    def tracked(self) -> list[str]:
+        """Every path the index tracks, sparse ones included, as git spells it."""
+        return [path for path in self.git.out("ls-files", "-z").split("\0") if path]
+
+    def trunk(self) -> str:
+        """The branch this repository follows: declared by the parent, else the remote's HEAD."""
+        if self.declared_branch:
+            return self.declared_branch
+        found = self.git.run("symbolic-ref", "-q", "--short", f"refs/remotes/{Repo.REMOTE}/HEAD")
+        if not found.succeeded:
+            return _DEFAULT_TRUNK
+        return found.stdout.strip().removeprefix(f"{Repo.REMOTE}/")
+
     def unlinked(self) -> list[str]:
         """Every symbolic link the index records that the working tree holds as a changed file.
 
@@ -301,35 +392,10 @@ class Repo:
             if meta.startswith(f":{_SYMLINK} ") and not (self.path / path).is_symlink()
         ]
 
-    def faithful(self, path: str) -> bool:
-        """Whether the file at `path` is only its link written out: the link's own target path
-        as text, or the very bytes of the file the link points at."""
-        target = self.git.out("cat-file", "blob", f":{path}")
-        written = (self.path / path).read_bytes()
-        if written == target.encode():
-            return True
-        try:
-            return written == ((self.path / path).parent / target).read_bytes()
-        except OSError:
-            return False
-
-    def merge(self, upstream: str) -> str:
-        """Merge `upstream` into the checked-out branch, returning what stopped it, or nothing.
-
-        A merge that conflicts is aborted rather than left half done, so the working tree is as
-        it was and the conflicting paths are named for one `git merge` by hand.
-        """
-        merged = self.git.run("merge", "--no-edit", "-q", upstream)
-        if merged.succeeded:
-            return ""
-        listing = self.git.run("diff", "--name-only", "-z", "--diff-filter=U").stdout
-        conflicts = [path for path in listing.split("\0") if path]
-        self.git.run("merge", "--abort")
-        return f"conflicts in {', '.join(conflicts)}" if conflicts else said(merged)
-
     def unreadable(self) -> str:
-        """Git's own words when a plain `git status` here aborts on a submodule checkout it
-        cannot read, empty when none does.
+        """Git's own words when a plain `git status` here aborts, empty when it does not.
+
+        It aborts on a submodule checkout it cannot read.
 
         Every other question this tree asks passes `--ignore-submodules` and survives a checkout
         whose `.git` names a directory that is gone, so nothing else would ever name the path a
@@ -339,73 +405,16 @@ class Repo:
         found = self.git.run("status", "--porcelain=v1", "--untracked-files=no", "--", ".", *owned)
         return "" if found.succeeded else "; ".join(filter(None, found.stderr.splitlines()))
 
-    def exists(self, ref: str) -> bool:
-        """Whether `ref` names a commit this repository has."""
-        return self.git.ok("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    def upstream(self) -> str:
+        """The remote branch HEAD is counted against, empty when there is none to count.
 
-    def ancestor(self, older: str, newer: str) -> bool:
-        """Whether `older` is `newer` or an ancestor of it, so one fast-forwards to the other."""
-        return self.git.ok("merge-base", "--is-ancestor", older, newer)
-
-    def homes(self, commit: str) -> list[str]:
-        """The remote branches holding `commit`, empty when none does or it is unknown here.
-
-        This is what decides whether a parent pointer at `commit` can be cloned: a commit no
-        remote branch reaches is one the remote may refuse to serve.
+        A branch answers with the upstream it is configured to track and nothing when it tracks
+        none, since guessing one would count against a branch it never meant to follow. A
+        detached HEAD answers with its trunk on the remote, which is the branch it is attached to
+        the first time a commit or a pull puts it back on one.
         """
-        found = self.git.run(
-            "for-each-ref",
-            "--format=%(if)%(symref)%(then)%(else)%(refname:short)%(end)",
-            "--contains",
-            commit,
-            f"refs/remotes/{REMOTE}/",
-        )
-        return found.stdout.split() if found.succeeded else []
-
-    def serves(self, commit: str) -> bool:
-        """Whether `origin` hands out `commit`, which a clone of a parent pointing at it needs.
-
-        A remote branch this clone knows holding it answers without the network. Otherwise the
-        remote itself is asked for that one commit, since a clone's refs see only part of it: a
-        shallow clone cannot trace a branch past its boundary, and a single-branch clone never
-        tracks the other branches that may hold it.
-        """
-        return bool(self.homes(commit)) or self._offered(commit)
-
-    def _offered(self, commit: str) -> bool:
-        """Whether `origin` serves `commit` when asked for it alone, without its history or tree.
-
-        The fetch lands in a scratch repository, so this clone's objects and shallow boundary
-        stay as they were; a remote that ignores the tree filter sends one snapshot at most.
-        """
-        with TemporaryDirectory() as scratch:
-            probe = Git(Path(scratch))
-            probe.out("init", "--quiet", "--bare")
-            asked = ("fetch", "--quiet", "--depth=1", "--filter=tree:0", self.url, commit)
-            return probe.run(*asked, network=True).succeeded
-
-    def tracked(self) -> list[str]:
-        """Every path the index tracks, sparse ones included, as git spells it."""
-        return [path for path in self.git.out("ls-files", "-z").split("\0") if path]
-
-    def pointers(self) -> dict[str, str]:
-        """The commit HEAD records for every submodule path, keyed by that path."""
-        paths = [self.relative(child) for child in self.children]
-        if not paths:
-            return {}
-        listing = self.git.out("ls-tree", "-z", "HEAD", "--", *paths)
-        entries = (entry.partition("\t") for entry in listing.split("\0") if entry)
-        return {path: meta.split()[2] for meta, _, path in entries if meta.startswith(_GITLINK)}
-
-    def fetch(self) -> str:
-        """Fetch from `origin`, pruning branches it deleted, and return git's complaint if any."""
-        found = self.git.run("fetch", "--prune", "--quiet", REMOTE, network=True)
-        return "" if found.succeeded else found.stderr.strip()
-
-    def lfs(self) -> bool:
-        """Whether this repository keeps files in Git LFS, which a push has to upload first."""
-        try:
-            attributes = (self.path / ".gitattributes").read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return False
-        return "filter=lfs" in attributes
+        if self.branch():
+            found = self.git.run("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+            return found.stdout.strip() if found.succeeded else ""
+        remote = f"{Repo.REMOTE}/{self.trunk()}"
+        return remote if self.exists(remote) else ""

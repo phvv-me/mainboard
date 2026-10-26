@@ -12,6 +12,10 @@ from pydantic import BeforeValidator
 from ..core.project import Project
 from ..log import logger
 
+# Research imports these from here, where they lived before `constants`.
+from .constants import CLOSURE_VAR as CLOSURE_VAR
+from .constants import DIGEST_VAR as DIGEST_VAR
+
 
 def now() -> str:
     """The current instant as an ISO-8601 string, the timestamp format every record shares."""
@@ -37,21 +41,6 @@ def since(stamp: str) -> str:
     if hours:
         return f"{hours}h{minutes}m"
     return f"{minutes}m{seconds}s" if minutes else f"{seconds}s"
-
-
-# The variables a run reads its provenance from, here because the dispatch exporting them and the
-# receipt reading them sit at opposite ends of the package. Each is exported under every name the
-# tool answers to, since the job may import an older release than the one that dispatched it.
-SOURCE_VAR = Project().variable("SOURCE")
-COMMIT_VAR = Project().variable("SOURCE_COMMIT")
-DIGEST_VAR = Project().variable("SOURCE_DIGEST")
-CLOSURE_VAR = Project().variable("CLOSURE")
-FIRST_PARTY_VAR = Project().variable("FIRST_PARTY")
-DEFERRED_VAR = Project().variable("DEFERRED")
-# Where a job keeps what it resumes from, the same directory on every attempt of one run name,
-# and which attempt this is (1 first).
-CHECKPOINT_VAR = Project().variable("CHECKPOINT")
-ATTEMPT_VAR = Project().variable("ATTEMPT")
 
 
 def git(*args: str, exact: bool = False) -> str:
@@ -90,27 +79,18 @@ type HandleId = Annotated[str, BeforeValidator(str)]
 
 
 def state_dir(root: Path | None = None) -> str:
-    """The subdirectory of the generated tree every dispatch artifact (sqlite state, job scripts,
-    logs) lives under, apart from the manifest compiler's output, in workspace `root` (the cwd's
-    workspace). Workspace-relative so the same string names it here and on a host, where a job
-    script writes its log for a later poll."""
-    return f"{Project().out_dir(root)}/dispatch"
+    """The generated-tree folder every dispatch artifact lives under, in workspace `root`.
 
-
-def workspace(start: Path | None = None) -> Path:
-    """The workspace `start` (the current directory when None) belongs to, found upward by its
-    manifest as `Board` finds it.
-
-    Dispatch state belongs to the workspace, keeping one database rather than an empty one per
-    subdirectory: the difference between a cron sweep that settles every job and one that finds
-    none.
+    Artifacts are sqlite state, job scripts and logs, kept apart from the manifest compiler's
+    output; `root` is the cwd's workspace by default. The path is workspace-relative, so the same
+    string names it here and on a host, where a job script writes its log for a later poll.
     """
-    return Project().workspace(start)
+    return f"{Project().out_dir(root)}/dispatch"
 
 
 def state_path(root: Path | None = None) -> Path:
     """The dispatch state directory as a real path, under `root` or the discovered workspace."""
-    here = root or workspace()
+    here = root or Project().workspace()
     return here / state_dir(here)
 
 

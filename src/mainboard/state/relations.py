@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import duckdb
 
 from ..runtime.tree import FileBudget
-from .database import connect
 from .lake import ndjson
+from .storage.database import connect
 
 if TYPE_CHECKING:
     from pydantic import JsonValue
@@ -45,9 +45,49 @@ class Relations:
         self.connection = connect(config={"autoinstall_known_extensions": False})
         self._made = 0
 
+    def arrow(self, table: ArrowStream) -> Relation:
+        """An Arrow stream as one table, its column types kept."""
+        self._made += 1
+        name = f"t{self._made}"
+        self.connection.from_arrow(table).to_table(name)
+        return self.connection.table(name)
+
+    def files(self, paths: Sequence[Path], *, positions: bool = False) -> Relation:
+        """Parquet files as one table, read lazily, their columns matched by name.
+
+        positions: also carry each row's `filename` and `file_row_number`, the order it was
+            written in.
+        """
+        located = ", filename = true, file_row_number = true" if positions else ""
+        with FileBudget.permitted():
+            return self.connection.sql(
+                f"SELECT * FROM read_parquet(?, union_by_name = true, hive_partitioning = false"
+                f"{located})",
+                params=[[str(path) for path in paths]],
+            )
+
+    def kept(self, query: str, params: Sequence[object] = ()) -> Relation:
+        """`query` materialized as a new table of this database."""
+        self._made += 1
+        name = f"t{self._made}"
+        with FileBudget.permitted():
+            self.connection.execute(f"CREATE TABLE {name} AS {query}", list(params) or None)
+        return self.connection.table(name)
+
+    def parquet(self, data: bytes) -> Relation:
+        """Parquet bytes as one table."""
+        descriptor, name = tempfile.mkstemp(prefix="mb-", suffix=".parquet")
+        try:
+            with os.fdopen(descriptor, "wb") as staged:
+                staged.write(data)
+            return self.kept("SELECT * FROM read_parquet(?)", [name])
+        finally:
+            Path(name).unlink(missing_ok=True)
+
     def rows(self, rows: Sequence[Mapping[str, JsonValue]]) -> Relation:
-        """`rows` as one table, each column's type read from every row and a key a row lacks
-        read as null.
+        """`rows` as one table, each column's type read from every row.
+
+        A key a row lacks is read as null.
 
         A key holding text stays text. Left to infer, DuckDB reads an instant, a date, a clock
         time or a UUID out of a string, and the value comes back as another object, an instant
@@ -64,37 +104,6 @@ class Relations:
             }
         with ndjson(rows, typed=True, columns=kinds) as source:
             return self.kept(f"SELECT * FROM {source}")
-
-    def arrow(self, table: ArrowStream) -> Relation:
-        """An Arrow stream as one table, its column types kept."""
-        self._made += 1
-        name = f"t{self._made}"
-        self.connection.from_arrow(table).to_table(name)
-        return self.connection.table(name)
-
-    def parquet(self, data: bytes) -> Relation:
-        """Parquet bytes as one table."""
-        descriptor, name = tempfile.mkstemp(prefix="mb-", suffix=".parquet")
-        try:
-            with os.fdopen(descriptor, "wb") as staged:
-                staged.write(data)
-            return self.kept("SELECT * FROM read_parquet(?)", [name])
-        finally:
-            Path(name).unlink(missing_ok=True)
-
-    def files(self, paths: Sequence[Path], *, positions: bool = False) -> Relation:
-        """Parquet files as one table, read lazily, their columns matched by name.
-
-        positions: also carry each row's `filename` and `file_row_number`, the order it was
-            written in.
-        """
-        located = ", filename = true, file_row_number = true" if positions else ""
-        with FileBudget.permitted():
-            return self.connection.sql(
-                f"SELECT * FROM read_parquet(?, union_by_name = true, hive_partitioning = false"
-                f"{located})",
-                params=[[str(path) for path in paths]],
-            )
 
     def sql(self, query: str, params: Sequence[object] = (), **named: Relation) -> Relation:
         """`query` over this database, each relation in `named` readable under its name."""
@@ -117,14 +126,6 @@ class Relations:
         return self.connection.sql(
             " UNION ALL BY NAME ".join(f"SELECT * FROM {name}" for name in names)
         )
-
-    def kept(self, query: str, params: Sequence[object] = ()) -> Relation:
-        """`query` materialized as a new table of this database."""
-        self._made += 1
-        name = f"t{self._made}"
-        with FileBudget.permitted():
-            self.connection.execute(f"CREATE TABLE {name} AS {query}", list(params) or None)
-        return self.connection.table(name)
 
 
 def write_parquet(relation: Relation, target: Path, *, level: int = LEVEL) -> None:

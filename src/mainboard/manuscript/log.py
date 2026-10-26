@@ -70,74 +70,32 @@ class TexLog:
     directory: the manuscript directory the engine ran in, which file paths are shown under.
     """
 
-    def __init__(self, text: str, *, directory: Path) -> None:
-        self.lines = _unwrapped(text)
-        self.directory = directory
-        self.stack: list[str | None] = []
-        self.closed = ""
-
-    def problems(self) -> list[Problem]:
-        """Every problem the log reports, in the order it reports them, each named once."""
-        found: list[Problem] = []
-        pending: Problem | None = None
-        for line in self.lines:
-            if pending and (numbered := _ERROR_LINE.match(line)):
-                found.append(
-                    pending.model_copy(update={"where": f"{pending.where}:{numbered[1]}"})
-                )
-                pending = None
-            elif error := _ERROR.match(line):
-                found.extend([pending] if pending else [])
-                pending = Problem(
-                    kind=Kind.ERROR, where=self.current, detail=error["detail"].strip()
-                )
-            else:
-                found.extend(self._warnings(line))
-        found.extend([pending] if pending else [])
-        return list(dict.fromkeys(found))
-
     @property
     def current(self) -> str:
         """The file TeX is reading right now, shown relative to the manuscript directory."""
         opened = next((entry for entry in reversed(self.stack) if entry is not None), "")
         return self._shown(opened)
 
-    def _warnings(self, line: str) -> list[Problem]:
-        """The warnings `line` carries, attributed to the file open where each one prints."""
-        matched = [
-            (kind, found)
-            for kind, pattern in (
-                (Kind.REFERENCE, _REFERENCE),
-                (Kind.CITATION, _CITATION),
-                (Kind.LABEL, _LABEL),
-                (Kind.OVERFULL, _OVERFULL),
-            )
-            if (found := pattern.search(line))
-        ]
-        if not matched:
-            self._follow(line)
-            return []
-        kind, found = matched[0]
-        self._follow(line[: found.start()])
-        where = f"{self._source(found)}:{found['line']}" if "line" in found.groupdict() else ""
-        detail = found["amount"] if kind is Kind.OVERFULL else found["name"]
-        self._follow(line[found.end() :])
-        # cleveref shadows every label with an `@cref` twin, so one duplicate warns twice.
-        if detail.endswith(_SHADOW):
-            return []
-        return [Problem(kind=kind, where=where, detail=detail)]
+    @staticmethod
+    def _unwrapped(text: str) -> list[str]:
+        """`text`'s lines with TeX's hard wrap undone, so a path or a warning reads whole."""
+        joined: list[str] = []
+        carried = ""
+        for line in text.splitlines():
+            carried += line
+            if len(line) == _WRAP:
+                continue
+            joined.append(carried)
+            carried = ""
+        if carried:
+            joined.append(carried)
+        return joined
 
-    def _source(self, found: re.Match[str]) -> str:
-        """The file a warning's first line sits in.
-
-        A paragraph that starts at the end of one input and is broken after TeX has opened the
-        next one reports lines that run backwards, `359--1`, and its start belongs to the file
-        that just closed rather than to the one now open.
-        """
-        last = found.groupdict().get("last")
-        if last and int(last) < int(found["line"]) and self.closed:
-            return self._shown(self.closed)
-        return self.current
+    def __init__(self, text: str, *, directory: Path) -> None:
+        self.lines = TexLog._unwrapped(text)
+        self.directory = directory
+        self.stack: list[str | None] = []
+        self.closed = ""
 
     def _follow(self, text: str) -> None:
         """Move the open-file stack across every parenthesis in `text`."""
@@ -164,17 +122,59 @@ class TexLog:
             return f"{shown}.tex"
         return shown
 
+    def _source(self, found: re.Match[str]) -> str:
+        """The file a warning's first line sits in.
 
-def _unwrapped(text: str) -> list[str]:
-    """`text`'s lines with TeX's hard wrap undone, so a path or a warning reads whole."""
-    joined: list[str] = []
-    carried = ""
-    for line in text.splitlines():
-        carried += line
-        if len(line) == _WRAP:
-            continue
-        joined.append(carried)
-        carried = ""
-    if carried:
-        joined.append(carried)
-    return joined
+        A paragraph that starts at the end of one input and is broken after TeX has opened the
+        next one reports lines that run backwards, `359--1`, and its start belongs to the file
+        that just closed rather than to the one now open.
+        """
+        last = found.groupdict().get("last")
+        if last and int(last) < int(found["line"]) and self.closed:
+            return self._shown(self.closed)
+        return self.current
+
+    def _warnings(self, line: str) -> list[Problem]:
+        """The warnings `line` carries, attributed to the file open where each one prints."""
+        matched = [
+            (kind, found)
+            for kind, pattern in (
+                (Kind.REFERENCE, _REFERENCE),
+                (Kind.CITATION, _CITATION),
+                (Kind.LABEL, _LABEL),
+                (Kind.OVERFULL, _OVERFULL),
+            )
+            if (found := pattern.search(line))
+        ]
+        if not matched:
+            self._follow(line)
+            return []
+        kind, found = matched[0]
+        self._follow(line[: found.start()])
+        where = f"{self._source(found)}:{found['line']}" if "line" in found.groupdict() else ""
+        detail = found["amount"] if kind is Kind.OVERFULL else found["name"]
+        self._follow(line[found.end() :])
+        # cleveref shadows every label with an `@cref` twin, so one duplicate warns twice.
+        if detail.endswith(_SHADOW):
+            return []
+        return [Problem(kind=kind, where=where, detail=detail)]
+
+    def problems(self) -> list[Problem]:
+        """Every problem the log reports, in the order it reports them, each named once."""
+        found: list[Problem] = []
+        pending: Problem | None = None
+        for line in self.lines:
+            if pending and (numbered := _ERROR_LINE.match(line)):
+                found.append(
+                    pending.model_copy(update={"where": f"{pending.where}:{numbered[1]}"})
+                )
+                pending = None
+            elif error := _ERROR.match(line):
+                found.extend([pending] if pending else [])
+                pending = Problem(
+                    kind=Kind.ERROR, where=self.current, detail=error["detail"].strip()
+                )
+            else:
+                found.extend(self._warnings(line))
+        found.extend([pending] if pending else [])
+        return list(dict.fromkeys(found))

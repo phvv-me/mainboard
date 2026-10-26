@@ -1,16 +1,17 @@
 from .benchmark import BenchSample, benchmark, compare
-from .dispatch import arch_config
-from .efficiency import EfficiencyReport, KernelEfficiency
-from .health import Diagnosis
-from .manifests import MergeManifest, TraceSource
-from .models import RegionStat, RegionSummary
+from .bottleneck.report import Bound, ProfileReport
+from .formats.manifests import MergeManifest, TraceSource
+from .formats.store import profiles_dir
+from .health.core import Diagnosis
 from .profiler import Feature, Profiler
-from .report import Bound, ProfileReport
 from .result import DeviceEvidence, Profile, ProfileDiff
-from .stages import StageProfile, profile_stages
-from .store import profiles_dir
-from .study import Point, Row
-from .timeline import DeviceTimeline
+from .result.efficiency import EfficiencyReport, KernelEfficiency
+from .result.models import RegionStat, RegionSummary
+from .result.timeline import DeviceTimeline
+from .spans import span
+from .studies.dispatch import arch_config
+from .studies.stages import StageProfile, profile_stages
+from .studies.study import Point, Row
 from .trace import (
     Activity,
     ActivityRecord,
@@ -60,4 +61,5 @@ __all__ = [
     "compare",
     "profile_stages",
     "profiles_dir",
+    "span",
 ]

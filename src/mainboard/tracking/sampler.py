@@ -9,7 +9,7 @@
 from threading import Event as Flag
 from threading import Thread
 from time import monotonic
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 import psutil
 
@@ -18,12 +18,11 @@ from ..probe.machine import Machine
 from ..runtime.job import ToolCall
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from types import TracebackType
 
     from pydantic import JsonValue
 
-    from ..batch.receipts import Bus, Event
+    from ..batch.receipts import Event, Journal
 
 # How long a stop waits for the sampling thread to notice, past which the thread is a daemon and
 # the process may leave without it.
@@ -32,63 +31,6 @@ _JOIN_S = 5.0
 # Compute utilization above which an accelerator counts as working, `probe.gating.gpu_busy`'s
 # threshold, so one workspace has one idea of busy.
 _BUSY_PCT = 10
-
-
-class Reading(Protocol):
-    """A memory figure a sample reads."""
-
-    @property
-    def used_gb(self) -> float: ...
-
-
-class Ceiling(Protocol):
-    """The enforced memory cap a sample reads its headroom against."""
-
-    @property
-    def capped(self) -> bool: ...
-
-    @property
-    def limit_gb(self) -> float: ...
-
-
-class Busyness(Protocol):
-    """A unit's compute and memory-controller utilization."""
-
-    @property
-    def gpu_pct(self) -> int: ...
-
-    @property
-    def memory_pct(self) -> int: ...
-
-
-class Accelerator(Protocol):
-    """One GPU as a sample reads it."""
-
-    @property
-    def memory(self) -> Reading: ...
-
-    @property
-    def utilization(self) -> Busyness: ...
-
-
-class Node(Protocol):
-    """The host as a sample reads it, with the cap its jobs really run under."""
-
-    @property
-    def cgroup_memory(self) -> Ceiling: ...
-
-    @property
-    def memory(self) -> Reading: ...
-
-
-class Sampled(Protocol):
-    """The slice of a machine one sample reads, so a test hands over a stand-in instead."""
-
-    @property
-    def gpus(self) -> Sequence[Accelerator]: ...
-
-    @property
-    def host(self) -> Node: ...
 
 
 class Sampler:
@@ -100,35 +42,12 @@ class Sampler:
     training loop and must never be why a job will not exit.
     """
 
-    def __init__(
-        self,
-        bus: Bus,
-        *,
-        stream: str,
-        job: str,
-        interval: float,
-        seconds: float = 0.0,
-        parent: int = 0,
-        machine: Sampled | None = None,
-    ) -> None:
-        """bus: where samples are published, the job's own receipts.
-
-        interval: seconds between readings, 0 to sample nothing.
-        seconds: a hard stop, 0 to sample until the caller stops it.
-        parent: a pid whose exit ends sampling, 0 for none; beside a dispatched command it is the
-            command's shell, so the sampler never outlives the job as an orphan.
-        machine: what is read, this machine when None.
-        """
-        self.bus = bus
-        self.stream = stream
-        self.job = job
-        self.interval = interval
-        self.seconds = seconds
-        self.parent = parent
-        self.machine = machine or Machine()
-        self.stopped = Flag()
-        self.opened = monotonic()
-        self.thread = Thread(target=self.loop, name=f"mainboard-sample-{job}", daemon=True)
+    @property
+    def expired(self) -> bool:
+        """Whether this sampler has outlived its budget or the process it was told to follow."""
+        if self.seconds and monotonic() - self.opened >= self.seconds:
+            return True
+        return bool(self.parent) and not psutil.pid_exists(self.parent)
 
     def __enter__(self) -> Sampler:
         self.start()
@@ -143,12 +62,33 @@ class Sampler:
         del exc_type, exc, traceback
         self.stop()
 
-    @property
-    def expired(self) -> bool:
-        """Whether this sampler has outlived its budget or the process it was told to follow."""
-        if self.seconds and monotonic() - self.opened >= self.seconds:
-            return True
-        return bool(self.parent) and not psutil.pid_exists(self.parent)
+    def __init__(
+        self,
+        bus: Journal,
+        *,
+        stream: str,
+        job: str,
+        interval: float,
+        seconds: float = 0.0,
+        parent: int = 0,
+    ) -> None:
+        """bus: where samples are published, the job's own receipts.
+
+        interval: seconds between readings, 0 to sample nothing.
+        seconds: a hard stop, 0 to sample until the caller stops it.
+        parent: a pid whose exit ends sampling, 0 for none; beside a dispatched command it is the
+            command's shell, so the sampler never outlives the job as an orphan.
+        """
+        self.bus = bus
+        self.stream = stream
+        self.job = job
+        self.interval = interval
+        self.seconds = seconds
+        self.parent = parent
+        self.machine = Machine()
+        self.stopped = Flag()
+        self.opened = monotonic()
+        self.thread = Thread(target=self.loop, name=f"mainboard-sample-{job}", daemon=True)
 
     def attest(self) -> Event:
         """Publish one reading as this job's `job.attested` receipt, saying if the node was idle.

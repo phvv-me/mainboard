@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from ..engines.compile.backend.result import CommandResult
-    from ..manifest.schema.paper import Paper
+    from ..manifest.schema.figures.paper import Paper
 
     type Runner = Callable[[Sequence[str]], CommandResult]
 
@@ -55,6 +55,20 @@ class Manuscript:
     run: runs one argv inside the workspace environment.
     """
 
+    @property
+    def pdf(self) -> Path:
+        return self.build / f"{self.stem}.pdf"
+
+    @staticmethod
+    def _errors(problems: Sequence[Problem], built: CommandResult) -> tuple[Problem, ...]:
+        """The errors a failed build reports: the log's own, else the engine's last words."""
+        logged = tuple(problem for problem in problems if problem.kind is Kind.ERROR)
+        return logged or tuple(
+            Problem(kind=Kind.ERROR, detail=line)
+            for line in built.stderr.splitlines()
+            if line.startswith("error:")
+        )
+
     def __init__(self, name: str, paper: Paper, *, root: Path, run: Runner) -> None:
         self.name = name
         self.paper = paper
@@ -64,9 +78,42 @@ class Manuscript:
         self.stem = Path(paper.main).stem
         self.run = run
 
-    @property
-    def pdf(self) -> Path:
-        return self.build / f"{self.stem}.pdf"
+    def _compile(self) -> CommandResult:
+        self.build.mkdir(parents=True, exist_ok=True)
+        return self.run(
+            ["tectonic", "--keep-logs", "--keep-intermediates", "--synctex"]
+            + ["--outdir", str(self.build), str(self.main)]
+        )
+
+    def _limited(self, pages: int) -> tuple[int, list[Problem]]:
+        """The last page of the closing section, and what the page rule makes of the build."""
+        limit, ends = self.paper.limit, self.paper.ends
+        if not limit:
+            return 0, []
+        if not ends:
+            over = pages > limit
+            return 0, [_over(f"{pages} pages, past the {limit}-page limit")] if over else []
+        span = Source(self.main).span(ends)
+        if not span:
+            return 0, [_over(f"no section titled {ends!r} in the sources")]
+        synctex = SyncTex.read(self.build / f"{self.stem}.synctex.gz", directory=self.directory)
+        ends_on = synctex.last_page(span)
+        if not ends_on:
+            return 0, [_over(f"SyncTeX placed no line of {ends!r} on any page")]
+        if ends_on > limit:
+            return ends_on, [
+                _over(f"{ends!r} ends on page {ends_on}, past the {limit}-page limit")
+            ]
+        return ends_on, []
+
+    def _read(self, suffix: str) -> str:
+        """The build file with `suffix` beside the PDF, empty when the build wrote none."""
+        try:
+            return (self.build / f"{self.stem}{suffix}").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except FileNotFoundError:
+            return ""
 
     def check(self) -> Report:
         """Build the manuscript, then read the log, the page layout and the rule into a report.
@@ -119,53 +166,6 @@ class Manuscript:
         if not rendered.succeeded:
             raise MissionError(f"pdftoppm could not render page {page}: {rendered.stderr.strip()}")
         return stem.with_suffix(".png")
-
-    def _compile(self) -> CommandResult:
-        self.build.mkdir(parents=True, exist_ok=True)
-        return self.run(
-            ["tectonic", "--keep-logs", "--keep-intermediates", "--synctex"]
-            + ["--outdir", str(self.build), str(self.main)]
-        )
-
-    @staticmethod
-    def _errors(problems: Sequence[Problem], built: CommandResult) -> tuple[Problem, ...]:
-        """The errors a failed build reports: the log's own, else the engine's last words."""
-        logged = tuple(problem for problem in problems if problem.kind is Kind.ERROR)
-        return logged or tuple(
-            Problem(kind=Kind.ERROR, detail=line)
-            for line in built.stderr.splitlines()
-            if line.startswith("error:")
-        )
-
-    def _limited(self, pages: int) -> tuple[int, list[Problem]]:
-        """The last page of the closing section, and what the page rule makes of the build."""
-        limit, ends = self.paper.limit, self.paper.ends
-        if not limit:
-            return 0, []
-        if not ends:
-            over = pages > limit
-            return 0, [_over(f"{pages} pages, past the {limit}-page limit")] if over else []
-        span = Source(self.main).span(ends)
-        if not span:
-            return 0, [_over(f"no section titled {ends!r} in the sources")]
-        synctex = SyncTex.read(self.build / f"{self.stem}.synctex.gz", directory=self.directory)
-        ends_on = synctex.last_page(span)
-        if not ends_on:
-            return 0, [_over(f"SyncTeX placed no line of {ends!r} on any page")]
-        if ends_on > limit:
-            return ends_on, [
-                _over(f"{ends!r} ends on page {ends_on}, past the {limit}-page limit")
-            ]
-        return ends_on, []
-
-    def _read(self, suffix: str) -> str:
-        """The build file with `suffix` beside the PDF, empty when the build wrote none."""
-        try:
-            return (self.build / f"{self.stem}{suffix}").read_text(
-                encoding="utf-8", errors="replace"
-            )
-        except FileNotFoundError:
-            return ""
 
 
 def _over(detail: str) -> Problem:

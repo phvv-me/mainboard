@@ -11,6 +11,7 @@ of `left_out.toml` record why the remaining codes are not reported.
 """
 
 import tomllib
+from contextlib import suppress
 from functools import cache
 from importlib import metadata
 from pathlib import Path
@@ -19,15 +20,16 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 from ...catalog import Example, Rule
-from ...facts import Setting
-from . import wired
+from ...engine.facts import Setting
 
 
 @cache
 def mainboard_closure() -> tuple[str, ...]:
-    """The canonical names of mainboard and of every distribution it requires, directly or
-    through another, on this platform. A project among them cannot import `mb`: mainboard
-    imports the project."""
+    """The canonical names of mainboard and every distribution it requires here.
+
+    Requirements through another distribution count too. A project among them cannot import `mb`,
+    since mainboard imports the project.
+    """
     seen: dict[str, None] = {}
     pending = ["mainboard"]
     while pending:
@@ -35,15 +37,12 @@ def mainboard_closure() -> tuple[str, ...]:
         if name in seen:
             continue
         seen[name] = None
-        try:
-            required = metadata.requires(name) or []
-        except metadata.PackageNotFoundError:
-            continue
-        pending += [
-            requirement.name
-            for requirement in map(Requirement, required)
-            if requirement.marker is None or requirement.marker.evaluate({"extra": ""})
-        ]
+        with suppress(metadata.PackageNotFoundError):
+            pending += [
+                requirement.name
+                for requirement in map(Requirement, metadata.requires(name) or [])
+                if requirement.marker is None or requirement.marker.evaluate({"extra": ""})
+            ]
     return tuple(seen)
 
 
@@ -51,7 +50,7 @@ def _kinds() -> dict[str, dict[str, str]]:
     return tomllib.loads(Path(__file__).with_name("left_out.toml").read_text())
 
 
-def left_out() -> dict[str, str]:
+def _left_out() -> dict[str, str]:
     """Each code the lane does not report, with its kind and reason."""
     return {
         code: f"{kind}: {reason}"
@@ -62,10 +61,10 @@ def left_out() -> dict[str, str]:
     }
 
 
-def extended() -> tuple[str, ...]:
+def _extended() -> tuple[str, ...]:
     """The codes the lane adds to the project's Ruff configuration; none may be left out."""
     codes = tuple(code for codes in _kinds()["extended"].values() for code in codes.split())
-    if clash := sorted(set(codes) & set(left_out())):
+    if clash := sorted(set(codes) & set(_left_out())):
         raise ValueError(f"Ruff codes both extended and left out: {clash}")
     return codes
 
@@ -115,10 +114,18 @@ _SHAPED_BY_THEIR_CONTEXT = f"""
 """
 
 
+# The name a finding calls an unneeded import, which a consumer elsewhere may still import from
+# this module: F401's from its message (`a.b.c` imported but unused: `c`), PLC0414's from the
+# `NAME as NAME` it points at.
 def _diagnostics(applicability: str) -> str:
     return f"""
-        SELECT r.*, CASE WHEN r.code = 'T201' THEN 'rewrote `print` as `logger.info`' END AS change
+        SELECT r.*, CASE WHEN r.code = 'T201' THEN 'rewrote `print` as `logger.info`' END AS change,
+               CASE r.code
+                 WHEN 'F401' THEN regexp_extract(regexp_extract(r.message, '`([^`]+)`', 1), '[^.]+$')
+                 WHEN 'PLC0414' THEN regexp_extract(substr(l.text, r.start_column + 1), '^\\w+')
+               END AS declared
         FROM ruff_diagnostics r
+        LEFT JOIN source_lines() l ON l.path = r.path AND l.line = r.start_line
         WHERE list_contains($extended::VARCHAR[], r.code) AND {applicability}
           AND {_SHAPED_BY_THEIR_CONTEXT}
     """
@@ -136,7 +143,7 @@ class RuffDiagnostics(Rule):
     it is, since only its author can place it; the logger writes to stderr and flushes, so
     `file=sys.stderr` and `flush=True` go."""
 
-    extended: tuple[str, ...] = extended()
+    extended: tuple[str, ...] = _extended()
     preferred_logger: str = "mb.logger"
 
     message = "{code}: {message}"
@@ -249,8 +256,14 @@ class RuffReview(RuffDiagnostics, id="PY-RUFF0002", applicability="review"):
         Example(
             bad='"""Module."""\n\n\ndef run(host):\n    print("started", host)\n    return 1\n',
             good=(
-                '"""Module."""\nfrom mb import logger\n\n\ndef run(host):\n'
-                '    logger.info("started {}", host)\n    return 1\n'
+                '''"""Module."""
+from mb import logger
+
+
+def run(host):
+    logger.info("started {}", host)
+    return 1
+'''
             ),
         ),
         Example(
@@ -260,33 +273,54 @@ class RuffReview(RuffDiagnostics, id="PY-RUFF0002", applicability="review"):
         Example(
             bad='"""Module."""\n\n\ndef run(host):\n    print("started", host)\n    return 1\n',
             good=(
-                '"""Module."""\nimport logging\n\nlogger = logging.getLogger(__name__)\n\n\n'
-                'def run(host):\n    logger.info("started %s", host)\n    return 1\n'
+                '''"""Module."""
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def run(host):
+    logger.info("started %s", host)
+    return 1
+'''
             ),
             context={"pyproject.toml": '[project]\nname = "patos"\nversion = "0"\n'},
         ),
         Example(
             bad='import logging\n\n\ndef run(host):\n    print("done 100%", host)\n',
             good=(
-                "import logging\n\nlogger = logging.getLogger(__name__)\n\n\n"
-                'def run(host):\n    logger.info("%s %s", "done 100%", host)\n'
+                """import logging
+
+logger = logging.getLogger(__name__)
+
+
+def run(host):
+    logger.info("%s %s", "done 100%", host)
+"""
             ),
             context={"pyproject.toml": '[project]\nname = "mainboard"\nversion = "0"\n'},
         ),
         Example(
             bad=(
-                "import logging\n\nlogger = logging.getLogger(__name__)\n\n\n"
-                'def run(host):\n    print("started", host)\n'
+                """import logging
+
+logger = logging.getLogger(__name__)
+
+
+def run(host):
+    print("started", host)
+"""
             ),
             good=(
-                "import logging\n\nlogger = logging.getLogger(__name__)\n\n\n"
-                'def run(host):\n    logger.info("started %s", host)\n'
+                """import logging
+
+logger = logging.getLogger(__name__)
+
+
+def run(host):
+    logger.info("started %s", host)
+"""
             ),
             context={"pyproject.toml": '[project]\nname = "lab"\nversion = "0"\n'},
         ),
     )
-
-
-if not wired():
-    for rule in (RuffSafeFix, RuffReview):
-        Rule.defined.pop(rule.id)

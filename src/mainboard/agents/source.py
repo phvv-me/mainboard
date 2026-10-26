@@ -8,22 +8,16 @@
 # understands sit beside them as its own file, `codex.toml` say, and are laid under what is
 # rendered for it.
 
-import json
 import re
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
-from patos import FrozenModel
-from pydantic import field_validator
+from patos import FrozenModel, FrozenOpenModel
+from pydantic import Field, field_validator
 
 from ..core.errors import MissionError
 from ..probe.census import Json
 
-FOLDER = ".agents"
-
-# How a shared file references a variable. Each harness spells it its own way, and no default
-# (`${NAME:-x}`) is accepted, since only Claude Code would honor one.
-REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _DEFAULTED = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-")
 
 
@@ -45,6 +39,10 @@ class Server(FrozenModel):
     headers: dict[str, str] = {}
     overrides: dict[str, dict[str, Json]] = {}
 
+    # How a shared file references a variable. Each harness spells it its own way, and no default
+    # (`${NAME:-x}`) is accepted, since only Claude Code would honor one.
+    REFERENCE: ClassVar[re.Pattern[str]] = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
     @field_validator("env", "headers")
     @classmethod
     def undefaulted(cls, values: dict[str, str]) -> dict[str, str]:
@@ -63,7 +61,7 @@ class Server(FrozenModel):
         return {
             name
             for value in (*self.env.values(), *self.headers.values())
-            for name in REFERENCE.findall(value)
+            for name in Server.REFERENCE.findall(value)
         }
 
 
@@ -115,34 +113,49 @@ class Source(FrozenModel):
     hooks: dict[str, tuple[HookGroup, ...]] = {}
     subagents: tuple[Subagent, ...] = ()
 
+    # The folder every harness's configuration renders from.
+    FOLDER: ClassVar[str] = ".agents"
+
     @classmethod
     def read(cls, root: Path) -> Source:
         """The `.agents` folder under `root`; a file it lacks declares nothing."""
-        folder = root / FOLDER
+        folder = root / Source.FOLDER
         try:
-            return cls.model_validate(
-                {
-                    "root": root,
-                    "servers": _json(folder / "mcp.json").get("mcpServers", {}),
-                    "hooks": _json(folder / "settings.json").get("hooks", {}),
-                    "subagents": [
-                        Subagent.read(path) for path in sorted((folder / "agents").glob("*.md"))
-                    ],
-                }
+            return cls(
+                root=root,
+                servers=_read(_Servers, folder / "mcp.json").servers,
+                hooks=_read(_Settings, folder / "settings.json").hooks,
+                subagents=tuple(
+                    Subagent.read(path) for path in sorted((folder / "agents").glob("*.md"))
+                ),
             )
         except (ValueError, KeyError) as fault:
-            raise MissionError(f"{FOLDER} does not read: {fault}") from fault
+            raise MissionError(f"{Source.FOLDER} does not read: {fault}") from fault
 
     def own(self, name: str) -> str:
         """One harness's own settings file in `.agents`, empty when it has none."""
         try:
-            return (self.root / FOLDER / name).read_text(encoding="utf-8")
+            return (self.root / Source.FOLDER / name).read_text(encoding="utf-8")
         except FileNotFoundError:
             return ""
 
 
-def _json(path: Path) -> dict[str, Json]:
+class _Servers(FrozenOpenModel):
+    """`.agents/mcp.json`, the servers every harness is handed."""
+
+    servers: dict[str, Server] = Field(default={}, alias="mcpServers")
+
+
+class _Settings(FrozenOpenModel):
+    """`.agents/settings.json`, of which the hooks are shared."""
+
+    hooks: dict[str, tuple[HookGroup, ...]] = {}
+
+
+def _read[File: FrozenOpenModel](model: type[File], path: Path) -> File:
+    """`path` read as `model`, which declares nothing when the file is absent."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}
+        return model()
+    return model.model_validate_json(text)

@@ -26,21 +26,17 @@
 # receipts keep their original labels. The optional adaptive lanes, `Hunt` and `Study`, choose
 # their own cells under the rule `adaptive` states.
 
-from ..dispatch.shared import SOURCE_VAR
-from .adaptive import Absent, Owed, driver
-from .adversarial import Breach, Hunt
+from ..dispatch.constants import SOURCE_VAR
 from .artifacts import Artifact
-from .coverage import PROBED, Cell, LaneStatus, Probed
-from .dataset import ADMISSIBILITY, OPENED, Ambiguous, Dataset
-from .declaration import MARKERS, Declaration
-from .figures import Figures, Gap, Need, Refusal, rendered_twice
-from .flags import Flag, held, moved, reading
-from .lease import Busy, CardLease
-from .ledger import NESTED, Ledger, TrialReceipts, wire
-from .lints import Finding, findings
-from .log import Log
+from .contract.declaration import Declaration
+from .contract.figures import Figures, Gap, Need, Refusal, rendered_twice
+from .contract.flags import Flag, held, moved, reading
+from .contract.vocabulary import Outcome, Stance, Vocabulary, Word
+from .lanes.adaptive import Absent, Owed, driver
+from .lanes.adversarial import Breach, Hunt
+from .lanes.coverage import Cell, LaneStatus, Probed
+from .lanes.search import Miss, Optuna, Study
 from .provenance import (
-    BASELINES,
     Admissibility,
     Card,
     Preflight,
@@ -51,11 +47,15 @@ from .provenance import (
     installed,
     source,
 )
-from .search import Miss, Optuna, Proposer, Study
+from .running.lease import Busy, CardLease
+from .running.lints import Finding, findings
+from .running.log import Log
+from .running.stage import Stage
 from .session import Session, Trial
-from .stage import Stage
-from .universe import Universe
-from .vocabulary import Outcome, Stance, Vocabulary, Word
+from .store.constants import ADMISSIBILITY, BASELINES, MARKERS, NESTED, OPENED, PROBED
+from .store.dataset import Ambiguous, Dataset
+from .store.ledger import Ledger, TrialReceipts, wire
+from .store.universe import Universe
 
 __all__ = [
     "Artifact",
@@ -91,7 +91,6 @@ __all__ = [
     "Owed",
     "Preflight",
     "Probed",
-    "Proposer",
     "Refusal",
     "Session",
     "Source",

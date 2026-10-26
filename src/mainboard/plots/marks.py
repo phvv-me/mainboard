@@ -18,8 +18,8 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.backend_bases import RendererBase
 
-RADIUS = 1.25
-BAR_GAP = 0.75
+_RADIUS = 1.25
+_BAR_GAP = 0.75
 
 
 class Orientation(StrEnum):
@@ -33,7 +33,7 @@ class Orientation(StrEnum):
         """The coordinate index the value runs on: x for horizontal bars, y for vertical ones."""
         return 0 if self is Orientation.HORIZONTAL else 1
 
-    def point(self, value: float, position: float) -> tuple[float, float]:
+    def point(self, value: float, *, position: float) -> tuple[float, float]:
         """The (x, y) of `value` on the value axis at category `position`."""
         return (value, position) if self is Orientation.HORIZONTAL else (position, value)
 
@@ -51,14 +51,14 @@ class RoundedBar(FancyBboxPatch):
         self,
         orientation: Orientation,
         position: float,
+        *,
         value: float,
         baseline: float,
         thickness: float,
-        *,
         color: str,
         label: str | None = None,
-        radius: float = RADIUS,
-        gap: float = BAR_GAP,
+        radius: float = _RADIUS,
+        gap: float = _BAR_GAP,
     ) -> None:
         super().__init__(
             (0.0, 0.0),
@@ -90,8 +90,8 @@ class RoundedBar(FancyBboxPatch):
         half = self.thickness / 2
         foot, head = axes.transData.transform(
             [
-                self.orientation.point(self.baseline, self.position - half),
-                self.orientation.point(self.value, self.position + half),
+                self.orientation.point(self.baseline, position=self.position - half),
+                self.orientation.point(self.value, position=self.position + half),
             ]
         )
         self.set_visible(bool(np.isfinite([*foot, *head]).all()))
@@ -124,8 +124,8 @@ def bars(
     baseline: float = 0.0,
     orientation: Orientation = Orientation.VERTICAL,
     label: str | None = None,
-    radius: float = RADIUS,
-    gap: float = BAR_GAP,
+    radius: float = _RADIUS,
+    gap: float = _BAR_GAP,
 ) -> list[RoundedBar]:
     """One series of rounded bars, `values` at `positions`, drawn as patches on `axis`.
 
@@ -140,9 +140,9 @@ def bars(
         RoundedBar(
             orientation,
             position,
-            value,
-            baseline,
-            thickness,
+            value=value,
+            baseline=baseline,
+            thickness=thickness,
             color=color,
             label=label if index == 0 else None,
             radius=radius,
@@ -153,7 +153,7 @@ def bars(
     for bar in drawn:
         axis.add_patch(bar)
     corners = [
-        orientation.point(end, bar.position + edge * bar.thickness / 2)
+        orientation.point(end, position=bar.position + edge * bar.thickness / 2)
         for bar in drawn
         for end in (bar.value, baseline)
         for edge in (-1, 1)

@@ -26,15 +26,7 @@ class Writer:
                 "The workspace sync lock is no longer held, so nothing may be written."
             )
 
-    def remove(self, path: Path) -> None:
-        """Drop a file, a link (never followed to its source), or a tree such as a vendored dep."""
-        self.held()
-        if path.is_symlink() or not path.is_dir():
-            path.unlink(missing_ok=True)
-            return
-        shutil.rmtree(path)
-
-    def link(self, path: Path, target: Path) -> None:
+    def link(self, path: Path, *, target: Path) -> None:
         """Point one generated symlink at `target`, replacing whatever stands there now.
 
         A vendored path dependency is a real directory of links, so an edit under the source
@@ -47,6 +39,14 @@ class Writer:
         self.remove(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.symlink_to(target, target_is_directory=target.is_dir())
+
+    def remove(self, path: Path) -> None:
+        """Drop a file, a link (never followed to its source), or a tree such as a vendored dep."""
+        self.held()
+        if path.is_symlink() or not path.is_dir():
+            path.unlink(missing_ok=True)
+            return
+        shutil.rmtree(path)
 
     def write(self, path: Path, text: str | bytes) -> None:
         """Replace a generated file atomically, encoding text as UTF-8 without newline changes."""

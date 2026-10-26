@@ -42,12 +42,6 @@ def system_cache() -> dict[str, Path]:
     return cache
 
 
-def trusted_directories() -> tuple[Path, ...]:
-    """The default directories of this machine, its multiarch ones included."""
-    triplet = f"{platform.machine()}-linux-gnu"
-    return tuple(Path(base) / sub for base in _TRUSTED for sub in ("", triplet))
-
-
 class Found(FrozenModel):
     """Where the loader finds a soname, and by which rule.
 
@@ -71,6 +65,12 @@ class Loader:
     trusted: the default directories searched after the cache.
     """
 
+    @staticmethod
+    def _trusted_directories() -> tuple[Path, ...]:
+        """The default directories of this machine, its multiarch ones included."""
+        triplet = f"{platform.machine()}-linux-gnu"
+        return tuple(Path(base) / sub for base in _TRUSTED for sub in ("", triplet))
+
     def __init__(
         self,
         library_path: Sequence[Path],
@@ -79,7 +79,7 @@ class Loader:
     ) -> None:
         self.library_path = tuple(library_path)
         self.cache = cache
-        self.trusted = tuple(trusted_directories() if trusted is None else trusted)
+        self.trusted = tuple(Loader._trusted_directories() if trusted is None else trusted)
 
     def find(self, soname: str, requester: Elf) -> Found | None:
         """The file `requester` gets when it asks for `soname`, None when nothing answers."""

@@ -1,5 +1,5 @@
 from ..core.errors import MissionError
-from ..manifest.schema.host import HostProfile
+from ..manifest.schema.compute.host import HostProfile
 
 
 def admit(profile: HostProfile, *, queue: str, walltime: str, mem_gb: int) -> None:

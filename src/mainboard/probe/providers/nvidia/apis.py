@@ -27,6 +27,11 @@ class NvidiaApis:
         system: CoreSystem | None
         cuda_device_type: CoreDeviceType | None
 
+    @property
+    def has_cuda_core(self) -> bool:
+        """Whether the optional `cuda.core` layer loaded successfully."""
+        return self.cuda_device_type is not None
+
     def __init__(self) -> None:
         self.nvml = cast("Nvml", import_module("cuda.bindings.nvml"))
         self.runtime = None
@@ -54,11 +59,6 @@ class NvidiaApis:
             with suppress(ImportError, OSError):
                 self.system = cast("CoreSystem", import_module("cuda.core.system"))
                 self.cuda_device_type = import_module("cuda.core").Device
-
-    @property
-    def has_cuda_core(self) -> bool:
-        """Whether the optional `cuda.core` layer loaded successfully."""
-        return self.cuda_device_type is not None
 
 
 @cache

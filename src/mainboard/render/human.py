@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 from rich.table import Table
 
+from ..log import logger
 from .values import columns_of
 
 _UNBOUNDED = 1 << 16
@@ -45,7 +46,9 @@ def render_table(
         # width, so the table takes its own, measured on a console too wide to clip it.
         natural = Console(markup=False, width=_UNBOUNDED).measure(table).maximum
         console = Console(markup=False, width=natural)
-    console.print(table)
+    with console.capture() as captured:
+        console.print(table)
+    logger.result(captured.get(), end="")
 
 
 @contextmanager
@@ -60,13 +63,13 @@ def progress(description: str) -> Generator[Callable[[str], None]]:
     start = time.monotonic()
 
     def stage(line: str) -> None:
-        print(f"{time.monotonic() - start:6.1f}s {line}", file=sys.stderr, flush=True)
+        logger.info(f"{time.monotonic() - start:6.1f}s {line}")
 
     with diverted():
         stage(description)
         yield stage
     if (total := time.monotonic() - start) >= _WORTH_A_TOTAL:
-        print(f"{total:6.1f}s done: {description}", file=sys.stderr, flush=True)
+        logger.info(f"{total:6.1f}s done: {description}")
 
 
 @contextmanager

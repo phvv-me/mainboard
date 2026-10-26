@@ -20,6 +20,38 @@ class Process:
     gives the child the caller's tty, `output` captures a query whose text is the answer.
     """
 
+    @classmethod
+    def foreground(cls, command: BaseCommand) -> bool:
+        """Run `command` attached to the terminal, returning whether it succeeded."""
+        return cls.stream(command).succeeded
+
+    @classmethod
+    def passthrough(cls, command: BaseCommand) -> int:
+        """Run `command` attached to the terminal, returning its exact exit code."""
+        return cls.stream(command).returncode
+
+    @classmethod
+    def stream(cls, command: BaseCommand) -> CommandResult:
+        """Run `command` while teeing and retaining both output streams."""
+        process = command.popen(stdin=None, stdout=PIPE, stderr=PIPE)
+        # `PIPE` on both streams guarantees Popen hands back real pipes, never `None`.
+        stdout_pipe = cast("BufferedReader", process.stdout)
+        stderr_pipe = cast("BufferedReader", process.stderr)
+        encoding = sys.getfilesystemencoding()
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="mainboard-compile") as pool:
+            stdout = pool.submit(cls.relay, stdout_pipe, sys.stdout, encoding)
+            stderr = pool.submit(cls.relay, stderr_pipe, sys.stderr, encoding)
+            returncode = process.wait()
+        return CommandResult(returncode, stdout.result(), stderr.result())
+
+    @staticmethod
+    def _display(destination: TextIO, text: str) -> None:
+        """Write text through the terminal's own encoding without losing captured evidence."""
+        if encoding := destination.encoding:
+            text = text.encode(encoding, errors="replace").decode(encoding)
+        destination.write(text)
+        destination.flush()
+
     @staticmethod
     def capture(command: BaseCommand, *, timeout: float | None = None) -> CommandResult:
         """Capture a probe whose failure is itself a finding: nothing is replayed or raised.
@@ -64,35 +96,3 @@ class Process:
             chunks.append(tail)
             Process._display(destination, tail)
         return "".join(chunks)
-
-    @staticmethod
-    def _display(destination: TextIO, text: str) -> None:
-        """Write text through the terminal's own encoding without losing captured evidence."""
-        if encoding := destination.encoding:
-            text = text.encode(encoding, errors="replace").decode(encoding)
-        destination.write(text)
-        destination.flush()
-
-    @classmethod
-    def foreground(cls, command: BaseCommand) -> bool:
-        """Run `command` attached to the terminal, returning whether it succeeded."""
-        return cls.stream(command).succeeded
-
-    @classmethod
-    def passthrough(cls, command: BaseCommand) -> int:
-        """Run `command` attached to the terminal, returning its exact exit code."""
-        return cls.stream(command).returncode
-
-    @classmethod
-    def stream(cls, command: BaseCommand) -> CommandResult:
-        """Run `command` while teeing and retaining both output streams."""
-        process = command.popen(stdin=None, stdout=PIPE, stderr=PIPE)
-        # `PIPE` on both streams guarantees Popen hands back real pipes, never `None`.
-        stdout_pipe = cast("BufferedReader", process.stdout)
-        stderr_pipe = cast("BufferedReader", process.stderr)
-        encoding = sys.getfilesystemencoding()
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="mainboard-compile") as pool:
-            stdout = pool.submit(cls.relay, stdout_pipe, sys.stdout, encoding)
-            stderr = pool.submit(cls.relay, stderr_pipe, sys.stderr, encoding)
-            returncode = process.wait()
-        return CommandResult(returncode, stdout.result(), stderr.result())

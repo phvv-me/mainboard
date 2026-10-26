@@ -21,11 +21,10 @@ _SHELL_OWN = frozenset({"_", "PWD", "OLDPWD", "SHLVL"})
 
 # The interpreter line a sourcing shell ends with, writing the environment it activated to the
 # file named after it. A file rather than stdout, since activation scripts print.
-_DUMP = (
-    "import json, os, sys\n"
-    "with open(sys.argv[1], 'w', encoding='utf-8') as sink:\n"
-    "    json.dump(dict(os.environ), sink)\n"
-)
+_DUMP = """import json, os, sys
+with open(sys.argv[1], 'w', encoding='utf-8') as sink:
+    json.dump(dict(os.environ), sink)
+"""
 
 
 class Refusal(Exception):

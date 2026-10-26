@@ -40,10 +40,8 @@ dependencies = [
     # platform the analysis engine's Arrow functions in DuckDB need it too.
     "numpy>=2.0",
     "packaging>=24.0",
-    # The analysis engine's fact base: Arrow frames into DuckDB, and the view names each rule's SQL
-    # reads.
+    # The analysis engine's fact base: Arrow frames into DuckDB.
     "pyarrow>=25.0",
-    "sqlglot>=30.0",
     "patos>=0.0.13",
     "plumbum>=1.8",
     "pathspec>=0.12",
@@ -65,7 +63,7 @@ dependencies = [
 [project.optional-dependencies]
 # The two adaptive lane kinds of `mainboard.trials`, each named after the lane rather than after
 # its library, because the lane is what a workspace declares and the library is an implementation
-# detail either one could replace. `mainboard.trials.adaptive.driver` imports them lazily and
+# detail either one could replace. `mainboard.trials.lanes.adaptive.driver` imports them lazily and
 # refuses by naming both the package and the extra, so a workspace that declares neither lane kind
 # installs neither package and one that declares a lane without its driver is told exactly what to
 # install rather than getting a `ModuleNotFoundError` from three frames down.
@@ -99,9 +97,9 @@ mainboard = "mainboard.cli:main"
 # gate runs belongs here, including the linters, since a checkout of this repository is all CI
 # gets and nothing outside it supplies them.
 dev = [
-    # The plotting layer is an extra for consumers but part of the source both type checkers
-    # read, so the gate installs it the way a plotting workspace would.
-    "mainboard[plot,adversarial]",
+    # The plotting layer and the search driver are extras for consumers but part of the source
+    # the type checkers read, so the gate installs them the way such a workspace would.
+    "mainboard[plot,adversarial,search]",
     "mypy>=1.11",
     "pyrefly>=1",
     "pytest>=8.0",
@@ -127,13 +125,23 @@ dev = [
 # on macOS, which ships with it, and bubblewrap on Linux, which a runner prepares first
 # (integration/gates/linux-runner.sh); a machine without either fails the step, never skips.
 [tool.mypy]
+python_version = "3.14"
 # The CI step `mypy src` as a table, so `mainboard lint` (which runs mypy only where a project
 # configures it) checks this package too.
 files = ["src"]
+# `mb lint` also hands mypy the integration tests, whose folders are no packages: each file is
+# named from these roots, so a gate test's `from . import runner` and its worker's `guard` resolve.
+explicit_package_bases = true
+mypy_path = ["src", ".", "integration/gates/worker"]
 
 # pyarrow ships no type stubs; the engine only builds Arrow arrays for DuckDB's functions.
 [[tool.mypy.overrides]]
 module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+# gpuhunt ships no type information; its offers are read through attribute access.
+[[tool.mypy.overrides]]
+module = ["gpuhunt", "gpuhunt.*"]
 ignore_missing_imports = true
 
 [tool.mainboard.ci]
@@ -183,6 +191,11 @@ max_output_tokens = 384000
 # names the reason the code cannot move, so a new occurrence still has to be argued rather than
 # inheriting the exemption.
 
+# What proves a fixed copy of mainboard still works: the gate suite, run inside the copy, which
+# imports the copy's own source. `mb refactor fix` undoes every fix that fails it before writing.
+[tool.mcmr]
+proof = ["sh", "integration/gates/run.sh", "suite"]
+
 # mainboard is a library the rest of the monorepo imports, and this checkout is only the package.
 # The root facade and the profile facade are the published surfaces research code reaches
 # (`from mainboard import Profile, gpu_busy`, `from mainboard.profile import Profiler`), so
@@ -201,67 +214,50 @@ exclude = [
 ]
 
 # pytest binds every test and fixture argument by name, never by position, so two adjacent
-# same-typed parameters of a collected test cannot be transposed by any caller. The two nvidia
-# protocol modules type the CUDA, NVML and CUPTI entry points, whose C signatures fix the
+# same-typed parameters of a collected test cannot be transposed by any caller. The nvidia
+# protocols and bindings type the CUDA, NVML and CUPTI entry points, whose C signatures fix the
 # parameter order, and the tracer holds the callback CUPTI itself invokes positionally.
+# `BoundedSshMachine.session` keeps plumbum's positional signature (ALL-PARA0003 says why), and a
+# manifest template calls interpolate's scope functions positionally (`{{ env('HOME', '') }}`).
+# Sealed research calls the trial API positionally (`log.settle("refuted", reason)`,
+# `Artifacts(root, root / "evidence")`, `PATHS.device_table(tag, name)`), and a command's
+# positional parameters are its documented command line (`rules swift-compare BASELINE CURRENT`).
 [tool.mcmr.rules."ALL-PARA0001"]
 exclude = [
+  "src/mainboard/analysis/commands/swift/comparison.py",
+  "src/mainboard/experiments/paths.py",
+  "src/mainboard/trials/artifacts.py",
+  "src/mainboard/trials/running/log.py",
+  "src/mainboard/trials/session.py",
+  "src/mainboard/dispatch/transport/core.py",
   "src/mainboard/manifest/render/interpolate.py",
   "src/mainboard/probe/providers/nvidia/protocols.py",
-  "src/mainboard/profile/providers/nvidia/protocols.py",
+  "src/mainboard/profile/providers/nvidia/bindings.py",
   "src/mainboard/profile/providers/nvidia/tracer.py",
 ]
 
 # The same name-binding argument: a parametrized Boolean rides into a test by argname, so the
 # positional-flag trap the rule guards against cannot occur. `BoundedSshMachine.session`
-# overrides plumbum's `SshMachine.session`, whose framework callers pass `isatty` positionally.
+# overrides plumbum's `SshMachine.session`, whose framework callers pass `isatty` and
+# `new_session` positionally, so neither its flags nor their order are this package's to change.
 [tool.mcmr.rules."ALL-PARA0003"]
-exclude = ["src/mainboard/dispatch/transport.py"]
+exclude = ["src/mainboard/dispatch/transport/core.py"]
 
-# The CLI verbs are the published terminal surface: `--json`, `--agent`, `--dev` and `--resolve`
-# are flags users and agents already pass, and cyclopts renders each as its own named option, so
-# the combination count lives in the command line contract rather than in a refactorable body.
+# The CLI verbs (`verbs/`, and the `rules` commands' `--write` and `--unsafe`) are the published
+# terminal surface: `--json`, `--agent`, `--dev` and `--resolve` are flags users and agents already
+# pass, and cyclopts renders each as its own named option, so the combination count lives in the
+# command line contract rather than in a refactorable body.
 # `curator`, `provisioner` and `render/present` carry those same flags one seam inward as data,
-# `write_job_script` and `JobSpec.render` name the two independent axes of the PBS script
-# contract, and `transport` overrides plumbum's own `session` signature. Test signatures take
-# the same flags by parametrized name.
+# and `transport` overrides plumbum's own `session` signature. Test signatures take the same
+# flags by parametrized name.
 [tool.mcmr.rules."ALL-PARA0004"]
 exclude = [
-  "src/mainboard/cli.py",
+  "src/mainboard/verbs",
+  "src/mainboard/analysis/engine/lint/verbs.py",
   "src/mainboard/deps/curator.py",
-  "src/mainboard/dispatch/dispatcher.py",
-  "src/mainboard/dispatch/jobs/spec.py",
-  "src/mainboard/dispatch/transport.py",
+  "src/mainboard/dispatch/transport/core.py",
   "src/mainboard/engines/compile/provisioner.py",
   "src/mainboard/render/present.py",
-]
-
-# `vocabulary` is the dispatch subsystem's written-down data contract, the verdict words and the
-# lifecycle table every scheduler and backend speaks, and `board_surface.RECEIPT` is the printed
-# `trial_receipt` line key the whole workspace joins on, so those names are public on purpose.
-# `registry.SCHEDULERS`, `shared.STATE_DIR`, `sync.ALWAYS_EXCLUDE` and `drive_info`'s sysfs roots
-# are module attributes their consumers read (and retarget) at call time, which a leading
-# underscore would turn into protected-member reads inside `src`.
-# The trials subsystem's constants are its written-down contracts and are public on purpose:
-# `NESTED` is the encoded-column list a writer and a reader must agree on, `PROBED` is the probe
-# outcome column suffix, `SOURCE_VAR` is the environment variable a dispatcher declares a mirrored
-# commit in, `MARKERS` is the marker table a consumer may replace, `WORD` is the report property a
-# settled word rides to the terminal on, and `SESSION` and `PASSED` are the two stash keys the
-# plugin's hooks share.
-[tool.mcmr.rules."PY-CONS0001"]
-exclude = [
-  "src/mainboard/dispatch/vocabulary.py",
-  "src/mainboard/dispatch/schedulers/registry.py",
-  "src/mainboard/dispatch/shared.py",
-  "src/mainboard/dispatch/sync.py",
-  "src/mainboard/lab/board_surface.py",
-  "src/mainboard/probe/facts/drive_info.py",
-  "src/mainboard/trials/coverage.py",
-  "src/mainboard/trials/declaration.py",
-  "src/mainboard/trials/ledger.py",
-  "src/mainboard/trials/provenance.py",
-  "src/mainboard/trials/pytest_plugin.py",
-  "src/mainboard/trials/session.py",
 ]
 
 # Each of these types is a record whose field count belongs to the shape it mirrors: a manifest
@@ -275,33 +271,30 @@ exclude = [
 [tool.mcmr.rules."ALL-CLAS0004"]
 exclude = [
   "src/mainboard/trials/session.py",
-  "src/mainboard/batch/estimate.py",
+  "src/mainboard/batch/estimate/core.py",
   "src/mainboard/batch/spec.py",
   "src/mainboard/costs/catalog.py",
   "src/mainboard/dispatch/jobs/spec.py",
-  "src/mainboard/dispatch/onboard.py",
+  "src/mainboard/dispatch/hosts/onboard/record.py",
   "src/mainboard/dispatch/state/cache.py",
-  "src/mainboard/dispatch/state/history.py",
-  "src/mainboard/dispatch/sync.py",
-  "src/mainboard/dispatch/targets.py",
-  "src/mainboard/dispatch/vocabulary.py",
+  "src/mainboard/dispatch/mirroring/sync.py",
+  "src/mainboard/dispatch/transport/targets.py",
+  "src/mainboard/dispatch/jobs/vocabulary.py",
   "src/mainboard/engines/compile/ecosystems/base.py",
-  "src/mainboard/engines/compile/pixi_manifest.py",
-  "src/mainboard/experiments/fleet.py",
-  "src/mainboard/experiments/study.py",
+  "src/mainboard/engines/compile/pixi/manifest.py",
   "src/mainboard/manifest/schema",
-  "src/mainboard/probe/snapshot.py",
+  "src/mainboard/probe/readings/snapshot.py",
   "src/mainboard/probe/units/cpu.py",
-  "src/mainboard/profile/efficiency.py",
-  "src/mainboard/profile/models.py",
+  "src/mainboard/profile/result/efficiency.py",
+  "src/mainboard/profile/result/models.py",
   "src/mainboard/profile/profiler.py",
-  "src/mainboard/profile/protocols.py",
-  "src/mainboard/profile/providers/nvidia/tracer.py",
-  "src/mainboard/profile/report.py",
-  "src/mainboard/profile/result.py",
+  "src/mainboard/profile/formats/protocols.py",
+  "src/mainboard/profile/providers/nvidia/collector.py",
+  "src/mainboard/profile/bottleneck/report.py",
+  "src/mainboard/profile/result/core.py",
   "src/mainboard/profile/trace.py",
   "src/mainboard/tracking/sampler.py",
-  "src/mainboard/verdicts.py",
+  "src/mainboard/waiting/verdicts.py",
 ]
 
 # House docstring style forbids file docstrings, so a module's design rationale lives in its
@@ -311,43 +304,16 @@ exclude = [
 [tool.mcmr.rules."ALL-COMM0001"]
 exclude = ["src"]
 
-# This tree already sits at PY-IMPO0005's depth ceiling of three named levels. Splitting a
-# subsystem directory into sub-packages to satisfy a three-module cap would push every import
-# past that depth, so the two bounds together fix the current layout: one directory per
-# subsystem, one module per concept inside it.
-[tool.mcmr.rules."ALL-FILE0003"]
-exclude = ["src"]
-
-# `CPU`, `GPU` and `NPU` are classes whose names are hardware acronyms, so the all-caps spelling
-# states the domain rather than a constant.
-# A subsystem states each of its contracts once and every module that speaks it imports the one
-# spelling. `NESTED` in the writer and the reader, `PROBED` in the coordinate and the store,
-# `RECEIPTS_VAR` from the dispatch boundary that owns it: retyping any of them is how a writer and
-# a reader come to disagree about the same file, which is the defect this rule guards against and
-# the reason these imports exist.
-[tool.mcmr.rules."PY-CONS0002"]
-exclude = [
-  "src/mainboard/probe/__init__.py",
-  "src/mainboard/probe/machine.py",
-  "src/mainboard/probe/units/__init__.py",
-  "src/mainboard/probe/providers/apple/gpu.py",
-  "src/mainboard/probe/providers/apple/npu.py",
-  "src/mainboard/probe/providers/nvidia/gpu.py",
-  "src/mainboard/profile/profiler.py",
-  "src/mainboard/trials",
-]
-
-# A test states the same fixture path, module and rule identity per case, and naming it would
-# move the fixture away from the assertion that reads it. The root facade's `_HOMES` table names
-# each export's home module, so a package that homes several exports repeats exactly there.
-[tool.mcmr.rules."ALL-DUPL0005"]
-exclude = ["src/mainboard/__init__.py"]
-
 # `Host` and `Machine` are the one-per-process hardware facade: the probe's lifetime is exactly
 # the instance's, and the test suite resets probing by dropping the singleton, which a module
 # level cache would survive. The instance cache is the seam that keeps the suite hermetic.
 [tool.mcmr.rules."PY-CACH0001"]
 exclude = ["src/mainboard/probe"]
+
+# gpuhunt names its offline catalogs only in `_internal`; `offers.py` is the one adapter over it,
+# and `test_clouds.py` imports it, so an upgrade that moves the name fails there first.
+[tool.mcmr.rules."PY-IMPO0007"]
+fence = ["src/mainboard/dispatch/backends/cloud/offers.py"]
 
 # Every flagged field sits on a patos `FrozenModel`, which is hashable, and hashing needs
 # hashable field values. A list field would take the whole model's hash away, so the homogeneous
@@ -377,23 +343,21 @@ exclude = [
 [tool.mcmr.rules."PY-COLL0004"]
 exclude = ["src"]
 
-# The three fixed pairs the rule still flags are records: `(stream, job)` on a sampling line,
-# the `(domain, id)` handle nvtx hands back, and a parametrized `(env, script)` expectation.
+# The fixed pairs the rule still flags are records: the `(domain, id)` handle nvtx hands back,
+# and a parametrized `(env, script)` expectation.
 # Loosening them to `Sequence` would lose exactly the pair shape their readers destructure.
 # `pytest_collection_modifyitems` takes a `list` because pytest's own hookspec does, and a
 # plugin that narrowed it would be describing a different hook from the one it implements.
 [tool.mcmr.rules."PY-COLL0001"]
 exclude = [
-  "src/mainboard/board.py",
-  "src/mainboard/profile/providers/nvidia/protocols.py",
+  "src/mainboard/profile/providers/nvidia/bindings.py",
   "src/mainboard/trials/pytest_plugin.py",
 ]
 
 # One module holds one closed type family, the shapes of one contract, named by the module
 # comment: `receipts` is the event contract, `vocabulary` the verdict words, `estimate` the
-# pricing rows. This ceiling, ALL-FILE0003's three modules per directory and PY-IMPO0005's
-# depth of three cannot all hold for a package of this size, and the family-per-module layout
-# is the one the house architecture asks to keep.
+# pricing rows. A class per module would multiply the modules ALL-FILE0003 folds five to a
+# folder, and the family-per-module layout is the one the house architecture asks to keep.
 [tool.mcmr.rules."ALL-MODU0005"]
 exclude = ["src"]
 
@@ -418,7 +382,7 @@ exclude = ["src"]
 # (`from mainboard import wait_for_idle`), so renaming them to an `is_` prefix breaks every
 # consumer for a hint the docstrings already carry.
 [tool.mcmr.rules."PY-NAMI0001"]
-exclude = ["src/mainboard/probe/gating.py", "src/mainboard/profile/bottleneck.py"]
+exclude = ["src/mainboard/probe/readings/gating.py", "src/mainboard/profile/bottleneck/core.py"]
 
 # Docstrings are English prose, and English sentences legitimately open with articles. A
 # thirty percent opener cap on a six-sentence section forbids two `The` sentences, which is a
@@ -434,9 +398,9 @@ exclude = ["src"]
 [tool.mcmr.rules."ALL-REAC0001"]
 exclude = [
   "src/mainboard/__init__.py",
-  "src/mainboard/core/shell.py",
+  "src/mainboard/core/execution/shell.py",
   "src/mainboard/probe/providers/nvidia/protocols.py",
-  "src/mainboard/profile/protocols.py",
+  "src/mainboard/profile/formats/protocols.py",
   "src/mainboard/profile/spans.py",
   "src/mainboard/trials/pytest_plugin.py",
 ]
@@ -447,7 +411,7 @@ exclude = [
 exclude = [
   "src/mainboard/render/present.py",
   "src/mainboard/profile/benchmark.py",
-  "src/mainboard/profile/stages.py",
+  "src/mainboard/profile/studies/stages.py",
 ]
 
 # `vars` over a module namespace is the profiler's discovery mechanism for the code objects it
@@ -463,8 +427,7 @@ exclude = ["src/mainboard/profile/profiler.py"]
 [tool.mcmr.rules."PY-CLAS0003"]
 exclude = [
   "src/mainboard/dispatch/schedulers",
-  "src/mainboard/probe/facts/fabric.py",
-  "src/mainboard/trials/distribution.py",
+  "src/mainboard/probe/facts/devices/fabric.py",
 ]
 
 # `Tracker` and `Delivery` are registry roots, the published extension seams a new sink or
@@ -475,13 +438,13 @@ exclude = [
 [tool.mcmr.rules."PY-INTE0002"]
 exclude = [
   "src/mainboard/dispatch/backends/base.py", "src/mainboard/tracking/base.py",
-  "src/mainboard/trials/figures.py",
+  "src/mainboard/trials/contract/figures.py",
 ]
 
 # Each subsystem names its own faults where they arise: `core.errors` holds the workspace-wide
 # `MissionError`, transport holds the connectivity family every scheduler shares.
 [tool.mcmr.rules."PY-EXCE0003"]
-exclude = ["src/mainboard/core/errors.py", "src/mainboard/dispatch/transport.py"]
+exclude = ["src/mainboard/core/errors.py", "src/mainboard/dispatch/transport/core.py"]
 
 # The ancestry the rule counts is the patos `Registry` plus pydantic stack under every provider
 # backend, not a hierarchy this package can flatten.
@@ -500,13 +463,12 @@ exclude = ["src/mainboard/__init__.py"]
 
 # An `except ...: continue` in these loops is a candidate filter, not a swallowed fault: an
 # unreadable version string, a kernel lock Windows gave up waiting on, a path a mirror prunes
-# that another pass already removed, and an unsupported CUPTI activity kind are each skipped so
-# the loop can keep what the host really offers.
+# that another pass already removed are each skipped so the loop can keep what the host really
+# offers.
 [tool.mcmr.rules."ALL-ERRO0001"]
 exclude = [
   "src/mainboard/deps/indexes.py",
-  "src/mainboard/dispatch/agent/program.py",
-  "src/mainboard/profile/providers/nvidia/tracer.py",
+  "src/mainboard/dispatch/agent/program/transfer.py",
 ]
 
 # The two waivers are the house-sanctioned `reason=`-stamped form for genuine third-party stub
@@ -514,15 +476,10 @@ exclude = [
 [tool.mcmr.rules."ALL-WAIV0001"]
 exclude = ["src/mainboard/engines/compile/generated/files.py"]
 
-# `Board` is the deliberate facade: one entry point whose verbs mirror the CLI's own, which is
-# the pattern the whole tool is built around. `Nvml` is a typed mirror of NVML's own C namespace,
-# so its method count is the vendor's rather than ours, and the test double stands in for that
-# same namespace method for method.
+# `Nvml` is a typed mirror of NVML's own C namespace, so its method count is the vendor's rather
+# than ours, and the test double stands in for that same namespace method for method.
 [tool.mcmr.rules."ALL-CLAS0003"]
-exclude = [
-  "src/mainboard/board.py",
-  "src/mainboard/probe/providers/nvidia/protocols.py",
-]
+exclude = ["src/mainboard/probe/providers/nvidia/protocols.py"]
 
 # Same mirror argument one level out: every NVML entry point the provider calls has to be
 # declared, and each enum those calls index into needs its own protocol, because they are
@@ -533,16 +490,16 @@ exclude = [
 # The verdict reader gained the receipts-store branch, which is one more evidence shape read
 # through the same settled-row surface rather than a second module a caller has to know about.
 [tool.mcmr.rules."ALL-MODU0001"]
-exclude = ["src/mainboard/verdicts.py"]
+exclude = ["src/mainboard/waiting/verdicts.py"]
 
 [tool.mcmr.rules."ALL-MODU0006"]
-exclude = ["src/mainboard/verdicts.py"]
+exclude = ["src/mainboard/waiting/verdicts.py"]
 
 [tool.mcmr.rules."ALL-MODU0002"]
 exclude = [
   "src/mainboard/probe/providers/nvidia/protocols.py",
   "src/mainboard/trials/pytest_plugin.py",
-  "src/mainboard/verdicts.py",
+  "src/mainboard/waiting/verdicts.py",
 ]
 
 # `profile` reaching `probe.units` is the one deliberate edge between them, and it buys the whole
@@ -561,22 +518,45 @@ exclude = ["src/mainboard/cli.py"]
 # at that boundary, the same disposition chefe records for its own pixi compiler.
 [tool.mcmr.rules."PY-INTE0001"]
 exclude = [
-  "src/mainboard/engines/compile/backend/pixi.py",
-  "src/mainboard/engines/compile/pixi_manifest.py",
+  "src/mainboard/engines/compile/backend/pixi/core.py",
+  "src/mainboard/engines/compile/pixi/manifest.py",
+  "src/mainboard/engines/compile/pixi/paths.py",
   "src/mainboard/manifest/render/interpolate.py",
 ]
 
 # `annotate` is the flat annotation facade over the detected tracer, so its functions are thin
-# delegations on purpose, the same shape as the root facade's exports.
+# delegations on purpose, the same shape as the root facade's exports. `center/remote.py` is the
+# program a migration ships to its destination, and the carrier calls its functions by name over
+# the wire (`carrier.call("census", ...)`), so each one-line entry is the remote verb itself.
+# `durable.settler` is the one public seam over the private `_SETTLERS` registry; inlining it
+# would hand that registry to `doctor`.
 [tool.mcmr.rules."ALL-FUNC0005"]
-exclude = ["src/mainboard/profile/annotate.py"]
+exclude = [
+  "src/mainboard/center/migration/remote.py",
+  "src/mainboard/settling/durable/core.py",
+  "src/mainboard/profile/bottleneck/annotate.py",
+]
+
+# `log.py` is the logger: its stderr sink and its `result` and `prompt` streams are the one place
+# the tool writes to a stream itself. The census also runs on a machine without mainboard (below).
+[tool.mcmr.rules."PY-LOGG0002"]
+exclude = ["src/mainboard/log/core.py", "src/mainboard/probe/census.py"]
+
+# Programs sent to another machine as source and run by its bare Python (the collection script,
+# the migration agent's census) import the standard library alone: their constants stay in them,
+# and the census answers on stdout itself. `test_standalone_programs.py` runs them that way.
+[tool.mcmr.rules."PY-CONS0001"]
+exclude = ["src/mainboard/dispatch/collection/pack.py"]
+
+[tool.mcmr.rules."PY-CONS0002"]
+exclude = ["src/mainboard/dispatch/collection/collector.py"]
 
 # psutil's partition namedtuple and CUPTI's raw records are not models, so the projections that
 # adapt them into typed rows must spell the fields at that third-party boundary.
 [tool.mcmr.rules."PY-MODE0004"]
 exclude = [
-  "src/mainboard/probe/facts/partition_info.py",
-  "src/mainboard/profile/providers/nvidia/tracer.py",
+  "src/mainboard/probe/facts/storage/partition_info.py",
+  "src/mainboard/profile/providers/nvidia/delivery.py",
 ]
 
 # Without this table pyrefly walks upward looking for one and adopts whatever manifest it finds,
@@ -585,6 +565,12 @@ exclude = [
 [tool.pyrefly]
 project-includes = ["src/**/*.py"]
 python-version = "3.14"
+# A gate test imports its worker's `guard` by name, as the worker puts its folder on the path.
+search-path = ["src", ".", "integration/gates/worker"]
+
+[tool.ty.environment]
+python-version = "3.14"
+extra-paths = ["integration/gates/worker"]
 
 [tool.pytest.ini_options]
 # `integration/` runs the real `mb` in throwaway workspaces and is what a bare `pytest` runs.
@@ -615,12 +601,14 @@ preview = true
 select = ["E", "F", "I", "UP", "B", "SIM", "PLW1514", "TID251"]
 
 # The owner's rule is no dataclasses: a record is a patos model. The two remote scripts
-# (`dispatch/agent/program.py`, `dispatch/collection/pack.py`) run on hosts with the standard
+# (`dispatch/agent/program/`, `dispatch/collection/pack.py`) run on hosts with the standard
 # library alone and use none; one that ever needs one takes a per-file ignore, not a model.
 # A rule's SQL and its good/bad examples are verbatim text the engine runs and compares, so a long
 # line in them is part of the rule, not prose to wrap.
 [tool.ruff.lint.per-file-ignores]
 "src/mainboard/analysis/rules/**" = ["E501"]
+# Shipped to a destination that has no mainboard yet, so its result is a bare print.
+"src/mainboard/center/standalone.py" = ["T201"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "dataclasses".msg = "Use patos's Model, FrozenModel, FlexModel or FrozenFlexModel (`from patos import ...`); pydantic refuses positional arguments, so construct with keywords."

@@ -1,137 +1,36 @@
-# The dispatch registries in the workspace's state lake: `runs_log`, whose `runs` view is the
-# current record per `(target, handle, submitted_at)` since a scheduler handle alone is not an
-# identity (pueue reissues small integer ids after a daemon restart), and `host_facts`, whose
-# `hosts` view is one onboarding record per alias. Both logs are append-only: a change appends the
-# whole new record, a removal appends a drop, and the views read the last record per key.
+"""The run registry: dispatched runs recorded, moved along their verdicts, and listed."""
 
-import weakref
 from pathlib import Path
-from shutil import rmtree
-from tempfile import mkdtemp
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Literal
 
-from filelock import FileLock
-from patos import FrozenModel, Lifecycle
-from pydantic import ValidationError
-from sqlalchemy import ColumnElement, Select, Table, func, or_, select
+from sqlalchemy import ColumnElement, func, or_, select
 
+from ...core.project import Project
 from ...state import schema
-from ...state.lake import Lake, Session
-from .. import vocabulary
-from ..lease import Lease
-from ..onboard import HostSetup
-from ..shared import now, workspace
-from ..vocabulary import Request
+from ...state.lake import Lake
+from ..jobs import vocabulary
 from .monitor import SettlementLock
+from .registry import Creations, Hosts, Log, RunRecord
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable
+
+    from ..hosts.lease import Lease
 
 # The terminal verdicts, for the lake to filter on.
-_TERMINAL = sorted(vocabulary.TERMINAL)
+_TERMINAL = sorted(vocabulary.Word.settled())
 
-# The current runs and hosts, as the lake's views read them.
-_RUNS = schema.runs
-_HOSTS = schema.hosts
+type Only = Literal["all", "live", "settled", "tracked"]
 
 
-class RunRecord(FrozenModel):
-    """One dispatched job's provenance, the `runs_log` record payload.
-
-    handle: the scheduler's job handle, or a provider's own run id (the dispatch-wide run id).
-    kind: the target's kind at submit time, a scheduler's (`ssh` / `pbs` / `slurm` / `local`) or
-        a provider's (`vast` / `hpc-ai` / `modal`), which a later pass routes on.
-    script: the original shipment spelling, or the prepared host script for a direct submission
-        without a shipment. Older queued records may contain a generated script.
-    args: the script arguments, shell-quoted and space-joined.
-    git_sha: the short HEAD sha the workspace was at when dispatched.
-    dirty: 1 when the working tree had uncommitted changes, else 0.
-    fetch_path: the results path to pull back, when `--fetch` was given.
-    name: a human label shown instead of the internal script path; empty falls back to the
-        script's basename at render time.
-    node: the ledger slug this run serves, carried into its receipts; empty is still valid.
-    source: the key of the pinned source tree the run executes from, so a sweep knows which host
-        snapshot is in use and which is garbage. Provider creation intents retain it before
-        their machine exists.
-    commit: the whole commit of the tree owning the dispatched code, not always the one
-        `git_sha` names: a monorepo dispatching a submodule's job records the submodule's.
-        Empty when git answered nothing.
-    digest: the content digest of that tree, which a run on a mirror with no history seals
-        itself against. Empty when `commit` is.
-    state: the last resolved scheduler outcome, memoized so a finished job is read from the
-        cache instead of re-probed over ssh. `None` means never resolved; a terminal verdict
-        here is trusted without touching the host.
-    verdict: one of the shared `vocabulary` verdicts.
-    reported: the verdict a durable monitor last surfaced, the cursor that keeps a periodic sweep
-        reporting only jobs newly terminal. `None` means never reported, so the first sweep
-        that finds it terminal announces it.
-    evidence: delivery status, separate from the computational verdict. `copied` means hashes
-        were verified but release is pending; `verified` means settlement finished. An
-        `unverified` correction preserves the original verdict while qualifying its evidence.
-    creation: the unique provider-request label, retained when its handle replaces the intent.
-    request: the original request for held jobs, or the resolved environment/resources for a
-        provider creation. Only held requests are retried automatically; a lost create reply
-        requires reconciliation with the provider.
-    lease: accepted rental quote and release deadline, retained before provider creation.
-    project: the workspace project the run was dispatched from (the directory under
-        `research/` or `packages/` the command ran in, or `MB_PROJECT`), empty for runs
-        recorded before it was kept.
-    reason: why the row is in its state when the state cannot say it alone, i.e. the refusal a
-        target's quota answered a held dispatch with. Empty for every run that was taken.
-    """
-
-    handle: str
-    target: str
-    kind: str
-    script: str
-    args: str
-    git_sha: str = ""
-    dirty: int | None = None
-    submitted_at: str
-    fetch_path: str | None = None
-    name: str = ""
-    node: str = ""
-    source: str = ""
-    commit: str = ""
-    digest: str = ""
-    state: str | None = None
-    exit_code: int | None = None
-    verdict: str | None = None
-    reported: str | None = None
-    evidence: str = ""
-    creation: str = ""
-    request: Request | None = None
-    lease: Lease | None = None
-    reason: str = ""
-    project: str = ""
-
-    @property
-    def label(self) -> str:
-        """The name `jobs` prints for this run: its label, else the script it was submitted as."""
-        return self.name or self.script
-
-
-class Cache:
-    """The dispatch registries, `runs` and `hosts`, in one workspace's state lake.
+class Cache(Log):
+    """The dispatch registries in one workspace's state lake: the runs, with `hosts` (onboarding)
+    and `creations` (provider requests before their machine exists) beside them.
 
     The lake is opened on the first statement, not at construction, so a board that never touches
     the registry (a host installing an environment) never creates or attaches one, and the one
-    session is kept for this cache's life rather than attached per statement. Every write that
-    reads first (a reservation, a compare-and-set transition) holds the registry lock across its
-    read and append, the way the one SQLite statement it replaces was atomic.
+    session is kept for this cache's life rather than attached per statement.
     """
-
-    def __init__(self, lake: Lake | None = None) -> None:
-        self.lake = lake or Lake.at(workspace())
-        self.session = self.lake.session()
-
-    @classmethod
-    def private(cls) -> Cache:
-        """A registry in a lake of its own under a temporary directory, removed with the cache."""
-        root = Path(mkdtemp(prefix="mb-registry-"))
-        cache = cls(Lake.at(root))
-        weakref.finalize(cache, _discard, cache.session, root)
-        return cache
 
     @property
     def path(self) -> Path:
@@ -148,14 +47,45 @@ class Cache:
         path.parent.mkdir(parents=True, exist_ok=True)
         return SettlementLock(path, is_singleton=True)
 
-    @property
-    def _registry(self) -> FileLock:
-        """The lock every read-then-append holds, so two processes cannot both win a race."""
-        return self._lock("registry.lock")
+    def __init__(self, lake: Lake | None = None) -> None:
+        lake = lake or Lake.at(Project().workspace())
+        super().__init__(lake, lake.session())
+        self.hosts = Hosts(lake, self.session)
+        self.creations = Creations(lake, self.session)
 
-    def close(self) -> None:
-        """Detach the lake now rather than whenever the collector reclaims this cache."""
-        self.session.close()
+    def _change(self, run: RunRecord, **fields: str | int | None) -> RunRecord:
+        """Update one registered identity atomically and answer its complete current record.
+
+        A verdict moves only along `VERDICTS`, so a terminal one is never replaced: a late or
+        stale report leaves the whole record as it stands rather than half of it.
+        """
+        with self._registry:
+            current = self._at(run)
+            if current is None:
+                raise self._unregistered(run)
+            if "verdict" in fields and not self._reaches(current.verdict, fields["verdict"]):
+                return current
+            changed = current.model_copy(update=fields)
+            self.session.append(schema.runs_log, [self._row(changed)])
+            return changed
+
+    def count(self, *, name: str = "", target: str = "") -> int:
+        """How many runs this registry holds, the count a truncated listing measures against.
+
+        name / target: only the runs named `name` dispatched to `target`, every attempt of that
+            run, when given.
+        """
+        named = [
+            *([schema.runs.c.name == name] if name else []),
+            *([schema.runs.c.target == target] if target else []),
+        ]
+        return int(
+            self.session.rows(select(func.count()).select_from(schema.runs).where(*named))[0][0]
+        )
+
+    def delivery(self, run: RunRecord, status: str) -> RunRecord:
+        """Advance evidence without replacing another process's computation or report fields."""
+        return self._change(run, evidence=status)
 
     def forget(self, run: RunRecord) -> None:
         """Drop one run's record entirely, the only thing that ever leaves `runs`.
@@ -165,158 +95,50 @@ class Cache:
         rather than being settled into a verdict it never had.
         """
         with self._registry:
-            self._append(schema.runs_log, [_row(run, dropped=True)])
+            self.session.append(schema.runs_log, [self._row(run, dropped=True)])
 
-    def delivery(self, run: RunRecord, status: str) -> RunRecord:
-        """Advance evidence without replacing another process's computation or report fields."""
-        return self._change(run, evidence=status)
-
-    def drop_host(self, alias: str) -> None:
-        """Forget `alias`'s onboarding, for a machine that no longer exists to be set up."""
-        with self._registry:
-            self._append(
-                schema.host_facts, [{"ts": now(), "alias": alias, "facts": "{}", "dropped": True}]
-            )
-
-    def host(self, alias: str) -> HostSetup:
-        """`alias`'s recorded onboarding, raising when the host was never set up."""
-        rows = self._rows(select(_HOSTS.c.facts).where(_HOSTS.c.alias == alias))
-        if not rows:
-            raise LookupError(f"host {alias!r} has never been set up; run `mb host setup {alias}`")
-        try:
-            return HostSetup.model_validate_json(rows[0][0], extra="ignore")
-        except ValidationError:
-            raise LookupError(
-                f"host {alias!r} was set up by an older release; run `mb host setup {alias}`"
-            ) from None
-
-    def hosts(self) -> list[HostSetup]:
-        """Every onboarded host, most recently set up first."""
-        rows = self._rows(select(_HOSTS.c.facts).order_by(_HOSTS.c.probed_at.desc()))
-        return [setup for (facts,) in rows if (setup := _current(facts)) is not None]
-
-    def mark_synced(self, alias: str) -> None:
-        """Stamp `alias`'s mirror watermark, which a later transfer set measures its delta from.
-
-        A host never onboarded has no mirror this store has seen, so nothing to stamp.
-        """
-        with self._registry:
-            try:
-                setup = self.host(alias)
-            except LookupError:
-                return
-            synced = setup.model_copy(update={"synced_at": now()})
-            self._append(schema.host_facts, [_host(synced, probed_at=setup.onboarded_at)])
-
-    def live(self, project: str = "") -> list[RunRecord]:
-        """Every run without a terminal verdict, newest first, never truncated by a limit.
-
-        A listing that hides half a dispatched wave sends an operator to `qstat` by hand.
-
-        project: only the runs dispatched from this project; every run when empty.
-        """
-        return self._matching(_unsettled(), project=project)
-
-    def _matching(
-        self, where: ColumnElement[bool], *, project: str = "", limit: int | None = None
+    def listed(
+        self,
+        only: Only = "all",
+        *,
+        project: str = "",
+        limit: int | None = None,
+        since: str = "",
     ) -> list[RunRecord]:
-        """The current runs `where` holds, newest first, filtered in the lake rather than here.
+        """Recorded runs, newest first, filtered in the lake rather than here.
 
         A registry of a hundred thousand runs cost 0.7 s a listing when every record was parsed
         to keep a few; the view's columns let the lake answer only those.
+
+        only: `live` keeps every run without a terminal verdict, which a limit never truncates (a
+            listing hiding half a dispatched wave sends an operator to `qstat` by hand), `settled`
+            the runs with one, `tracked` every run a durable sweep still owes an outcome for: a
+            run leaves only once its terminal verdict has been reported, so a sweep never
+            announces a settled run twice nor drops one whose dispatching agent died before
+            recording it.
+        project: only the runs dispatched from this project; every run when empty.
+        since: only the runs dispatched at or after this ISO instant.
         """
-        query = _newest().where(where).limit(limit)
-        return self._records(query.where(_RUNS.c.project == project) if project else query)
-
-    def recent(self, limit: int | None = 20) -> list[RunRecord]:
-        """Dispatched runs, newest first; None retains all historical declarations."""
-        return self._records(_newest().limit(limit))
-
-    def since(self, stamp: str) -> list[RunRecord]:
-        """Every run dispatched at or after the ISO instant `stamp`, newest first."""
-        return self._records(_newest().where(_RUNS.c.submitted_at >= stamp))
+        chosen = [
+            *([_ONLY[only]()] if only != "all" else []),
+            *([schema.runs.c.project == project] if project else []),
+            *([schema.runs.c.submitted_at >= since] if since else []),
+        ]
+        return self._records(self._newest().where(*chosen).limit(limit))
 
     def record(self, run: RunRecord) -> None:
         """Record a dispatched run, replacing whatever its identity recorded before."""
         with self._registry:
-            self._append(schema.runs_log, [_row(run)])
-
-    def reserve(self, run: RunRecord) -> None:
-        """Reserve a creation once; unresolved identical requests cannot allocate twice."""
-        with self._registry:
-            pending = (vocabulary.PREPARED, vocabulary.SUBMITTING)
-            if any(
-                other.verdict in pending
-                and other.script == run.script
-                and other.digest == run.digest
-                for other in self._on(run.target)
-            ):
-                raise ValueError(
-                    f"an unresolved creation already exists for {run.name or run.script!r} on "
-                    f"{run.target}; inspect its job record and provider label before retrying"
-                )
-            self._append(schema.runs_log, [_row(run)])
-
-    def bind(self, run: RunRecord, handle: str) -> RunRecord:
-        """Replace the intent identity in one commit, preserving its provenance and time."""
-        with self._registry:
-            current = self._at(run)
-            if current is None or current.verdict != vocabulary.SUBMITTING:
-                raise LookupError(f"no submitting creation {run.creation!r} on {run.target!r}")
-            bound = current.model_copy(
-                update={"handle": handle, "state": vocabulary.QUEUED, "verdict": vocabulary.QUEUED}
-            )
-            self._append(schema.runs_log, [_row(current, dropped=True), _row(bound)])
-            return bound
-
-    def leave_prepared(
-        self, run: RunRecord, verdict: str, *, lease: Lease | None = None
-    ) -> RunRecord:
-        """Claim preparation once, so cancellation and creation cannot both win."""
-        if not _reaches(vocabulary.PREPARED, verdict):
-            raise ValueError(f"invalid prepared transition to {verdict!r}")
-        return self._transition(
-            run,
-            vocabulary.PREPARED,
-            {
-                "state": verdict,
-                "verdict": verdict,
-                "reported": verdict if verdict in vocabulary.TERMINAL else None,
-                "lease": lease,
-            },
-            missing=ValueError(
-                f"creation {run.creation!r} is no longer prepared; do not resend it"
-            ),
-        )
-
-    def reopen(self, run: RunRecord) -> RunRecord:
-        """Return a submitting creation to prepared, once the provider has declined it.
-
-        The refusal proves nothing was allocated, so the request may be sent again or left to
-        `interrupted` to close.
-        """
-        return self._transition(
-            run,
-            vocabulary.SUBMITTING,
-            {"state": vocabulary.PREPARED, "verdict": vocabulary.PREPARED, "lease": None},
-            missing=ValueError(f"creation {run.creation!r} is not submitting; nothing to reopen"),
-        )
-
-    def creation(self, label: str, target: str) -> RunRecord:
-        """Read the same request before or after its provider handle replaced the intent."""
-        for run in self._on(target):
-            if run.creation == label:
-                return run
-        raise LookupError(f"no creation {label!r} on {target!r}")
+            self.session.append(schema.runs_log, [self._row(run)])
 
     def relet(self, run: RunRecord, lease: Lease) -> RunRecord:
         """Replace `run`'s rental lease, the deadline a sweep releases the machine at."""
         with self._registry:
             current = self._at(run)
             if current is None:
-                raise _unregistered(run)
+                raise self._unregistered(run)
             relet = current.model_copy(update={"lease": lease})
-            self._append(schema.runs_log, [_row(relet)])
+            self.session.append(schema.runs_log, [self._row(relet)])
             return relet
 
     def report(self, run: RunRecord, verdict: str) -> None:
@@ -356,163 +178,23 @@ class Cache:
             )
         return runs[0]
 
-    def attempts(self, name: str, target: str) -> int:
-        """How many runs named `name` were dispatched to `target`: every attempt of that run."""
-        counted = select(func.count()).where(_RUNS.c.target == target, _RUNS.c.name == name)
-        return int(self._rows(counted)[0][0])
 
-    def save_host(self, setup: HostSetup) -> HostSetup:
-        """Stamp `setup` with the current time and record it as `setup.host`'s onboarding.
-
-        The store owns the timestamp, so two records of the same host can always be ordered.
-        """
-        stamped = setup.model_copy(update={"onboarded_at": now()})
-        with self._registry:
-            self._append(schema.host_facts, [_host(stamped, probed_at=stamped.onboarded_at)])
-        return stamped
-
-    def settled(self, limit: int, project: str = "") -> list[RunRecord]:
-        """The `limit` most recently dispatched runs whose verdict is terminal, newest first.
-
-        project: only the runs dispatched from this project; every run when empty.
-        """
-        return self._matching(_RUNS.c.verdict.in_(_TERMINAL), project=project, limit=limit)
-
-    def total(self) -> int:
-        """How many runs this registry holds, the count a truncated listing measures against."""
-        return int(self._rows(select(func.count()).select_from(_RUNS))[0][0])
-
-    def tracked(self) -> list[RunRecord]:
-        """Every run a durable sweep still owes an outcome for, newest first.
-
-        A run leaves only once its terminal verdict has been reported, so a sweep never announces
-        a settled run twice nor drops one whose dispatching agent died before recording it.
-        """
-        reported = _RUNS.c.record["reported"].as_string()
-        return self._matching(or_(_unsettled(), reported.is_distinct_from(_RUNS.c.verdict)))
-
-    def _change(self, run: RunRecord, **fields: str | int | None) -> RunRecord:
-        """Update one registered identity atomically and answer its complete current record.
-
-        A verdict moves only along `VERDICTS`, so a terminal one is never replaced: a late or
-        stale report leaves the whole record as it stands rather than half of it.
-        """
-        with self._registry:
-            current = self._at(run)
-            if current is None:
-                raise _unregistered(run)
-            if "verdict" in fields and not _reaches(current.verdict, fields["verdict"]):
-                return current
-            changed = current.model_copy(update=fields)
-            self._append(schema.runs_log, [_row(changed)])
-            return changed
-
-    def _transition(
-        self,
-        run: RunRecord,
-        expected: str,
-        update: Mapping[str, object],
-        *,
-        missing: Exception,
-    ) -> RunRecord:
-        """Move `run` on only while its current verdict is `expected`, raising `missing` else."""
-        with self._registry:
-            current = self._at(run)
-            if current is None or current.verdict != expected:
-                raise missing
-            moved = current.model_copy(update=dict(update))
-            self._append(schema.runs_log, [_row(moved)])
-            return moved
-
-    def _at(self, run: RunRecord) -> RunRecord | None:
-        """The current record of `run`'s identity, None when it was never recorded or dropped."""
-        identity = (
-            _RUNS.c.target == run.target,
-            _RUNS.c.handle == run.handle,
-            _RUNS.c.submitted_at == run.submitted_at,
-        )
-        return next(iter(self._records(select(_RUNS.c.record).where(*identity))), None)
-
-    def _on(self, target: str | None) -> list[RunRecord]:
-        """Every current run, on `target` when given, newest first."""
-        return self._records(_newest().where(_RUNS.c.target == target) if target else _newest())
-
-    def _lock(self, name: str) -> FileLock:
-        """The process-reentrant file lock `name` under the lake's run directory."""
-        path = self.lake.out / "run" / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return FileLock(path, is_singleton=True)
-
-    def _rows(self, statement: Select) -> list[tuple[Any, ...]]:
-        """What `statement` answers in this cache's session."""
-        return self.session.rows(statement)
-
-    def _records(self, statement: Select) -> list[RunRecord]:
-        """The run records `statement` selects, in its order."""
-        rows = self._rows(statement)
-        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
-
-    def _append(self, table: Table, rows: Sequence[Mapping[str, object]]) -> None:
-        """Append `rows` to `table` in one commit of this cache's session."""
-        self.session.append(table, rows)
-
-
-def _newest() -> Select:
-    """Every current run's record, the newest dispatch first."""
-    return select(_RUNS.c.record).order_by(_RUNS.c.submitted_at.desc())
-
-
-def _reaches(current: str | None, verdict: str | int | None) -> bool:
-    """Whether a run recorded at `current` may be recorded at `verdict`: never resolved, the same
-    verdict again, or one move `VERDICTS` declares."""
-    return (
-        current is None
-        or verdict == current
-        or Lifecycle(vocabulary.VERDICTS, current).allowed(str(verdict))
+def _tracked() -> ColumnElement[bool]:
+    """Whether a durable sweep still owes a run its outcome: unsettled, or settled unreported."""
+    return or_(
+        _unsettled(),
+        schema.runs.c.record["reported"].as_string().is_distinct_from(schema.runs.c.verdict),
     )
 
 
 def _unsettled() -> ColumnElement[bool]:
     """Whether a run has no terminal verdict yet."""
-    return func.coalesce(_RUNS.c.verdict, "").not_in(_TERMINAL)
+    return func.coalesce(schema.runs.c.verdict, "").not_in(_TERMINAL)
 
 
-def _row(run: RunRecord, *, dropped: bool = False) -> dict[str, object]:
-    """The `runs_log` row recording `run`, or its removal when `dropped`."""
-    return {
-        "ts": now(),
-        "target": run.target,
-        "handle": run.handle,
-        "submitted_at": run.submitted_at,
-        "record": run.model_dump_json(),
-        "dropped": dropped,
-    }
-
-
-def _host(setup: HostSetup, *, probed_at: str | None) -> dict[str, object]:
-    """The `host_facts` row recording `setup`, ordered among its alias's records by `probed_at`."""
-    return {
-        "ts": now(),
-        "alias": setup.host,
-        "probed_at": probed_at,
-        "facts": setup.model_dump_json(),
-        "dropped": False,
-    }
-
-
-def _discard(session: Session, root: Path) -> None:
-    """Detach a private registry's lake and delete the directory it lived in."""
-    session.close()
-    rmtree(root, ignore_errors=True)
-
-
-def _unregistered(run: RunRecord) -> LookupError:
-    return LookupError(f"no registered run {run.handle!r} on {run.target!r}")
-
-
-def _current(facts: object) -> HostSetup | None:
-    """A recorded setup, None when an older mainboard wrote it and `setup` must record it anew."""
-    try:
-        return HostSetup.model_validate_json(str(facts), extra="ignore")
-    except ValidationError:
-        return None
+# The condition of each listing `Cache.listed` names but `all`.
+_ONLY: dict[str, Callable[[], ColumnElement[bool]]] = {
+    "live": _unsettled,
+    "settled": lambda: schema.runs.c.verdict.in_(_TERMINAL),
+    "tracked": _tracked,
+}

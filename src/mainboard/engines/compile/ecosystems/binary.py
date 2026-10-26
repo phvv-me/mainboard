@@ -12,10 +12,11 @@ from patos import FrozenModel
 from pydantic import ValidationError, model_validator
 
 from ....core.errors import MissionError
-from ....core.tool import ToolRunner
+from ....core.execution.tool import ToolRunner
 from .base import Ecosystem
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from typing import Self
 
     from ....manifest.schema.spec import Spec
@@ -66,73 +67,9 @@ class Binary(Ecosystem):
     def directory(self) -> Path:
         return self.out / "binary"
 
-    def binary_dirs(self) -> tuple[Path, ...]:
-        return (self.directory / "bin",)
-
     @staticmethod
-    def archive(name: str, spec: Spec) -> Archive:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or name.endswith("."):
-            raise MissionError(f"invalid binary executable name {name!r}")
-        try:
-            return Archive.model_validate({"version": spec.version, **(spec.model_extra or {})})
-        except ValidationError as fault:
-            raise MissionError(f"invalid [binary] dependency {name!r}: {fault}") from fault
-
-    def frozen_inputs(self) -> tuple[Path, ...]:
-        for name, spec in self.deps.items():
-            self.archive(name, spec)
-        return ()
-
-    def sync(self, *, resolve: bool = False) -> None:
-        archives = {name: self.archive(name, spec) for name, spec in self.deps.items()}
-        directory = self.binary_dirs()[0]
-        if not archives and not self.directory.exists():
-            return
-        if self.directory.is_symlink() or directory.is_symlink():
-            raise MissionError("binary install directories must not be symbolic links")
-        directory.mkdir(parents=True, exist_ok=True)
-        for installed in directory.iterdir():
-            if installed.name not in archives:
-                installed.unlink()
-        for receipt in self.directory.glob("*.json"):
-            if receipt.stem not in archives:
-                receipt.unlink()
-        for name, archive in archives.items():
-            executable = directory / name
-            receipt = self.directory / f"{name}.json"
-            if self._satisfied(executable, receipt, archive):
-                continue
-            with TemporaryDirectory(prefix=".install-", dir=self.directory) as temporary:
-                staging = Path(temporary)
-                downloaded = staging / "download.zip"
-                self._download(archive, downloaded)
-                binary = staging / "executable"
-                self._extract(archive, downloaded, binary)
-                record = staging / "receipt.json"
-                record.write_text(
-                    json.dumps({**archive.model_dump(), "executable_sha256": _digest(binary)})
-                    + "\n",
-                    encoding="utf-8",
-                )
-                binary.chmod(0o755)
-                binary.replace(executable)
-                record.replace(receipt)
-
-    @staticmethod
-    def _satisfied(executable: Path, receipt: Path, archive: Archive) -> bool:
-        try:
-            record = json.loads(receipt.read_text(encoding="utf-8"))
-            return (
-                not executable.is_symlink()
-                and executable.is_file()
-                and executable.stat().st_mode & 0o111 != 0
-                and record == {**archive.model_dump(), "executable_sha256": _digest(executable)}
-            )
-        except FileNotFoundError, json.JSONDecodeError:
-            return False
-
-    @staticmethod
-    def _download(archive: Archive, destination: Path) -> None:
+    def _curl_checked() -> None:
+        """Refuse a curl older than 8.4, which cannot bound a streaming download."""
         version = ToolRunner(timeout=5).run("curl", ("--version",))
         parsed = re.match(r"curl (\d+)\.(\d+)\.(\d+)", version.stdout)
         if (
@@ -142,6 +79,10 @@ class Binary(Ecosystem):
             or tuple(map(int, parsed.groups())) < (8, 4, 0)
         ):
             raise MissionError("binary setup requires curl 8.4+ for bounded streaming downloads")
+
+    @staticmethod
+    def _download(archive: Archive, destination: Path) -> None:
+        Binary._curl_checked()
         result = ToolRunner(timeout=125, max_bytes=16 << 10).run(
             "curl",
             (
@@ -170,37 +111,110 @@ class Binary(Ecosystem):
         if result.returncode or result.truncated:
             raise MissionError(f"binary download failed: {result.stderr or result.returncode}")
         try:
-            if destination.stat().st_size > 128 << 20:
-                raise MissionError("binary download exceeded its size limit")
-            digest = _digest(destination)
+            size, digest = destination.stat().st_size, _digest(destination)
         except OSError as fault:
             raise MissionError(f"cannot read binary download: {fault}") from fault
+        if size > 128 << 20:
+            raise MissionError("binary download exceeded its size limit")
         if digest != archive.sha256:
             raise MissionError("binary archive SHA-256 does not match its manifest pin")
 
     @staticmethod
-    def _extract(archive: Archive, downloaded: Path, destination: Path) -> None:
+    def _extract(archive: Archive, downloaded: Path, *, destination: Path) -> None:
         try:
-            with ZipFile(downloaded) as zipped:
-                matches = [
-                    entry for entry in zipped.infolist() if entry.filename == archive.member
-                ]
-                if len(matches) != 1:
-                    raise MissionError("binary ZIP must contain exactly one declared member")
-                entry = matches[0]
-                mode = entry.external_attr >> 16
-                if (
-                    entry.is_dir()
-                    or stat.S_IFMT(mode) not in (0, stat.S_IFREG)
-                    or not 0 < entry.file_size <= 64 << 20
-                ):
-                    raise MissionError(
-                        "binary ZIP member must be a regular executable under 64 MiB"
-                    )
-                # Never extract a pathname from the archive, including unrelated traversal entries.
-                destination.write_bytes(zipped.read(entry))
+            destination.write_bytes(Binary._member(archive, downloaded))
         except (BadZipFile, OSError, RuntimeError) as fault:
             raise MissionError(f"cannot read binary ZIP: {fault}") from fault
+
+    @staticmethod
+    def _member(archive: Archive, downloaded: Path) -> bytes:
+        """The bytes of the one member `archive` declares, a regular file under 64 MiB.
+
+        Never a pathname from the archive is extracted, including unrelated traversal entries.
+        """
+        with ZipFile(downloaded) as zipped:
+            matches = [entry for entry in zipped.infolist() if entry.filename == archive.member]
+            if len(matches) != 1:
+                raise MissionError("binary ZIP must contain exactly one declared member")
+            entry = matches[0]
+            mode = entry.external_attr >> 16
+            if (
+                entry.is_dir()
+                or stat.S_IFMT(mode) not in (0, stat.S_IFREG)
+                or not 0 < entry.file_size <= 64 << 20
+            ):
+                raise MissionError("binary ZIP member must be a regular executable under 64 MiB")
+            return zipped.read(entry)
+
+    @staticmethod
+    def _satisfied(executable: Path, *, receipt: Path, archive: Archive) -> bool:
+        try:
+            record = json.loads(receipt.read_text(encoding="utf-8"))
+        except FileNotFoundError, json.JSONDecodeError:
+            return False
+        return (
+            not executable.is_symlink()
+            and executable.is_file()
+            and executable.stat().st_mode & 0o111 != 0
+            and record == {**archive.model_dump(), "executable_sha256": _digest(executable)}
+        )
+
+    @staticmethod
+    def archive(name: str, spec: Spec) -> Archive:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or name.endswith("."):
+            raise MissionError(f"invalid binary executable name {name!r}")
+        try:
+            return Archive.model_validate({"version": spec.version, **(spec.model_extra or {})})
+        except ValidationError as fault:
+            raise MissionError(f"invalid [binary] dependency {name!r}: {fault}") from fault
+
+    def _installed(self, archive: Archive, *, executable: Path, receipt: Path) -> None:
+        """`archive` downloaded, its member checked and moved into place, its receipt last."""
+        with TemporaryDirectory(prefix=".install-", dir=self.directory) as temporary:
+            staging = Path(temporary)
+            downloaded = staging / "download.zip"
+            self._download(archive, downloaded)
+            binary = staging / "executable"
+            self._extract(archive, downloaded, destination=binary)
+            record = staging / "receipt.json"
+            record.write_text(
+                json.dumps({**archive.model_dump(), "executable_sha256": _digest(binary)}) + "\n",
+                encoding="utf-8",
+            )
+            binary.chmod(0o755)
+            binary.replace(executable)
+            record.replace(receipt)
+
+    def _pruned(self, directory: Path, archives: Mapping[str, Archive]) -> None:
+        """Remove every executable and receipt the manifest no longer pins."""
+        for installed in directory.iterdir():
+            if installed.name not in archives:
+                installed.unlink()
+        for receipt in self.directory.glob("*.json"):
+            if receipt.stem not in archives:
+                receipt.unlink()
+
+    def binary_dirs(self) -> tuple[Path, ...]:
+        return (self.directory / "bin",)
+
+    def frozen_inputs(self) -> tuple[Path, ...]:
+        for name, spec in self.deps.items():
+            self.archive(name, spec)
+        return ()
+
+    def sync(self, *, resolve: bool = False) -> None:
+        archives = {name: self.archive(name, spec) for name, spec in self.deps.items()}
+        directory = self.binary_dirs()[0]
+        if not archives and not self.directory.exists():
+            return
+        if self.directory.is_symlink() or directory.is_symlink():
+            raise MissionError("binary install directories must not be symbolic links")
+        directory.mkdir(parents=True, exist_ok=True)
+        self._pruned(directory, archives)
+        for name, archive in archives.items():
+            receipt = self.directory / f"{name}.json"
+            if not self._satisfied(directory / name, receipt=receipt, archive=archive):
+                self._installed(archive, executable=directory / name, receipt=receipt)
 
 
 def _digest(path: Path) -> str:

@@ -1,24 +1,15 @@
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from .catalog import Offer
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from gpuhunt import CatalogItem
+
 # gpuhunt's spelling of a provider this workspace names otherwise. Vast is the only collision
 # today (`runpod`, `lambdalabs` and the rest agree), so an explicit map beats an alias mechanism.
 _FEED_NAMES = {"vastai": "vast"}
-
-
-class CatalogRow(Protocol):
-    """One `gpuhunt.query` row, typed structurally so the optional dependency never imports."""
-
-    provider: str
-    gpu_name: str
-    gpu_count: int
-    spot: bool
-    location: str | None
-    price: float | None
 
 
 def from_vast(rows: Iterable[dict], *, spot: bool = False) -> list[Offer]:
@@ -54,12 +45,15 @@ def catalog_provider(name: str) -> str:
     return _FEED_NAMES.get(name, name)
 
 
-def from_gpuhunt(rows: Iterable[CatalogRow]) -> list[Offer]:
-    """gpuhunt catalog rows as `Offer`s, tagged imported and named as this workspace names them."""
+def from_gpuhunt(rows: Iterable[CatalogItem]) -> list[Offer]:
+    """gpuhunt catalog rows as `Offer`s, tagged imported and named as this workspace names them.
+
+    A row with no GPU (a CPU-only offer) or no price is left out.
+    """
     return [
         Offer(
             provider=catalog_provider(row.provider),
-            gpu=row.gpu_name,
+            gpu=gpu,
             gpu_count=row.gpu_count,
             spot=row.spot,
             region=row.location or "",
@@ -67,5 +61,5 @@ def from_gpuhunt(rows: Iterable[CatalogRow]) -> list[Offer]:
             source="imported:gpuhunt",
         )
         for row in rows
-        if (price := row.price) is not None
+        if (gpu := row.gpu_name) and (price := row.price) is not None
     ]

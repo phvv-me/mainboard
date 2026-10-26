@@ -1,5 +1,6 @@
 import mmap
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from struct import error, iter_unpack, unpack_from
 
@@ -34,7 +35,7 @@ class Elf(FrozenModel):
     def read(cls, path: Path) -> Elf:
         """The dynamic section of `path`, only its headers read however large the library is."""
         try:
-            tags = _dynamic(path)
+            tags = Elf._dynamic(path)
         except OSError, error, ValueError:
             return cls(path=path)
         return cls(
@@ -46,7 +47,7 @@ class Elf(FrozenModel):
         )
 
     @staticmethod
-    def _directories(path: Path, entries: tuple[str, ...]) -> tuple[Path, ...]:
+    def _directories(path: Path, entries: Iterable[str]) -> tuple[Path, ...]:
         """The directories of colon-separated `entries`, `$ORIGIN` replaced by `path`'s own."""
         return tuple(
             Path(_ORIGIN.sub(str(path.parent), directory))
@@ -54,6 +55,32 @@ class Elf(FrozenModel):
             for directory in entry.split(":")
             if directory
         )
+
+    @staticmethod
+    def _dynamic(path: Path) -> dict[int, tuple[str, ...]]:
+        """Every string-valued tag of `path`'s dynamic section, by tag number."""
+        with path.open("rb") as file:
+            header = file.read(64)
+            if header[:4] != b"\x7fELF" or header[4:6] != b"\x02\x01":
+                raise ValueError(path)
+            (table,) = unpack_from("<Q", header, 0x28)
+            size, count = unpack_from("<HH", header, 0x3A)
+            file.seek(table)
+            raw = file.read(size * count)
+            sections = [unpack_from(_SECTION, raw, at * size) for at in range(count)]
+            dynamic = next(section for section in sections if section[1] == _SHT_DYNAMIC)
+            file.seek(dynamic[4])
+            entries = file.read(dynamic[5])
+            names = sections[dynamic[6]]
+            file.seek(names[4])
+            strings = file.read(names[5])
+        tags: dict[int, list[str]] = {}
+        for tag, value in iter_unpack("<qQ", entries):
+            if tag in {_DT_NEEDED, _DT_SONAME, _DT_RPATH, _DT_RUNPATH}:
+                tags.setdefault(tag, []).append(
+                    strings[value : strings.index(b"\0", value)].decode()
+                )
+        return {tag: tuple(values) for tag, values in tags.items()}
 
     def mentions(self, stem: str) -> tuple[str, ...]:
         """The library names beginning `stem` that the file's bytes spell out, as it spells them.
@@ -70,27 +97,3 @@ class Elf(FrozenModel):
             mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as data,
         ):
             return tuple(sorted({found.decode() for found in pattern.findall(data)}))
-
-
-def _dynamic(path: Path) -> dict[int, tuple[str, ...]]:
-    """Every string-valued tag of `path`'s dynamic section, by tag number."""
-    with path.open("rb") as file:
-        header = file.read(64)
-        if header[:4] != b"\x7fELF" or header[4:6] != b"\x02\x01":
-            raise ValueError(path)
-        (table,) = unpack_from("<Q", header, 0x28)
-        size, count = unpack_from("<HH", header, 0x3A)
-        file.seek(table)
-        raw = file.read(size * count)
-        sections = [unpack_from(_SECTION, raw, at * size) for at in range(count)]
-        dynamic = next(section for section in sections if section[1] == _SHT_DYNAMIC)
-        file.seek(dynamic[4])
-        entries = file.read(dynamic[5])
-        names = sections[dynamic[6]]
-        file.seek(names[4])
-        strings = file.read(names[5])
-    tags: dict[int, list[str]] = {}
-    for tag, value in iter_unpack("<qQ", entries):
-        if tag in {_DT_NEEDED, _DT_SONAME, _DT_RPATH, _DT_RUNPATH}:
-            tags.setdefault(tag, []).append(strings[value : strings.index(b"\0", value)].decode())
-    return {tag: tuple(values) for tag, values in tags.items()}

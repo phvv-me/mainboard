@@ -2,7 +2,7 @@ import shutil
 from collections.abc import Sequence
 from typing import ClassVar
 
-from ...manifest.schema.container import Container
+from ...manifest.schema.compute.container import Container
 from .base import ContainerRuntime
 
 

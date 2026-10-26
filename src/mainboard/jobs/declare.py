@@ -4,7 +4,7 @@
 
 import ast
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from patos import FrozenModel
 
@@ -13,11 +13,8 @@ from ..core.errors import MissionError
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-# Where the decorator keeps its declaration on the target, for a caller holding the object.
-MARK = "__mainboard_job__"
-
 # What the decorator is called, which is how it is recognised in a file that is only parsed.
-NAME = "job"
+_NAME = "job"
 
 
 class Declaration(FrozenModel):
@@ -29,6 +26,9 @@ class Declaration(FrozenModel):
         registration or a template, pinned and digested with the code unlike a need.
     fetch: the results path pulled home when the job settles, empty when it declared none.
     """
+
+    # Where the decorator keeps its declaration on the target, for a caller holding the object.
+    MARK: ClassVar[str] = "__mainboard_job__"
 
     needs: tuple[str, ...] = ()
     resources: tuple[str, ...] = ()
@@ -48,7 +48,7 @@ def job[Declared](
 
     def marked(target: Declared) -> Declared:
         with suppress(AttributeError):
-            setattr(target, MARK, declared)
+            setattr(target, Declaration.MARK, declared)
         return target
 
     return marked
@@ -132,8 +132,8 @@ def _job_decorator(function: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.Call
 def _is_job(func: ast.expr) -> bool:
     """Whether `func` spells the decorator, bare or through the module it was imported from."""
     if isinstance(func, ast.Name):
-        return func.id == NAME
-    return isinstance(func, ast.Attribute) and func.attr == NAME
+        return func.id == _NAME
+    return isinstance(func, ast.Attribute) and func.attr == _NAME
 
 
 def _literal(keyword: ast.keyword, name: str) -> str | tuple[str, ...] | list[str]:
@@ -144,6 +144,6 @@ def _literal(keyword: ast.keyword, name: str) -> str | tuple[str, ...] | list[st
         return ast.literal_eval(keyword.value)
     except ValueError as opaque:
         raise MissionError(
-            f"the `{NAME}` declaration on {name!r} must be literal, since the file is read "
+            f"the `{_NAME}` declaration on {name!r} must be literal, since the file is read "
             f"without being imported; {keyword.arg or '**'} is {opaque}"
         ) from None

@@ -3,8 +3,8 @@ from typing import Self
 from patos import FlexModel
 from pydantic import ConfigDict
 
+from .compute.toolchain import Toolchain
 from .spec import Spec
-from .toolchain import Toolchain
 
 
 class Scope(FlexModel):

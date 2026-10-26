@@ -9,22 +9,16 @@ from patos import FrozenModel
 from pydantic import JsonValue
 
 from ..core.project import Project
+from .constants import RECEIPT
+from .declarations.gates import GateStatus, GateVerdict
 from .experiment import Experiment
-from .gates import GateStatus, GateVerdict
 from .run import Run
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from .gates import Gate
+    from .declarations.gates import Gate
     from .lane import Lane
-
-# The whole published contract between a trial and anything reading its output: one JSON line
-# under this key, printed by whatever drives the trial (nothing here prints it). The key names
-# the shape, not the harness, so any framework printing the same line reads the same, and a
-# reader (a proof-bookkeeping tool turning a claim's run into evidence naming its trial and
-# gates) parses it instead of importing this package.
-RECEIPT = "trial_receipt"
 
 
 class Declarations(TypedDict, total=False):
@@ -111,6 +105,8 @@ def experiment(
     """
 
     def decorate(fn: Callable[..., dict[str, float]]) -> type[Experiment]:
+        if not isinstance(fn, types.FunctionType):
+            raise TypeError(f"experiment() turns a plain function into a class, not {fn!r}")
         hints = typing.get_type_hints(fn, include_extras=True)
         parameters = inspect.signature(fn).parameters
         accepts_lane = "lane" in parameters

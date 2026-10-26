@@ -1,0 +1,226 @@
+# The default environment's tools, reachable from every shell an agent opens on the center.
+#
+# Agents rarely run inside an activated environment: Claude Code runs its commands through the
+# user's zsh, Codex through a login shell, opencode through whatever shell it spawns. The portable
+# toolset the manifest puts in the default environment (the uutils coreutils, ripgrep, fd, sd, yq
+# and the rest) only standardizes their commands if each of those shells finds it first. macOS
+# and Linux keep no PATH outside each shell's startup files, so one generated file,
+# `~/.config/mainboard/path.sh`, puts the environment's executable directories on PATH. The
+# startup files belong to the owner's dotfiles, which source it; only a startup file that does not
+# (a machine without them) gets a marked line appended: `~/.zshenv` for zsh (login or not,
+# interactive or not), and `~/.profile` and `~/.bashrc` for bash and sh.
+#
+# Each shell kind is then started the way an agent starts it, from a fresh environment, and asked
+# where each tool resolves, which is the only proof that counts.
+
+import json
+import os
+from pathlib import Path
+from shlex import quote
+from typing import TYPE_CHECKING
+
+from ...core.project import Project
+from ...core.section import Section, Verdict
+from .workstation import abbreviated
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
+
+# Runs one command under an environment, answering its status and joined output.
+type Spawn = Callable[[Sequence[str], Mapping[str, str]], tuple[int, str]]
+
+# The generated PATH file on macOS and Linux, and the marked line that sources it. Both keep the
+# legacy name on purpose: every startup file already sourcing it stays correct untouched, and a
+# block under any of the tool's names counts as present, so none is ever appended twice.
+_PATH_FILE = f".config/{Project().package}/path.sh"
+_BEGIN = f"# >>> {Project().package} >>>"
+_END = f"# <<< {Project().package} <<<"
+_BEGINS = tuple(f"# >>> {name} >>>" for name in Project().names)
+_SOURCE = f'[ -f "$HOME/{_PATH_FILE}" ] && . "$HOME/{_PATH_FILE}"'
+
+# Which startup file each POSIX shell reads in every mode an agent starts it in.
+_STARTUP = {"zsh": (".zshenv",), "bash": (".profile", ".bashrc"), "sh": (".profile",)}
+
+# The PATH a fresh POSIX login starts from, before any startup file adds to it.
+_BARE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+# This tool as it is typed, which every agent shell must reach wherever uv put it.
+_TOOL = Project().name
+
+# How many names a detail line spells out before it only counts the rest.
+_NAMED = 6
+
+
+def executables(prefix: Path, packages: Sequence[str]) -> list[str]:
+    """The command names the declared conda `packages` put in `prefix/bin`.
+
+    They are read from conda's records.
+    """
+    records = [
+        json.loads(record.read_text(encoding="utf-8"))
+        for record in (prefix / "conda-meta").glob("*.json")
+    ]
+    return sorted(
+        {
+            path.name
+            for record in records
+            if record.get("name") in packages
+            for path in map(Path, record.get("files", []))
+            # Runnable by name, or gone and so worth naming.
+            if path.parent.as_posix() == "bin"
+            and (not (prefix / path).exists() or os.access(prefix / path, os.X_OK))
+        }
+    )
+
+
+class Exposure:
+    """Put an environment's executable directories on every shell's PATH, then prove it.
+
+    folders: the environment's executable directories, first searched first.
+    home: the user's home directory, where startup files and the PATH file live.
+    shells: every shell on this machine, by name, with its path.
+    """
+
+    @staticmethod
+    def _is_written(path: Path, text: str) -> bool:
+        """Write `text` to `path` unless it already holds it, answering whether it changed."""
+        try:
+            if path.read_text(encoding="utf-8") == text:
+                return False
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return True
+
+    @staticmethod
+    def _prepended(folder: str) -> str:
+        """The POSIX line putting `folder` first on PATH once, however often it is sourced."""
+        held = quote(folder)
+        return f'case ":$PATH:" in *:{held}:*) ;; *) PATH={held}:"$PATH" ;; esac'
+
+    @staticmethod
+    def _sourced(startup: Path) -> bool:
+        """Append the marked line sourcing the PATH file to `startup`, answering whether it did.
+
+        A startup file that already names the PATH file (the dotfiles' own line) is left alone,
+        since whatever manages it would only rewrite the appended block away.
+        """
+        try:
+            text = startup.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = ""
+        if _PATH_FILE in text or any(begin in text for begin in _BEGINS):
+            return False
+        block = f"{_BEGIN}\n{_SOURCE}\n{_END}\n"
+        startup.write_text(
+            text + ("\n" if text and not text.endswith("\n") else "") + block,
+            encoding="utf-8",
+            newline="\n",
+        )
+        return True
+
+    def __init__(
+        self, folders: Sequence[Path], *, home: Path, shells: Mapping[str, str], spawn: Spawn
+    ) -> None:
+        self.folders = [str(folder) for folder in folders]
+        self.home = home
+        self.shells = dict(shells)
+        self.spawn = spawn
+
+    def _fresh(self, kind: str) -> dict[str, str]:
+        """The environment a new shell of `kind` starts from, before its startup files run."""
+        return {
+            "HOME": str(self.home),
+            "USER": os.environ.get("USER", ""),
+            "PATH": _BARE_PATH,
+            "SHELL": self.shells.get(kind, ""),
+            "TERM": "dumb",
+        }
+
+    def _judged(
+        self, kind: str, names: Sequence[str], found: Mapping[str, tuple[str, str]]
+    ) -> Section:
+        """One shell's row: how many names resolve into the environment, and which do not."""
+        inside = [name for name in names if name in found and self._ours(found[name][1])]
+        missing = [name for name in (_TOOL, *names) if name not in found]
+        builtins = [name for name in names if found.get(name, ("", ""))[0] == "Builtin"]
+        shadowed = [
+            f"{name} ({found[name][0].lower()})"
+            for name in names
+            if name in found and name not in builtins and not self._ours(found[name][1])
+        ]
+        detail = f"{len(inside)} of {len(names)} resolve into the environment"
+        if builtins:
+            detail += f", {len(builtins)} are the shell's own builtins"
+        if missing:
+            detail += f"; missing {abbreviated(missing, _NAMED)}"
+        if shadowed:
+            detail += f"; shadowed by {abbreviated(shadowed, _NAMED)}"
+        if not missing and not shadowed:
+            return Section(section=f"path {kind}", verdict=Verdict.PASS, detail=detail)
+        return Section(
+            section=f"path {kind}",
+            verdict=Verdict.WARN,
+            detail=detail,
+            fix=f"{Project().name} install, then open a new shell",
+        )
+
+    def _ours(self, where: str) -> bool:
+        """Whether a resolved path lies in one of the environment's directories."""
+        return any(where.startswith(folder.rstrip("/") + "/") for folder in self.folders)
+
+    def _resolved(
+        self, kind: str, *, path: str, names: Sequence[str]
+    ) -> dict[str, tuple[str, str]]:
+        """Each name's resolution in one shell kind: its kind of command and where it lives."""
+        loop = " ".join(quote(name) for name in names)
+        script = (
+            f'for t in {loop}; do p=$(command -v "$t"); '
+            'case "$p" in /*) k=Application ;; *) k=Builtin ;; esac; '
+            'printf "%s\\t%s\\t%s\\n" "$t" "$k" "$p"; done'
+        )
+        flag = "-c" if kind == "zsh" else "-lc"
+        _, said = self.spawn((path, flag, script), self._fresh(kind))
+        rows = [line.split("\t") for line in said.splitlines() if line.count("\t") == 2]
+        return {name: (sort, where) for name, sort, where in rows if where}
+
+    def apply(self) -> Section:
+        """Write the PATH file and source it from each present shell's startup files."""
+        path_file = self.home / _PATH_FILE
+        lines = [
+            f"# Written by `{Project().name} doctor --center`: the default environment and the "
+            "tool on PATH",
+            *(
+                Exposure._prepended(folder)
+                for folder in reversed([*self.folders, str(self.home / ".local" / "bin")])
+            ),
+            "export PATH",
+        ]
+        written = (
+            [path_file.name] if Exposure._is_written(path_file, "\n".join(lines) + "\n") else []
+        )
+        files = sorted({file for kind in self.shells for file in _STARTUP.get(kind, ())})
+        touched = written + [file for file in files if Exposure._sourced(self.home / file)]
+        return Section(
+            section="path",
+            verdict=Verdict.PASS,
+            detail=(
+                f"wrote {', '.join(touched)}"
+                if touched
+                else "the environment is on every shell's PATH"
+            )
+            + (f"; startup files carry the {_BEGIN} line" if files else ""),
+        )
+
+    def verify(self, names: Sequence[str]) -> list[Section]:
+        """Where each of `names`, and this tool, resolves from every shell here, one row each.
+
+        A name that resolves outside the environment is shadowed, and one that resolves nowhere
+        is missing; both are named with the fix. This tool lives in its own uv environment, so it
+        only has to resolve at all.
+        """
+        asked = [_TOOL, *names]
+        return [
+            self._judged(kind, names, self._resolved(kind, path=path, names=asked))
+            for kind, path in sorted(self.shells.items())
+        ]

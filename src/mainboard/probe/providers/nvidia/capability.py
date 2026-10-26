@@ -17,12 +17,6 @@ class ComputeCapability(NamedTuple):
     major: int
     minor: int
 
-    def __repr__(self) -> str:
-        return f"ComputeCapability({self.major}, {self.minor})"
-
-    def __str__(self) -> str:
-        return f"{self.major}.{self.minor}"
-
     @property
     def architecture(self) -> str:
         """NVIDIA architecture family, the `cuda.core`-free fallback name; `Unknown` if unmapped.
@@ -36,3 +30,9 @@ class ComputeCapability(NamedTuple):
     def sm(self) -> str:
         """The dot-free `sm_NN` target `nvcc`/Triton key a build by, e.g. `sm_90`."""
         return f"sm_{self.major}{self.minor}"
+
+    def __repr__(self) -> str:
+        return f"ComputeCapability({self.major}, {self.minor})"
+
+    def __str__(self) -> str:
+        return f"{self.major}.{self.minor}"

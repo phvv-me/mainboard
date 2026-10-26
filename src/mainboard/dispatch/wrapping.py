@@ -9,7 +9,7 @@ from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from ..core.project import Project
 from ..engines.compile.generated.activation import module_specs
-from .transport import BoundedSshMachine, HostUnreachable, SshTransport
+from .transport.core import BoundedSshMachine, HostUnreachable, SshTransport
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 # on a fresh host before any env is even activated. pixi's global tools live in either home: its
 # own `~/.pixi`, or the dotfiles' one per architecture (`~/.pixi/<uname -m>`, so an HPC home
 # shared by x86-64 and aarch64 nodes works), which is where `pixi global install` writes there.
-USER_BINS = (
+_USER_BINS = (
     "$HOME/.local/bin",
     "$HOME/.pixi/$(uname -m)/bin",
     "$HOME/.pixi/bin",
@@ -38,8 +38,10 @@ _LOGIN_POLL = 2
 
 
 def guarded(line: str, plan: ExecutionPlan) -> str:
-    """`line`, stopped with everything it started once all of this user's processes on the
-    login node hold `_LOGIN_SHARE` of the host's `login_memory_gb`; unchanged where it has none.
+    """`line`, stopped with its children once this user's login processes hold their share.
+
+    The share is `_LOGIN_SHARE` of the host's `login_memory_gb`; a host without one leaves `line`
+    unchanged.
 
     A site enforcing a per-user limit kills the largest tasks itself, and on miyabi-g that ended
     the one login its owner unlocks every 72 hours, mid-install (2026-10-01); stopping short
@@ -63,8 +65,10 @@ def guarded(line: str, plan: ExecutionPlan) -> str:
 
 
 def activation(root: str, *, env: str = "default") -> str:
-    """The activation script a provisioned workspace under `root` carries for `env`, under the
-    state directory this workspace keeps, which a host's mirror of it keeps too."""
+    """The activation script a provisioned workspace under `root` carries for `env`.
+
+    It lives under the state directory this workspace keeps, which a host's mirror of it keeps too.
+    """
     return f"{root}/{Project().activation(env)}"
 
 
@@ -86,7 +90,7 @@ def wrap(
     activate: False keeps only `cd`, `PATH` and modules, the footing an onboarding stands on
         while the host has no environment to activate yet.
     """
-    steps = [f"cd {shlex.quote(root)}", f"export PATH={':'.join(USER_BINS)}:$PATH"]
+    steps = [f"cd {shlex.quote(root)}", f"export PATH={':'.join(_USER_BINS)}:$PATH"]
     if plan.profile.modules:
         steps += [
             "module purge",
@@ -100,7 +104,7 @@ def wrap(
         [f"export {key}={shlex.quote(value)}" for key, value in plan.exports.items()] + [command]
     )
     if not plan.containerized:
-        return " && ".join([*steps, activation_stage(plan, root), exported])
+        return " && ".join([*steps, _activation_stage(plan, root), exported])
     if containerize is None:
         raise LookupError(
             f"plan for host {plan.host!r} is containerized but no container argv builder was given"
@@ -108,7 +112,7 @@ def wrap(
     return " && ".join([*steps, shlex.join(containerize(["bash", "-c", exported]))])
 
 
-def activation_stage(plan: ExecutionPlan, root: str) -> str:
+def _activation_stage(plan: ExecutionPlan, root: str) -> str:
     """The shell stage that activates `plan`'s environment before a wrapped command runs.
 
     It sources the environment's generated activation, else puts its prefix's `bin/` on PATH.
@@ -130,9 +134,11 @@ def activation_stage(plan: ExecutionPlan, root: str) -> str:
     )
 
 
-def absent(prefix: str, env: str) -> str:
-    """The refusal a job whose addressed prefix is missing or unfinished prints, naming the
-    host's own tool by the script every release installs."""
+def absent(prefix: str, *, env: str) -> str:
+    """The refusal a job prints when its addressed prefix is missing or unfinished.
+
+    It names the host's own tool by the script every release installs.
+    """
     tool = Project().package
     return (
         f"{tool} found no completed environment with the expected identity at {prefix}. It is "
@@ -188,8 +194,13 @@ def _open(host: str, ssh: SshTransport) -> BoundedSshMachine:
     ssh.warm(host)
     remote = ssh.machine(host)
     arch = remote["uname"]("-m").strip()
-    for bindir in reversed(USER_BINS):
+    for bindir in reversed(_USER_BINS):
         remote.env.path.insert(
             0, remote.cwd / bindir.removeprefix("$HOME/").replace("$(uname -m)", arch)
         )
     return remote
+
+
+def user_path() -> str:
+    """The user's tool directories as a `PATH` prefix, each expanded by the shell that reads it."""
+    return ":".join(_USER_BINS)

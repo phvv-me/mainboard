@@ -128,31 +128,34 @@ class UnreachableStatement(Rule, id="PY-DEAD0002", applicability="review"):
     examples = (
         Example(
             bad=(
-                "def run(value):\n"
-                "    if value:\n"
-                "        return 1\n"
-                '        print("never")\n'
-                "        value += 1\n"
-                "    return 0\n"
+                """def run(value):
+    if value:
+        return 1
+        print("never")
+        value += 1
+    return 0
+"""
             ),
             good="def run(value):\n    if value:\n        return 1\n    return 0\n",
         ),
         Example(
             bad=(
-                "def first(items):\n"
-                "    for item in items:\n"
-                "        if item:\n"
-                "            break\n"
-                "            # never reached\n"
-                "            item.close()\n"
-                "    return None\n"
+                """def first(items):
+    for item in items:
+        if item:
+            break
+            # never reached
+            item.close()
+    return None
+"""
             ),
             good=(
-                "def first(items):\n"
-                "    for item in items:\n"
-                "        if item:\n"
-                "            break\n"
-                "    return None\n"
+                """def first(items):
+    for item in items:
+        if item:
+            break
+    return None
+"""
             ),
         ),
         Example(

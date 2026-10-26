@@ -1,6 +1,6 @@
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from enum import IntEnum, StrEnum, auto
 from pathlib import Path
 from typing import Literal, Self
@@ -88,9 +88,9 @@ class Provenance(IntEnum):
     """Merge competing provenance by max; ANALYSIS includes AI-derived findings."""
 
     DEFAULT = 0
-    IMPORTED = 1
-    ANALYSIS = 2
-    USER_DEFINED = 3
+    IMPORTED = auto()
+    ANALYSIS = auto()
+    USER_DEFINED = auto()
 
 
 class Limitation(FrozenModel):
@@ -111,13 +111,6 @@ class Fact[T](FrozenModel):
     value: T
     confidence: Confidence
     provenance: Provenance
-
-
-class LiftedRef(FrozenModel):
-    tier: str
-    form: str
-    producer: str
-    blob_hash: str
 
 
 class AnalysisProfile(FrozenModel):
@@ -242,6 +235,10 @@ class SassListing(FrozenModel):
     instructions: tuple[SassInsn, ...]
 
     @property
+    def branches(self) -> BranchSummary:
+        return BranchSummary(unresolved=len(self.brx_sites))
+
+    @property
     def brx_sites(self) -> tuple[Address, ...]:
         # BRA/BRX spellings vary by generation; none of these indirect targets is resolved
         # merely because a tool printed the instruction or a register operand.
@@ -250,10 +247,6 @@ class SassListing(FrozenModel):
             for insn in self.instructions
             if insn.opcode.split(".")[0] in {"BRX", "BRXU", "JMX", "JMXU"}
         )
-
-    @property
-    def branches(self) -> BranchSummary:
-        return BranchSummary(unresolved=len(self.brx_sites))
 
 
 class SassResult(FrozenModel):
@@ -289,7 +282,7 @@ class Parsed[T](FrozenModel):
     unresolved: tuple[ResidualUnknown, ...] = ()
 
 
-def coverage_of(values: tuple[Coverage, ...]) -> Coverage:
+def coverage_of(values: Collection[Coverage]) -> Coverage:
     for status in (Coverage.failed, Coverage.truncated, Coverage.partial, Coverage.not_run):
         if status in values:
             return status

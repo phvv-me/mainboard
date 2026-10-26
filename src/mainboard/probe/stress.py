@@ -13,16 +13,17 @@ The framework is imported when a measurement runs, so the probe is importable on
 that carries no accelerator stack and refuses by naming what is missing.
 """
 
-from __future__ import annotations
-
 from enum import StrEnum, auto
 from importlib import import_module
 from statistics import median
 from time import get_clock_info, perf_counter
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from cyclopts import App
 from patos import FrozenModel, FrozenOpenModel
+
+from ..log import logger
+from .machine import Machine
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -98,24 +99,9 @@ class StressReport(FrozenOpenModel):
         return next(rate for rate in self.rates if rate.precision == precision)
 
 
-class Kernels(Protocol):
-    """The device operations a stress measurement times, one framework behind them."""
-
-    def describe(self) -> tuple[str, tuple[int, int], int, int]:
-        """Name, compute capability, multiprocessor count and clock in kHz."""
-
-    def gemm(self, precision: Precision, n: int) -> Callable[[], None]:
-        """A closure running one n by n GEMM at `precision`, or raise when unsupported."""
-
-    def copy(self, path: str, megabytes: int) -> Callable[[], None]:
-        """A closure moving `megabytes` along `path`."""
-
-    def synchronize(self) -> None:
-        """Wait for every queued device operation."""
-
-
 class TorchKernels:
-    """The stress operations through PyTorch, imported when first used."""
+    """The device operations a stress measurement times, through PyTorch imported when first
+    used."""
 
     def __init__(self, device_index: int = 0) -> None:
         self.torch = import_module("torch")
@@ -123,8 +109,19 @@ class TorchKernels:
         self.index = device_index
         self.torch.cuda.set_device(self.device)
 
+    def copy(self, path: str, megabytes: int) -> Callable[[], None]:
+        torch = self.torch
+        count = megabytes << 20
+        device = torch.empty(count, dtype=torch.uint8, device=self.device)
+        if path == "device_to_device":
+            source = torch.empty_like(device)
+            return lambda: device.copy_(source)
+        host = torch.empty(count, dtype=torch.uint8, pin_memory=True)
+        if path == "host_to_device":
+            return lambda: device.copy_(host, non_blocking=True)
+        return lambda: host.copy_(device, non_blocking=True)
+
     def describe(self) -> tuple[str, tuple[int, int], int, int]:
-        from .machine import Machine
 
         properties = self.torch.cuda.get_device_properties(self.index)
         capability = (int(properties.major), int(properties.minor))
@@ -160,18 +157,6 @@ class TorchKernels:
         right = torch.randn(n, n, device=self.device, dtype=dtype)
         return lambda: torch.matmul(left, right)
 
-    def copy(self, path: str, megabytes: int) -> Callable[[], None]:
-        torch = self.torch
-        count = megabytes << 20
-        device = torch.empty(count, dtype=torch.uint8, device=self.device)
-        if path == "device_to_device":
-            source = torch.empty_like(device)
-            return lambda: device.copy_(source)
-        host = torch.empty(count, dtype=torch.uint8, pin_memory=True)
-        if path == "host_to_device":
-            return lambda: device.copy_(host, non_blocking=True)
-        return lambda: host.copy_(device, non_blocking=True)
-
     def synchronize(self) -> None:
         self.torch.cuda.synchronize(self.device)
 
@@ -188,7 +173,7 @@ class Stress:
 
     def __init__(
         self,
-        kernels: Kernels | None = None,
+        kernels: TorchKernels | None = None,
         *,
         n: int = 8192,
         megabytes: int = 256,
@@ -200,6 +185,37 @@ class Stress:
         self.megabytes = megabytes
         self.warmups = warmups
         self.repetitions = repetitions
+
+    def _link(self, path: str) -> Link:
+        seconds = self._timed(self.kernels.copy(path, self.megabytes))
+        moved = (self.megabytes << 20) * (2 if path == "device_to_device" else 1)
+        return Link(path=path, megabytes=self.megabytes, gb_s=moved / seconds / 1e9)
+
+    def _rate(self, precision: Precision) -> Rate:
+        n = self.n // 2 if precision == Precision.FP64 else self.n
+        try:
+            seconds = self._timed(self.kernels.gemm(precision, n))
+        except (RuntimeError, AttributeError, KeyError) as error:
+            return Rate(precision=precision, n=n, supported=False, note=str(error).splitlines()[0])
+        return Rate(precision=precision, n=n, seconds=seconds, tflops=2 * n**3 / seconds / 1e12)
+
+    def _timed(self, call: Callable[[], None]) -> float:
+        """The median wall time of `call` over the timed repetitions, device synchronized.
+
+        Never below one tick of the clock: a call shorter than that reads as zero,
+        and a rate divided by it would be infinite rather than merely unmeasurable.
+        """
+        for _ in range(self.warmups):
+            call()
+        self.kernels.synchronize()
+        timings = []
+        for _ in range(self.repetitions):
+            self.kernels.synchronize()
+            begin = perf_counter()
+            call()
+            self.kernels.synchronize()
+            timings.append(perf_counter() - begin)
+        return max(median(timings), get_clock_info("perf_counter").resolution)
 
     def measure(self) -> StressReport:
         """Time every precision and copy path, answering the report."""
@@ -223,37 +239,6 @@ class Stress:
             seconds=perf_counter() - start,
         )
 
-    def _rate(self, precision: Precision) -> Rate:
-        n = self.n // 2 if precision == Precision.FP64 else self.n
-        try:
-            seconds = self._timed(self.kernels.gemm(precision, n))
-        except (RuntimeError, AttributeError, KeyError) as error:
-            return Rate(precision=precision, n=n, supported=False, note=str(error).splitlines()[0])
-        return Rate(precision=precision, n=n, seconds=seconds, tflops=2 * n**3 / seconds / 1e12)
-
-    def _link(self, path: str) -> Link:
-        seconds = self._timed(self.kernels.copy(path, self.megabytes))
-        moved = (self.megabytes << 20) * (2 if path == "device_to_device" else 1)
-        return Link(path=path, megabytes=self.megabytes, gb_s=moved / seconds / 1e9)
-
-    def _timed(self, call: Callable[[], None]) -> float:
-        """The median wall time of `call` over the timed repetitions, device synchronized.
-
-        Never below one tick of the clock: a call shorter than that reads as zero,
-        and a rate divided by it would be infinite rather than merely unmeasurable.
-        """
-        for _ in range(self.warmups):
-            call()
-        self.kernels.synchronize()
-        timings = []
-        for _ in range(self.repetitions):
-            self.kernels.synchronize()
-            begin = perf_counter()
-            call()
-            self.kernels.synchronize()
-            timings.append(perf_counter() - begin)
-        return max(median(timings), get_clock_info("perf_counter").resolution)
-
 
 app = App(name="stress", help="Measure this device's achieved rates and print the report JSON.")
 
@@ -266,7 +251,9 @@ def main(*, device: int = 0, n: int = 8192, repetitions: int = 5) -> None:
     n: the square GEMM side.
     repetitions: timed calls per measurement.
     """
-    print(Stress(TorchKernels(device), n=n, repetitions=repetitions).measure().model_dump_json())
+    logger.result(
+        Stress(TorchKernels(device), n=n, repetitions=repetitions).measure().model_dump_json()
+    )
 
 
 if __name__ == "__main__":

@@ -81,13 +81,19 @@ class RawBarrierOverCooperativeGroups(Rule, id="CU-LAUN0001", applicability="rev
     examples = (
         Example(
             bad=(
-                "__global__ void scale(float* values) {\n    values[threadIdx.x] *= 2.0f;\n"
-                "    __syncthreads();\n}\n"
+                """__global__ void scale(float* values) {
+    values[threadIdx.x] *= 2.0f;
+    __syncthreads();
+}
+"""
             ),
             good=(
-                "#include <cooperative_groups.h>\n__global__ void scale(float* values) {\n"
-                "    values[threadIdx.x] *= 2.0f;\n"
-                "    cooperative_groups::this_thread_block().sync();\n}\n"
+                """#include <cooperative_groups.h>
+__global__ void scale(float* values) {
+    values[threadIdx.x] *= 2.0f;
+    cooperative_groups::this_thread_block().sync();
+}
+"""
             ),
         ),
     )

@@ -9,7 +9,8 @@ from patos import FrozenModel
 from ...context.plan import ExecutionPlan
 from ...core.project import Project
 from ...runtime.job import Job, PrefixActivation, ToolCall, WorkspaceActivation
-from ..shared import (
+from .. import wrapping
+from ..constants import (
     ATTEMPT_VAR,
     CHECKPOINT_VAR,
     CLOSURE_VAR,
@@ -18,9 +19,9 @@ from ..shared import (
     DIGEST_VAR,
     FIRST_PARTY_VAR,
     SOURCE_VAR,
-    state_dir,
 )
-from ..wrapping import USER_BINS, absent, activation, missing
+from ..shared import state_dir
+from ..wrapping import absent, activation, missing
 
 
 class JobSpec(FrozenModel):
@@ -42,9 +43,6 @@ class JobSpec(FrozenModel):
     pythonpath: explicit `PYTHONPATH`, empty for an isolated default. A dispatch fills it with
         the pinned tree's import roots, so an editable workspace package is imported from the
         snapshot rather than the mirror the shared prefix's editable install points at.
-    isolate_pythonpath: drop the submitting shell's `PYTHONPATH` so imports come only from the
-        job's environment; False keeps it for a caller relying on it. An explicit `pythonpath`
-        replaces it outright, isolated the same way.
     container: the argv that runs `cmd` inside a container runtime, empty for a bare command.
     prefix: the built environment to activate, addressed by the manifest and lock content it
         was dispatched with, entered as is with nothing asked to reconcile it; empty enters the
@@ -81,7 +79,6 @@ class JobSpec(FrozenModel):
     account: str = ""
     mem_gb: int | None = None
     pythonpath: str = ""
-    isolate_pythonpath: bool = True
     container: tuple[str, ...] = ()
     prefix: str = ""
     provide: ToolCall | None = None
@@ -97,7 +94,55 @@ class JobSpec(FrozenModel):
     attempt: int = 1
     exports: dict[str, str] = {}
 
-    def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
+    def activation(self) -> PrefixActivation | WorkspaceActivation:
+        """The environment the job enters: its addressed prefix, or the workspace's own."""
+        if self.prefix:
+            return PrefixActivation(
+                prefix=self.prefix,
+                env=self.plan.env,
+                refusal=absent(self.prefix, env=self.plan.env),
+            )
+        installed = self.plan.prefix(self.root)
+        return WorkspaceActivation(
+            script=activation(self.root, env=self.plan.env),
+            prefix=installed,
+            refusal=missing(self.plan, installed),
+        )
+
+    def directives(self) -> list[str]:
+        """The `#PBS` header lines: queue, chunk, walltime, group and merged output."""
+        ngpus = f":ngpus={self.gpus}" if self.gpus else ""
+        mem = f":mem={self.mem_gb}gb" if self.mem_gb else ""
+        return [
+            f"#PBS -q {self.queue}",
+            f"#PBS -l select={self.select}{ngpus}{mem}",
+            f"#PBS -l walltime={self.walltime}",
+            *([f"#PBS -W group_list={self.account}"] if self.account else []),
+            "#PBS -j oe",
+        ]
+
+    def job(self, *, pbs: bool) -> Job:
+        """The record the host's tool runs.
+
+        Under `pbs`, the output goes to the log and exit artifact a later poll reads. The runner
+        enforces the walltime everywhere: a queue that also enforces it kills first, and a held
+        line, which no queue bounds per job, relies on it.
+        """
+        return Job(
+            command=self.cmd,
+            root=self.root,
+            activation=self.activation(),
+            container=self.container,
+            walltime=self.walltime,
+            logs=f"{self.root}/{state_dir()}/logs" if pbs else "",
+            pythonpath=self.pythonpath,
+            variables=self.variables(),
+            provide=self.provide,
+            attestation=self.attestation,
+            sampler=self.sampler,
+        )
+
+    def render(self, *, pbs: bool) -> str:
         """The POSIX `sh` script: the `#PBS` header when `pbs`, then `exec` of the host's tool.
 
         The job record travels inline, so a scheduler feeding the script on stdin runs it as
@@ -107,8 +152,6 @@ class JobSpec(FrozenModel):
         server later purges can still be autopsied; `-j oe` merges the streams PBS spools.
 
         pbs: render the PBS header and hand PBS the output and walltime.
-        gpu_in_select: put `ngpus` in the `select=` chunk (with `mem=NNgb` when `mem_gb` is set);
-            some GPU queues hand out the GPU with the queue and reject an explicit `ngpus`.
         """
         if pbs and not self.walltime:
             raise ValueError(
@@ -116,48 +159,16 @@ class JobSpec(FrozenModel):
                 "defaults before rendering"
             )
         record = shlex.quote(self.job(pbs=pbs).model_dump_json())
-        handover = f'PATH="{":".join(USER_BINS)}:$PATH" exec {Project().package} execute {record}'
+        bins = wrapping.user_path()
+        handover = f'PATH="{bins}:$PATH" exec {Project().package} execute {record}'
         lines = [
             "#!/bin/sh",
-            *(self.directives(gpu_in_select=gpu_in_select) if pbs else ()),
+            *(self.directives() if pbs else ()),
             f"# A {Project().package} job. The record below is what runs; this line hands it "
             "over.",
             handover,
         ]
         return "\n".join(lines) + "\n"
-
-    def job(self, *, pbs: bool) -> Job:
-        """The record the host's tool runs; under `pbs`, the output goes to the log and exit
-        artifact a later poll reads. The runner enforces the walltime everywhere: a queue that
-        also enforces it kills first, and a held line, which no queue bounds per job, relies on
-        it."""
-        return Job(
-            command=self.cmd,
-            root=self.root,
-            activation=self.activation(),
-            container=self.container,
-            walltime=self.walltime,
-            logs=f"{self.root}/{state_dir()}/logs" if pbs else "",
-            pythonpath=self.pythonpath,
-            isolate_pythonpath=self.isolate_pythonpath,
-            variables=self.variables(),
-            provide=self.provide,
-            attestation=self.attestation,
-            sampler=self.sampler,
-        )
-
-    def activation(self) -> PrefixActivation | WorkspaceActivation:
-        """The environment the job enters: its addressed prefix, or the workspace's own."""
-        if self.prefix:
-            return PrefixActivation(
-                prefix=self.prefix, env=self.plan.env, refusal=absent(self.prefix, self.plan.env)
-            )
-        installed = self.plan.prefix(self.root)
-        return WorkspaceActivation(
-            script=activation(self.root, env=self.plan.env),
-            prefix=installed,
-            refusal=missing(self.plan, installed),
-        )
 
     def variables(self) -> dict[str, str]:
         """The provenance the job exports, then the host profile's exports over it."""
@@ -178,15 +189,3 @@ class JobSpec(FrozenModel):
             for name in variable.names
         }
         return exported | self.exports
-
-    def directives(self, *, gpu_in_select: bool) -> list[str]:
-        """The `#PBS` header lines: queue, chunk, walltime, group and merged output."""
-        ngpus = f":ngpus={self.gpus}" if self.gpus and gpu_in_select else ""
-        mem = f":mem={self.mem_gb}gb" if self.mem_gb else ""
-        return [
-            f"#PBS -q {self.queue}",
-            f"#PBS -l select={self.select}{ngpus}{mem}",
-            f"#PBS -l walltime={self.walltime}",
-            *([f"#PBS -W group_list={self.account}"] if self.account else []),
-            "#PBS -j oe",
-        ]

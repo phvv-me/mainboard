@@ -1,0 +1,63 @@
+"""Durable provider creation, before a handle or an SSH endpoint exists."""
+
+from patos import FrozenModel, Runtime
+
+from ...core.errors import MissionError
+from ...log import logger
+from ..jobs import vocabulary
+from ..state.cache import Cache, RunRecord
+from .lease import Lease
+
+
+class Allocation(FrozenModel):
+    """One reserved request and the mandatory provider creation checkpoints."""
+
+    cache: Runtime[Cache]
+    record: RunRecord
+
+    @property
+    def label(self) -> str:
+        """The unique label retained locally and sent with the provider's create request."""
+        return self.record.creation
+
+    def begin(self, *, lease: Lease | None = None) -> None:
+        """Persist the uncertain API boundary before sending a create request."""
+        self.cache.creations.prepared(self.record, vocabulary.Word.SUBMITTING, lease=lease)
+
+    def created(self, handle: str) -> str:
+        """Attach the returned handle atomically, before waiting or running another API call."""
+        if not handle or handle == "None":
+            raise MissionError(
+                f"provider returned no handle for {self.label}; reconcile its label"
+            )
+        logger.info("provider creation {} -> {}", self.label, handle)
+        self.cache.creations.bind(self.record, handle)
+        return handle
+
+    def interrupted(self) -> None:
+        """Only a request that never crossed the API boundary is known not to have created."""
+        current = self.cache.creations.named(self.label, target=self.record.target)
+        if current.verdict == vocabulary.Word.PREPARED:
+            self.cache.creations.prepared(current, vocabulary.Word.FAILED)
+        elif current.verdict == vocabulary.Word.SUBMITTING:
+            logger.error(
+                "creation {} has no confirmed provider handle; reconcile this exact label "
+                "before retrying, because the request may have allocated a billable instance",
+                self.label,
+            )
+        elif (
+            current.verdict not in vocabulary.Word.settled() and current.evidence == "not_started"
+        ):
+            self.cache.resolve(current, vocabulary.Word.FAILED, None, vocabulary.Word.FAILED)
+
+    def refused(self) -> None:
+        """The provider refused the create, so this request allocated nothing.
+
+        A 4xx on create is the provider declining the request before any instance exists, the
+        one outcome that lets a request past the API boundary stand as prepared again, for
+        another offer or for `interrupted` to close; anything ambiguous stays `submitting` for a
+        reconciliation by label.
+        """
+        current = self.cache.creations.named(self.label, target=self.record.target)
+        if current.verdict == vocabulary.Word.SUBMITTING:
+            self.cache.creations.reopen(current)

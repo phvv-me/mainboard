@@ -8,12 +8,10 @@ from typing import TYPE_CHECKING
 import psutil
 from patos import FrozenModel
 
+from ..proc import Exit
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
-
-# The exit codes a command did not choose: the shell's words for "not found" and "timed out".
-MISSING = 127
-TIMED_OUT = 124
 
 
 class Outcome(FrozenModel):
@@ -54,6 +52,23 @@ class Invocation(FrozenModel):
     env: str
     timeout: float
 
+    @staticmethod
+    def _kill(process: subprocess.Popen[bytes]) -> None:
+        """Kill `process` and every descendant, which keep its output pipe open until they die."""
+        for child in psutil.Process(process.pid).children(recursive=True):
+            with suppress(psutil.NoSuchProcess):
+                child.kill()
+        process.kill()
+
+    def _outcome(self, code: int, started: float, output: str) -> Outcome:
+        return Outcome(
+            step=self.step,
+            owner=self.owner,
+            code=code,
+            seconds=time.monotonic() - started,
+            output=output,
+        )
+
     def run(self, environment: Mapping[str, str]) -> Outcome:
         """Run the command under `environment`, stopping it and its children at the deadline.
 
@@ -66,7 +81,9 @@ class Invocation(FrozenModel):
         executable = shutil.which(self.argv[0], path=environment.get("PATH"))
         if executable is None:
             return self._outcome(
-                MISSING, started, f"{self.argv[0]} is not on the {self.env} environment's PATH"
+                Exit.MISSING,
+                started,
+                f"{self.argv[0]} is not on the {self.env} environment's PATH",
             )
         process = subprocess.Popen(
             [executable, *self.argv[1:]],
@@ -79,27 +96,12 @@ class Invocation(FrozenModel):
         try:
             output, _ = process.communicate(timeout=self.timeout)
         except subprocess.TimeoutExpired:
-            _kill(process)
+            Invocation._kill(process)
             output, _ = process.communicate()
             said = output.decode(errors="replace")
             return self._outcome(
-                TIMED_OUT, started, f"{said}\n{self.step} exceeded its {self.timeout:g}s deadline"
+                Exit.TIMED_OUT,
+                started,
+                f"{said}\n{self.step} exceeded its {self.timeout:g}s deadline",
             )
         return self._outcome(process.returncode, started, output.decode(errors="replace"))
-
-    def _outcome(self, code: int, started: float, output: str) -> Outcome:
-        return Outcome(
-            step=self.step,
-            owner=self.owner,
-            code=code,
-            seconds=time.monotonic() - started,
-            output=output,
-        )
-
-
-def _kill(process: subprocess.Popen[bytes]) -> None:
-    """Kill `process` and every descendant, which keep its output pipe open until they die."""
-    for child in psutil.Process(process.pid).children(recursive=True):
-        with suppress(psutil.NoSuchProcess):
-            child.kill()
-    process.kill()

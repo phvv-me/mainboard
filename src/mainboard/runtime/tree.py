@@ -19,18 +19,6 @@ import psutil
 _UNBOUNDED = (1 << 20, 92160, 10240)
 
 
-def _raise(hard: int) -> None:
-    """Lift the soft file limit to `hard`, or where that is unbounded to the largest the kernel
-    grants, keeping the current one when it grants none of them."""
-    asked = (hard,) if hard != resource.RLIM_INFINITY else _UNBOUNDED
-    for soft in asked:
-        try:
-            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
-        except ValueError, OSError:
-            continue
-        return
-
-
 class FileBudget:
     """Share the permitted file limit across overlapping operations, restoring it last."""
 
@@ -44,15 +32,32 @@ class FileBudget:
         with cls._lock:
             if cls._holders == 0:
                 cls._original = resource.getrlimit(resource.RLIMIT_NOFILE)
-                _raise(cls._original[1])
+                FileBudget._raise(cls._original[1])
             cls._holders += 1
         try:
             yield
         finally:
-            with cls._lock:
-                cls._holders -= 1
-                if cls._holders == 0:
-                    resource.setrlimit(resource.RLIMIT_NOFILE, cls._original)
+            cls._release()
+
+    @classmethod
+    def _release(cls) -> None:
+        """Give up one hold, restoring the original limit when it was the last."""
+        with cls._lock:
+            cls._holders -= 1
+            if cls._holders == 0:
+                resource.setrlimit(resource.RLIMIT_NOFILE, cls._original)
+
+    @staticmethod
+    def _raise(hard: int) -> None:
+        """Lift the soft file limit to `hard`, or to the kernel's largest where that is unbounded.
+
+        The current limit stays when the kernel grants none of them.
+        """
+        asked = (hard,) if hard != resource.RLIM_INFINITY else _UNBOUNDED
+        for soft in asked:
+            with suppress(ValueError, OSError):
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+                return
 
 
 class ProcessTree:
@@ -65,23 +70,15 @@ class ProcessTree:
         self.process = process
         self.grace = grace
 
-    def wait(self, timeout: float | None = None) -> int | None:
-        """The command's exit status, None when `timeout` seconds (None for no limit) pass first.
+    def _members(self) -> list[psutil.Process]:
+        """The command and every living descendant, read before any is signalled.
 
-        A signal N reports `128 + N`, as a shell would, so an exit code reads the same whether a
-        shell or this runner started the command.
+        Ending a parent reparents its children out of reach.
         """
-        try:
-            returned = self.process.wait(timeout)
-        except subprocess.TimeoutExpired:
-            return None
-        return 128 - returned if returned < 0 else returned
-
-    def terminate(self) -> None:
-        """Ask the whole tree to stop with SIGTERM."""
-        for member in self._members():
-            with suppress(psutil.NoSuchProcess):
-                member.terminate()
+        with suppress(psutil.NoSuchProcess):
+            root = psutil.Process(self.process.pid)
+            return [*root.children(recursive=True), root]
+        return []
 
     def kill(self) -> None:
         for member in self._members():
@@ -100,11 +97,20 @@ class ProcessTree:
         self.wait()
         return True
 
-    def _members(self) -> list[psutil.Process]:
-        """The command and every living descendant, read before any is signalled, since ending a
-        parent reparents its children out of reach."""
+    def terminate(self) -> None:
+        """Ask the whole tree to stop with SIGTERM."""
+        for member in self._members():
+            with suppress(psutil.NoSuchProcess):
+                member.terminate()
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        """The command's exit status, None when `timeout` seconds (None for no limit) pass first.
+
+        A signal N reports `128 + N`, as a shell would, so an exit code reads the same whether a
+        shell or this runner started the command.
+        """
         try:
-            root = psutil.Process(self.process.pid)
-            return [*root.children(recursive=True), root]
-        except psutil.NoSuchProcess:
-            return []
+            returned = self.process.wait(timeout)
+        except subprocess.TimeoutExpired:
+            return None
+        return 128 - returned if returned < 0 else returned

@@ -2,11 +2,11 @@
 # it, dispatch it, and watch every target in one view. `receipts` holds the event contract the
 # whole flow publishes through and is the one place those shapes are written down.
 
-from .estimate import BatchEstimate, Estimator, JobEstimate, platform
-from .receipts import Event, Topic
+from .estimate.core import BatchEstimate, Estimator, JobEstimate, platform
+from .estimate.transfer import Transfer, TransferSet
+from .receipts import Event, Journal, Topic, publish
 from .runner import Batch
 from .spec import BatchSpec, Selection
-from .transfer import Transfer, TransferSet
 from .watch import BatchStatus, Watch
 
 __all__ = [
@@ -17,10 +17,12 @@ __all__ = [
     "Estimator",
     "Event",
     "JobEstimate",
+    "Journal",
     "Selection",
     "Topic",
     "Transfer",
     "TransferSet",
     "Watch",
     "platform",
+    "publish",
 ]

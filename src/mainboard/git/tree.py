@@ -1,10 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
-from .check import Check
-from .commit import Commit
-from .pull import Pull
-from .push import Push
+from .operations.check import Check
+from .operations.commit import Commit
+from .operations.pull import Pull
+from .operations.push import Push
 from .repo import Repo
 from .report import Outcome, RepoState, Step
 
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
-    from ..manifest.schema.git import GitPolicy
+    from ..manifest.schema.project.git import GitPolicy
     from .report import Finding
 
 # How many repositories talk to their remotes at once. A fetch is mostly waiting, so the tree's
@@ -37,77 +37,15 @@ class Tree:
         self.policy = policy
         self.root = Repo(root, owns=self._owns)
 
-    def owned(self) -> list[Repo]:
-        """Every checked-out owned repository, each parent before its submodules."""
-        return list(self._descend(self.root))
-
-    def status(self) -> list[RepoState]:
-        """One row per owned repository, read from what this machine already knows."""
-        with ThreadPoolExecutor(max_workers=_FETCHERS) as pool:
-            return list(pool.map(self._state, self.owned()))
-
-    def pull(self) -> list[Step]:
-        """Fast-forward every owned repository and bring submodule checkouts along."""
-        return Pull(self).run()
-
-    def commit(
-        self, messages: Sequence[str], paths: Sequence[Path] = (), *, everything: bool = False
-    ) -> list[Step]:
-        """Commit the named paths (each repository's index when none), submodules before the
-        pointers to them; `everything` sweeps every change instead. See `Commit` for messages."""
-        return Commit(self, messages, paths, everything=everything).run()
-
-    def push(self) -> list[Step]:
-        """Push every owned repository, submodules before the parents that point at them."""
-        return Push(self).run()
-
-    def check(self) -> list[Finding]:
-        """Every inconsistency in the tree, an empty list for a tree safe to clone."""
-        return Check(self).run()
-
-    def fetch(self, repos: Sequence[Repo]) -> dict[str, str]:
-        """Fetch `repos` at once, returning git's complaint for each failure.
-
-        A fetch writes only remote-tracking refs, so a foreign checkout is left as it was.
-        """
-        with ThreadPoolExecutor(max_workers=_FETCHERS) as pool:
-            complaints = list(pool.map(Repo.fetch, repos))
-        return {
-            repo.name: complaint
-            for repo, complaint in zip(repos, complaints, strict=True)
-            if complaint
-        }
-
-    def upward(self, verb: str, act: Callable[[Repo], Step], *, hold: bool = True) -> list[Step]:
-        """`act` on every owned repository bottom-up, holding each parent of one that did not.
-
-        verb: what the held step says the submodule did not do.
-        hold: whether a submodule that did not get there holds its parent; a parent acting only
-            on what it was asked about, never the stuck submodule's pointer, need not wait.
-        """
-        steps: list[Step] = []
-        stuck: set[str] = set()
-        for repo in reversed(self.owned()):
-            blocked = [child.name for child in repo.children if hold and child.name in stuck]
-            step = (
-                Step(repo=repo.name, outcome=Outcome.HELD, detail=f"{blocked[0]} did not {verb}")
-                if blocked
-                else act(repo)
-            )
-            if not step.outcome.settled:
-                stuck.add(repo.name)
-            steps.append(step)
-        return steps
-
-    def _owns(self, owner: str) -> bool:
-        return self.policy.owns(owner, self.root.owner)
-
     def _descend(self, repo: Repo) -> Iterator[Repo]:
         if not (repo.initialized and repo.owned):
             return
         yield repo
         for child in repo.children:
             yield from self._descend(child)
+
+    def _owns(self, owner: str) -> bool:
+        return self.policy.owns(owner, root_owner=self.root.owner)
 
     def _state(self, repo: Repo) -> RepoState:
         head = repo.head()
@@ -129,3 +67,68 @@ class Tree:
             published=upstream if upstream in homes else next(iter(homes), ""),
             broken=repo.unreadable(),
         )
+
+    def check(self) -> list[Finding]:
+        """Every inconsistency in the tree, an empty list for a tree safe to clone."""
+        return Check(self).run()
+
+    def commit(
+        self, messages: Sequence[str], paths: Sequence[Path] = (), *, everything: bool = False
+    ) -> list[Step]:
+        """Commit the named paths, submodules before the pointers to them.
+
+        Without paths each repository's index is committed, and `everything` sweeps every change
+        instead. See `Commit` for messages.
+        """
+        return Commit(self, messages, paths, everything=everything).run()
+
+    def fetch(self, repos: Sequence[Repo]) -> dict[str, str]:
+        """Fetch `repos` at once, returning git's complaint for each failure.
+
+        A fetch writes only remote-tracking refs, so a foreign checkout is left as it was.
+        """
+        with ThreadPoolExecutor(max_workers=_FETCHERS) as pool:
+            complaints = list(pool.map(Repo.fetch, repos))
+        return {
+            repo.name: complaint
+            for repo, complaint in zip(repos, complaints, strict=True)
+            if complaint
+        }
+
+    def owned(self) -> list[Repo]:
+        """Every checked-out owned repository, each parent before its submodules."""
+        return list(self._descend(self.root))
+
+    def pull(self) -> list[Step]:
+        """Fast-forward every owned repository and bring submodule checkouts along."""
+        return Pull(self).run()
+
+    def push(self) -> list[Step]:
+        """Push every owned repository, submodules before the parents that point at them."""
+        return Push(self).run()
+
+    def status(self) -> list[RepoState]:
+        """One row per owned repository, read from what this machine already knows."""
+        with ThreadPoolExecutor(max_workers=_FETCHERS) as pool:
+            return list(pool.map(self._state, self.owned()))
+
+    def upward(self, verb: str, act: Callable[[Repo], Step], *, hold: bool = True) -> list[Step]:
+        """`act` on every owned repository bottom-up, holding each parent of one that did not.
+
+        verb: what the held step says the submodule did not do.
+        hold: whether a submodule that did not get there holds its parent; a parent acting only
+            on what it was asked about, never the stuck submodule's pointer, need not wait.
+        """
+        steps: list[Step] = []
+        stuck: set[str] = set()
+        for repo in reversed(self.owned()):
+            blocked = [child.name for child in repo.children if hold and child.name in stuck]
+            step = (
+                Step(repo=repo.name, outcome=Outcome.HELD, detail=f"{blocked[0]} did not {verb}")
+                if blocked
+                else act(repo)
+            )
+            if not step.outcome.settled:
+                stuck.add(repo.name)
+            steps.append(step)
+        return steps

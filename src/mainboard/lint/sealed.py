@@ -20,18 +20,6 @@ class Sealed:
     root: the workspace root, where the search up from a file stops.
     """
 
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self._registered = cache(self._registers)
-
-    def holds(self, path: Path) -> bool:
-        """Whether `path` is sealed by a registered node above it."""
-        return any(
-            self._registered(directory)
-            for directory in (path.parent, *path.parent.parents)
-            if directory.is_relative_to(self.root)
-        )
-
     @staticmethod
     def _registers(directory: Path) -> bool:
         """Whether `directory`'s node declares a seal other than the placeholder."""
@@ -44,3 +32,15 @@ class Sealed:
         closing = next((i for i, line in enumerate(lines[1:], 1) if line.rstrip() == _FENCE), 0)
         found = _SEAL.search("\n".join(lines[1:closing]))
         return found is not None and set(found["digest"]) != {"0"}
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._registered = cache(self._registers)
+
+    def holds(self, path: Path) -> bool:
+        """Whether `path` is sealed by a registered node above it."""
+        return any(
+            self._registered(directory)
+            for directory in (path.parent, *path.parent.parents)
+            if directory.is_relative_to(self.root)
+        )

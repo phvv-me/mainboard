@@ -4,6 +4,8 @@ from statistics import fmean
 
 from patos import FrozenModel
 
+from ..log import logger
+
 
 class BenchSample(FrozenModel):
     """Timing of one callable.
@@ -76,5 +78,7 @@ def compare[T, S](
     )
     width = max((len(s.label) for s in samples), default=4)
     for sample in samples:
-        print(f"{sample.label:{width}s}  {sample.mean_us:10.3f} us  (min {sample.min_us:.3f})")
+        logger.result(
+            f"{sample.label:{width}s}  {sample.mean_us:10.3f} us  (min {sample.min_us:.3f})"
+        )
     return samples

@@ -16,14 +16,6 @@ class Spec(FlexModel):
 
     version: str = "*"
 
-    @property
-    def is_editable(self) -> bool:
-        return bool((self.model_extra or {}).get("editable"))
-
-    @property
-    def is_path(self) -> bool:
-        return "path" in (self.model_extra or {})
-
     @model_validator(mode="before")
     @classmethod
     def from_bare_string(cls, value: Json) -> Json:
@@ -31,6 +23,14 @@ class Spec(FlexModel):
         if isinstance(value, str):
             return {"version": value}
         return value
+
+    @property
+    def is_editable(self) -> bool:
+        return bool((self.model_extra or {}).get("editable"))
+
+    @property
+    def is_path(self) -> bool:
+        return "path" in (self.model_extra or {})
 
     def merged(self, over: Self) -> Self:
         """This spec layered over `over`, later keys winning key-by-key.

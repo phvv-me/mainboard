@@ -15,7 +15,7 @@ checker. The worker gets the budget less 30 seconds reserved for launch, preflig
 
 ```sh
 sh integration/gates/run.sh suite --report /tmp/m07-gate
-sh integration/gates/run.sh target --budget 90 integration/test_dead_host.py
+sh integration/gates/run.sh target --budget 90 integration/dispatch/test_dead_host.py
 sh integration/gates/run.sh mcmr
 ```
 

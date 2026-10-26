@@ -1,7 +1,6 @@
 """Portable, staged collection of project-owned evidence through existing OpenSSH."""
 
 import base64
-import hashlib
 import json
 import os
 import shutil
@@ -11,7 +10,7 @@ from contextlib import contextmanager, suppress
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
-from zipfile import ZipFile
+from zipfile import ZipFile, ZipInfo
 
 import psutil
 from filelock import FileLock
@@ -20,22 +19,11 @@ from ...core.project import Project
 from ...log import logger
 from ...state.evidence import Evidence
 from ...state.lake import Lake
+from ...trials.artifacts import relative_path
+from ..provenance import blob_of
 from ..state.digests import KeptDigests
-from ..transport import SshTransport
+from ..transport.core import SshTransport
 from .pack import HELD
-
-
-def relative_path(value: str) -> PurePosixPath:
-    """`value` checked as a portable project-relative path, the trials package's rule; imported
-    on use, since that package loads a dataframe engine no other verb needs."""
-    from ...trials.artifacts import relative_path as checked
-
-    return checked(value)
-
-
-def _sha256(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 class Collector:
@@ -48,9 +36,25 @@ class Collector:
     reader that needs its path.
     """
 
-    def __init__(self, root: Path, transport: SshTransport | None = None) -> None:
-        self.root = root.resolve()
-        self.transport = transport or SshTransport()
+    @cached_property
+    def evidence(self) -> Evidence:
+        return Evidence(Lake.at(self.root))
+
+    @contextmanager
+    def _staging(self) -> Generator[Path]:
+        """Yield a fresh staging directory under the generated `tmp`, named by this process.
+
+        It sits on the tree's filesystem. One a killed or timed-out pass left, its process gone,
+        is cleared first, never one a live pass is using.
+        """
+        parent = Project().out(self.root) / "tmp"
+        parent.mkdir(parents=True, exist_ok=True)
+        for stale in parent.glob("collect-*"):
+            with suppress(ValueError, IndexError):
+                if not psutil.pid_exists(int(stale.name.split("-")[1])):
+                    shutil.rmtree(stale, ignore_errors=True)
+        with TemporaryDirectory(prefix=f"collect-{os.getpid()}-", dir=parent) as temporary:
+            yield Path(temporary)
 
     @property
     def digests(self) -> str:
@@ -61,9 +65,123 @@ class Collector:
             .as_posix()
         )
 
-    @cached_property
-    def evidence(self) -> Evidence:
-        return Evidence(Lake.at(self.root))
+    @staticmethod
+    def _extract(archive: Path, *, staged: Path, scope: PurePosixPath) -> dict[str, str]:
+        """Check every path and ZIP checksum in staging before anything is kept.
+
+        Answers what the host left unsent, by path.
+        """
+        with ZipFile(archive) as source:
+            entries = source.infolist()
+            for entry in entries:
+                if entry.filename != HELD:
+                    Collector._unpacked(source, entry, staged=staged, scope=scope)
+            held: dict[str, str] = next(
+                (json.loads(source.read(e)) for e in reversed(entries) if e.filename == HELD), {}
+            )
+        for name in held:
+            if not relative_path(name).is_relative_to(scope):
+                raise ValueError(f"unexpected collection entry: {name}")
+        return held
+
+    @staticmethod
+    def _unpacked(source: ZipFile, entry: ZipInfo, *, staged: Path, scope: PurePosixPath) -> None:
+        """Write one archived file into staging, refusing one outside `scope` or seen twice."""
+        relative = relative_path(entry.filename)
+        if not relative.is_relative_to(scope) or entry.is_dir():
+            raise ValueError(f"unexpected collection entry: {relative}")
+        target = staged / relative
+        if target.exists():
+            raise ValueError(f"duplicate collection entry: {relative}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with source.open(entry) as incoming, target.open("xb") as output:
+            shutil.copyfileobj(incoming, output)
+
+    def __init__(self, root: Path, transport: SshTransport | None = None) -> None:
+        self.root = root.resolve()
+        self.transport = transport or SshTransport()
+
+    def _diverging(
+        self,
+        relative: str,
+        files: Mapping[str, Path],
+        *,
+        held: Mapping[str, str],
+        kept: Mapping[str, str],
+    ) -> str:
+        """The blob offered at `relative` when the center holds other bytes there, else empty.
+
+        A destination outside the workspace is refused.
+        """
+        target = self.root / relative
+        if not target.resolve().is_relative_to(self.root):
+            raise ValueError(f"collection destination escapes workspace: {target}")
+        expected = blob_of(target) if target.is_file() else kept.get(relative)
+        offered = held.get(relative) or blob_of(files[relative])
+        return "" if expected is None or expected == offered else offered
+
+    def _divert(
+        self,
+        files: Mapping[str, Path],
+        held: Mapping[str, str],
+        *,
+        scope: PurePosixPath,
+        staged: Path,
+        kept: Mapping[str, str],
+    ) -> dict[str, str]:
+        """Keep every path the center already holds as it is, and keep what differs beside it.
+
+        The same path with other bytes (a second registration writing the same file names) used to
+        refuse the whole transfer, which left every other file of the run, its receipts included,
+        on the host and the job blocked. The center's copy still wins its path, the tree's first,
+        else the lake's, and a byte-identical copy is no conflict. A divergent file that was sent
+        moves in staging to `<scope>/.conflicts/<sha8>/<its path under scope>` and is kept there; a
+        divergent file the host left unsent (the lake holds its bytes elsewhere) is not adopted at
+        this path. Answers the paths still to adopt, and warns with how many diverged.
+        """
+        diverged = 0
+        remaining = dict(held)
+        for relative in [*files, *held]:
+            if not (offered := self._diverging(relative, files, held=held, kept=kept)):
+                continue
+            diverged += 1
+            if relative in files:
+                inside = PurePosixPath(relative).relative_to(scope)
+                aside = staged / scope / ".conflicts" / offered[:8] / inside
+                aside.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(files[relative], aside)
+            remaining.pop(relative, None)
+        if diverged:
+            logger.warning(
+                "{} path(s) under {} hold other bytes here than on the host: the center's copy "
+                "kept its path, the host's is under {}/.conflicts/<sha8>/",
+                diverged,
+                scope,
+                scope,
+            )
+        return remaining
+
+    def _kept(self, relative: PurePosixPath) -> dict[str, str]:
+        """The digest the workspace lake indexes for each path under `relative`.
+
+        A host sends none of those paths again, nor any file holding one of those digests.
+        """
+        return {row.path: row.sha256 for row in self.evidence.indexed(relative.as_posix())}
+
+    def _local(self, relative: PurePosixPath, *, kept: Mapping[str, str]) -> dict[str, str]:
+        """Digest each file the tree holds under `relative` unless the lake indexes it as is.
+
+        A byte-identical remote copy of one is then not shipped again.
+        """
+        digests = KeptDigests(self.root, "collection")
+        found = {
+            key: digests.of(str(path), key=key)
+            for path in (self.root / relative).rglob("*")
+            if not path.is_symlink() and path.is_file()
+            for key in (path.relative_to(self.root).as_posix(),)
+        }
+        digests.save()
+        return {key: digest for key, digest in found.items() if kept.get(key) != digest}
 
     def merge(self, archive: Path, *, path: str) -> int:
         """Validate the transfer, then keep it in the lake; how many paths are new to the center.
@@ -88,12 +206,8 @@ class Collector:
                 held = self._divert(
                     files, held, scope=scope, staged=staged, kept=self._kept(scope)
                 )
-                files = {
-                    source.relative_to(staged).as_posix(): source
-                    for source in staged.rglob("*")
-                    if source.is_file()
-                }
-                kept = self.evidence.ingest([staged], staged=staged).indexed if files else 0
+                left = any(source.is_file() for source in staged.rglob("*"))
+                kept = self.evidence.ingest([staged], staged=staged).indexed if left else 0
                 return kept + self.evidence.adopt(held)
 
     def pull(self, host: str, *, root: str, path: str, python: str) -> int:
@@ -126,113 +240,3 @@ class Collector:
                 output=archive,
             )
             return self.merge(archive, path=relative.as_posix())
-
-    def _kept(self, relative: PurePosixPath) -> dict[str, str]:
-        """The digest the workspace lake indexes for each path under `relative`.
-
-        A host sends none of those paths again, nor any file holding one of those digests.
-        """
-        return {row.path: row.sha256 for row in self.evidence.indexed(relative.as_posix())}
-
-    def _local(self, relative: PurePosixPath, *, kept: Mapping[str, str]) -> dict[str, str]:
-        """Digest each file the tree holds under `relative` unless the lake indexes it as is.
-
-        A byte-identical remote copy of one is then not shipped again.
-        """
-        digests = KeptDigests(self.root, "collection")
-        found = {
-            key: digests.of(str(path), key=key)
-            for path in (self.root / relative).rglob("*")
-            if not path.is_symlink() and path.is_file()
-            for key in (path.relative_to(self.root).as_posix(),)
-        }
-        digests.save()
-        return {key: digest for key, digest in found.items() if kept.get(key) != digest}
-
-    @staticmethod
-    def _extract(archive: Path, *, staged: Path, scope: PurePosixPath) -> dict[str, str]:
-        """Check every path and ZIP checksum in staging before anything is kept.
-
-        Answers what the host left unsent, by path.
-        """
-        held: dict[str, str] = {}
-        with ZipFile(archive) as source:
-            for entry in source.infolist():
-                if entry.filename == HELD:
-                    held = json.loads(source.read(entry))
-                    continue
-                relative = relative_path(entry.filename)
-                if not relative.is_relative_to(scope) or entry.is_dir():
-                    raise ValueError(f"unexpected collection entry: {relative}")
-                target = staged / relative
-                if target.exists():
-                    raise ValueError(f"duplicate collection entry: {relative}")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with source.open(entry) as incoming, target.open("xb") as output:
-                    shutil.copyfileobj(incoming, output)
-        for name in held:
-            if not relative_path(name).is_relative_to(scope):
-                raise ValueError(f"unexpected collection entry: {name}")
-        return held
-
-    def _divert(
-        self,
-        files: Mapping[str, Path],
-        held: Mapping[str, str],
-        *,
-        scope: PurePosixPath,
-        staged: Path,
-        kept: Mapping[str, str],
-    ) -> dict[str, str]:
-        """Keep every path the center already holds as it is, and keep what differs beside it.
-
-        The same path with other bytes (a second registration writing the same file names) used to
-        refuse the whole transfer, which left every other file of the run, its receipts included,
-        on the host and the job blocked. The center's copy still wins its path, the tree's first,
-        else the lake's, and a byte-identical copy is no conflict. A divergent file that was sent
-        moves in staging to `<scope>/.conflicts/<sha8>/<its path under scope>` and is kept there; a
-        divergent file the host left unsent (the lake holds its bytes elsewhere) is not adopted at
-        this path. Answers the paths still to adopt, and warns with how many diverged.
-        """
-        diverged = 0
-        remaining = dict(held)
-        for relative in [*files, *held]:
-            target = self.root / relative
-            if not target.resolve().is_relative_to(self.root):
-                raise ValueError(f"collection destination escapes workspace: {target}")
-            expected = _sha256(target) if target.is_file() else kept.get(relative)
-            offered = held.get(relative) or _sha256(files[relative])
-            if expected is None or expected == offered:
-                continue
-            diverged += 1
-            if relative in files:
-                inside = PurePosixPath(relative).relative_to(scope)
-                aside = staged / scope / ".conflicts" / offered[:8] / inside
-                aside.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(files[relative], aside)
-            remaining.pop(relative, None)
-        if diverged:
-            logger.warning(
-                "{} path(s) under {} hold other bytes here than on the host: the center's copy "
-                "kept its path, the host's is under {}/.conflicts/<sha8>/",
-                diverged,
-                scope,
-                scope,
-            )
-        return remaining
-
-    @contextmanager
-    def _staging(self) -> Generator[Path]:
-        """Yield a fresh staging directory under the generated `tmp`, named by this process.
-
-        It sits on the tree's filesystem. One a killed or timed-out pass left, its process gone,
-        is cleared first, never one a live pass is using.
-        """
-        parent = Project().out(self.root) / "tmp"
-        parent.mkdir(parents=True, exist_ok=True)
-        for stale in parent.glob("collect-*"):
-            with suppress(ValueError, IndexError):
-                if not psutil.pid_exists(int(stale.name.split("-")[1])):
-                    shutil.rmtree(stale, ignore_errors=True)
-        with TemporaryDirectory(prefix=f"collect-{os.getpid()}-", dir=parent) as temporary:
-            yield Path(temporary)

@@ -8,6 +8,7 @@ import tarfile
 import venv
 from pathlib import Path
 
+import pytest
 from patos import FrozenModel
 
 _REVISION = "c97cb81daed05e8b9d0ed21f87a7427075487562"
@@ -42,6 +43,22 @@ class LegacyRuntime(FrozenModel):
         assert Path(proof.stdout.strip()).resolve() == root / "src/mainboard/__init__.py"
         return runtime
 
+    @staticmethod
+    def _archive() -> bytes:
+        """The immutable git archive of the legacy revision.
+
+        A tree without the repository's history (the mirror `mb refactor fix` proves a fix in)
+        cannot hold the archive, so a test that needs it is skipped there.
+        """
+        tree = Path(__file__).resolve().parents[1]
+        archived = subprocess.run(
+            ["git", "-C", str(tree), "archive", _REVISION], capture_output=True, timeout=30
+        )
+        if archived.returncode and not (tree / ".git").exists():
+            pytest.skip("the legacy archive needs the git history of this tree")
+        archived.check_returncode()
+        return archived.stdout
+
     def run(self, program: str) -> subprocess.CompletedProcess[str]:
         """Run `program` with the legacy sources as the only import root, not the new tree's."""
         environment = {**os.environ, "PYTHONPATH": str(self.root / "src")}
@@ -62,14 +79,3 @@ class LegacyRuntime(FrozenModel):
             timeout=30,
             check=True,
         )
-
-    @staticmethod
-    def _archive() -> bytes:
-        """The immutable git archive of the legacy revision."""
-        tree = Path(__file__).resolve().parents[1]
-        return subprocess.run(
-            ["git", "-C", str(tree), "archive", _REVISION],
-            capture_output=True,
-            timeout=30,
-            check=True,
-        ).stdout

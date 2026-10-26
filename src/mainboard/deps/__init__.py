@@ -1,13 +1,14 @@
 from .curator import Change, Dependencies
 from .editing import ManifestText
 from .indexes import Index
-from .slots import candidates, declared
+from .slots import Edit, Relock, Tables
 
 __all__ = [
     "Change",
     "Dependencies",
+    "Edit",
     "Index",
     "ManifestText",
-    "candidates",
-    "declared",
+    "Relock",
+    "Tables",
 ]

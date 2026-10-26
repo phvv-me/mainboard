@@ -1,0 +1,529 @@
+# Everything the center holds that git does not, and that its successor needs on day one.
+#
+# A clone brings the tracked tree and nothing else. The center also runs on a `.env` of provider
+# keys, on the `.mainboard/` registry of every job it dispatched and every ledger it settled, on
+# the ssh keys and aliases the host profiles name, on a GitHub login, and on each AI agent's
+# per-user state: Claude Code's memory for this workspace, Codex's config, credentials and
+# memories, opencode's config and logins. This module finds each of those here and says where
+# it lands there, re-keying what a tool files under the workspace's own path, and names what it
+# deliberately leaves behind. It reads; shipping is the migration's business.
+
+import hashlib
+import io
+import json
+import sqlite3
+import tarfile
+from collections.abc import Iterator, Sequence
+from contextlib import closing
+from fnmatch import fnmatch
+from getpass import getuser
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, Literal
+
+import tomlkit
+from patos import FrozenModel
+
+from ...agents.harness import claude_key
+from ...core.project import Project
+from ...core.section import Section, Verdict
+from ...engines.compile.provisioner import Provisioner
+from ...state.lake import Lake
+
+if TYPE_CHECKING:
+    from ...manifest.schema.root import Manifest
+    from ...probe.census import Json
+
+type Anchor = Literal["root", "home"]
+
+# What the state directory keeps that belongs to this machine alone or is rebuilt from what does
+# ship: environment prefixes (reinstalled from the shipped lock), the hub pin cache (refetched at
+# its recorded revisions), generated activation scripts, a digest cache and every lock file.
+_MACHINE_LOCAL = (
+    "envs/*",
+    "pins/*",
+    "activate*.sh",
+    "collection.digests.json",
+    "*.lock",
+    "*.sqlite-wal",
+    "*.sqlite-shm",
+    "dispatch/locks/*",
+    "run/*",
+)
+
+# The SQLite stores shipped as a consistent snapshot rather than as the bytes a writer may be
+# halfway through: an unimported registry and a workspace lake's catalog here (its Parquet files
+# are immutable and ship as they are), Codex's memories under home.
+_REGISTRY = "dispatch/db.sqlite"
+
+# Each agent's per-user state under home: what is copied as is, and what is a credential.
+_CLAUDE = ("settings.json", "CLAUDE.md", "keybindings.json", "agents", "skills", "commands")
+_CLAUDE_PLUGINS = ("plugins/installed_plugins.json", "plugins/known_marketplaces.json")
+_CLAUDE_SECRETS = (".credentials.json",)
+_CODEX = ("AGENTS.md", "rules", "skills", "prompts")
+_CODEX_SECRETS = ("auth.json", ".credentials.json")
+_CODEX_MEMORIES = "memories_1.sqlite"
+_OPENCODE_CONFIG = ".config/opencode"
+_OPENCODE_SECRETS = (".local/share/opencode/auth.json", ".local/share/opencode/mcp-auth.json")
+
+# What of Claude Code's per-project record in `~/.claude.json` is a setting rather than history.
+_CLAUDE_PROJECT = (
+    "allowedTools",
+    "mcpContextUris",
+    "enabledMcpjsonServers",
+    "disabledMcpjsonServers",
+    "hasTrustDialogAccepted",
+    "hasClaudeMdExternalIncludesApproved",
+    "hasClaudeMdExternalIncludesWarningShown",
+)
+
+# The macOS-only ssh setting other clients refuse unless told to ignore it.
+_MACOS_ONLY = ("usekeychain",)
+
+# The keys ssh offers when a host names none, carried when present.
+_DEFAULT_KEYS = ("id_ed25519", "id_ecdsa", "id_rsa")
+
+
+class Destination(FrozenModel):
+    """Where the new center keeps things, as the destination agent reported it.
+
+    root: the workspace root, absolute and in that machine's spelling, as is `home`.
+    system: the platform as `platform.system()` spells it there.
+    user: the login the migration's ssh runs as there.
+    """
+
+    root: str
+    home: str
+    system: str = ""
+    user: str = ""
+
+
+class Parcel(FrozenModel):
+    """One file to put on the destination, from a local file or from bytes made here.
+
+    anchor: whether `path` is relative to the workspace root or to home.
+    path: the relative path, forward slashes.
+    source: the local file, None when `data` carries the content.
+    data: the content made here, a re-keyed config or a database snapshot.
+    secret: whether the file is a credential, written readable by its owner alone.
+    """
+
+    anchor: Anchor
+    path: str
+    source: Path | None = None
+    data: bytes = b""
+    secret: bool = False
+
+    @property
+    def fingerprint(self) -> str:
+        """What the destination compares its own copy against: content, or a tree's stamp."""
+        if self.source is None:
+            return "sha256:" + hashlib.sha256(self.data).hexdigest()
+        status = self.source.stat()
+        return f"mtime:{int(status.st_mtime)}:{status.st_size}"
+
+    @property
+    def key(self) -> str:
+        """The member name this parcel travels under, `<anchor>/<path>`."""
+        return f"{self.anchor}/{self.path}"
+
+    def listing(self) -> dict[str, str]:
+        """This parcel as the destination's inventory reads it."""
+        return {
+            "key": self.key,
+            "anchor": self.anchor,
+            "path": self.path,
+            "fingerprint": self.fingerprint,
+        }
+
+
+def packed(parcels: Sequence[Parcel]) -> Iterator[bytes]:
+    """`parcels` as one uncompressed tar stream, yielded a member at a time.
+
+    Streamed so a tree of receipts never has to fit in memory, and uncompressed because most of
+    it is already compressed evidence and the rest is small.
+    """
+    sink = io.BytesIO()
+    with tarfile.open(fileobj=sink, mode="w|") as archive:
+        for parcel in parcels:
+            content = parcel.source.read_bytes() if parcel.source is not None else parcel.data
+            member = tarfile.TarInfo(parcel.key)
+            member.size = len(content)
+            member.mtime = int(parcel.source.stat().st_mtime) if parcel.source is not None else 0
+            member.mode = 0o600 if parcel.secret else 0o644
+            archive.addfile(member, io.BytesIO(content))
+            yield sink.getvalue()
+            sink.seek(0)
+            sink.truncate()
+    yield sink.getvalue()
+
+
+class SshConfig:
+    """The user's ssh client config `text`, cut to the blocks this workspace's hosts need."""
+
+    @staticmethod
+    def _blocks(text: str) -> list[list[str]]:
+        """The config split at each `Host` or `Match` line, leading lines their own block."""
+        blocks: list[list[str]] = [[]]
+        for line in text.splitlines():
+            if line.strip().lower().startswith(("host ", "match ")):
+                blocks.append([])
+            blocks[-1].append(line)
+        return [block for block in blocks if any(line.strip() for line in block)]
+
+    @staticmethod
+    def _hops(block: Sequence[str]) -> set[str]:
+        """The aliases a block's jump settings go through."""
+        hops: set[str] = set()
+        for line in block:
+            key, _, value = line.strip().partition(" ")
+            if key.lower() == "proxyjump":
+                hops |= {
+                    hop.split("@")[-1].split(":")[0] for hop in value.split(",") if hop.strip()
+                }
+            elif key.lower() == "proxycommand":
+                words = value.split()
+                hops |= {
+                    words[index + 1] for index, word in enumerate(words[:-1]) if word == "ssh"
+                }
+        return {hop.strip() for hop in hops if hop.strip() and hop.strip().lower() != "none"}
+
+    @staticmethod
+    def identities(blocks: Sequence[list[str]]) -> list[str]:
+        """Every `IdentityFile` the blocks name, as written."""
+        return [
+            line.split(None, 1)[1].strip().strip('"')
+            for block in blocks
+            for line in block
+            if line.strip().lower().startswith("identityfile") and len(line.split(None, 1)) > 1
+        ]
+
+    @staticmethod
+    def rendered(blocks: Sequence[list[str]], *, system: str, user: str = "") -> list[str]:
+        """Each block as text the destination's ssh client accepts.
+
+        user: the login a block naming none reaches its host as, empty to leave it to ssh; the
+            catch-all `Host *` is left alone, since it would rename every other host there too.
+        """
+        refused = _MACOS_ONLY if system != "Darwin" else ()
+        rendered = []
+        for block in blocks:
+            lines = [line for line in block if not line.strip().lower().startswith(refused)]
+            if (
+                user
+                and _patterns(block) != ["*"]
+                and not any(line.strip().lower().split()[:1] == ["user"] for line in block)
+            ):
+                lines.insert(1, f"    User {user}")
+            rendered.append("\n".join(lines).strip())
+        return rendered
+
+    def __init__(self, text: str) -> None:
+        self.blocks = self._blocks(text)
+
+    def needed(self, aliases: Sequence[str]) -> list[list[str]]:
+        """The blocks reaching any of `aliases`, with every jump host they go through.
+
+        A block is kept when one of its patterns matches an alias, and the aliases its
+        `ProxyJump` or `ProxyCommand ssh <alias>` go through are followed until nothing new is
+        named, so a host behind a bastion arrives with its bastion.
+        """
+        wanted = set(aliases)
+        kept: list[list[str]] = []
+        grew = True
+        while grew:
+            grew = False
+            for block in self.blocks:
+                if block in kept or not any(
+                    fnmatch(alias, pattern) for alias in wanted for pattern in _patterns(block)
+                ):
+                    continue
+                kept.append(block)
+                wanted |= SshConfig._hops(block)
+                grew = True
+        return [block for block in self.blocks if block in kept]
+
+
+def _patterns(block: Sequence[str]) -> list[str]:
+    """The host patterns a `Host` block answers to, none for a `Match` or leading block."""
+    head = block[0].split()
+    return head[1:] if head and head[0].lower() == "host" else []
+
+
+class Carried:
+    """The state this center carries to a destination, and what it leaves behind on purpose.
+
+    manifest: the workspace's loaded manifest, which names the environments and the hosts.
+    destination: where the new center keeps its root and home.
+    home: this machine's home directory.
+    user: this machine's login, the one its ssh config's blocks were written for.
+    """
+
+    # The host GitHub is reached at over ssh, which the workspace's own submodules name.
+    GITHUB = "github.com"
+
+    def __init__(
+        self,
+        root: Path,
+        manifest: Manifest,
+        destination: Destination,
+        *,
+        home: Path,
+        user: str = "",
+    ) -> None:
+        self.root = root
+        self.manifest = manifest
+        self.destination = destination
+        self.home = home
+        self.user = user or getuser()
+
+    def _blocks(self) -> list[list[str]]:
+        """The blocks of this machine's ssh config the destination needs, none without one."""
+        try:
+            config = SshConfig((self.home / ".ssh" / "config").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        return config.needed(
+            [
+                *self.manifest.profiles(),
+                Carried.GITHUB,
+            ]
+        )
+
+    def _codex_config(self, path: Path) -> str:
+        """Codex's config with its trusted projects re-keyed to the new workspace path."""
+        document = tomlkit.parse(path.read_text(encoding="utf-8"))
+        projects = document.get("projects")
+        if projects is not None and str(self.root) in projects:
+            projects[self.destination.root] = projects.pop(str(self.root))
+        return tomlkit.dumps(document)
+
+    def _home(self, path: Path, *, secret: bool = False) -> Parcel:
+        """One file under home as a parcel."""
+        return Parcel(
+            anchor="home", path=path.relative_to(self.home).as_posix(), source=path, secret=secret
+        )
+
+    def _home_path(self, written: str) -> Path | None:
+        """An `IdentityFile` as written, resolved here, None when it lies outside home."""
+        path = Path(
+            written.replace("~", str(self.home), 1) if written.startswith("~") else written
+        )
+        return path if path.is_relative_to(self.home) else None
+
+    def _root(self, path: Path, *, secret: bool = False) -> Parcel:
+        """One file under the workspace as a parcel."""
+        return Parcel(
+            anchor="root", path=path.relative_to(self.root).as_posix(), source=path, secret=secret
+        )
+
+    def _state(self) -> list[Parcel]:
+        """The state directory and a lake kept inside the workspace, SQLite stores as snapshots.
+
+        A lake the manifest keeps outside the workspace is not copied: `left` names it, and the
+        destination's `doctor --center` fails until that machine reaches it.
+        """
+        out = Project().out(self.root)
+        lake = Lake.at(self.root)
+        inside = lake.home.is_relative_to(self.root)
+        stores = {out / _REGISTRY, *([lake.catalog] if inside else [])}
+        files = [
+            self._root(path)
+            for path in sorted({*out.rglob("*"), *(lake.data.rglob("*") if inside else ())})
+            if path.is_file()
+            and not path.is_symlink()
+            and path not in stores
+            and not (
+                path.is_relative_to(out)
+                and any(fnmatch(path.relative_to(out).as_posix(), rule) for rule in _MACHINE_LOCAL)
+            )
+        ]
+        return files + [
+            Parcel(
+                anchor="root",
+                path=database.relative_to(self.root).as_posix(),
+                data=_snapshot(database),
+            )
+            for database in sorted(stores)
+            if database.is_file()
+        ]
+
+    def _tree(self, path: Path, *, into: str = "", secret: bool = False) -> list[Parcel]:
+        """Every file at or under `path` in home, landing under `into` when re-keyed."""
+        files = (
+            [path]
+            if path.is_file()
+            else sorted(item for item in path.rglob("*") if item.is_file())
+        )
+        base = into or path.relative_to(self.home).as_posix()
+        return [
+            Parcel(
+                anchor="home",
+                path=str(PurePosixPath(base, file.relative_to(path).as_posix())),
+                source=file,
+                secret=secret,
+            )
+            for file in files
+            if "node_modules" not in file.parts
+        ]
+
+    def agents(self) -> list[Parcel]:
+        """Claude Code, Codex and opencode per-user state, re-keyed to the new workspace path."""
+        claude = self.home / ".claude"
+        codex = self.home / ".codex"
+        memory = claude / "projects" / claude_key(str(self.root)) / "memory"
+        rekeyed = f".claude/projects/{claude_key(self.destination.root)}/memory"
+        sources = [
+            *((claude / name, False) for name in (*_CLAUDE, *_CLAUDE_PLUGINS)),
+            *((claude / name, True) for name in _CLAUDE_SECRETS),
+            *((codex / name, False) for name in _CODEX),
+            *((codex / name, True) for name in _CODEX_SECRETS),
+            (self.home / _OPENCODE_CONFIG, False),
+            *((self.home / name, True) for name in _OPENCODE_SECRETS),
+        ]
+        parcels = [
+            *self._tree(memory, into=rekeyed),
+            *(parcel for path, secret in sources for parcel in self._tree(path, secret=secret)),
+        ]
+        if (codex / "config.toml").is_file():
+            parcels.append(
+                Parcel(
+                    anchor="home",
+                    path=".codex/config.toml",
+                    data=self._codex_config(codex / "config.toml").encode(),
+                    secret=True,
+                )
+            )
+        if (codex / _CODEX_MEMORIES).is_file():
+            parcels.append(
+                Parcel(
+                    anchor="home",
+                    path=f".codex/{_CODEX_MEMORIES}",
+                    data=_snapshot(codex / _CODEX_MEMORIES),
+                )
+            )
+        return parcels
+
+    def claude_project(self) -> dict[str, Json]:
+        """This workspace's settings from Claude Code's `~/.claude.json`, under the new path.
+
+        Trust, the allowed tools and which project MCP servers are on, re-keyed so the new
+        center opens the workspace as this one did. Usage history stays behind.
+        """
+        try:
+            document = json.loads((self.home / ".claude.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        record = document.get("projects", {}).get(str(self.root), {})
+        kept = {key: record[key] for key in _CLAUDE_PROJECT if key in record}
+        return {self.destination.root: kept} if kept else {}
+
+    def known_hosts(self) -> list[str]:
+        """This machine's known host lines, none when it keeps no such file."""
+        try:
+            text = (self.home / ".ssh" / "known_hosts").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    def left(self) -> list[Section]:
+        """What the migration deliberately leaves behind, each with how the new center gets it."""
+        notes = [
+            Section(
+                section="left: env prefixes",
+                verdict=Verdict.PASS,
+                detail="environment prefixes are rebuilt from the shipped lock, never copied",
+            ),
+            Section(
+                section="left: pins",
+                verdict=Verdict.PASS,
+                detail="the hub pin cache refetches at each recorded revision on first use",
+            ),
+            Section(
+                section="left: ignored data",
+                verdict=Verdict.PASS,
+                detail="ignored data (/data/, outputs/) is not workspace state; copy it by hand",
+            ),
+            Section(
+                section="left: ChatGPT desktop",
+                verdict=Verdict.WARN,
+                detail="the desktop apps keep their sign-in in the app; Codex shares ~/.codex",
+                fix="sign in to ChatGPT desktop on the destination",
+            ),
+        ]
+        lake = Lake.at(self.root)
+        if not lake.home.is_relative_to(self.root):
+            notes.append(
+                Section(
+                    section="left: lake",
+                    verdict=Verdict.WARN,
+                    detail=f"the lake at {lake.home} is outside the workspace and not copied",
+                    fix=f"mount or copy {lake.home} at the same path on the destination",
+                )
+            )
+        if not (self.home / ".claude" / ".credentials.json").is_file():
+            notes.append(
+                Section(
+                    section="left: Claude Code login",
+                    verdict=Verdict.WARN,
+                    detail="Claude Code keeps this login in the system keychain, which stays here",
+                    fix="run `claude` on the destination and sign in with /login",
+                )
+            )
+        return notes
+
+    def ssh(self) -> list[Parcel]:
+        """The keys the needed ssh blocks name and the default ones, each with its public half."""
+        folder = self.home / ".ssh"
+        named = [self._home_path(identity) for identity in SshConfig.identities(self._blocks())]
+        keys = [
+            path
+            for path in dict.fromkeys([*named, *(folder / key for key in _DEFAULT_KEYS)])
+            if path is not None and path.is_file()
+        ]
+        pairs = [
+            pair
+            for key in keys
+            for pair in ((key, True), (key.with_name(f"{key.name}.pub"), False))
+        ]
+        return [self._home(path, secret=secret) for path, secret in pairs if path.is_file()]
+
+    def ssh_config(self) -> list[str]:
+        """The ssh blocks the declared, held and GitHub hosts need, with every jump host.
+
+        Each names this machine's login where it names none and the destination logs in as
+        someone else, whose name ssh would otherwise send.
+        """
+        user = self.user if self.destination.user not in ("", self.user) else ""
+        return SshConfig.rendered(self._blocks(), system=self.destination.system, user=user)
+
+    def workspace(self) -> list[Parcel]:
+        """The `.env`, the generated state (see `_state`), and every environment's lock."""
+        env = self.root / ".env"
+        provisioner = Provisioner(self.root, self.manifest)
+        artifacts = dict.fromkeys(
+            relative
+            for environment in ("default", *self.manifest.envs)
+            for relative in provisioner.artifact_for(environment)
+        )
+        return [
+            *([self._root(env, secret=True)] if env.is_file() else []),
+            *self._state(),
+            *(
+                self._root(self.root / relative)
+                for relative in artifacts
+                if (self.root / relative).is_file()
+            ),
+        ]
+
+
+def _snapshot(database: Path) -> bytes:
+    """A consistent copy of a live SQLite database, taken through SQLite's own backup."""
+    with TemporaryDirectory() as scratch:
+        copy = Path(scratch) / database.name
+        with (
+            closing(sqlite3.connect(database)) as source,
+            closing(sqlite3.connect(copy)) as target,
+        ):
+            source.backup(target)
+        return copy.read_bytes()

@@ -3,30 +3,18 @@
 import importlib
 import time
 from collections.abc import Sequence
-from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar
 
 from patos import Registry
 
 from ..log import logger
+from ..probe.enums.vendor import Vendor
 from .trace import Activity, CallbackSession, TraceCollector
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 type Marker = Callable[[], None]
-
-
-class Vendor(StrEnum):
-    """The vendors `providers/` ships a native annotation backend for.
-
-    `DeviceProbe.vendor` is a plain string, so it compares equal to these members by value.
-    """
-
-    NVIDIA = auto()
-    AMD = auto()
-    APPLE = auto()
-    UNKNOWN = auto()
 
 
 class Tracer(Registry):
@@ -42,7 +30,7 @@ class Tracer(Registry):
     def detect(cls, *, present: frozenset[str] = frozenset()) -> Tracer:
         """The best available tracer: one matching a vendor in `present`, else any, else no-op.
 
-        present: `DeviceProbe.vendor` values of the GPUs on this host, as the caller found them.
+        present: `GPU.vendor` values of the GPUs on this host, as the caller found them.
         """
         importlib.import_module("mainboard.profile.providers")
         backends = [b for b in cls.implementations() if b.is_available()]

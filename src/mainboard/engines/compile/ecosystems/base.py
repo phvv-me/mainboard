@@ -8,8 +8,8 @@ from ....core import MissionError
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ....manifest.schema.compute.toolchain import Toolchain
     from ....manifest.schema.spec import Spec
-    from ....manifest.schema.toolchain import Toolchain
     from ..backend import Pixi
     from ..generated import Writer
 
@@ -28,6 +28,19 @@ class Ecosystem(Registry, abc.ABC):
     # whole manifest, since one environment's view would let installing it rewrite or delete what
     # another environment installed from.
     shared: ClassVar[bool] = False
+
+    @abc.abstractmethod
+    def binary_dirs(self) -> tuple[Path, ...]:
+        """Directories this toolchain links executables into, beyond the prefix's own `bin/`."""
+
+    @abc.abstractmethod
+    def sync(self, *, resolve: bool = False) -> None:
+        """Make the environment carry exactly what the table declares, and nothing it dropped."""
+
+    @property
+    def deps(self) -> dict[str, Spec]:
+        """Runtime and dev requirements together."""
+        return self.table.all_deps()
 
     def __init__(
         self,
@@ -52,18 +65,6 @@ class Ecosystem(Registry, abc.ABC):
         self.out = out
         self.pixi = pixi
 
-    @property
-    def deps(self) -> dict[str, Spec]:
-        """Runtime and dev requirements together."""
-        return self.table.all_deps()
-
-    @abc.abstractmethod
-    def binary_dirs(self) -> tuple[Path, ...]:
-        """Directories this toolchain links executables into, beyond the prefix's own `bin/`."""
-
-    def generate(self, files: Writer) -> None:
-        """Write what the installer reads; `files` is valid only under the sync lock."""
-
     def frozen_inputs(self) -> tuple[Path, ...]:
         """Inputs that permit installation without resolving versions, or a clear refusal."""
         if self.deps:
@@ -73,6 +74,5 @@ class Ecosystem(Registry, abc.ABC):
             )
         return ()
 
-    @abc.abstractmethod
-    def sync(self, *, resolve: bool = False) -> None:
-        """Make the environment carry exactly what the table declares, and nothing it dropped."""
+    def generate(self, files: Writer) -> None:
+        """Write what the installer reads; `files` is valid only under the sync lock."""

@@ -1,37 +1,25 @@
 import functools
 import inspect
 import time
-from typing import TYPE_CHECKING, Protocol, cast, overload
+from typing import TYPE_CHECKING, cast, overload
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
     from types import TracebackType
 
-
-class SpanSession(Protocol):
-    """The small surface dormant spans need from an active profiler."""
-
-    def enter(self, name: str) -> int:
-        """Open `name` and return its session-local token."""
-
-    def exit(self, token: int, *, wall_ns: int) -> None:
-        """Close a prior token after `wall_ns` elapsed."""
+    from .profiler import Profiler
 
 
-class ReturnedValue(Protocol):
-    """An intentionally unconstrained decorated return value."""
+_active: Profiler | None = None
+type SpanToken = tuple[Profiler, int, int] | None
 
 
-_active: SpanSession | None = None
-type SpanToken = tuple[SpanSession, int, int] | None
-
-
-def active() -> SpanSession | None:
+def active() -> Profiler | None:
     """Return the profiler currently receiving spans, or None if none is active."""
     return _active
 
 
-def activate(session: SpanSession) -> None:
+def activate(session: Profiler) -> None:
     """Route dormant spans to `session` until it is deactivated."""
     global _active
     if _active is not None:
@@ -39,7 +27,7 @@ def activate(session: SpanSession) -> None:
     _active = session
 
 
-def deactivate(session: SpanSession) -> None:
+def deactivate(session: Profiler) -> None:
     """Stop routing spans when `session` owns the active slot."""
     global _active
     if _active is session:
@@ -68,48 +56,10 @@ class Span:
 
     __slots__ = ("name", "session", "start_ns", "token")
 
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.session: SpanSession | None = None
-        self.start_ns = 0
-        self.token = 0
-
-    def __call__[**P, R](self, func: Callable[P, R]) -> Callable[P, R]:
-        """Decorate `func` with this span name, adding no collection policy.
-
-        A generator's span covers its consumption: timing only its creation is the silent
-        zero-length-span bug CPython fixed for its own decorators.
-        """
-        if inspect.iscoroutinefunction(func):
-            return cast(
-                "Callable[P, R]",
-                Span._decorate_async(
-                    cast("Callable[P, Awaitable[ReturnedValue]]", func), self.name
-                ),
-            )
-        if inspect.isasyncgenfunction(func):
-            return cast("Callable[P, R]", Span._decorate_async_generator(func, self.name))
-        if inspect.isgeneratorfunction(func):
-            return cast("Callable[P, R]", Span._decorate_generator(func, self.name))
-        return Span._decorate_sync(func, self.name)
-
-    def __enter__(self) -> Span:
-        token = start(self.name)
-        if token is not None:
-            self.session, self.token, self.start_ns = token
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None = None,
-        exc: BaseException | None = None,
-        traceback: TracebackType | None = None,
-    ) -> None:
-        session = self.session
-        if session is None:
-            return
-        self.session = None
-        finish((session, self.token, self.start_ns))
+    name: str
+    session: Profiler | None
+    start_ns: int
+    token: int
 
     @staticmethod
     def _decorate_async[**P, R](
@@ -190,6 +140,47 @@ class Span:
                 session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
 
         return inner
+
+    def __call__[**P, R](self, func: Callable[P, R]) -> Callable[P, R]:
+        """Decorate `func` with this span name, adding no collection policy.
+
+        A generator's span covers its consumption: timing only its creation is the silent
+        zero-length-span bug CPython fixed for its own decorators.
+        """
+        if inspect.iscoroutinefunction(func):
+            return cast(
+                "Callable[P, R]",
+                Span._decorate_async(cast("Callable[P, Awaitable[R]]", func), self.name),
+            )
+        if inspect.isasyncgenfunction(func):
+            return cast("Callable[P, R]", Span._decorate_async_generator(func, self.name))
+        if inspect.isgeneratorfunction(func):
+            return cast("Callable[P, R]", Span._decorate_generator(func, self.name))
+        return Span._decorate_sync(func, self.name)
+
+    def __enter__(self) -> Span:
+        token = start(self.name)
+        if token is not None:
+            self.session, self.token, self.start_ns = token
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        session = self.session
+        if session is None:
+            return
+        self.session = None
+        finish((session, self.token, self.start_ns))
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.session = None
+        self.start_ns = 0
+        self.token = 0
 
 
 @overload

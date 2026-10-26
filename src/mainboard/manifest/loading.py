@@ -1,12 +1,9 @@
 from typing import TYPE_CHECKING
 
-from ..core.errors import MissionError
-from .held import Holdings
-from .members import Composition
-from .parsing import rendered, validated
-from .schema.plot import PlotStyle
+from .composing import composition
+from .schema.figures.plot import PlotStyle
+from .schema.project.workspace import Header
 from .schema.root import Manifest
-from .schema.workspace import Header
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -15,22 +12,10 @@ if TYPE_CHECKING:
 def load(path: Path) -> Manifest:
     """Parse, interpolate, compose and validate the manifest at `path`, errors naming their spot.
 
-    Members join first (see `manifest.members`), then held machines stand behind `[hosts]`,
-    read from the lake only when a lookup reaches them, so a held alias resolves like a
-    declared one and a declared one never waits on the lake.
+    Members join first (see `manifest.members`). The machines the workspace holds live in its
+    lake, which reads this manifest, so `state.holds.holding` lays them over it.
     """
-    composed = composition(path).composed()
-    home = composed.workspace.lake_home(path.parent)
-    return composed.holding(Holdings(path.parent, home).profiles)
-
-
-def composition(path: Path) -> Composition:
-    """The manifest at `path` and the members it declares, before they are folded in."""
-    try:
-        tree = rendered(path)
-    except FileNotFoundError:
-        raise MissionError(f"no manifest at {path}") from None
-    return Composition(path.parent, validated(path, tree))
+    return composition(path).composed()
 
 
 def load_plot_config(root: Path, config: Path | None = None) -> Manifest:

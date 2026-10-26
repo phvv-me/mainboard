@@ -12,9 +12,11 @@ from cyclopts import Parameter
 from patos import FrozenModel
 
 from ...core.errors import MissionError
-from ..catalog import LANGUAGES, Rule, RuleProvenance
-from ..facts import Setting
-from ..lint import app, load_catalog
+from ...log import logger
+from ..catalog import Rule, RuleProvenance
+from ..constants import LANGUAGES
+from ..engine.facts import Setting
+from ..engine.lint import load_catalog
 from .report import Report
 
 
@@ -70,6 +72,12 @@ class Catalog(Report):
 
     rules: list[RuleEntry]
 
+    @staticmethod
+    def _settings(rule: RuleEntry) -> str:
+        if not rule.settings:
+            return ""
+        return "  [" + ", ".join(f"{s.name}={s.default!r}" for s in rule.settings) + "]"
+
     def text(self) -> str:
         width = max((len(rule.id) for rule in self.rules), default=0)
         counts = {
@@ -89,14 +97,7 @@ class Catalog(Report):
             ]
         )
 
-    @staticmethod
-    def _settings(rule: RuleEntry) -> str:
-        if not rule.settings:
-            return ""
-        return "  [" + ", ".join(f"{s.name}={s.default!r}" for s in rule.settings) + "]"
 
-
-@app.command
 def catalog(
     *,
     rule: tuple[str, ...] = (),
@@ -109,7 +110,7 @@ def catalog(
     """
     load_catalog()
     chosen = [Rule.defined[id] for id in sorted(Rule.defined) if not rule or id in rule]
-    print(Catalog(rules=[RuleEntry.of(entry) for entry in chosen]).render(as_json=as_json))
+    logger.result(Catalog(rules=[RuleEntry.of(entry) for entry in chosen]).render(as_json=as_json))
 
 
 class Explanation(Report):
@@ -136,7 +137,6 @@ class Explanation(Report):
         )
 
 
-@app.command
 def explain(
     rule: str,
     *,
@@ -144,12 +144,12 @@ def explain(
 ) -> None:
     """Explain RULE, its repair policy and remediation references without fetching documentation.
 
-    rule: the exact rule id from a finding or `mainboard rules catalog`.
+    rule: the exact rule id from a finding or `mainboard refactor catalog`.
     as_json: print structured guidance and reference URLs for an agent.
     """
     load_catalog()
     try:
         specification = Rule.defined[rule]
     except KeyError:
-        raise MissionError(f"no rule {rule!r}; see `mainboard rules catalog`") from None
-    print(Explanation(rule=RuleEntry.of(specification)).render(as_json=as_json))
+        raise MissionError(f"no rule {rule!r}; see `mainboard refactor catalog`") from None
+    logger.result(Explanation(rule=RuleEntry.of(specification)).render(as_json=as_json))

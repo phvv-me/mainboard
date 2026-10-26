@@ -11,6 +11,7 @@
 # for, which is also how a platform that needs a different spelling says so in the open.
 
 import tomllib
+from contextlib import suppress
 from pathlib import Path
 from shlex import split
 from typing import Literal, Self
@@ -19,17 +20,17 @@ from pydantic import Field, field_validator, model_validator
 
 from ..core.base import Declared
 from ..core.errors import MissionError
-from ..core.host import platform_family
+from ..core.execution.host import platform_family
 from ..core.project import Project
 
 # The operating-system families a gate runs on, spelled the way pixi spells platform families,
 # so a host profile's `platform` names its family without a second vocabulary.
 type Family = Literal["linux", "osx"]
 
-FAMILIES: tuple[Family, ...] = ("linux", "osx")
+_FAMILIES: tuple[Family, ...] = ("linux", "osx")
 
 # The file a package declares its gate in.
-PYPROJECT = "pyproject.toml"
+_PYPROJECT = "pyproject.toml"
 
 
 def family_of(platform: str) -> Family:
@@ -38,10 +39,10 @@ def family_of(platform: str) -> Family:
     platform: a pixi platform string, or a bare family.
     """
     family = platform_family(platform)
-    for known in FAMILIES:
+    for known in _FAMILIES:
         if known == family:
             return known
-    raise MissionError(f"{platform!r} names no platform family CI runs on; use one of {FAMILIES}")
+    raise MissionError(f"{platform!r} names no platform family CI runs on; use one of {_FAMILIES}")
 
 
 class Step(Declared):
@@ -83,7 +84,7 @@ class Definition(Declared):
     steps: the commands, in order; a leg stops at the first that fails, as a CI job does.
     """
 
-    os: tuple[Family, ...] = FAMILIES
+    os: tuple[Family, ...] = _FAMILIES
     steps: tuple[Step, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -118,13 +119,11 @@ class Package(Declared):
     def found(cls, start: Path) -> Self:
         """The nearest package at or above `start` whose pyproject.toml declares a gate."""
         for directory in (start, *start.parents):
-            try:
-                text = (directory / PYPROJECT).read_text(encoding="utf-8")
-            except FileNotFoundError:
-                continue
-            table = (Project().table(tomllib.loads(text).get("tool", {})) or {}).get("ci")
-            if table is not None:
-                return cls(root=directory, definition=Definition.model_validate(table))
+            with suppress(FileNotFoundError):
+                text = (directory / _PYPROJECT).read_text(encoding="utf-8")
+                table = (Project().table(tomllib.loads(text).get("tool", {})) or {}).get("ci")
+                if table is not None:
+                    return cls(root=directory, definition=Definition.model_validate(table))
         raise MissionError(
-            f"no {PYPROJECT} declares [tool.{Project().name}.ci] from {start} upward"
+            f"no {_PYPROJECT} declares [tool.{Project().name}.ci] from {start} upward"
         )

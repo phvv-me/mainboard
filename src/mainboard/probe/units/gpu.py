@@ -6,9 +6,9 @@ from patos import Registry
 
 from ...log import logger
 from ..enums import UnitKind
-from ..facts.memory import Memory
-from ..facts.telemetry import Telemetry
-from ..facts.utilization import Utilization
+from ..facts.devices.telemetry import Telemetry
+from ..facts.devices.utilization import Utilization
+from ..facts.memory.core import Memory
 from .unit import Unit
 
 
@@ -50,14 +50,9 @@ class GPU(Unit, Registry):
         return ""
 
     @cached_property
-    def runtime_version(self) -> tuple[int, int] | None:
-        """The compute runtime version as `(major, minor)`, the CUDA one here, when known."""
-        return None
-
-    @property
-    def memory(self) -> Memory:
-        """Current accelerator memory state."""
-        return Memory(scope="device", source=self.backend, supported=False)
+    def peak_bandwidth_gbs(self) -> float:
+        """Theoretical peak memory bandwidth in GB/s, 0.0 when the provider cannot say."""
+        return 0.0
 
     @cached_property
     def peak_clock_khz(self) -> int:
@@ -65,14 +60,9 @@ class GPU(Unit, Registry):
         return 0
 
     @cached_property
-    def peak_bandwidth_gbs(self) -> float:
-        """Theoretical peak memory bandwidth in GB/s, 0.0 when the provider cannot say."""
-        return 0.0
-
-    @property
-    def utilization(self) -> Utilization:
-        """Current compute and memory-controller utilization."""
-        return Utilization()
+    def runtime_version(self) -> tuple[int, int] | None:
+        """The compute runtime version as `(major, minor)`, the CUDA one here, when known."""
+        return None
 
     @cached_property
     def uuid(self) -> str:
@@ -99,6 +89,16 @@ class GPU(Unit, Registry):
                 "GPU provider {} failed to probe, skipping", provider.__name__, exc_info=True
             )
             return ()
+
+    @property
+    def memory(self) -> Memory:
+        """Current accelerator memory state."""
+        return Memory(scope="device", source=self.backend, supported=False)
+
+    @property
+    def utilization(self) -> Utilization:
+        """Current compute and memory-controller utilization."""
+        return Utilization()
 
     def snapshot(self, name: str = "") -> Telemetry:
         """Point-in-time reading of this GPU's sensors, tagged with region `name`.

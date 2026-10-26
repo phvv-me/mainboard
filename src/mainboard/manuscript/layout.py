@@ -9,6 +9,7 @@
 
 import gzip
 import re
+from collections.abc import Set
 from pathlib import Path
 
 from patos import FrozenModel
@@ -45,14 +46,14 @@ class Section(FrozenModel):
 class Aux:
     """The page count and the section starts a build wrote into its `.aux` file."""
 
-    def __init__(self, text: str) -> None:
-        self.text = text
-
     @property
     def pages(self) -> int:
         """The page count LaTeX recorded, 0 when it recorded none."""
         found = _PAGES.search(self.text)
         return int(found["pages"]) if found else 0
+
+    def __init__(self, text: str) -> None:
+        self.text = text
 
     def sections(self) -> list[Section]:
         """Every top-level section in reading order."""
@@ -65,7 +66,7 @@ class Aux:
             listed.append(
                 Section(
                     number=number["number"] if number else "",
-                    title=plain(_NUMBER.sub("", title)),
+                    title=_plain(_NUMBER.sub("", title)),
                     page=int(page) if page.isdigit() else 0,
                 )
             )
@@ -77,6 +78,11 @@ class SyncTex:
 
     directory: the manuscript directory relative input paths resolve against.
     """
+
+    @classmethod
+    def read(cls, path: Path, *, directory: Path) -> SyncTex:
+        """The gzipped SyncTeX file a build writes at `path`."""
+        return cls(gzip.decompress(path.read_bytes()).decode("utf-8"), directory=directory)
 
     def __init__(self, text: str, *, directory: Path) -> None:
         self.inputs: dict[str, Path] = {}
@@ -93,12 +99,7 @@ class SyncTex:
                 if source is not None and page:
                     self.pages.setdefault(page, set()).add((source, int(record["line"])))
 
-    @classmethod
-    def read(cls, path: Path, *, directory: Path) -> SyncTex:
-        """The gzipped SyncTeX file a build writes at `path`."""
-        return cls(gzip.decompress(path.read_bytes()).decode("utf-8"), directory=directory)
-
-    def last_page(self, lines: set[tuple[Path, int]]) -> int:
+    def last_page(self, lines: Set[tuple[Path, int]]) -> int:
         """The last page carrying any of `lines`, 0 when none of them was typeset."""
         return max((page for page, typeset in self.pages.items() if typeset & lines), default=0)
 
@@ -110,31 +111,6 @@ class Source:
     def __init__(self, main: Path) -> None:
         self.directory = main.resolve().parent
         self.lines = self._read(main.resolve())
-
-    def span(self, title: str) -> set[tuple[Path, int]]:
-        """Every source line of the section titled `title` up to the next `_BOUNDARY`, empty when
-        no section has that title."""
-        wanted = plain(title).casefold()
-        start = next(
-            (
-                index
-                for index, (_, _, text) in enumerate(self.lines)
-                if (heading := _SECTION.search(text))
-                and plain(_groups("{" + heading["title"], count=1)[0]).casefold() == wanted
-            ),
-            None,
-        )
-        if start is None:
-            return set()
-        end = next(
-            (
-                index
-                for index in range(start + 1, len(self.lines))
-                if _BOUNDARY.search(self.lines[index][2])
-            ),
-            len(self.lines),
-        )
-        return {(path, number) for path, number, _ in self.lines[start:end]}
 
     def _read(self, path: Path) -> list[tuple[Path, int, str]]:
         """`path`'s lines with every input inlined where it is read, comments dropped."""
@@ -152,8 +128,35 @@ class Source:
                 lines.extend(self._read(named.resolve()))
         return lines
 
+    def span(self, title: str) -> set[tuple[Path, int]]:
+        """Every source line of the section titled `title` up to the next `_BOUNDARY`.
 
-def plain(markup: str) -> str:
+        It is empty when no section has that title.
+        """
+        wanted = _plain(title).casefold()
+        start = next(
+            (
+                index
+                for index, (_, _, text) in enumerate(self.lines)
+                if (heading := _SECTION.search(text))
+                and _plain(_groups("{" + heading["title"], count=1)[0]).casefold() == wanted
+            ),
+            None,
+        )
+        if start is None:
+            return set()
+        end = next(
+            (
+                index
+                for index in range(start + 1, len(self.lines))
+                if _BOUNDARY.search(self.lines[index][2])
+            ),
+            len(self.lines),
+        )
+        return {(path, number) for path, number, _ in self.lines[start:end]}
+
+
+def _plain(markup: str) -> str:
     """`markup` with TeX commands and braces dropped and its spaces collapsed."""
     text = _COMMAND.sub(" ", markup.replace("~", " ")).replace("{", "").replace("}", "")
     return " ".join(text.split())

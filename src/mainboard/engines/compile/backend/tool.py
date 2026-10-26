@@ -1,5 +1,4 @@
 from contextlib import nullcontext
-from functools import cached_property
 from typing import TYPE_CHECKING
 
 from plumbum import local
@@ -22,19 +21,9 @@ class Tool:
 
     name: str = ""
 
-    def __call__(self, verb: str, *args: str, **flags: bool | str | None) -> None:
-        """Run in the foreground, a no-op if unavailable, `MissionError` on failure.
-
-        `flags` become CLI args (see `flags`) placed before the positional `args`.
-        """
-        if not self.available():
-            return
-        if not self.within_cwd(Process.foreground, verb, *args, **flags):
-            raise MissionError(f"`{self.name} {verb}` failed (see its output above)")
-
-    @cached_property
+    @property
     def command(self) -> BaseCommand:
-        """The resolved local command, looked up lazily.
+        """The resolved local command, looked up on each use.
 
         The name is required only here, since a backend running through another tool overrides
         `__call__` and names no binary.
@@ -57,6 +46,16 @@ class Tool:
             if isinstance(value, str):
                 out.append(value)
         return out
+
+    def __call__(self, verb: str, *args: str, **flags: bool | str | None) -> None:
+        """Run in the foreground, a no-op if unavailable, `MissionError` on failure.
+
+        `flags` become CLI args (see `flags`) placed before the positional `args`.
+        """
+        if not self.available():
+            return
+        if not self.within_cwd(Process.foreground, verb, *args, **flags):
+            raise MissionError(f"`{self.name} {verb}` failed (see its output above)")
 
     def available(self) -> bool:
         return True

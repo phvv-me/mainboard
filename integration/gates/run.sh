@@ -30,6 +30,9 @@ root=$(mktemp -d /tmp/mb-gate.XXXXXXXX)
 report=${report:-$(mktemp -d /tmp/mb-gate-report.XXXXXXXX)}
 mkdir -p "$report" "$root/tmp" "$root/cache"
 export MB_GATE_PROJECTS=$projects MB_GATE_ROOT=$root MB_GATE_BUDGET=${budget:-$limit}
+# The Apple lanes build with Xcode, not the command-line tools, wherever Xcode is installed.
+xcode=/Applications/Xcode.app/Contents/Developer
+[ -n "${DEVELOPER_DIR:-}" ] || [ ! -d "$xcode" ] || export DEVELOPER_DIR=$xcode
 export MB_GATE_REPORT=$(CDPATH= cd -- "$report" && pwd -P)
 export MB_GATE_WORKTREE=$(CDPATH= cd -- "$gate_dir/../.." && pwd)
 echo "gate $mode: budget ${MB_GATE_BUDGET}s, report $MB_GATE_REPORT" >&2

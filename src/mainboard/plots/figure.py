@@ -2,25 +2,22 @@
 
 from contextlib import ExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.style as mplstyle
 
-from .columns import Columns
 from .panel import PanelPlot
-from .table import Plot
+from .table.columns import Columns
+from .table.core import Plot, loose
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    from matplotlib.figure import Figure
-    from matplotlib.legend import Legend
-
     from ..manifest import FigureSpec
-    from ..manifest.schema.plot import PlotStyle
-    from ..render.query import Stamp
+    from ..manifest.schema.figures.plot import PlotStyle
+    from ..render.stamps import Stamp
     from ..state.relations import Relation
 
 
@@ -47,8 +44,7 @@ class FigurePlot(Plot):
         }
         with mplstyle.context([self.style.theme, self.style.rc]), ExitStack() as cleanup:
             mpl.rcParams["savefig.dpi"] = dpi or self.style.dpi
-            create = cast("Callable[..., Figure]", plt.figure)
-            canvas = create(**{"figsize": self.style.figsize, **specification.layout})
+            canvas = loose(plt.figure)(**{"figsize": self.style.figsize, **specification.layout})
             cleanup.callback(plt.close, canvas)
             mosaic = specification.mosaic or (tuple(specification.panels),)
             grid = canvas.add_gridspec(len(mosaic), len(mosaic[0]), **specification.gridspec)
@@ -75,7 +71,8 @@ class FigurePlot(Plot):
                 ordered = [label for label in self.style.colors if label in shared]
                 ordered += [label for label in shared if label not in self.style.colors]
                 labels = [self.style.labels.get(label, label) for label in ordered]
-                legend = cast("Callable[..., Legend]", canvas.legend)
-                legend([shared[label] for label in ordered], labels, **self.style.legend)
+                loose(canvas.legend)(
+                    [shared[label] for label in ordered], labels, **self.style.legend
+                )
             self._publish(canvas, paths)
         return paths

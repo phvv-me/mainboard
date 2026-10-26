@@ -19,16 +19,10 @@ from ..log import logger
 # `probe.units.gpu` imports nothing from here, so `probe.gating` -> `profile.bottleneck` cannot
 # close into a cycle.
 from ..probe.units.gpu import GPU
-from . import annotate
-from .models import ProcessReading, RegionStat, RegionSummary
-from .protocols import (
-    DeviceProbe,  # noqa: TC001  reason=Profiler is inspect.signature()'d in tests, so __init__'s Sequence[DeviceProbe] annotation must resolve at runtime since=2026-08-17
-)
+from .bottleneck import annotate
 from .result import DeviceEvidence, Profile
-from .session import Collection as Collection
-from .session import Feature as Feature
-from .session import SpanFrame as SpanFrame
-from .session import SpanMeasurement as SpanMeasurement
+from .result.models import ProcessReading, RegionStat, RegionSummary
+from .session import Collection, Feature, SpanFrame, SpanMeasurement
 from .spans import activate, active, deactivate
 from .trace import Activity as NativeActivity
 from .trace import BottleneckReport, RegionWindow, TraceCollector
@@ -46,97 +40,24 @@ class Profiler:
     Feature: TypeAlias = Feature  # noqa: UP040  reason=type statement would not forward attribute access since=2026-08-16
     Activity = NativeActivity
 
-    def __init__(
-        self,
-        *,
-        gpus: Sequence[DeviceProbe] = (),
-        features: Feature = Feature.DEFAULT,
-        activities: NativeActivity = NativeActivity.DEFAULT,
-        device_index: int = 0,
-        sample_interval_ms: int = 50,
-        max_spans: int = 100_000,
-        auto: Sequence[str] = (),
-    ) -> None:
-        self.collection = Collection(
-            features=features,
-            activities=activities,
-            device_index=device_index,
-            sample_interval_ms=sample_interval_ms,
-            max_spans=max_spans,
-            auto=tuple(auto),
-        )
-        self.gpus: Sequence[DeviceProbe] = tuple(gpus)
-        self.gpu: DeviceProbe | None = None
-        self.gpu_label = ""
-        self.tracer: Tracer = Tracer()
-        self.measurements: deque[SpanMeasurement] = deque(maxlen=max_spans)
-        self.frames: dict[int, SpanFrame] = {}
-        self.windows: deque[RegionWindow] = deque(maxlen=max_spans)
-        self.collector: TraceCollector = TraceCollector()
-        self.stack: ContextVar[tuple[int, ...]] = ContextVar("mainboard_spans", default=())
-        self.lock = threading.Lock()
-        self.stop_event = threading.Event()
-        self.sampler: threading.Thread | None = None
-        self.next_token = 0
-        self.dropped_spans = 0
-        self.gpu_evidence = False
-        self.auto_on = False
-        self.active = False
-
-    def __enter__(self) -> Profiler:
-        if self.active:
-            raise RuntimeError("a Profiler instance cannot be entered twice")
-        wanted = self.collection.features
-        if wanted & (self.Feature.DEVICE | self.Feature.ACTIVITY):
-            # Handed no probe, discover the host's own cards rather than collecting nothing.
-            self.gpus = self.gpus or GPU.all()
-            self.gpu = self._selected()
-        if self.gpu is None and self._demands_activity():
-            raise RuntimeError(
-                "GPU activity collection was requested and no device is visible here, so "
-                "this session would collect nothing. Run `mb host list --facts` to see what the "
-                "host probe finds, or drop `Profiler.Feature.ACTIVITY` to profile the host "
-                "alone."
-            )
-        if wanted & (self.Feature.MARKERS | self.Feature.ACTIVITY):
-            present = frozenset(gpu.vendor for gpu in self.gpus)
-            self.tracer = annotate.tracer(present=present)
-        with ExitStack() as rollback:
-            activate(self)
-            rollback.callback(deactivate, self)
-            if wanted & self.Feature.ACTIVITY and self.gpu is not None:
-                kinds = self.collection.activities
-                self.collector = rollback.enter_context(self.tracer.collect(kinds))
-            if self.collection.auto:
-                self.auto(self.collection.auto)
-                rollback.callback(annotate.disable_auto)
-            if wanted & self.Feature.DEVICE and self.gpu is not None:
-                self.stop_event.clear()
-                self.sampler = threading.Thread(
-                    target=self.sample, daemon=True, name="mainboard-profiler"
-                )
-                self.sampler.start()
-                rollback.callback(self.stop_sampler)
-            self.active = True
-            rollback.pop_all()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None = None,
-        exc: BaseException | None = None,
-        traceback: TracebackType | None = None,
-    ) -> None:
-        if self.auto_on:
-            annotate.disable_auto()
-            self.auto_on = False
-        deactivate(self)
-        self.stop_sampler()
-        try:
-            if self.collection.features & self.Feature.ACTIVITY and self.gpu is not None:
-                self.collector.stop()
-        finally:
-            self.active = False
+    active: bool
+    auto_on: bool
+    collection: Collection
+    collector: TraceCollector
+    dropped_spans: int
+    frames: dict[int, SpanFrame]
+    gpu: GPU | None
+    gpu_evidence: bool
+    gpu_label: str
+    gpus: Sequence[GPU]
+    lock: threading.Lock
+    measurements: deque[SpanMeasurement]
+    next_token: int
+    sampler: threading.Thread | None
+    stack: ContextVar[tuple[int, ...]]
+    stop_event: threading.Event
+    tracer: Tracer
+    windows: deque[RegionWindow]
 
     @classmethod
     def capture[Answer](
@@ -167,39 +88,21 @@ class Profiler:
         ) as owner:
             return owner._capture(work, activities)
 
-    def _capture[Answer](
-        self, work: Callable[[], Answer], activities: NativeActivity
-    ) -> tuple[Answer, Profile]:
-        """Checkpoint the shared stream, run once, then retrieve exactly that interval."""
-        if not self.active or not self.collection.features & Feature.ACTIVITY:
-            raise RuntimeError("the active Profiler did not request native activity collection")
-        if activities & ~self.collection.activities:
-            raise RuntimeError("the active Profiler did not enable the requested activity kinds")
-        if self.collector.device_index != self.collection.device_index:
-            raise RuntimeError("selected device differs from the actual current CUDA device")
-        since, loss_before = self.collector.checkpoint(activities)
-        start_ns = self.tracer.timestamp()
-        began = time.perf_counter_ns()
-        try:
-            answer = work()
-        finally:
-            until, loss_after = self.collector.checkpoint(activities)
-        wall_ns = time.perf_counter_ns() - began
-        end_ns = self.tracer.timestamp()
-        if loss_after != loss_before:
-            raise RuntimeError(f"native activity window lost {loss_after - loss_before} records")
-        kernels = tuple(self.collector.kernels(since=since, until=until))
-        memcpys = tuple(self.collector.memcpys(since=since, until=until))
-        kernels = kernels if activities & NativeActivity.KERNEL else ()
-        memcpys = memcpys if activities & NativeActivity.MEMCPY else ()
-        observed = bool(kernels or memcpys)
-        name = getattr(work, "__qualname__", type(work).__qualname__)
-        return answer, Profile(
-            device=self.gpu.label if self.gpu is not None else "",
-            device_evidence=DeviceEvidence.COLLECTED if observed else DeviceEvidence.ABSENT,
-            kernels=kernels,
-            memcpys=memcpys,
-            windows=(RegionWindow(name=name, start_ns=start_ns, end_ns=end_ns, wall_ns=wall_ns),),
+    @classmethod
+    def under(cls, collection: Collection, *, gpus: Sequence[GPU] = ()) -> Profiler:
+        """Build a profiler from one collection policy, for a caller that holds one already.
+
+        The constructor takes the choices flat for a one-line caller; a study hands the value
+        over rather than risk unpacking it differently next time.
+        """
+        return cls(
+            gpus=gpus,
+            features=collection.features,
+            activities=collection.activities,
+            device_index=collection.device_index,
+            sample_interval_ms=collection.sample_interval_ms,
+            max_spans=collection.max_spans,
+            auto=collection.auto,
         )
 
     @staticmethod
@@ -248,21 +151,201 @@ class Profiler:
             )
         )
 
-    @classmethod
-    def under(cls, collection: Collection, *, gpus: Sequence[DeviceProbe] = ()) -> Profiler:
-        """Build a profiler from one collection policy, for a caller that holds one already.
+    def __enter__(self) -> Profiler:
+        if self.active:
+            raise RuntimeError("a Profiler instance cannot be entered twice")
+        wanted = self.collection.features
+        if wanted & (self.Feature.DEVICE | self.Feature.ACTIVITY):
+            # Handed no probe, discover the host's own cards rather than collecting nothing.
+            self.gpus = self.gpus or GPU.all()
+            self.gpu = self._selected()
+        if self.gpu is None and self._demands_activity():
+            raise RuntimeError(
+                "GPU activity collection was requested and no device is visible here, so "
+                "this session would collect nothing. Run `mb host list --facts` to see what the "
+                "host probe finds, or drop `Profiler.Feature.ACTIVITY` to profile the host "
+                "alone."
+            )
+        if wanted & (self.Feature.MARKERS | self.Feature.ACTIVITY):
+            present = frozenset(gpu.vendor for gpu in self.gpus)
+            self.tracer = annotate.tracer(present=present)
+        with ExitStack() as rollback:
+            activate(self)
+            rollback.callback(deactivate, self)
+            self._armed(rollback, wanted)
+            self.active = True
+            rollback.pop_all()
+        return self
 
-        The constructor takes the choices flat for a one-line caller; a study hands the value
-        over rather than risk unpacking it differently next time.
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        if self.auto_on:
+            annotate.disable_auto()
+            self.auto_on = False
+        deactivate(self)
+        self.stop_sampler()
+        try:
+            if self.collection.features & self.Feature.ACTIVITY and self.gpu is not None:
+                self.collector.stop()
+        finally:
+            self.active = False
+
+    def __init__(
+        self,
+        *,
+        gpus: Sequence[GPU] = (),
+        features: Feature = Feature.DEFAULT,
+        activities: NativeActivity = NativeActivity.DEFAULT,
+        device_index: int = 0,
+        sample_interval_ms: int = 50,
+        max_spans: int = 100_000,
+        auto: Sequence[str] = (),
+    ) -> None:
+        self.collection = Collection(
+            features=features,
+            activities=activities,
+            device_index=device_index,
+            sample_interval_ms=sample_interval_ms,
+            max_spans=max_spans,
+            auto=tuple(auto),
+        )
+        self.gpus = tuple(gpus)
+        self.gpu = None
+        self.gpu_label = ""
+        self.tracer = Tracer()
+        self.measurements = deque(maxlen=max_spans)
+        self.frames = {}
+        self.windows = deque(maxlen=max_spans)
+        self.collector = TraceCollector()
+        self.stack = ContextVar("mainboard_spans", default=())
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.sampler = None
+        self.next_token = 0
+        self.dropped_spans = 0
+        self.gpu_evidence = False
+        self.auto_on = False
+        self.active = False
+
+    def _armed(self, rollback: ExitStack, wanted: Feature) -> None:
+        """Start the collector, auto-instrumentation and sampler `wanted` asks.
+
+        Each is undone by `rollback` should a later one fail.
         """
-        return cls(
-            gpus=gpus,
-            features=collection.features,
-            activities=collection.activities,
-            device_index=collection.device_index,
-            sample_interval_ms=collection.sample_interval_ms,
-            max_spans=collection.max_spans,
-            auto=collection.auto,
+        if wanted & self.Feature.ACTIVITY and self.gpu is not None:
+            kinds = self.collection.activities
+            self.collector = rollback.enter_context(self.tracer.collect(kinds))
+        if self.collection.auto:
+            self.auto(self.collection.auto)
+            rollback.callback(annotate.disable_auto)
+        if wanted & self.Feature.DEVICE and self.gpu is not None:
+            self.stop_event.clear()
+            self.sampler = threading.Thread(
+                target=self.sample, daemon=True, name="mainboard-profiler"
+            )
+            self.sampler.start()
+            rollback.callback(self.stop_sampler)
+
+    def _capturable(self, activities: NativeActivity) -> None:
+        """Refuse a capture of `activities` this session does not collect on this device."""
+        if not self.active or not self.collection.features & Feature.ACTIVITY:
+            raise RuntimeError("the active Profiler did not request native activity collection")
+        if activities & ~self.collection.activities:
+            raise RuntimeError("the active Profiler did not enable the requested activity kinds")
+        if self.collector.device_index != self.collection.device_index:
+            raise RuntimeError("selected device differs from the actual current CUDA device")
+
+    def _capture[Answer](
+        self, work: Callable[[], Answer], activities: NativeActivity
+    ) -> tuple[Answer, Profile]:
+        """Checkpoint the shared stream, run once, then retrieve exactly that interval."""
+        self._capturable(activities)
+        since, loss_before = self.collector.checkpoint(activities)
+        start_ns = self.tracer.timestamp()
+        began = time.perf_counter_ns()
+        try:
+            answer = work()
+        finally:
+            until, loss_after = self.collector.checkpoint(activities)
+        wall_ns = time.perf_counter_ns() - began
+        end_ns = self.tracer.timestamp()
+        if loss_after != loss_before:
+            raise RuntimeError(f"native activity window lost {loss_after - loss_before} records")
+        kernels = tuple(self.collector.kernels(since=since, until=until))
+        memcpys = tuple(self.collector.memcpys(since=since, until=until))
+        kernels = kernels if activities & NativeActivity.KERNEL else ()
+        memcpys = memcpys if activities & NativeActivity.MEMCPY else ()
+        observed = bool(kernels or memcpys)
+        name = getattr(work, "__qualname__", type(work).__qualname__)
+        return answer, Profile(
+            device=self.gpu.label if self.gpu is not None else "",
+            device_evidence=DeviceEvidence.COLLECTED if observed else DeviceEvidence.ABSENT,
+            kernels=kernels,
+            memcpys=memcpys,
+            windows=(RegionWindow(name=name, start_ns=start_ns, end_ns=end_ns, wall_ns=wall_ns),),
+        )
+
+    def _demands_activity(self) -> bool:
+        """Whether this session named ACTIVITY, which a GPU-less host cannot serve.
+
+        Under DEFAULT such a host should still profile its Python.
+        """
+        wanted = self.collection.features
+        return bool(wanted & self.Feature.ACTIVITY) and wanted != self.Feature.DEFAULT
+
+    def _evidence(self, *, observed: bool) -> DeviceEvidence:
+        """Say whether device evidence came back, or was never asked for in the first place."""
+        if observed:
+            return DeviceEvidence.COLLECTED
+        wanted = self.collection.features & (self.Feature.DEVICE | self.Feature.ACTIVITY)
+        return DeviceEvidence.ABSENT if wanted else DeviceEvidence.UNSOUGHT
+
+    def _measured(self, frame: SpanFrame, *, wall_ns: int) -> None:
+        """Keep the closed span's wall time and device samples.
+
+        A boundary sample stands in when the sampler took none.
+        """
+        samples = list(frame.samples)
+        if not samples and self.collection.features & self.Feature.DEVICE:
+            boundary = self.target_snapshot(frame.path)
+            samples = [boundary] if boundary is not None else []
+        if not (self.collection.features & self.Feature.SPANS or samples):
+            return
+        if len(self.measurements) == self.collection.max_spans:
+            self.dropped_spans += 1
+        self.measurements.append(
+            SpanMeasurement(name=frame.path, wall_ms=wall_ns / 1e6, samples=tuple(samples))
+        )
+
+    def _selected(self) -> GPU | None:
+        """Select exactly the requested visible device; never substitute another card."""
+        if not self.gpus:
+            return None
+        index = self.collection.device_index
+        try:
+            return self.gpus[index]
+        except IndexError:
+            raise ValueError(
+                f"device_index {index} is outside the {len(self.gpus)} visible devices"
+            ) from None
+
+    def _windowed(self, frame: SpanFrame, *, wall_ns: int) -> None:
+        """Keep the closed span's device activity window, when this session collects activity."""
+        if not self.collection.features & self.Feature.ACTIVITY:
+            return
+        if len(self.windows) == self.collection.max_spans:
+            self.dropped_spans += 1
+        self.windows.append(
+            RegionWindow(
+                name=frame.path,
+                start_ns=frame.device_start_ns,
+                end_ns=self.tracer.timestamp(),
+                wall_ns=wall_ns,
+            )
         )
 
     def auto(self, modules: Sequence[str]) -> None:
@@ -277,14 +360,6 @@ class Profiler:
     def bottlenecks(self, top: int = 10) -> list[RegionStat]:
         """Return the slowest span paths in the current session."""
         return self.result().bottlenecks(top)
-
-    def _demands_activity(self) -> bool:
-        """Whether this session named ACTIVITY, which a GPU-less host cannot serve.
-
-        Under DEFAULT such a host should still profile its Python.
-        """
-        wanted = self.collection.features
-        return bool(wanted & self.Feature.ACTIVITY) and wanted != self.Feature.DEFAULT
 
     def enter(self, name: str) -> int:
         """Open one span and return the exact token later used to close it."""
@@ -307,13 +382,6 @@ class Profiler:
         self.stack.set((*stack, token))
         return token
 
-    def _evidence(self, *, observed: bool) -> DeviceEvidence:
-        """Say whether device evidence came back, or was never asked for in the first place."""
-        if observed:
-            return DeviceEvidence.COLLECTED
-        wanted = self.collection.features & (self.Feature.DEVICE | self.Feature.ACTIVITY)
-        return DeviceEvidence.ABSENT if wanted else DeviceEvidence.UNSOUGHT
-
     def exit(self, token: int, *, wall_ns: int) -> None:
         """Close one span and fold its timing, device samples, and activity window."""
         stack = self.stack.get()
@@ -325,31 +393,8 @@ class Profiler:
             return
         if frame.finish_marker is not None:
             frame.finish_marker()
-        samples = list(frame.samples)
-        if not samples and self.collection.features & self.Feature.DEVICE:
-            boundary = self.target_snapshot(frame.path)
-            samples = [boundary] if boundary is not None else []
-        if self.collection.features & self.Feature.SPANS or samples:
-            if len(self.measurements) == self.collection.max_spans:
-                self.dropped_spans += 1
-            self.measurements.append(
-                SpanMeasurement(
-                    name=frame.path,
-                    wall_ms=wall_ns / 1e6,
-                    samples=tuple(samples),
-                )
-            )
-        if self.collection.features & self.Feature.ACTIVITY:
-            if len(self.windows) == self.collection.max_spans:
-                self.dropped_spans += 1
-            self.windows.append(
-                RegionWindow(
-                    name=frame.path,
-                    start_ns=frame.device_start_ns,
-                    end_ns=self.tracer.timestamp(),
-                    wall_ns=wall_ns,
-                )
-            )
+        self._measured(frame, wall_ns=wall_ns)
+        self._windowed(frame, wall_ns=wall_ns)
 
     def report(self) -> str:
         """Render the current result as plain text."""
@@ -393,18 +438,6 @@ class Profiler:
             with self.lock:
                 for frame in frames:
                     frame.samples.append(snapshot)
-
-    def _selected(self) -> DeviceProbe | None:
-        """Select exactly the requested visible device; never substitute another card."""
-        if not self.gpus:
-            return None
-        index = self.collection.device_index
-        try:
-            return self.gpus[index]
-        except IndexError:
-            raise ValueError(
-                f"device_index {index} is outside the {len(self.gpus)} visible devices"
-            ) from None
 
     def stats(self) -> list[RegionStat]:
         """Return per-span aggregates for the current session."""

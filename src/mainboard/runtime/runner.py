@@ -19,7 +19,8 @@ from time import monotonic
 from typing import TYPE_CHECKING
 
 from ..core.project import Project
-from ..dispatch.evidence import RECEIPTS_VAR, framed
+from ..dispatch.constants import RECEIPTS_VAR
+from ..dispatch.jobs.evidence import framed
 from .entry import Refusal
 from .job import walltime_seconds
 from .tree import FileBudget, ProcessTree
@@ -49,12 +50,6 @@ class Receipts:
         self.path = Path(gettempdir()) / f"mainboard-receipts.{os.getpid()}.ndjson"
         self.staged = False
 
-    def stage(self, environment: MutableMapping[str, str]) -> None:
-        """Point the command at an empty receipts file, emptied for a restarted container."""
-        self.path.write_bytes(b"")
-        environment.update(RECEIPTS_VAR.exported(str(self.path)))
-        self.staged = True
-
     def frame(self) -> str:
         """The framed block of what the command wrote, empty when it wrote nothing."""
         if not self.staged:
@@ -65,6 +60,12 @@ class Receipts:
             return ""
         self.path.unlink()
         return framed(written) if written else ""
+
+    def stage(self, environment: MutableMapping[str, str]) -> None:
+        """Point the command at an empty receipts file, emptied for a restarted container."""
+        self.path.write_bytes(b"")
+        environment.update(RECEIPTS_VAR.exported(str(self.path)))
+        self.staged = True
 
 
 class Runner:
@@ -77,6 +78,47 @@ class Runner:
     """
 
     tool: tuple[str, ...] = (sys.executable, "-m", Project().package)
+
+    @contextmanager
+    def endings(self) -> Generator[None]:
+        """Hold every ending signal for the run, ending the command's tree when one arrives."""
+        previous = {number: signal.signal(number, self.ended) for number in _ENDINGS}
+        try:
+            yield
+        finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
+
+    @contextmanager
+    def output(self) -> Generator[None]:
+        """Send a PBS job's merged output to the log a later poll reads, and nothing otherwise.
+
+        A PBS server spools output where no poll looks and soon purges the job, so the job
+        appends to its own log (exit status beside it). The runner's own standard streams move,
+        as `exec >> log 2>&1` moved a script's, so everything lands in the one log until the run
+        ends.
+        """
+        if not self.job.logs:
+            yield
+            return
+        Path(self.job.logs).mkdir(parents=True, exist_ok=True)
+        self.flush()
+        kept = [os.dup(stream) for stream in (1, 2)]
+        with (Path(self.job.logs) / f"{self.job_id}.log").open("ab") as log:
+            for stream in (1, 2):
+                os.dup2(log.fileno(), stream)
+        try:
+            yield
+        finally:
+            self.flush()
+            for stream, descriptor in zip((1, 2), kept, strict=True):
+                os.dup2(descriptor, stream)
+                os.close(descriptor)
+
+    @property
+    def job_id(self) -> str:
+        """The PBS job's bare number, the stem its log and exit artifact are named by."""
+        return self.environ["PBS_JOBID"].split(".", maxsplit=1)[0]
 
     def __init__(
         self, job: Job, *, environ: Mapping[str, str] | None = None, grace: float = 30.0
@@ -93,15 +135,75 @@ class Runner:
         self.signalled = 0
         self.deadline = monotonic() + walltime_seconds(job.walltime) if job.walltime else None
 
-    def run(self) -> int:
-        """Run the job, frame its receipts, record its exit, and answer its exit status."""
-        with self.output(), self.endings(), FileBudget.permitted():
-            status = self.outcome()
-            self.say(self.receipts.frame())
-            if self.job.logs:
-                self.say(f"exit={status}")
-                self.exit_artifact().write_text(f"exit={status}\n", encoding="utf-8", newline="\n")
+    def _verb(
+        self, call: ToolCall, environment: Mapping[str, str], *extra: str, quiet: bool = True
+    ) -> subprocess.Popen[bytes]:
+        return subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=this tool's own verb in its own interpreter since=2026-09-25
+            [*self.tool, *call.args, *extra],
+            cwd=call.cwd or self.job.root,
+            env=dict(environment),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL if quiet else None,
+        )
+
+    def argv(self) -> list[str]:
+        """The command's argv: its container, else `bash -c`."""
+        return list(self.job.container) if self.job.container else ["bash", "-c", self.job.command]
+
+    def call(
+        self, call: ToolCall | None, environment: Mapping[str, str], *, quiet: bool = True
+    ) -> int:
+        """Run one of this tool's own verbs to its exit status, 0 when there is none to run.
+
+        Its output is discarded, since it belongs in the job's receipts rather than its log; a
+        call that is not `quiet` keeps its errors in the log.
+        """
+        if call is None:
+            return 0
+        self.flush()
+        with self._verb(call, environment, quiet=quiet) as process:
+            return process.wait()
+
+    def command(self, environment: dict[str, str]) -> int:
+        """Run the command from the pinned tree under the walltime and answer its status."""
+        self.flush()
+        process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the job's own command, run the way its dispatch spelled it since=2026-09-25
+            self.argv(), cwd=self.job.root, env=environment
+        )
+        self.tree = ProcessTree(process, grace=self.grace)
+        remaining = None if self.deadline is None else max(self.deadline - monotonic(), 0.0)
+        status = self.tree.wait(remaining)
+        if status is not None:
+            return status
+        status = 137 if self.tree.stop() else 124
+        self.say(f"mainboard: killed at walltime {self.job.walltime} (exit {status})")
         return status
+
+    def ended(self, number: int, frame: FrameType | None) -> None:
+        """Remember the signal the job is ending on and pass it to the command's tree."""
+        del frame
+        self.signalled = 128 + number
+        if self.tree is not None:
+            self.tree.terminate()
+
+    def environment(self) -> dict[str, str]:
+        """The environment the command starts in: entered, then the dispatch's own variables."""
+        entered = self.job.activation.entered(self.environ, cwd=self.job.root)
+        if self.job.pythonpath:
+            entered["PYTHONPATH"] = self.job.pythonpath
+        else:
+            entered.pop("PYTHONPATH", None)
+        entered.update(self.job.variables)
+        return entered
+
+    def exit_artifact(self) -> Path:
+        """Where a PBS job's status is kept for a server that has since forgotten the job."""
+        return Path(self.job.logs) / f"{self.job_id}.exit"
+
+    def flush(self) -> None:
+        """Flush this runner's own streams, so a child's output lands after what came before."""
+        for stream in (sys.stdout, sys.stderr):
+            stream.flush()
 
     def outcome(self) -> int:
         """Every step up to and including the command, answering the job's exit status."""
@@ -133,48 +235,15 @@ class Runner:
         if self.call(self.job.provide, self.environ, quiet=False):
             self.say("mainboard: could not build the environment this job was dispatched with")
 
-    def environment(self) -> dict[str, str]:
-        """The environment the command starts in: entered, then the dispatch's own variables."""
-        entered = self.job.activation.entered(self.environ, cwd=self.job.root)
-        if self.job.pythonpath:
-            entered["PYTHONPATH"] = self.job.pythonpath
-        elif self.job.isolate_pythonpath:
-            entered.pop("PYTHONPATH", None)
-        entered.update(self.job.variables)
-        return entered
-
-    def command(self, environment: dict[str, str]) -> int:
-        """Run the command from the pinned tree under the walltime and answer its status."""
-        self.flush()
-        process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the job's own command, run the way its dispatch spelled it since=2026-09-25
-            self.argv(), cwd=self.job.root, env=environment
-        )
-        self.tree = ProcessTree(process, grace=self.grace)
-        remaining = None if self.deadline is None else max(self.deadline - monotonic(), 0.0)
-        status = self.tree.wait(remaining)
-        if status is not None:
-            return status
-        status = 137 if self.tree.stop() else 124
-        self.say(f"mainboard: killed at walltime {self.job.walltime} (exit {status})")
+    def run(self) -> int:
+        """Run the job, frame its receipts, record its exit, and answer its exit status."""
+        with self.output(), self.endings(), FileBudget.permitted():
+            status = self.outcome()
+            self.say(self.receipts.frame())
+            if self.job.logs:
+                self.say(f"exit={status}")
+                self.exit_artifact().write_text(f"exit={status}\n", encoding="utf-8", newline="\n")
         return status
-
-    def argv(self) -> list[str]:
-        """The command's argv: its container, else `bash -c`."""
-        return list(self.job.container) if self.job.container else ["bash", "-c", self.job.command]
-
-    def call(
-        self, call: ToolCall | None, environment: Mapping[str, str], *, quiet: bool = True
-    ) -> int:
-        """Run one of this tool's own verbs to its exit status, 0 when there is none to run.
-
-        Its output is discarded, since it belongs in the job's receipts rather than its log; a
-        call that is not `quiet` keeps its errors in the log.
-        """
-        if call is None:
-            return 0
-        self.flush()
-        with self._verb(call, environment, quiet=quiet) as process:
-            return process.wait()
 
     def sample(self, environment: Mapping[str, str]) -> subprocess.Popen[bytes] | None:
         """Start the sampler beside the command, following this runner so it cannot outlive it."""
@@ -182,26 +251,6 @@ class Runner:
         return (
             None if call is None else self._verb(call, environment, "--parent", str(os.getpid()))
         )
-
-    def _verb(
-        self, call: ToolCall, environment: Mapping[str, str], *extra: str, quiet: bool = True
-    ) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=this tool's own verb in its own interpreter since=2026-09-25
-            [*self.tool, *call.args, *extra],
-            cwd=call.cwd or self.job.root,
-            env=dict(environment),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL if quiet else None,
-        )
-
-    def exit_artifact(self) -> Path:
-        """Where a PBS job's status is kept for a server that has since forgotten the job."""
-        return Path(self.job.logs) / f"{self.job_id}.exit"
-
-    @property
-    def job_id(self) -> str:
-        """The PBS job's bare number, the stem its log and exit artifact are named by."""
-        return self.environ["PBS_JOBID"].split(".", maxsplit=1)[0]
 
     def say(self, text: str, *, error: bool = False) -> None:
         """Write one line of the runner's own into the job's output, nothing for empty text.
@@ -212,51 +261,3 @@ class Runner:
         if text:
             self.flush()
             os.write(2 if error else 1, (text if text.endswith("\n") else f"{text}\n").encode())
-
-    def flush(self) -> None:
-        """Flush this runner's own streams, so a child's output lands after what came before."""
-        for stream in (sys.stdout, sys.stderr):
-            stream.flush()
-
-    @contextmanager
-    def output(self) -> Generator[None]:
-        """Send a PBS job's merged output to the log a later poll reads, and nothing otherwise.
-
-        A PBS server spools output where no poll looks and soon purges the job, so the job
-        appends to its own log (exit status beside it). The runner's own standard streams move,
-        as `exec >> log 2>&1` moved a script's, so everything lands in the one log until the run
-        ends.
-        """
-        if not self.job.logs:
-            yield
-            return
-        Path(self.job.logs).mkdir(parents=True, exist_ok=True)
-        self.flush()
-        kept = [os.dup(stream) for stream in (1, 2)]
-        with (Path(self.job.logs) / f"{self.job_id}.log").open("ab") as log:
-            for stream in (1, 2):
-                os.dup2(log.fileno(), stream)
-        try:
-            yield
-        finally:
-            self.flush()
-            for stream, descriptor in zip((1, 2), kept, strict=True):
-                os.dup2(descriptor, stream)
-                os.close(descriptor)
-
-    @contextmanager
-    def endings(self) -> Generator[None]:
-        """Hold every ending signal for the run, ending the command's tree when one arrives."""
-        previous = {number: signal.signal(number, self.ended) for number in _ENDINGS}
-        try:
-            yield
-        finally:
-            for number, handler in previous.items():
-                signal.signal(number, handler)
-
-    def ended(self, number: int, frame: FrameType | None) -> None:
-        """Remember the signal the job is ending on and pass it to the command's tree."""
-        del frame
-        self.signalled = 128 + number
-        if self.tree is not None:
-            self.tree.terminate()

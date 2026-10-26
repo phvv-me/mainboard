@@ -1,19 +1,15 @@
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
 from ..core.project import Project
 from ..profile.spans import Span
 from ..profile.spans import span as profile_span
-from .experiment import DeclaredExperiment
-
-if TYPE_CHECKING:
-    from .experiment import Fixture
+from .experiment import DeclaredExperiment, Fixture
 
 
-def default_dataset_resolver(name: str) -> Path:
+def _default_dataset_resolver(name: str) -> Path:
     """The hardware-free default: a dataset resolves under the project's staged-data cache."""
     return Path(Project().out_dir(Path.cwd())) / "data" / name
 
@@ -28,10 +24,10 @@ class Run(FrozenModel):
     model_id: str
     config: DeclaredExperiment
     artifact_dir: Path
-    dataset_resolver: Callable[[str], Path] = default_dataset_resolver
+    dataset_resolver: Callable[[str], Path] = _default_dataset_resolver
 
-    def artifact(
-        self, name: str, writer: Callable[[Path, Fixture], None], payload: Fixture
+    def artifact[Payload: Fixture](
+        self, name: str, writer: Callable[[Path, Payload], None], payload: Payload
     ) -> Path:
         """Write one named artifact under `artifact_dir` through `writer(path, payload)`.
 

@@ -1,6 +1,6 @@
 from patos import FrozenModel
 
-from ...models import ProcessReading
+from ...result.models import ProcessReading
 
 
 class SpanMeasurement(FrozenModel):

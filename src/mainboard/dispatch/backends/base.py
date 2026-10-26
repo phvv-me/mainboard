@@ -15,7 +15,7 @@ import os
 import re
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
+from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -25,7 +25,7 @@ from pydantic import field_validator
 from ...core.errors import MissionError
 from ...core.project import Project
 from ...runtime.job import walltime_seconds
-from ..rentals import Rental
+from ..hosts.rentals import Rental
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -33,18 +33,12 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
-    from ..allocation import Allocation
-    from ..transport import Endpoint
-    from ..vocabulary import JobState, Resources
+    from ..hosts.allocation import Allocation
+    from ..jobs.vocabulary import JobState, Resources
+    from ..transport.core import Endpoint
 
-    class HttpResponse(Protocol):
-        """The subset of `http.client.HTTPResponse` a transport callable must return."""
-
-        status: int
-
-        def read(self) -> bytes: ...
-
-    type Transport = Callable[[Request], HttpResponse]
+    # What a REST backend sends a request through, answering the response body.
+    type Transport = Callable[[Request], bytes]
 
 # Kinds the `Scheduler` path dispatches; `auto` stays here, as `Scheduler.pick` treats an
 # unprobed kind as ssh. `held` is the kind a queue declaring that scheduler records on its runs.
@@ -74,6 +68,16 @@ class Credentials(Singleton):
         self.project = Project()
         self.loaded = False
         self.lock = Lock()
+
+    def key(self, *names: str, hint: str) -> str:
+        """The first of the variables `names` set here or in the workspace `.env`.
+
+        Refuses with `hint` (where such a key comes from) when none is.
+        """
+        self.load()
+        if found := next(filter(None, (os.environ.get(name, "") for name in names)), ""):
+            return found
+        raise MissionError(f"set {' or '.join(names)} in the workspace .env, {hint}")
 
     def load(self) -> tuple[str, ...]:
         """Define what the workspace `.env` declares and this environment lacks, by name.
@@ -218,6 +222,10 @@ class Rentable(Capability, abc.ABC):
     """
 
     @abc.abstractmethod
+    def cancel(self, handle: str) -> None:
+        """Cancel `handle` on the provider, which is what stops the meter."""
+
+    @abc.abstractmethod
     def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
         """Reconnect to a rental, including after the submitting process has exited."""
 
@@ -260,6 +268,25 @@ class ProviderBackend(Registry, abc.ABC):
     # `cuda_max_good` of 13.0, exactly that trap.
     CAPABILITY_FLOOR: ClassVar[int] = 750
 
+    @abc.abstractmethod
+    def cancel(self, handle: str) -> None:
+        """End `handle` on the provider, tolerating one it already forgot.
+
+        The durable sweep cancels every run it settles and may settle one twice (a pass killed
+        before advancing its cursor), and someone may have ended the rental by hand, so a gone
+        rental is the state asked for rather than a fault.
+        """
+
+    @abc.abstractmethod
+    def state(self, handle: str) -> JobState:
+        """Post-mortem `handle`: its state, exit code, and a verdict."""
+
+    @abc.abstractmethod
+    def submit(
+        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+    ) -> str:
+        """Launch `command` under `resources`; return the provider's opaque handle id."""
+
     def admit(self, plan: ExecutionPlan, resources: Resources) -> None:
         """Every refusal a metered dispatch owes before it reaches a provider's API at all.
 
@@ -278,15 +305,6 @@ class ProviderBackend(Registry, abc.ABC):
                 f"{self.CUDA_FLOOR} floor; rent a CUDA {self.CUDA_FLOOR} or newer image instead"
             )
 
-    @abc.abstractmethod
-    def cancel(self, handle: str) -> None:
-        """End `handle` on the provider, tolerating one it already forgot.
-
-        The durable sweep cancels every run it settles and may settle one twice (a pass killed
-        before advancing its cursor), and someone may have ended the rental by hand, so a gone
-        rental is the state asked for rather than a fault.
-        """
-
     def refusal(self, capability: type[Capability], **facts: str) -> str:
         """Why this backend cannot answer `capability`: its own `lacks` advice, else a plain line.
 
@@ -296,16 +314,6 @@ class ProviderBackend(Registry, abc.ABC):
         if advice is None:
             return f"the {self.name} backend does not implement {capability.__name__}"
         return advice.format(**facts)
-
-    @abc.abstractmethod
-    def state(self, handle: str) -> JobState:
-        """Post-mortem `handle`: its state, exit code, and a verdict."""
-
-    @abc.abstractmethod
-    def submit(
-        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
-    ) -> str:
-        """Launch `command` under `resources`; return the provider's opaque handle id."""
 
 
 def forgotten(error: HTTPError) -> dict:
@@ -328,14 +336,15 @@ def hourly_cap(resources: Resources, *, landing: int = 0) -> float:
     return resources.max_usd * 3600.0 / (seconds + landing) if seconds else 0.0
 
 
-def http_transport(request: Request) -> HttpResponse:
-    """Send `request` over urllib, the default transport of every REST backend.
+def http_transport(request: Request) -> bytes:
+    """Send `request` over urllib and read its body, the default transport of every REST backend.
 
     The one audited url open in the package: each backend builds its `Request` from a constant
     https root and tests swap this callable out, so no unvetted scheme reaches urllib. The
     deadline is ours, since urllib has none.
     """
-    return urlopen(request, timeout=_TIMEOUT_S)  # ruff:ignore[suspicious-url-open-usage]  reason=the package's single audited seam, every caller builds its Request from a constant https root and tests inject a double since=2026-08-18
+    with urlopen(request, timeout=_TIMEOUT_S) as response:  # ruff:ignore[suspicious-url-open-usage]  reason=the package's single audited seam, every caller builds its Request from a constant https root and tests inject a double since=2026-08-18
+        return response.read()
 
 
 def image_cuda(image: str) -> float | None:

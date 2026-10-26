@@ -25,12 +25,12 @@ Differences from the kernel, kept on purpose: the facts do not state `frameworks
 from typing import TYPE_CHECKING
 
 from ...catalog import Family, Function
-from ...facts import listed
+from ...engine.facts import listed
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ...facts import Facts
+    from ...engine.facts import Facts
 
 _SUFFIXES = ("py", "rs", "ts", "tsx", "js", "jsx", "mjs", "svelte", "go")
 _VERBS = "['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'route', 'websocket', 'ws']"
@@ -67,7 +67,6 @@ class RouteStrip(Function):
 
 class Route(Family):
     family = "RouteFact"
-    verified = True
     relations = {
         "facts": r"""
             SELECT 0 AS fact_order, 'routes' AS fact_id, '' AS path, 1 AS start_line,
@@ -234,8 +233,10 @@ class Route(Family):
 
     @classmethod
     def provide(cls, facts: Facts, root: Path) -> None:
-        """List the files routes are read from and mentioned in (`route_corpus`), so that
-        `source_files` reads them."""
+        """List the files routes are read from and mentioned in, as `route_corpus`.
+
+        `source_files` then reads them.
+        """
         paths = [path for path in listed(root) if path.rsplit(".", 1)[-1] in _SUFFIXES]
         facts.db.execute("CREATE TABLE route_corpus (path VARCHAR)")
         if paths:
