@@ -2,8 +2,8 @@
 
 import json
 import os
+import platform
 import plistlib
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
@@ -103,22 +103,25 @@ class Apple:
         return target
 
     @staticmethod
-    def select_xcode() -> None:
+    def select_xcode(*, link: str = _XCODE_SELECT, applications: Path = _APPLICATIONS) -> None:
         """Point `DEVELOPER_DIR` at the newest Xcode.app when Command Line Tools are chosen.
 
         It holds for this process and every one it starts. The Command Line Tools lack the
         SwiftParser host libraries the Swift rules read and `xcodebuild` itself, which made 444
         commands in a week prefix `DEVELOPER_DIR` by hand (2026-10-23). A `DEVELOPER_DIR` the
         caller set, another platform, or a choice of Xcode is left alone.
+
+        link: the xcode-select link to read.
+        applications: the folder holding the Xcode apps.
         """
-        if "DEVELOPER_DIR" in os.environ or sys.platform != "darwin":
+        if "DEVELOPER_DIR" in os.environ or platform.system() != "Darwin":
             return
         try:
-            selected = os.readlink(_XCODE_SELECT)
+            selected = os.readlink(link)
         except OSError:
             return
         if selected.startswith(_COMMAND_LINE_TOOLS) and (
-            installed := sorted(_APPLICATIONS.glob("Xcode*.app"), key=_bundle_version)
+            installed := sorted(applications.glob("Xcode*.app"), key=_bundle_version)
         ):
             # plumbum, which launches `mb run`'s commands, copied the environment at import.
             os.environ["DEVELOPER_DIR"] = local.env["DEVELOPER_DIR"] = str(

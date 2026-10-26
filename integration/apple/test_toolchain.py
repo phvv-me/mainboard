@@ -62,14 +62,12 @@ def xcode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., str]
         selected: str | None,
         *,
         environment: Mapping[str, str] | None = None,
-        platform: str = "darwin",
+        system: str = "Darwin",
     ) -> str:
         _install(tmp_path, apps)
         if selected is not None:
             (tmp_path / "link").symlink_to(selected)
-        monkeypatch.setattr(toolchain, "_APPLICATIONS", tmp_path)
-        monkeypatch.setattr(toolchain, "_XCODE_SELECT", str(tmp_path / "link"))
-        monkeypatch.setattr(toolchain.sys, "platform", platform)
+        monkeypatch.setattr(toolchain.platform, "system", lambda: system)
         monkeypatch.setenv("DEVELOPER_DIR", "")
         monkeypatch.delenv("DEVELOPER_DIR")
         for key, value in (environment or {}).items():
@@ -77,7 +75,7 @@ def xcode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., str]
         # plumbum's copy of the environment, which the selection also sets, is restored afterwards.
         with local.env():
             local.env.pop("DEVELOPER_DIR", "")
-            Apple.select_xcode()
+            Apple.select_xcode(link=str(tmp_path / "link"), applications=tmp_path)
         return os.environ.get("DEVELOPER_DIR", _UNSET).replace(str(tmp_path), _APPLICATIONS)
 
     return select
@@ -128,7 +126,7 @@ def xcode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., str]
             {"apps": {}, "selected": _COMMAND_LINE_TOOLS}, _UNSET, id="no-installed-xcode"
         ),
         pytest.param(
-            {"apps": _INSTALLED, "selected": _COMMAND_LINE_TOOLS, "platform": "linux"},
+            {"apps": _INSTALLED, "selected": _COMMAND_LINE_TOOLS, "system": "Linux"},
             _UNSET,
             id="another-platform-is-left-alone",
         ),

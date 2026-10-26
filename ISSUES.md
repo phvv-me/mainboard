@@ -2198,6 +2198,17 @@ changed function compared old against new on probes, none left WRONG). Nothing i
   The mirror holds only copied files in real directories, so empty directories escape
   (ALL-FILE0001) and populated ones always crash. ALL-TEST0004 works around it with one `Rename`
   per file; the fix is to expand directories with `_files` in `adopt` and `publish`.
+- Found by the first CI run of the milestone (all fixed 2026-10-26; none showed on the Mac that
+  has the monorepo environment): `dirty-equals` and `ty` were in the root `mb.toml` but not in
+  this package's `dev` group, so a standalone checkout could not collect the lake tests and the
+  fixer's proof ran `str(shutil.which("ty"))`, the executable `'None'` (the call still hides a
+  missing tool behind `str()`); pyrefly on Linux reported `selected` uninitialized after the
+  `sys.platform != "darwin"` early return in `Apple.select_xcode`, now `platform.system()` with
+  the link and the applications folder as parameters instead of patched module constants; and the
+  Swift helper compile wrote the compiler's module cache outside the gate's sandbox, which only
+  works where a cache already exists (113 tests on a fresh runner), so it builds with
+  `-module-cache-path` inside its scratch folder. `mb ci --matrix` could not run the Linux leg:
+  `pedro-cvlab` was unreachable and the table offers no other host.
 - Process (fixers over the test tree): each proven state is one full suite on the mirror (about 9
   minutes), and `mb refactor fix` bisects a failing state file by file, so four test-convention
   rules took 70 minutes; a first run with `timeout 3400` was killed in its last proof, wrote

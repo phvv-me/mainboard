@@ -109,8 +109,11 @@ class _Build(FrozenModel):
             source.write_bytes(_SOURCE.read_bytes())
             host = str(self.host)
             linked = ("-I", host, "-L", host, "-Xlinker", "-rpath", "-Xlinker", host)
+            # The compiler's own module cache lives outside the sandboxes this build runs in (a
+            # fresh CI runner has none to read and may write none), so the build keeps its own.
+            cached = ("-module-cache-path", str(Path(scratch) / "modules"))
             built = runner.run(
-                str(self.compiler), (*linked, *self.sdk, str(source), "-o", str(output))
+                str(self.compiler), (*linked, *cached, *self.sdk, str(source), "-o", str(output))
             )
             if built.returncode or built.truncated:
                 raise MissionError(f"SwiftSyntax helper compilation failed: {built.stderr}")
