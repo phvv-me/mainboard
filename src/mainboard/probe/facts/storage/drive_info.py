@@ -4,6 +4,7 @@ from pathlib import Path
 
 from patos import FrozenModel
 
+from ....constants import BYTES_PER_KIBIBYTE
 from ...enums import DiskKind
 from ..constants import SYS_BLOCK
 from .partition_info import PartitionInfo
@@ -81,4 +82,4 @@ class DriveInfo(FrozenModel):
     @property
     def size_gb(self) -> float:
         """Total device capacity in gibibytes."""
-        return self.size_bytes / 1024**3
+        return self.size_bytes / BYTES_PER_KIBIBYTE**3

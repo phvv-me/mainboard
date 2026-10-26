@@ -9,6 +9,22 @@ from .....catalog import Function
 from ...constants.manuscripts.reader import GROUP, INSIDE
 from ..reader import quoted
 
+_VALUE = (
+    "CASE WHEN len(r[2]) = 1 AND contains(substr(u, 3, length(u) - 3), chr(92)) "
+    "THEN r[2][1] ELSE regexp_replace(substr(u, 3, length(u) - 3), '\\s', '', 'g') END"
+)
+_BODY = "CASE WHEN length(w) = 1 THEN '_' || w ELSE '_{' || w || '}' END"
+_SUBSCRIPT_RENDER_SQL = (
+    "CASE WHEN u IS NULL THEN '' "
+    "WHEN starts_with(substr(u, 2), chr(92)) THEN '_{' || coalesce(r[2][1], substr(u, 2)) || '}' "
+    "WHEN starts_with(substr(u, 2), '{') THEN "
+)
+_STYLED_COMMAND_SQL = (
+    "CASE WHEN t.styled THEN chr(92) || name || '{' || CASE WHEN len(r[1]) = 1 THEN r[1][1] "
+    "ELSE trim(t.wrapped, ' ' || chr(9) || chr(10) || chr(13)) END || '}' "
+    "ELSE t.base END"
+)
+
 _STRUCTURAL = [
     "Big",
     "Bigg",
@@ -191,6 +207,7 @@ _SCRIPT_PIECE = (
     rf"|\\(?:{'|'.join(_TEXTUAL)})\b\s*(?:{_GROUP})?|\\[A-Za-z]+\s*|(?s:.))"
 )
 _SCRIPTS = rf"(?:\s*{_SCRIPT_PIECE})*"
+_PIECES_SQL = f"regexp_extract_all(t.rest, {quoted(_SCRIPT_PIECE)})"
 _SHAPING = [*_STRUCTURAL, *_OPERATORS, *_TEXTUAL]
 
 
@@ -260,18 +277,43 @@ def _lite() -> str:
     )
 
 
-def _named(inner: str) -> str:
-    """The expression naming the symbols of `text`.
+# The text of each superscript of a token, its braces dropped.
+_SUPERSCRIPTS_SQL = (
+    "list_transform(list_filter(" + _PIECES_SQL + ", lambda p: starts_with(p, '^')), "
+    "lambda p: CASE WHEN starts_with(substr(p, 2), '{') AND ends_with(p, '}') "
+    "THEN substr(p, 3, length(p) - 3) ELSE substr(p, 2) END)"
+)
+# The groups nested in a token, read before `inner` names them: its wrapped group, and those of
+# its subscript and its superscripts.
+_NESTED_SQL = (
+    f"list_concat([t.wrapped, CASE WHEN u IS NULL THEN '' "
+    f"WHEN starts_with(substr(u, 2), '{{') THEN substr(u, 3, length(u) - 3) "
+    f"WHEN starts_with(substr(u, 2), chr(92)) THEN substr(u, 2) ELSE '' END, "
+    f"CASE WHEN t.base IS NULL AND NOT t.styled THEN t.rest ELSE '' END], "
+    f"list_filter({_SUPERSCRIPTS_SQL}, lambda g: g NOT IN "
+    f"('\\mathsf{{T}}', '\\mathrm{{T}}', '\\top')))"
+)
+_SUBSCRIPT_TEXT_SQL = (
+    _SUBSCRIPT_RENDER_SQL + _let("w", value=_VALUE, body=_BODY) + " ELSE '_' || substr(u, 2) END"
+)
+# The symbols a token names, from its nested groups `r`, its subscript `u` and the token `t`.
+_NAMED_SQL = (
+    "CASE WHEN t.base IS NULL AND NOT t.styled THEN r[3] ELSE "
+    f"list_concat([{_STYLED_COMMAND_SQL} || {_SUBSCRIPT_TEXT_SQL}], "
+    "flatten(list_slice(r, 4, len(r)))) END"
+)
 
-    `inner` names the macro reading the groups nested in a token's scripts and arguments, called
-    once per token on all of them.
+
+def _token() -> str:
+    """The token read before its nested groups are named.
+
+    Its base (null when it names nothing), what is left of it for scripts, and the group a styled
+    symbol wraps.
     """
     brace = f"regexp_extract(m, {_headed(_INSIDE)}, 1)"
     argument = f"regexp_extract(m, {_headed(f'({_ARGUMENT})')}, 1)"
     shaping_rest = f"regexp_replace(m, {quoted(r'^\\[A-Za-z]+')}, '')"
-    # The token read before its nested groups are named: its base (null when it names nothing),
-    # what is left of it for scripts, and the group a styled symbol wraps.
-    token = (
+    return (
         "CASE "
         "WHEN NOT starts_with(m, chr(92)) THEN "
         "{'base': left(m, 1), 'rest': substr(m, 2), 'wrapped': '', 'styled': false} "
@@ -291,54 +333,22 @@ def _named(inner: str) -> str:
         f"ELSE {{'base': chr(92) || name, 'rest': {shaping_rest}, 'wrapped': '', "
         "'styled': false} END"
     )
-    pieces = f"regexp_extract_all(t.rest, {quoted(_SCRIPT_PIECE)})"
-    # The text of the last subscript that needs its symbols named (a group, or a control word
-    # with its argument), and of each superscript.
-    subscript = f"list_filter({pieces}, lambda p: starts_with(p, '_'))[-1]"
-    power_text = (
-        "list_transform(list_filter(" + pieces + ", lambda p: starts_with(p, '^')), "
-        "lambda p: CASE WHEN starts_with(substr(p, 2), '{') AND ends_with(p, '}') "
-        "THEN substr(p, 3, length(p) - 3) ELSE substr(p, 2) END)"
-    )
-    kids = (
-        f"list_concat([t.wrapped, CASE WHEN u IS NULL THEN '' "
-        f"WHEN starts_with(substr(u, 2), '{{') THEN substr(u, 3, length(u) - 3) "
-        f"WHEN starts_with(substr(u, 2), chr(92)) THEN substr(u, 2) ELSE '' END, "
-        f"CASE WHEN t.base IS NULL AND NOT t.styled THEN t.rest ELSE '' END], "
-        f"list_filter({power_text}, lambda g: g NOT IN "
-        f"('\\mathsf{{T}}', '\\mathrm{{T}}', '\\top')))"
-    )
-    # Subscript `u` (a piece such as `_{i}`), `a` the names of its text.
-    script = (
-        "CASE WHEN u IS NULL THEN '' "
-        "WHEN starts_with(substr(u, 2), chr(92)) THEN '_{' || coalesce(r[2][1], substr(u, 2)) || '}' "
-        "WHEN starts_with(substr(u, 2), '{') THEN "
-        + _let(
-            "w",
-            value="CASE WHEN len(r[2]) = 1 AND contains(substr(u, 3, length(u) - 3), chr(92)) "
-            "THEN r[2][1] ELSE regexp_replace(substr(u, 3, length(u) - 3), '\\s', '', 'g') END",
-            body="CASE WHEN length(w) = 1 THEN '_' || w ELSE '_{' || w || '}' END",
-        )
-        + " ELSE '_' || substr(u, 2) END"
-    )
-    wrapped = (
-        "CASE WHEN t.styled THEN chr(92) || name || '{' || CASE WHEN len(r[1]) = 1 THEN r[1][1] "
-        "ELSE trim(t.wrapped, ' ' || chr(9) || chr(10) || chr(13)) END || '}' "
-        "ELSE t.base END"
-    )
-    named = (
-        "CASE WHEN t.base IS NULL AND NOT t.styled THEN r[3] ELSE "
-        f"list_concat([{wrapped} || {script}], flatten(list_slice(r, 4, len(r)))) END"
-    )
+
+
+def _named(inner: str) -> str:
+    """The expression naming the symbols of `text`.
+
+    `inner` names the macro reading the groups nested in a token's scripts and arguments, called
+    once per token on all of them.
+    """
     control = f"regexp_extract(m, {quoted(r'^\\([A-Za-z]+)')}, 1)"
-    read = _let(
-        "u",
-        value=subscript,
-        body=_let("r", value=f"list_transform({kids}, lambda x: {inner}(x))", body=named),
-    )
+    subscript = f"list_filter({_PIECES_SQL}, lambda p: starts_with(p, '_'))[-1]"
+    nested = f"list_transform({_NESTED_SQL}, lambda x: {inner}(x))"
+    read = _let("u", value=subscript, body=_let("r", value=nested, body=_NAMED_SQL))
     return (
         f"list_filter(flatten(list_transform(regexp_extract_all(text, {quoted(_TOKEN)}), "
-        f"lambda m: {_let('name', value=control, body=_let('t', value=token, body=read))})), lambda x: x <> '')"
+        f"lambda m: {_let('name', value=control, body=_let('t', value=_token(), body=read))})), "
+        "lambda x: x <> '')"
     )
 
 

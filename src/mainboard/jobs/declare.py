@@ -64,31 +64,37 @@ def declared(module: ast.Module, name: str) -> Declaration:
     """
     if not name:
         return _together(module)
-    parts = name.split("::")
-    body = module.body
-    for parent in parts[:-1]:
-        selected = next(
-            (node for node in body if isinstance(node, ast.ClassDef) and node.name == parent),
-            None,
+    *parents, target = name.split("::")
+    body = _scope(module.body, parents)
+    decoration = next(
+        (found for node in body if (found := _decoration(node, target)) is not None), None
+    )
+    if decoration is None:
+        return Declaration()
+    return _declaration(decoration, name)
+
+
+def _declaration(decoration: ast.Call, name: str) -> Declaration:
+    """The declaration a `job(...)` call spells, its keywords read as literals."""
+    return Declaration.model_validate(
+        {keyword.arg: _literal(keyword, name) for keyword in decoration.keywords}
+    )
+
+
+def _scope(body: list[ast.stmt], parents: Sequence[str]) -> list[ast.stmt]:
+    """The body of the class path `parents` inside `body`, empty when the path is not there."""
+    for parent in parents:
+        body = next(
+            (node.body for node in body if isinstance(node, ast.ClassDef) and node.name == parent),
+            [],
         )
-        if selected is None:
-            return Declaration()
-        body = selected.body
-    for node in body:
-        decoration = _decoration(node, parts[-1])
-        if decoration is not None:
-            return Declaration.model_validate(
-                {keyword.arg: _literal(keyword, name) for keyword in decoration.keywords}
-            )
-    return Declaration()
+    return body
 
 
 def _together(module: ast.Module) -> Declaration:
     """What every decorated function or method in `module` declares, as one declaration."""
     found = [
-        Declaration.model_validate(
-            {keyword.arg: _literal(keyword, node.name) for keyword in decoration.keywords}
-        )
+        _declaration(decoration, node.name)
         for node in ast.walk(module)
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
         and (decoration := _job_decorator(node)) is not None
@@ -138,12 +144,17 @@ def _is_job(func: ast.expr) -> bool:
 
 def _literal(keyword: ast.keyword, name: str) -> str | tuple[str, ...] | list[str]:
     """The literal value of one decorator keyword, refusing anything that needs running."""
+    if keyword.arg is None:
+        raise _refusal(keyword, name=name, reason="a splatted mapping")
     try:
-        if keyword.arg is None:
-            raise ValueError("a splatted mapping")
         return ast.literal_eval(keyword.value)
     except ValueError as opaque:
-        raise MissionError(
-            f"the `{_NAME}` declaration on {name!r} must be literal, since the file is read "
-            f"without being imported; {keyword.arg or '**'} is {opaque}"
-        ) from None
+        raise _refusal(keyword, name=name, reason=str(opaque)) from None
+
+
+def _refusal(keyword: ast.keyword, *, name: str, reason: str) -> MissionError:
+    """The error refusing a decorator keyword whose value is not a literal, for `reason`."""
+    return MissionError(
+        f"the `{_NAME}` declaration on {name!r} must be literal, since the file is read "
+        f"without being imported; {keyword.arg or '**'} is {reason}"
+    )

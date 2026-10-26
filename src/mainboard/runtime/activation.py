@@ -51,14 +51,19 @@ class WheelLibraries(Step):
     the loader never searches, so a binary linking one outside torch's `RPATH` fails to load it.
     """
 
-    def apply(self, environ: MutableMapping[str, str], prefix: Path) -> None:
-        found = [
+    @staticmethod
+    def _libraries(site: Path) -> list[Path]:
+        """The wheel library directories under `site`, each pattern's matches sorted in turn."""
+        return [
             library
-            for site in sorted(prefix.glob("lib/python3*/site-packages"))
             for pattern in ("nvidia/*/lib", "lib*/lib64")
             for library in sorted(site.glob(pattern))
             if library.is_dir()
         ]
+
+    def apply(self, environ: MutableMapping[str, str], prefix: Path) -> None:
+        sites = sorted(prefix.glob("lib/python3*/site-packages"))
+        found = [library for site in sites for library in self._libraries(site)]
         prepended(environ, "LD_LIBRARY_PATH", found)
 
 
@@ -71,15 +76,20 @@ class CudnnSublibraries(Step):
     the environment's own win, in every environment whatever its activation scripts.
     """
 
+    @staticmethod
+    def _link_versioned(dist: Path) -> None:
+        """Link each cuDNN library beside the wheel's `dist` info under the version it names."""
+        version = dist.stem.partition("-")[2].split(".")
+        minor_patch = ".".join(version[1:3])
+        for library in (dist.parent / "nvidia/cudnn/lib").glob("libcudnn*.so.9"):
+            with suppress(OSError):
+                library.with_name(f"{library.name}.{minor_patch}").symlink_to(library.name)
+
     def apply(self, environ: MutableMapping[str, str], prefix: Path) -> None:
         del environ
         for site in prefix.glob("lib/python3*/site-packages"):
             for dist in site.glob("nvidia_cudnn_cu13-*.dist-info"):
-                version = dist.stem.partition("-")[2].split(".")
-                minor_patch = ".".join(version[1:3])
-                for library in (site / "nvidia/cudnn/lib").glob("libcudnn*.so.9"):
-                    with suppress(OSError):
-                        library.with_name(f"{library.name}.{minor_patch}").symlink_to(library.name)
+                self._link_versioned(dist)
 
 
 class BuildPaths(Step):

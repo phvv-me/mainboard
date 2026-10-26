@@ -7,8 +7,10 @@ from math import isfinite
 from patos import FrozenModel
 from pydantic import AwareDatetime
 
+from ...constants import SECONDS_PER_HOUR
 from ...core.errors import MissionError
 from ...costs.catalog import Offer
+from ...costs.model import BillingModel
 from ...runtime.job import walltime_seconds
 from ..jobs.vocabulary import Resources
 
@@ -41,13 +43,7 @@ class Lease(FrozenModel):
             or setup_s < 0
         ):
             raise MissionError("rental needs finite, positive, affordable billing terms")
-        available = (
-            (Decimal(str(resources.max_usd)) - Decimal(str(billing.fees_usd)))
-            * 3600
-            / Decimal(str(billing.rate_usd_hr))
-        )
-        quanta = int((available / billing.granularity_s).to_integral_value(ROUND_FLOOR))
-        seconds = quanta * billing.granularity_s
+        seconds = cls._billable_seconds(billing, resources.max_usd)
         requested = walltime_seconds(resources.walltime) if resources.walltime else 0
         if seconds < billing.minimum_s or seconds <= setup_s + requested + _RESERVE_S:
             raise MissionError(
@@ -62,3 +58,14 @@ class Lease(FrozenModel):
     def expired(self) -> bool:
         """Whether release must take precedence over another probe or evidence transfer."""
         return datetime.now(UTC) >= self.release_by
+
+    @staticmethod
+    def _billable_seconds(billing: BillingModel, max_usd: float) -> int:
+        """Whole billing quanta that `max_usd` buys once the fees are paid, in seconds."""
+        available = (
+            (Decimal(str(max_usd)) - Decimal(str(billing.fees_usd)))
+            * SECONDS_PER_HOUR
+            / Decimal(str(billing.rate_usd_hr))
+        )
+        quanta = int((available / billing.granularity_s).to_integral_value(ROUND_FLOOR))
+        return quanta * billing.granularity_s

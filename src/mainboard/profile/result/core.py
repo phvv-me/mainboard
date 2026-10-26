@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ...constants import BYTES_PER_KIBIBYTE
 from ...log import logger
+from ..constants import NANOSECONDS_PER_MILLISECOND
 from ..trace import ActivityRecord, BottleneckReport, KernelTrace, MemcpyTrace, RegionWindow
 from .efficiency import EfficiencyReport
 from .models import RegionStat, RegionSummary
@@ -113,13 +115,44 @@ class Profile(FrozenModel):
         rows = [f"{'region':<30}{'calls':>6}{'total ms':>10}{'avg ms':>9}{'peak MB':>10}"]
         rows += [
             f"{s.name:<30}{s.calls:>6d}{s.total_ms:>10.2f}{s.avg_ms:>9.2f}"
-            f"{s.peak_memory_bytes / 1024**2:>10.1f}"
+            f"{s.peak_memory_bytes / BYTES_PER_KIBIBYTE**2:>10.1f}"
             for s in stats
         ]
         return "\n".join(rows)
 
     def __str__(self) -> str:
         return self.report()
+
+    def _device_section(self) -> str:
+        if self.device_evidence is DeviceEvidence.ABSENT:
+            return "Device\nno device evidence collected: asked for it and observed none"
+        return ""
+
+    def _gpu_section(self) -> str:
+        if not (self.kernels or self.memcpys or self.activities):
+            return ""
+        report = self.trace_report()
+        return (
+            "GPU activity\n"
+            f"{len(self.kernels)} kernels, {len(self.memcpys)} copies, "
+            f"{len(self.activities)} other activities, "
+            f"{report.total_kernel_ns / NANOSECONDS_PER_MILLISECOND:.2f} ms kernel time"
+        )
+
+    def _limit_section(self) -> str:
+        drops = []
+        if self.dropped_spans:
+            drops.append(f"{self.dropped_spans} oldest spans dropped")
+        if self.dropped_activities:
+            drops.append(f"{self.dropped_activities} GPU activities dropped")
+        if not drops:
+            return ""
+        return "Capture limit\n" + "\n".join(drops)
+
+    def _spans_section(self) -> str:
+        if not self.summaries:
+            return ""
+        return f"Spans\n{Profile._region_text(self.stats())}"
 
     def bottlenecks(self, top: int = 10) -> list[RegionStat]:
         """The slowest region names by total wall time."""
@@ -158,27 +191,16 @@ class Profile(FrozenModel):
 
     def report(self) -> str:
         """A plain-text report containing only populated evidence sections."""
-        sections = []
-        if self.summaries:
-            sections.append(f"Spans\n{Profile._region_text(self.stats())}")
-        if self.kernels or self.memcpys or self.activities:
-            report = self.trace_report()
-            sections.append(
-                "GPU activity\n"
-                f"{len(self.kernels)} kernels, {len(self.memcpys)} copies, "
-                f"{len(self.activities)} other activities, "
-                f"{report.total_kernel_ns / 1e6:.2f} ms kernel time"
-            )
-        if self.device_evidence is DeviceEvidence.ABSENT:
-            sections.append("Device\nno device evidence collected: asked for it and observed none")
-        drops = []
-        if self.dropped_spans:
-            drops.append(f"{self.dropped_spans} oldest spans dropped")
-        if self.dropped_activities:
-            drops.append(f"{self.dropped_activities} GPU activities dropped")
-        if drops:
-            sections.append("Capture limit\n" + "\n".join(drops))
-        return "\n\n".join(sections) or "No profiling data collected."
+        sections = [
+            self._spans_section(),
+            self._gpu_section(),
+            self._device_section(),
+            self._limit_section(),
+        ]
+        return (
+            "\n\n".join(section for section in sections if section)
+            or "No profiling data collected."
+        )
 
     def save(self, path: str | PathLike[str]) -> None:
         """Persist to JSON so a later run can :meth:`load` and :meth:`diff` it."""

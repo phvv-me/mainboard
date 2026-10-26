@@ -49,10 +49,13 @@ class Processes:
         if not number.isdigit():
             raise MissionError(f"a port is written host:port, not {port!r}")
         try:
-            with socket.create_connection((host or "localhost", int(number)), timeout=_POLL):
-                return True
+            connection = socket.create_connection(
+                (host or "localhost", int(number)), timeout=_POLL
+            )
         except OSError:
             return False
+        connection.close()
+        return True
 
     def __init__(
         self,
@@ -88,14 +91,14 @@ class Processes:
         An empty pattern lists this user's processes only; a pattern searches everyone's, so a
         job somebody started by hand on a shared host is found too. This process is left out.
         """
-        me = psutil.Process()
-        user = me.username()
+        current = psutil.Process()
+        user = current.username()
         found = []
         attributes = ["pid", "ppid", "username", "cpu_percent", "memory_info", "create_time"]
         for process in psutil.process_iter([*attributes, "cmdline", "name"]):
             info = process.info
             line = " ".join(info["cmdline"] or []) or info["name"] or ""
-            if process.pid == me.pid or (pattern and pattern not in line):
+            if process.pid == current.pid or (pattern and pattern not in line):
                 continue
             if not pattern and info["username"] != user:
                 continue

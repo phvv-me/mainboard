@@ -9,6 +9,8 @@ from ...findings import Hit, Span
 from ...operations import Operation
 from ..facts import snake
 
+_FINDING_ROWS_SQL = "SELECT * FROM finding_rows ORDER BY finding_key"
+
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
@@ -40,24 +42,15 @@ def grouped(cursor: DuckDBPyConnection, rule: Rule) -> defaultdict[object, list[
     """
     query = rule.edits("finding_rows")
     result = (
-        cursor.execute("SELECT * FROM finding_rows ORDER BY finding_key")
+        cursor.execute(_FINDING_ROWS_SQL)
         if query is None
         else cursor.execute(query.sql, query.parameters)
     )
     columns = [column for column, *_ in result.description]
-    grouped: defaultdict[object, list[Edit]] = defaultdict(list)
-    refused: set[object] = set()
-    for number, row in enumerate(result.fetchall()):
-        record = dict(zip(columns, row, strict=True))
-        if query is None:
-            grouped[record.pop("finding_key")].extend(rule.repair(Hit(**record)) or [])
-        elif (made := _edits(record)) is None:
-            refused.add(record.get("finding_key", ("row", number)))
-        else:
-            grouped[record.get("finding_key", ("row", number))].extend(made)
-    for key in refused:
-        grouped.pop(key, None)
-    return grouped
+    records = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+    if query is None:
+        return _repaired_rows(rule, records)
+    return _stated_rows(records)
 
 
 def placed(rule: Rule, group: list[Edit], place: tuple[str, int, str | None] | None) -> dict:
@@ -119,3 +112,26 @@ def _operated(operation: str, row: Mapping) -> Edit:
         case "rename":
             return Rename(path=row["path"], target=row["target"])
     raise ValueError(f"a fix row states an unknown operation {operation!r}")
+
+
+def _repaired_rows(rule: Rule, records: Iterable[dict]) -> defaultdict[object, list[Edit]]:
+    """Each finding row's repair by `rule`'s Python fix, grouped by its finding."""
+    grouped: defaultdict[object, list[Edit]] = defaultdict(list)
+    for record in records:
+        grouped[record.pop("finding_key")].extend(rule.repair(Hit(**record)) or [])
+    return grouped
+
+
+def _stated_rows(records: Iterable[dict]) -> defaultdict[object, list[Edit]]:
+    """The edits each row states, grouped by finding, minus the groups a refused row withholds."""
+    grouped: defaultdict[object, list[Edit]] = defaultdict(list)
+    refused: set[object] = set()
+    for number, record in enumerate(records):
+        key = record.get("finding_key", ("row", number))
+        if (made := _edits(record)) is None:
+            refused.add(key)
+        else:
+            grouped[key].extend(made)
+    for key in refused:
+        grouped.pop(key, None)
+    return grouped

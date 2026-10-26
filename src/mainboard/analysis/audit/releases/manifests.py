@@ -11,6 +11,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 from patos import FrozenModel
 
+from ....core.project import Project
 from ....log import logger
 from .models import Declaration
 
@@ -78,8 +79,8 @@ class Manifests(FrozenModel):
             return {}
 
     def _workspace(self) -> list[Declaration]:
-        """The Python tables of `mainboard.toml`, minus entries installing this project itself."""
-        manifest = self._read("mainboard.toml")
+        """The Python tables of the workspace manifest, minus entries installing this project."""
+        manifest = self._read(Project().manifest(self.root).name)
         tables = [
             (manifest.get("python", {}).get("deps", {}), False),
             (manifest.get("dev", {}).get("python", {}).get("deps", {}), True),

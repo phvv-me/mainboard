@@ -44,22 +44,12 @@ def pack(
     base = Path(root).expanduser().resolve(strict=True)
     digests = Digests(base / cache if cache else None, base=base)
     known, held = {**kept, **known}, set(kept.values())
-    named: dict[str, str] = {}
     with ZipFile(sys.stdout.buffer, "w", ZIP_ZSTANDARD, compresslevel=_LEVEL) as archive:
+        writer = _Writer(archive, base=base, digests=digests, held=held, known=known)
         for path, stat in _paths(base, relative):
-            if path.parent.name == "events" and path.name == "live.ndjson":
-                _snapshot(archive, path, base=base, known=known)
-                continue
-            key = path.relative_to(base).as_posix()
-            digest = digests.of(path, stat)
-            if known.get(key) == digest:
-                continue
-            if digest in held:
-                named[key] = digest
-            else:
-                _immutable(archive, path, base=base)
-        if named:
-            archive.writestr(HELD, json.dumps(named))
+            writer.add(path, stat)
+        if writer.named:
+            archive.writestr(HELD, json.dumps(writer.named))
     digests.save()
 
 
@@ -101,6 +91,76 @@ class Digests:
         os.replace(staged, self.path)
 
 
+class _Writer:
+    """Archives a pass's files, naming in `named` each one whose digest the lake keeps."""
+
+    @staticmethod
+    def _range(data: bytes) -> tuple[int, int]:
+        """Validate contiguous byte offsets without reserializing event records."""
+        start = json.loads(data.split(b"\n", 1)[0])["offset"]
+        if type(start) is not int or start < 0:
+            raise ValueError("invalid event offset")
+        position = start
+        for line in data.split(b"\n")[:-1]:
+            if json.loads(line)["offset"] != position:
+                raise ValueError("noncontiguous event offsets")
+            position += len(line) + 1
+        return start, position
+
+    def __init__(
+        self,
+        archive: ZipFile,
+        *,
+        base: Path,
+        digests: Digests,
+        held: set[str],
+        known: Mapping[str, str],
+    ) -> None:
+        self.archive = archive
+        self.base = base
+        self.digests = digests
+        self.held = held
+        self.known = known
+        self.named: dict[str, str] = {}
+
+    def _immutable(self, path: Path) -> None:
+        """Copy one file and refuse an observed size or timestamp change."""
+        before = path.stat()
+        self.archive.write(path, path.relative_to(self.base).as_posix())
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise RuntimeError("file changed during collection: " + str(path))
+
+    def _snapshot(self, path: Path) -> None:
+        """Retain complete event records byte-for-byte under their validated offset range.
+
+        A range the center already collected is not sent again.
+        """
+        with path.open("rb") as stream:
+            data = stream.read(path.stat().st_size)
+        data = data[: data.rfind(b"\n") + 1]
+        if not data:
+            return
+        start, end = self._range(data)
+        name = path.with_name(f"collected-{start:020d}-{end:020d}.ndjson").relative_to(self.base)
+        if name.as_posix() not in self.known:
+            self.archive.writestr(name.as_posix(), data)
+
+    def add(self, path: Path, stat: os.stat_result) -> None:
+        """Send `path` unless the center already holds its bytes."""
+        if path.parent.name == "events" and path.name == "live.ndjson":
+            self._snapshot(path)
+            return
+        key = path.relative_to(self.base).as_posix()
+        digest = self.digests.of(path, stat)
+        if self.known.get(key) == digest:
+            return
+        if digest in self.held:
+            self.named[key] = digest
+        else:
+            self._immutable(path)
+
+
 def sha256(path: Path) -> str:
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
@@ -122,11 +182,15 @@ def _paths(base: Path, relative: str) -> Iterator[tuple[Path, os.stat_result]]:
     if not resolved.is_relative_to(base):
         raise ValueError("collection path escapes the remote workspace")
     for path, stat in walked(selected):
-        if excluded(path):
-            continue
-        if not S_ISREG(stat.st_mode):
-            raise ValueError("collection contains a non-regular file: " + str(path))
-        yield path, stat
+        if not excluded(path):
+            yield _regular(path, stat)
+
+
+def _regular(path: Path, stat: os.stat_result) -> tuple[Path, os.stat_result]:
+    """`path` with its status, refusing anything but a regular file."""
+    if not S_ISREG(stat.st_mode):
+        raise ValueError("collection contains a non-regular file: " + str(path))
+    return path, stat
 
 
 def walked(selected: Path) -> Iterator[tuple[Path, os.stat_result]]:
@@ -152,41 +216,3 @@ def excluded(path: Path) -> bool:
         or (path.parent.name == "events" and path.name == "status.json")
         or (path.parent.name == "objects" and fnmatch.fnmatch(path.name, "tmp????????"))
     )
-
-
-def _immutable(archive: ZipFile, path: Path, *, base: Path) -> None:
-    """Copy one file and refuse an observed size or timestamp change."""
-    before = path.stat()
-    archive.write(path, path.relative_to(base).as_posix())
-    after = path.stat()
-    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-        raise RuntimeError("file changed during collection: " + str(path))
-
-
-def _snapshot(archive: ZipFile, path: Path, *, base: Path, known: Mapping[str, str]) -> None:
-    """Retain complete event records byte-for-byte under their validated offset range.
-
-    A range the center already collected is not sent again.
-    """
-    with path.open("rb") as stream:
-        data = stream.read(path.stat().st_size)
-    data = data[: data.rfind(b"\n") + 1]
-    if not data:
-        return
-    start, end = _range(data)
-    name = path.with_name(f"collected-{start:020d}-{end:020d}.ndjson").relative_to(base)
-    if name.as_posix() not in known:
-        archive.writestr(name.as_posix(), data)
-
-
-def _range(data: bytes) -> tuple[int, int]:
-    """Validate contiguous byte offsets without reserializing event records."""
-    start = json.loads(data.split(b"\n", 1)[0])["offset"]
-    if type(start) is not int or start < 0:
-        raise ValueError("invalid event offset")
-    position = start
-    for line in data.split(b"\n")[:-1]:
-        if json.loads(line)["offset"] != position:
-            raise ValueError("noncontiguous event offsets")
-        position += len(line) + 1
-    return start, position

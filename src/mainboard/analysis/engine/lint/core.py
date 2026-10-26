@@ -23,6 +23,10 @@ from ...rules.core import Core
 from ..facts import Budget, Facts, Query, listed, snake, vendored
 from .repairs import grouped, placed
 
+_DELETE_CONSUMED_FINDING_ROWS_SQL = (
+    "DELETE FROM finding_rows WHERE list_contains($keys, finding_key)"
+)
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from types import TracebackType
@@ -257,9 +261,7 @@ class Lint:
             for key, path, declared in cursor.execute(named).fetchall()
             if self._consumed(rule, path, declared)
         ]
-        cursor.execute(
-            "DELETE FROM finding_rows WHERE list_contains($keys, finding_key)", {"keys": consumed}
-        )
+        cursor.execute(_DELETE_CONSUMED_FINDING_ROWS_SQL, {"keys": consumed})
 
     def applicable(self, db: Facts) -> list[Rule]:
         """The rules whose language the project holds."""

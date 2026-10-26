@@ -22,6 +22,7 @@ from urllib.request import urlopen
 from patos import FrozenModel, Registry, Singleton
 from pydantic import field_validator
 
+from ...constants import SECONDS_PER_HOUR
 from ...core.errors import MissionError
 from ...core.project import Project
 from ...runtime.job import walltime_seconds
@@ -333,7 +334,7 @@ def hourly_cap(resources: Resources, *, landing: int = 0) -> float:
         a prebuilt container that runs the command the moment it boots.
     """
     seconds = walltime_seconds(resources.walltime) if resources.walltime else 0
-    return resources.max_usd * 3600.0 / (seconds + landing) if seconds else 0.0
+    return resources.max_usd * SECONDS_PER_HOUR / (seconds + landing) if seconds else 0.0
 
 
 def http_transport(request: Request) -> bytes:

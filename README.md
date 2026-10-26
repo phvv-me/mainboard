@@ -2,7 +2,7 @@
 
 Run batch jobs anywhere without caring about system setup.
 
-One file, `mainboard.toml`, declares your dependencies, your environments,
+One file, `mb.toml`, declares your dependencies, your environments,
 your container base images, and every machine you run on, from your laptop
 to a PBS supercomputer to a cloud GPU provider. One interface runs, submits,
 tracks, probes, and profiles across all of them.
@@ -10,7 +10,7 @@ tracks, probes, and profiles across all of them.
 ```python
 from mainboard import Board
 
-board = Board()  # finds the nearest mainboard.toml
+board = Board()  # finds the nearest mb.toml
 board.run("python train.py")  # here, in the activated environment
 board.on("gold").run("nvidia-smi")  # any ssh box, same call
 job = board.on("miyabi-g").submit(  # a PBS cluster, inside an NGC container,
@@ -25,18 +25,18 @@ job.pull()
 The same surface as a CLI:
 
 ```console
-$ mainboard run --on gold nvidia-smi -L   # everything from the command on is its own
+$ mb run --on gold nvidia-smi -L          # everything from the command on is its own
 GPU 0: NVIDIA GB10 (UUID: GPU-6a5c...)
-$ mainboard host list gold --facts | head -4
+$ mb host list gold --facts | head -4
 
 # facts: gold
 hostname	gold
 cpu_name	10x Arm Cortex-A725 + 10x Arm Cortex-X925
-$ mainboard job submit --on miyabi-g --attempt 2 python -m experiments.run
+$ mb job submit --on miyabi-g --attempt 2 python -m experiments.run
 2231259
-$ mainboard job list                    # settles what ended, then every live job as its queue sees it
-$ mainboard job show 2231259 --wait     # cells and a heartbeat on stderr; exit 4 on a stalled job
-$ mainboard host list                   # every path this workspace can run on
+$ mb job list                           # settles what ended, then every live job as its queue sees it
+$ mb job show 2231259 --wait            # cells and a heartbeat on stderr; exit 4 on a stalled job
+$ mb host list                          # every path this workspace can run on
 name      kind      access       detail                 usd_hr  credit_usd
 local     local     here         1x RTX 4090, 135 GB RAM
 gold      ssh       provisioned  cached default: hardware from onboarding
@@ -44,8 +44,8 @@ miyabi-g  pbs       unreachable  ssh connect timed out
 vast      provider  keyed        1x RTX 4090 Sweden, SE  0.2978  99.9968
 ```
 
-`mainboard help job submit` opens that command's help. Other queries, such as
-`mainboard help Log.read_table` or `mainboard help separate trace pass`, search
+`mb help job submit` opens that command's help. Other queries, such as
+`mb help Log.read_table` or `mb help separate trace pass`, search
 command descriptions, this README, and Python API docstrings. Results name their
 source locations. The wheel includes the README. API search never imports
 the scanned modules. Broad searches show twenty hits and the full match count.
@@ -70,8 +70,8 @@ has left. No credential is ever printed, only whether one was found.
 facts, which may be stale. An SSH echo probe works without an installed environment.
 Neither cached hardware nor
 a successful login proves GPU availability. For PBS/Slurm, the reachable endpoint
-is the login host, not an allocated compute node. Inspect `mainboard job list` and
-`mainboard host list <host> --facts` before choosing a target.
+is the login host, not an allocated compute node. Inspect `mb job list` and
+`mb host list <host> --facts` before choosing a target.
 A host's `[hosts.<name>.vars]` may contain `status-note` to describe a supported
 route or known restriction. This replaces generic setup advice, not the observed
 access state, and never makes a host job-ready.
@@ -142,15 +142,15 @@ command = "python -m experiments.run --shard 1"
 ```
 
 ```console
-$ mainboard job submit --batch fleet.toml --estimate   # what it ships and costs, nothing runs
+$ mb job submit --batch fleet.toml --estimate          # what it ships and costs, nothing runs
 job      target  kind  hardware     wire_bytes  runtime_s  setup_p50_s  setup_p90_s  setup_samples  rate_usd_hr  expected_usd  p90_usd
 sweep-a  gold    ssh   129 GB RAM   33053       25.0       2.49         7.53         3              0.0          0.0           0.0
-$ mainboard job submit --batch fleet.toml --set repetition=3   # every job to its own target
+$ mb job submit --batch fleet.toml --set repetition=3          # every job to its own target
 # batch fleet-db4af53f
-$ mainboard job submit --batch fleet.toml --only "sweep-*"     # the ready jobs; the rest skipped
-$ mainboard job list --batch fleet-db4af53f                    # one batch's jobs, as they settle
-$ mainboard job show fleet-db4af53f --wait                     # block until all settle, exit the verdict
-$ mainboard shell --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
+$ mb job submit --batch fleet.toml --only "sweep-*"            # the ready jobs; the rest skipped
+$ mb job list --batch fleet-db4af53f                           # one batch's jobs, as they settle
+$ mb job show fleet-db4af53f --wait                            # block until all settle, exit the verdict
+$ mb shell --on miyabi-g --keep --walltime 02:00:00          # hold a GH200 in tmux, reattach with the same line
 ```
 
 `job submit --batch <spec> --estimate` measures compressed changes from the host's
@@ -199,10 +199,10 @@ A rental per job rebuilds the environment every time. A held machine is rented,
 named, set up once, and then takes jobs in seconds until its deadline:
 
 ```console
-$ mainboard host hold vast --gpu-name "RTX 5090" --for 3h --max-usd 4   # rent, alias, onboard, park
-$ mainboard job submit --on vast-rtx-5090 --walltime 00:20:00 -- path/to/test_x.py::test_y
-$ mainboard host list                                                  # every live rental, held or not
-$ mainboard host release vast-rtx-5090                                    # stop billing now
+$ mb host hold vast --gpu-name "RTX 5090" --for 3h --max-usd 4          # rent, alias, onboard, park
+$ mb job submit --on vast-rtx-5090 --walltime 00:20:00 -- path/to/test_x.py::test_y
+$ mb host list                                                         # every live rental, held or not
+$ mb host release vast-rtx-5090                                           # stop billing now
 ```
 
 The alias is a marked block at the top of `~/.ssh/config`, the host profile is the
@@ -224,8 +224,8 @@ ends = "Conclusion"     # the section that must end by that page
 ```
 
 ```console
-$ mainboard paper build head                        # build, report, exit 1 on any problem
-$ mainboard paper build head --show "Pareto front"  # and render that phrase's page to PNG
+$ mb paper build head                               # build, report, exit 1 on any problem
+$ mb paper build head --show "Pareto front"         # and render that phrase's page to PNG
 ```
 
 The build is tectonic from the workspace environment. The report names every
@@ -309,7 +309,7 @@ up is refused with the command that fixes it, and a rental's home is read on lan
 
 A monorepo is made of projects that each stand on their own. A member is one:
 a `pyproject.toml` anybody can `pip install`, naming its dependencies the
-normal way (a version or a git URL), and optionally its own `mainboard.toml`
+normal way (a version or a git URL), and optionally its own `mb.toml`
 for what only it needs (tasks, papers, lint, system packages). Cloned alone,
 that manifest is the workspace. Inside the monorepo, the root composes it:
 
@@ -332,8 +332,8 @@ hosts apply only when it stands alone. From inside a member, the workspace
 composing it is the root, the way cargo finds one.
 
 ```console
-$ mainboard doctor --members              # every member, as somebody who clones it alone sees it
-$ mainboard doctor --members llm-head     # one: imports, paths, tasks, then a clone installed by uv
+$ mb doctor --members                     # every member, as somebody who clones it alone sees it
+$ mb doctor --members llm-head            # one: imports, paths, tasks, then a clone installed by uv
 ```
 
 ### Libraries the host answers instead of the environment
@@ -348,7 +348,7 @@ outside the environment, one found nowhere, and a family installed in two releas
 9.27 copy, and every convolution raised `CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`.
 
 ```console
-$ mainboard doctor --fix                  # first apply what the libraries rows name, one row each
+$ mb doctor --fix                         # first apply what the libraries rows name, one row each
 ```
 
 Each finding names its repair, never a system package and never `sudo`: the owning package raised
@@ -376,17 +376,17 @@ never-commit = [                             # the default; data lives in the la
 ]
 ```
 
-Experiment data never enters a commit: `mainboard lake ingest` keeps it, and
+Experiment data never enters a commit: `mb lake ingest` keeps it, and
 `git check` warns while any is still tracked and fails when git knows no author.
 
 ```console
-$ mainboard git status          # branch or detached, ahead/behind, dirty, published
-$ mainboard git pull            # fast-forward only, submodules follow their pointers
-$ mainboard git commit -m "…" PATH...  # those paths alone, then the pointers that moved
-$ mainboard git commit -m "…"   # what each repository has staged
-$ mainboard git commit -m "…" --all  # every change in every owned repository
-$ mainboard git push            # children first, pointers verified, protected main → branch
-$ mainboard git check           # everything a clone or the next push would trip on
+$ mb git status                 # branch or detached, ahead/behind, dirty, published
+$ mb git pull                   # fast-forward only, submodules follow their pointers
+$ mb git commit -m "…" PATH...         # those paths alone, then the pointers that moved
+$ mb git commit -m "…"          # what each repository has staged
+$ mb git commit -m "…" --all         # every change in every owned repository
+$ mb git push                   # children first, pointers verified, protected main → branch
+$ mb git check                  # everything a clone or the next push would trip on
 ```
 
 ## One lint pass
@@ -408,20 +408,20 @@ path-when-unconfigured = "."                   # appended where the owner has no
 ```
 
 ```console
-$ mainboard lint                        # what differs from HEAD or is new, submodules too
-$ mainboard lint .                      # everything git tracks or would, beneath here
-$ mainboard lint --check --json         # CI: write nothing, report it all, fail on any of it
-$ mainboard lint src --only ruff-format # one step; `text` names the built-in hygiene
+$ mb lint                               # what differs from HEAD or is new, submodules too
+$ mb lint .                             # everything git tracks or would, beneath here
+$ mb lint --check --json                # CI: write nothing, report it all, fail on any of it
+$ mb lint src --only ruff-format        # one step; `text` names the built-in hygiene
 ```
 
-`mainboard lint` repairs text (UTF-8, the newline `.gitattributes` names, no
+`mb lint` repairs text (UTF-8, the newline `.gitattributes` names, no
 trailing blanks, one final newline), runs each writing tool's `fix` in order,
 then every `check` at once, each inside the owner of the files it matched and
 under the workspace environment's PATH. `--check` writes nothing: the hygiene
 names what it would repair and every tool runs its read-only `check`, so a tree
 that passes it is one the writing pass would leave alone. A person, an agent, a
-hook and CI all call the same command and read the same exit code. A
-`mainboard.toml` holding only `[lint]` is enough to use it in any git
+hook and CI all call the same command and read the same exit code. An
+`mb.toml` holding only `[lint]` is enough to use it in any git
 repository.
 
 Only the repositories the workspace owns are read: reference code and a vendored
@@ -446,9 +446,9 @@ AGENTS.md                 the instructions, read by all three (Claude through CL
 ```
 
 ```console
-$ mainboard agents sync      # render .mcp.json, .codex/, opencode.json and the .claude link
-$ mainboard agents check     # drift, servers this machine cannot start, releases, logins
-$ mainboard agents update    # install what is missing, bring every harness to its latest release
+$ mb agents sync             # render .mcp.json, .codex/, opencode.json and the .claude link
+$ mb agents check            # drift, servers this machine cannot start, releases, logins
+$ mb agents update           # install what is missing, bring every harness to its latest release
 ```
 
 The rendered files are tracked, so a fresh clone works without this tool; edit
@@ -467,8 +467,8 @@ verbs that manage the monorepo itself are `git`, `paper`, `doctor --center`,
 `doctor --members` and `host setup --center`.
 
 ```console
-$ mainboard doctor --center                      # is this machine ready to be the center
-$ mainboard host setup --center macmini --root ~/Developer/projects    # move it there
+$ mb doctor --center                             # is this machine ready to be the center
+$ mb host setup --center macmini --root ~/Developer/projects           # move it there
 ```
 
 `doctor --center` is one report, each row with the command that repairs it: this
@@ -497,7 +497,7 @@ a platform the workspace or its lock cannot serve, then:
    destination's client refuses (`UseKeychain` off macOS);
 3. clones the monorepo at this HEAD and every owned submodule at its recorded
    pointer (foreign reference submodules are left to fetch on demand);
-4. carries what git does not hold: the `.env`, `.mainboard/` (the dispatch
+4. carries what git does not hold: the `.env`, `.mb/` (the dispatch
    registry as a consistent SQLite snapshot, ledgers, batches, audits, recovery,
    source archives, holds), every environment's compiled lock and `mb.lock`
    as it stands, committed or not; Claude Code's
@@ -575,10 +575,10 @@ Three everyday operations have no binary that behaves the same everywhere, so
 they are verbs:
 
 ```console
-$ mainboard proc timeout 600 pytest -x          # exit 124 when stopped, like GNU timeout
-$ mainboard proc kill 4242                       # the process and everything it started
-$ mainboard proc wait --port localhost:8000 --timeout 60
-$ mainboard proc wait --file results/done.json --pid 4242
+$ mb proc timeout 600 pytest -x                 # exit 124 when stopped, like GNU timeout
+$ mb proc kill 4242                              # the process and everything it started
+$ mb proc wait --port localhost:8000 --timeout 60
+$ mb proc wait --file results/done.json --pid 4242
 ```
 
 Everything after the limit is the command's own, its options and any `--` included:
@@ -641,8 +641,8 @@ with content-addressed run ids and declared data needs.
 A pytest experiment is a native job target:
 
 ```console
-mainboard run path/to/test_experiment.py::test_measurement -- --collect-only
-mainboard job submit --on gold path/to/test_experiment.py::test_measurement
+mb run path/to/test_experiment.py::test_measurement -- --collect-only
+mb job submit --on gold path/to/test_experiment.py::test_measurement
 ```
 
 Pytest owns fixtures, parametrization, assertions, and per-case failures. The
@@ -691,7 +691,7 @@ An empty window is absent evidence, not proof that a kernel ran.
 | Process device telemetry | `Feature.DEVICE` | Sampled GPU usage, not kernel execution time |
 | Callable timing | `benchmark(fn, sync=barrier)` | Synchronized wall time, not CUDA-event time |
 | Stage comparison | `profile_stages(cases, trace=True)` | Untraced timing pass followed by a separate trace pass |
-| Fleet telemetry | `mainboard sample`, `host list --facts`, `host list` | Job/machine observations, not a replacement for in-process profiling |
+| Fleet telemetry | `mb sample`, `host list --facts`, `host list` | Job/machine observations, not a replacement for in-process profiling |
 
 Keep profiling separate from uninstrumented throughput measurements, and keep
 the requested collection policy beside each saved profile. An invalid device
@@ -702,8 +702,8 @@ scientific verdict. Use pytest parametrization for independently recorded trials
 Select Python regions with `auto` or `span`. Neither is statistical sampling.
 The unused `PYTHON` flag was removed. Existing feature bit values are unchanged.
 Historical policies containing that unsupported bit require their original source.
-Launch work through `mainboard run` or
-`mainboard job submit`, with the profiling context inside the target. There is no
+Launch work through `mb run` or
+`mb job submit`, with the profiling context inside the target. There is no
 profiler attach API. Render the returned `Profile`, not the active `Profiler`.
 
 The `mainboard.trials.pytest_plugin` also injects `log`, backed by the existing
@@ -739,15 +739,15 @@ Mainboard's remote result mounts and after fetching.
 ### One query surface across machines
 
 ```console
-mainboard job list --json
-mainboard job collect research/reproducibility/datasets/experiments/architecture_error_census --on pedro-cvlab
-mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
-mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
-mainboard query "SELECT server, handle, backend_state, verdict, evidence, settled FROM jobs"
-mainboard query "SELECT * FROM runs" --out /tmp/runs.parquet
-mainboard query --file queries/inventory.sql --out /tmp/inventory.parquet
-mainboard help artifacts
-mainboard help job submit
+mb job list --json
+mb job collect research/reproducibility/datasets/experiments/architecture_error_census --on pedro-cvlab
+mb query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
+mb query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
+mb query "SELECT server, handle, backend_state, verdict, evidence, settled FROM jobs"
+mb query "SELECT * FROM runs" --out /tmp/runs.parquet
+mb query --file queries/inventory.sql --out /tmp/inventory.parquet
+mb help artifacts
+mb help job submit
 ```
 
 `job list` pulls published results from running jobs as well as finished ones. Run
@@ -788,7 +788,7 @@ Plot the same SELECT with optional Seaborn and Matplotlib:
 
 ```console
 uv tool install --reinstall --python 3.14 --from './packages/mainboard[plot]' mainboard --force
-mainboard paper plot "SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware" --project reproducibility --x hardware --y runs --kind bar --out /tmp/run-inventory.png --out /tmp/run-inventory.pdf --dpi 300
+mb paper plot "SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware" --project reproducibility --x hardware --y runs --kind bar --out /tmp/run-inventory.png --out /tmp/run-inventory.pdf --dpi 300
 ```
 
 This example charts the collected run inventory, not comparative GPU performance.
@@ -803,7 +803,7 @@ Null/nonfinite plotted values and existing output files are refused, not silentl
 or overwritten. Tables with bespoke plots can use Seaborn directly on
 `Results(root).query(sql).to_dict(as_series=False)` or verified `Results(root).table(...)` data.
 
-Define shared styles in `mainboard.toml`. `paper` is the default when declared;
+Define shared styles in `mb.toml`. `paper` is the default when declared;
 select another named style with `--style`:
 
 ```toml
@@ -851,8 +851,8 @@ The corresponding `queries/inventory.sql` contains
 `SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware ORDER BY hardware`.
 
 ```console
-mainboard paper plot --config plots.toml --figure inventory
-mainboard paper plot --config plots.toml --figure inventory --out /tmp/inventory.svg
+mb paper plot --config plots.toml --figure inventory
+mb paper plot --config plots.toml --figure inventory --out /tmp/inventory.svg
 ```
 
 Layers use native Seaborn marks and moves. SQL supplies aggregates and interval
@@ -902,7 +902,7 @@ transferred-file listing, including the adjacent captured `node.md`, environment
 inputs, and hardware. No repository, Git executable, clean worktree, commit, or push
 is required. Newly written and modified files are ordinary source. Mainboard hashes
 their actual bytes with SHA-256, preserves a content-addressed source ZIP under
-`.mainboard/source-archives/`, and verifies the listing and bytes before acquisition.
+`.mb/source-archives/`, and verifies the listing and bytes before acquisition.
 An edit after capture requires a new bundle, not a commit. Discovery follows the
 same per-repository file set as mirroring, reading `.gitignore` files directly when
 no Git answers; secrets and output protections remain. A local trial's bundle also
@@ -973,7 +973,7 @@ suites; UI runs sharing a device still need to run sequentially.
 Native output streams to the terminal and a fresh `.xcresult` is retained under
 `--results` (default `.build/Results`). Filters and `--setting KEY=VALUE` are literal
 arguments, with no shell. CocoaPods restoration and SwiftPM command-line unit tests
-remain native commands bounded by `mainboard proc timeout`.
+remain native commands bounded by `mb proc timeout`.
 
 Every execution with a result bundle also retains its readable build diagnostics as
 `<bundle-name>.build.json`; test actions retain `<bundle-name>.tests.json` when those
@@ -986,18 +986,18 @@ lock and never replace an existing report. They describe the bundle; they do not
 prove which working-tree bytes Xcode read or establish a clean/full rebuild.
 
 ```sh
-mainboard apple execute App/Example.xcworkspace --scheme Example --action test \
+mb apple execute App/Example.xcworkspace --scheme Example --action test \
   --destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' \
   --derived-data .build/Xcode/iOS --setting CODE_SIGNING_ALLOWED=NO --timeout 900
-mainboard apple execute Shared --scheme Example-Package --action test --destination platform=macOS
-mainboard apple toolchain --json
-mainboard apple diagnostics path/to/Build.xcresult --json
-mainboard apple results path/to/Test.xcresult --json
-mainboard apple results path/to/DerivedData/Logs/Test --json
-mainboard lint --check --only swift-format path/to/Changed.swift
+mb apple execute Shared --scheme Example-Package --action test --destination platform=macOS
+mb apple toolchain --json
+mb apple diagnostics path/to/Build.xcresult --json
+mb apple results path/to/Test.xcresult --json
+mb apple results path/to/DerivedData/Logs/Test --json
+mb lint --check --only swift-format path/to/Changed.swift
 ```
 
-Use `mainboard refactor swift-compare before.json after.json --json` to compare two
+Use `mb refactor swift-compare before.json after.json --json` to compare two
 saved `swift-inventory --json` observations for the same repository-relative scope.
 This works without invoking Xcode or rereading source. It retains artifact SHA256s,
 parser/toolchain identity and changed rule IDs, per-category totals, byte changes,
@@ -1016,7 +1016,7 @@ font substitution and existing output paths fail. Each run retains a fresh direc
 under `--results` and reports the exact face, source and pixel dimensions.
 
 ```sh
-mainboard apple font-previews Resources/Fonts --text '日本語の見本' --json
+mb apple font-previews Resources/Fonts --text '日本語の見本' --json
 ```
 
 `apple bundle` inspects a built app without running it. It hashes the main Info.plist,
@@ -1029,7 +1029,7 @@ Internal links are deduplicated, escaping links fail, and traversal is bounded t
 entries, 128 binaries and 16 fat-header slices. Native calls use the existing bounded runner.
 
 ```sh
-mainboard proc timeout 120 mainboard apple bundle build/Example.app \
+mb proc timeout 120 mb apple bundle build/Example.app \
   --forbid-symbol 'RetiredLibrary|RetiredClass' --forbid-resource '**/*.xctest' \
   --expect-info CFBundleDisplayName=Example --require-info NSMicrophoneUsageDescription \
   --expect-name en=Example --json > build/Bundle.json
@@ -1085,10 +1085,10 @@ The rules use syntax evidence, including inactive conditional branches; compiler
 still decide names, types, actor isolation and availability.
 
 ```sh
-mainboard refactor catalog --rule SW-UI0001 --json
-mainboard refactor explain SW-MIG0004 --json
-mainboard refactor gate --rule SW-UI0001 --rule SW-PARSE0001 Sources/Screen.swift
-mainboard refactor check . --rule SW-MIG0001 --rule SW-MIG0002 --rule SW-MIG0003 --rule SW-MIG0004
+mb refactor catalog --rule SW-UI0001 --json
+mb refactor explain SW-MIG0004 --json
+mb refactor gate --rule SW-UI0001 --rule SW-PARSE0001 Sources/Screen.swift
+mb refactor check . --rule SW-MIG0001 --rule SW-MIG0002 --rule SW-MIG0003 --rule SW-MIG0004
 ```
 
 `gate` fails for findings in its named files. `check` is an inventory: it prints findings
@@ -1097,7 +1097,7 @@ documentation URLs and the rule's repair policy. UIKit/AppKit, representables, O
 exposure, Objective-C implementation files and SQL imports are migration signals, not
 automatic proof a framework bridge is removable. Review-only rules offer no blind rewrite.
 
-General onboarding guidance recognizes exact `mainboard run` task names, including
+General onboarding guidance recognizes exact `mb run` task names, including
 the `--locked`, `--frozen`, `--no-install` and `--as-is` flags before the task. Naming
 `setup-extra` does not document `setup`; unknown flags are not inferred as valid syntax.
 The readiness score still requires repository-owned unattended tasks and their guidance.
@@ -1115,7 +1115,7 @@ populated-store upgrades are proved; never automatically rewrite their stored fo
 Native owners can declare per-rule policy in `[analysis.rules."RULE-ID"]`; the existing
 `pyproject.toml` policy remains supported, and conflicting declarations are refused.
 
-`mainboard refactor swift-inventory . --json` accounts for each Swift/Objective-C
+`mb refactor swift-inventory . --json` accounts for each Swift/Objective-C
 implementation file, with physical/nonblank lines, content hashes, category totals,
 source imports, placed conditional-compilation expressions and the existing migration
 signals with offline guidance. The API is `SwiftSourceInventory(Scope.of(path)).read()`
@@ -1150,12 +1150,12 @@ Keep its release URL, version, archive SHA-256 and executable member in the mani
 swiftlint = { version = "0.65.1", url = "https://github.com/realm/SwiftLint/releases/download/0.65.1/portable_swiftlint.zip", sha256 = "c1e429b0599cf1b516f369a2d9ec04eaf0e436f3c12b637df8851fa52ff694d0", member = "swiftlint" }
 
 [lint.tools.swiftlint]
-check = "{root}/.mainboard/envs/default/binary/bin/swiftlint lint --strict --quiet --no-cache --force-exclude -- {files}"
+check = "{root}/.mb/envs/default/binary/bin/swiftlint lint --strict --quiet --no-cache --force-exclude -- {files}"
 files = ["*.swift"]
 exclude = ["**/Pods/**", "**/Generated/**", "**/.build/**"]
 ```
 
-Run `mainboard binary sync` explicitly for setup. It installs only the platform-declared
+Run `mb binary sync` explicitly for setup. It installs only the platform-declared
 tools in the generated environment, without solving or reinstalling other ecosystems.
 It validates HTTPS coordinates, bounds transfers, checks the archive hash and extracts
 only the named regular member. Lint invokes the private executable directly and does not
@@ -1172,7 +1172,7 @@ these dependencies or re-solve an unrelated Mainboard environment. Task and lint
 configuration changes alone need no dependency solve; `run --as-is` uses the installed
 environment. Mainboard is development infrastructure, not an app runtime dependency.
 
-Use `mainboard apple simulators --json` to discover installed, available simulator
+Use `mb apple simulators --json` to discover installed, available simulator
 names, runtime identifiers, UDIDs and states before choosing a test destination.
 The compact form avoids dumping simulator filesystem paths and cache sizes. It never
 boots, creates or erases a device, and availability does not prove that a particular
@@ -1181,7 +1181,7 @@ This command follows the same Xcode selection and bounded runner as `toolchain`.
 If the system selects Command Line Tools, use a declared task with `DEVELOPER_DIR`
 pointing at the intended Xcode; do not change global `xcode-select` as a workaround.
 
-Use `mainboard apple launch path/to/Example.app --simulator 'iPhone 18 Pro'
+Use `mb apple launch path/to/Example.app --simulator 'iPhone 18 Pro'
 --os-version 27.0` to install a previously built simulator app and show its device.
 An exact available UDID also works. Names matching multiple devices are refused;
 there is no implicit first/booted-device choice. The command waits for boot readiness,

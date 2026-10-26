@@ -146,6 +146,17 @@ def _ordered(body: Sequence[str], header: re.Pattern[str], naming: Mapping[str, 
     return [line for _, block in blocks for line in block]
 
 
+def _platforms(body: Sequence[str]) -> list[tuple[str, list[str]]]:
+    """Each platform label a packages mapping's `body` opens, with the locations under it."""
+    platforms: list[tuple[str, list[str]]] = []
+    for line in body:
+        if named := _KEY.fullmatch(line):
+            platforms.append((named[1], []))
+        elif platforms and (location := _LOCATION.fullmatch(line)):
+            platforms[-1][1].append(location[1])
+    return platforms
+
+
 def packages(lock: str, *, environment: str = "") -> dict[str, list[str]]:
     """Every package location the lock installs, by subdirectory.
 
@@ -156,13 +167,6 @@ def packages(lock: str, *, environment: str = "") -> dict[str, list[str]]:
     subdirs = {label: subdir for label, subdir, _ in _entries(lines)}
     found: dict[str, list[str]] = {}
     for start, stop in _mappings(lines, environment=environment):
-        label = ""
-        for line in lines[start:stop]:
-            if named := _KEY.fullmatch(line):
-                label = named[1]
-                found.setdefault(subdirs.get(label, label), [])
-                continue
-            location = _LOCATION.fullmatch(line)
-            if label and location:
-                found[subdirs.get(label, label)].append(location[1])
+        for label, locations in _platforms(lines[start:stop]):
+            found.setdefault(subdirs.get(label, label), []).extend(locations)
     return found

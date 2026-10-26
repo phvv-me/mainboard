@@ -28,7 +28,7 @@
 import hashlib
 import os
 import re
-from collections.abc import Collection, Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from io import BytesIO
 from itertools import batched, groupby
 from operator import itemgetter
@@ -304,6 +304,21 @@ class _Batch:
     """Chunks on their way into one insert, and how many bytes they hold."""
 
     @staticmethod
+    def _groups(source: str, sizes: Sequence[int]) -> list[str]:
+        """`source` cut into SELECTs over runs of chunks, each run weighing at most a row group.
+
+        A chunk heavier than a row group alone forms its own run.
+        """
+        sources = []
+        start = size = 0
+        for position, chunk_size in enumerate(sizes):
+            if size and size + chunk_size > _ROW_GROUP_BYTES:
+                sources.append(f"{source} WHERE position >= {start} AND position < {position}")
+                start, size = position, 0
+            size += chunk_size
+        return [*sources, f"{source} WHERE position >= {start}"]
+
+    @staticmethod
     def _pieces(source: bytes | Path) -> Iterator[bytes]:
         """`source`'s bytes in `_CHUNK_BYTES` pieces.
 
@@ -319,6 +334,16 @@ class _Batch:
             yield payload
             while payload := stream.read(_CHUNK_BYTES):
                 yield payload
+
+    @staticmethod
+    def _union(selects: list[str]) -> str:
+        """`selects` as one query, joined with UNION ALL in pairs until one remains."""
+        while len(selects) > 1:
+            selects = [
+                "(" + ") UNION ALL (".join(pair) + ")"
+                for pair in batched(selects, 2, strict=False)
+            ]
+        return selects[0]
 
     def __init__(self, connection: duckdb.DuckDBPyConnection) -> None:
         self.connection = connection
@@ -338,23 +363,9 @@ class _Batch:
             payload = row["bytes"]
             assert isinstance(payload, bytes)
             sizes.append(len(payload))
-        group_rows = _ROW_GROUP_BYTES // max(1, max(sizes))
-        if group_rows >= _VECTOR_ROWS:
+        if _ROW_GROUP_BYTES // max(1, max(sizes)) >= _VECTOR_ROWS:
             return source
-        sources = []
-        start = size = 0
-        for position, chunk_size in enumerate(sizes):
-            if size and size + chunk_size > _ROW_GROUP_BYTES:
-                sources.append(f"{source} WHERE position >= {start} AND position < {position}")
-                start, size = position, 0
-            size += chunk_size
-        sources.append(f"{source} WHERE position >= {start}")
-        while len(sources) > 1:
-            sources = [
-                "(" + ") UNION ALL (".join(pair) + ")"
-                for pair in batched(sources, 2, strict=False)
-            ]
-        return sources[0]
+        return self._union(self._groups(source, sizes))
 
     def flush(self) -> None:
         """Insert every waiting chunk into `blobs` and its checksum into `checksums`."""

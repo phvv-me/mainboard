@@ -24,6 +24,13 @@ from .attachment import Access, Attachment
 from .session import patiently
 from .staging import compiled, insert
 
+_HELD_COLUMNS_SQL = "SELECT table_name, column_name FROM duckdb_columns() WHERE database_name = ?"
+_ALIAS_TABLE_NAMES_SQL = (
+    "SELECT table_name FROM duckdb_tables() WHERE database_name = ? ORDER BY table_name"
+)
+_TABLE_FILES_SQL = "SELECT data_file, delete_file FROM ducklake_list_files(?, ?)"
+_DUCKDB_VERSION_SQL = "SELECT library_version FROM pragma_version()"
+
 # The options a lake is created with: zstd Parquet at a cheap level, snapshots kept a month for
 # time travel, and files a snapshot stopped referencing kept a week before cleanup deletes them.
 _OPTIONS = (
@@ -135,7 +142,7 @@ class Maintained(Attachment):
         """Add what this release's schema holds and the lake lacks, then its views and log row."""
         held = set(
             connection.execute(
-                "SELECT table_name, column_name FROM duckdb_columns() WHERE database_name = ?",
+                _HELD_COLUMNS_SQL,
                 [ALIAS],
             ).fetchall()
         )
@@ -152,13 +159,12 @@ class Maintained(Attachment):
         """A finding for every data or delete file the catalog references that the disk lacks."""
         with self.open() as connection:
             tables = connection.execute(
-                "SELECT table_name FROM duckdb_tables() WHERE database_name = ? "
-                "ORDER BY table_name",
+                _ALIAS_TABLE_NAMES_SQL,
                 [ALIAS],
             ).fetchall()
             for (table,) in tables:
                 listed = connection.execute(
-                    "SELECT data_file, delete_file FROM ducklake_list_files(?, ?)",
+                    _TABLE_FILES_SQL,
                     [ALIAS, table],
                 ).fetchall()
                 yield from (
@@ -328,7 +334,7 @@ def _described(connection: duckdb.DuckDBPyConnection) -> str:
 
 def _record(connection: duckdb.DuckDBPyConnection, spec: str) -> None:
     """Record that the schema at `VERSION` now lives in a lake at `spec`, and by which engine."""
-    engine = connection.execute("SELECT library_version FROM pragma_version()").fetchone()
+    engine = connection.execute(_DUCKDB_VERSION_SQL).fetchone()
     insert(
         connection,
         schema.schema_log,

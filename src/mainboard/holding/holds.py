@@ -17,6 +17,7 @@ from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ConfigDict
 
+from ..constants import SECONDS_PER_HOUR
 from ..core.errors import MissionError
 from ..costs.catalog import Offer
 from ..dispatch.backends.base import Rentable, route
@@ -323,11 +324,11 @@ def duration_seconds(duration: str) -> int:
     """`duration` as a person writes it (`3h`, `90m`, `1h30m` or `HH:MM:SS`) in seconds."""
     spoken = _DURATION.match(duration.strip())
     if spoken and (spoken["hours"] or spoken["minutes"]):
-        return int(spoken["hours"] or 0) * 3600 + int(spoken["minutes"] or 0) * 60
+        return int(spoken["hours"] or 0) * SECONDS_PER_HOUR + int(spoken["minutes"] or 0) * 60
     hours, minutes, rest = (duration.strip().split(":") + ["", ""])[:3]
     if not (hours.isdigit() and minutes.isdigit() and rest.isdigit()):
         raise MissionError(f"a hold lasts `3h`, `90m`, `1h30m` or `HH:MM:SS`, not {duration!r}")
-    return int(hours) * 3600 + int(minutes) * 60 + int(rest)
+    return int(hours) * SECONDS_PER_HOUR + int(minutes) * 60 + int(rest)
 
 
 def _rentable(plan: ExecutionPlan) -> Rentable:

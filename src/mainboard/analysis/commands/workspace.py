@@ -36,14 +36,14 @@ class Workspace:
         self.facts = Facts(self.root, budget)
         atexit.register(budget.close)
         atexit.register(self.facts.close)
-        self.db = self.facts.db.cursor()
+        self.connection = self.facts.db.cursor()
         Ducks(cache=folder / "ast.duckdb", budget=budget, exclusive=True).register(
             self.facts, self.root
         )
         if "python" not in self.facts.languages:
-            self.db.execute("CREATE SCHEMA IF NOT EXISTS python")
+            self.connection.execute("CREATE SCHEMA IF NOT EXISTS python")
             for view in ("ast_files", "ast_nodes"):
-                self.db.execute(
+                self.connection.execute(
                     f"CREATE VIEW python.{view} AS SELECT * FROM main.{view} WHERE false"
                 )
 
@@ -60,18 +60,18 @@ class Workspace:
             if relation.name() in self.installed:
                 continue
             if relation.stored:
-                self.db.execute(
+                self.connection.execute(
                     f"CREATE OR REPLACE TABLE main.{relation.name()}__rows AS {relation.query}"
                 )
-            self.db.execute(relation.definition())
+            self.connection.execute(relation.definition())
             self.installed.add(relation.name())
             logger.debug("installed {}", relation.name())
 
     def read_texts(self, table: str, paths: list[str]) -> None:
         """Create `table(path, content)` holding the text of `paths`, project-relative."""
-        self.db.execute(f"CREATE OR REPLACE TABLE {table} (path VARCHAR, content VARCHAR)")
+        self.connection.execute(f"CREATE OR REPLACE TABLE {table} (path VARCHAR, content VARCHAR)")
         if paths:
-            self.db.execute(
+            self.connection.execute(
                 f"INSERT INTO {table} SELECT path, content FROM "
                 "(SELECT unnest($paths) AS path, unnest($files) AS file) "
                 "JOIN read_text($files) r ON r.filename = file",
@@ -81,6 +81,6 @@ class Workspace:
     def rows(self, sql: str, parameters: Mapping[str, Binding] | None = None) -> list[dict]:
         """The rows of `sql` as dicts, after installing the relations it calls."""
         self.install(sql)
-        cursor = self.db.execute(sql, parameters or {})
+        cursor = self.connection.execute(sql, parameters or {})
         names = [column for column, *_ in cursor.description]
         return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]

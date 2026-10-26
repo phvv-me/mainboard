@@ -20,6 +20,10 @@ from patos import FrozenModel
 from ....catalog import Family, Function
 from ....engine.facts import Facts, lint_excludes
 
+_PROJECT_ENTRIES_EXISTS_SQL = "SELECT 1 FROM duckdb_tables() WHERE table_name = 'project_entries'"
+_PROJECT_ENTRIES_CREATE_SQL = "CREATE TABLE project_entries (entry VARCHAR, is_directory BOOLEAN)"
+_PROJECT_ENTRIES_INSERT_SQL = "INSERT INTO project_entries VALUES (?, ?)"
+
 _NOT_A_REPOSITORY = b"not a git repository"
 _GIT = ["git", "-c", "core.excludesFile=/dev/null"]
 
@@ -108,13 +112,11 @@ class ProjectTree(FrozenModel):
 
     def register(self, facts: Facts) -> None:
         """Create `project_entries` (entry, is_directory) in `facts`, once."""
-        if facts.db.execute(
-            "SELECT 1 FROM duckdb_tables() WHERE table_name = 'project_entries'"
-        ).fetchone():
+        if facts.db.execute(_PROJECT_ENTRIES_EXISTS_SQL).fetchone():
             return
-        facts.db.execute("CREATE TABLE project_entries (entry VARCHAR, is_directory BOOLEAN)")
+        facts.db.execute(_PROJECT_ENTRIES_CREATE_SQL)
         if entries := self.entries():
-            facts.db.executemany("INSERT INTO project_entries VALUES (?, ?)", entries)
+            facts.db.executemany(_PROJECT_ENTRIES_INSERT_SQL, entries)
 
 
 class ProjectParent(Function):

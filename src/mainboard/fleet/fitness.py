@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from packaging.version import Version
 
 from ..center.readiness.workstation import abbreviated, install_command
+from ..constants import BYTES_PER_GB
 from ..core.errors import MissionError
 from ..core.execution.host import current_platform
 from ..core.section import Section, Verdict
@@ -19,6 +20,8 @@ from ..engines.compile.pixi.lock import packages
 from ..engines.compile.pixi.lockfile import Lockfile
 from ..engines.compile.provisioner import Provisioner
 from ..git.process import Git
+
+_MB_PER_GB = 1024
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -154,9 +157,9 @@ class Fitness:
     def _disk(self, system: System, role: Role) -> Section:
         """Whether the disk where the workspace lives has room for it."""
         need = _DISK[role]
-        free = f"{system.free_bytes / 1e9:.0f} GB free at {system.root}"
+        free = f"{system.free_bytes / BYTES_PER_GB:.0f} GB free at {system.root}"
         if system.free_bytes < need:
-            return _row("disk", Verdict.WARN, f"{free}, a {role} wants {need / 1e9:.0f}")
+            return _row("disk", Verdict.WARN, f"{free}, a {role} wants {need / BYTES_PER_GB:.0f}")
         return _row("disk", Verdict.PASS, free)
 
     def _driver(self, system: System, floor: str) -> Section:
@@ -246,7 +249,7 @@ class Fitness:
         if (wanted := profile.defaults.gpus) > cards:
             detail = f"jobs here ask for {wanted} cards, the machine has {cards}"
             return _row("memory", Verdict.FAIL, detail)
-        have = system.vram_mb / 1024
+        have = system.vram_mb / _MB_PER_GB
         if need and have < need:
             detail = f"jobs here need {need} GB of card memory, the largest card holds {have:.0f}"
             return _row("memory", Verdict.FAIL, detail)

@@ -4,6 +4,7 @@ The CLI loads this module by name only when the verb is typed: importing the plo
 over a second, which no other verb should pay.
 """
 
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -22,6 +23,8 @@ from ..options import query_source
 from ..session import Session
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from ...manifest.schema.figures import figure as figure_schema
     from ...manifest.schema.root import Manifest
 
@@ -40,12 +43,19 @@ def _refusal(fault: ModuleNotFoundError) -> Exception:
     )
 
 
-try:
+@contextmanager
+def _plot_extra() -> Generator[None]:
+    """Answer a missing plot module with its install line, any other fault unchanged."""
+    try:
+        yield
+    except ModuleNotFoundError as missing:
+        raise _refusal(missing) from missing
+
+
+with _plot_extra():
     from ...plots import figure
     from ...plots.table import columns
     from ...plots.table import core as table
-except ModuleNotFoundError as missing:
-    raise _refusal(missing) from missing
 
 
 @Parameter(name="*")

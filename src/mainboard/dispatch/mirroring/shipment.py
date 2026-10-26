@@ -101,6 +101,13 @@ class Shipment(FrozenModel):
         """Whether this dispatch ships a closure rather than the mirror."""
         return bool(self.listing)
 
+    @staticmethod
+    def _unchanged(rows: Sequence[Row], *, root: Path) -> None:
+        """Refuse a row whose file no longer holds the bytes the job was prepared from."""
+        for row in rows:
+            if blob_of(root / row.path) != row.blob:
+                raise MissionError(f"{row.path} changed after Mainboard prepared the job")
+
     def admit(self, root: Path) -> None:
         """Refuse an unregistered research shipment before remote work or allocation.
 
@@ -120,13 +127,14 @@ class Shipment(FrozenModel):
         if hashlib.sha256(self.listing.encode()).hexdigest() != self.source.digest:
             raise MissionError("research source listing does not match its recorded digest")
         registered(root / target.registration, rows, root=root)
-        for row in rows:
-            if blob_of(root / row.path) != row.blob:
-                raise MissionError(f"{row.path} changed after Mainboard prepared the job")
+        self._unchanged(rows, root=root)
 
     def carried(self, *, script: str, listing: str) -> list[tuple[str]]:
-        """What a dispatch names to the mirror beyond its allowlist, each path alone: the staged
-        job script, the staged closure listing (empty for a command) and the closure's files."""
+        """List the paths a dispatch names to the mirror beyond its allowlist, one per entry.
+
+        The staged job script, the staged closure listing (empty for a command) and the closure's
+        files; empty paths are dropped.
+        """
         return [(path,) for path in (script, listing, *self.files) if path]
 
     def exports(self, closure: str = "") -> dict[str, str]:

@@ -40,34 +40,38 @@ class Artifact(FrozenModel):
             stream.seek(0)
             sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
             size = stream.tell()
-        match header[:4]:
-            case b"\x7fELF":
-                if len(header) < 20 or header[5] not in {1, 2}:
-                    raise ValueError(f"truncated or invalid ELF header: {path}")
-                byteorder: Literal["little", "big"] = "little" if header[5] == 1 else "big"
-                kind = (
-                    ArtifactKind.cubin
-                    if int.from_bytes(header[18:20], byteorder) == 190
-                    else ArtifactKind.native_elf
-                )
-            case b"\xb1CbF" | b"\x50\xed\x55\xba":
-                kind = ArtifactKind.fatbin
-            case (
-                b"\xcf\xfa\xed\xfe"
-                | b"\xce\xfa\xed\xfe"
-                | b"\xfe\xed\xfa\xcf"
-                | b"\xfe\xed\xfa\xce"
-                | b"\xca\xfe\xba\xbe"
-                | b"\xbe\xba\xfe\xca"
-                | b"\xca\xfe\xba\xbf"
-                | b"\xbf\xba\xfe\xca"
-            ):
-                kind = ArtifactKind.native_macho
-            case _ if path.suffix.lower() == ".ptx":
-                kind = ArtifactKind.ptx
-            case _:
-                raise ValueError(f"unrecognized device artifact: {path}")
-        return cls(path=str(path), sha256=sha256, size=size, kind=kind)
+        return cls(path=str(path), sha256=sha256, size=size, kind=cls._kind_of(header, path))
+
+    @staticmethod
+    def _elf_kind(header: bytes, path: Path) -> ArtifactKind:
+        if len(header) < 20 or header[5] not in {1, 2}:
+            raise ValueError(f"truncated or invalid ELF header: {path}")
+        byteorder: Literal["little", "big"] = "little" if header[5] == 1 else "big"
+        if int.from_bytes(header[18:20], byteorder) == 190:
+            return ArtifactKind.cubin
+        return ArtifactKind.native_elf
+
+    @staticmethod
+    def _kind_of(header: bytes, path: Path) -> ArtifactKind:
+        magic = header[:4]
+        if magic == b"\x7fELF":
+            return Artifact._elf_kind(header, path)
+        if magic in {b"\xb1CbF", b"\x50\xed\x55\xba"}:
+            return ArtifactKind.fatbin
+        if magic in {
+            b"\xcf\xfa\xed\xfe",
+            b"\xce\xfa\xed\xfe",
+            b"\xfe\xed\xfa\xcf",
+            b"\xfe\xed\xfa\xce",
+            b"\xca\xfe\xba\xbe",
+            b"\xbe\xba\xfe\xca",
+            b"\xca\xfe\xba\xbf",
+            b"\xbf\xba\xfe\xca",
+        }:
+            return ArtifactKind.native_macho
+        if path.suffix.lower() == ".ptx":
+            return ArtifactKind.ptx
+        raise ValueError(f"unrecognized device artifact: {path}")
 
 
 class Coverage(StrEnum):

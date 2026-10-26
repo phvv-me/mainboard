@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import psutil
 from patos import FrozenModel, FrozenOpenModel
 
+from ...constants import BYTES_PER_GB, SECONDS_PER_HOUR
 from ..machine import Machine
 
 if TYPE_CHECKING:
@@ -84,17 +85,22 @@ class Occupancy(FrozenOpenModel):
     def _holder(pid: int, *, used_bytes: int) -> Holder:
         """What the host knows about `pid`, the bare id when the process is gone or private."""
         try:
-            process = psutil.Process(pid)
-            with process.oneshot():
-                return Holder(
-                    pid=pid,
-                    user=process.username(),
-                    age_s=int(datetime.now(UTC).timestamp() - process.create_time()),
-                    command=" ".join(process.cmdline())[:80],
-                    used_bytes=used_bytes,
-                )
+            return Occupancy._live_holder(pid, used_bytes=used_bytes)
         except psutil.NoSuchProcess, psutil.AccessDenied:
             return Holder(pid=pid, used_bytes=used_bytes)
+
+    @staticmethod
+    def _live_holder(pid: int, *, used_bytes: int) -> Holder:
+        """What the host reports about a running process it lets this one read."""
+        process = psutil.Process(pid)
+        with process.oneshot():
+            return Holder(
+                pid=pid,
+                user=process.username(),
+                age_s=int(datetime.now(UTC).timestamp() - process.create_time()),
+                command=" ".join(process.cmdline())[:80],
+                used_bytes=used_bytes,
+            )
 
     @staticmethod
     def _read(unit: GPU) -> CardOccupancy:
@@ -121,11 +127,11 @@ def rows(host: str, occupancy: Occupancy) -> list[dict[str, str | int | float | 
             "host": host,
             "card": f"{card.index}: {card.name}",
             "util_pct": card.utilization_pct,
-            "memory_gb": round(card.memory_used_bytes / 1e9, 1),
-            "of_gb": round(card.memory_total_bytes / 1e9, 1),
+            "memory_gb": round(card.memory_used_bytes / BYTES_PER_GB, 1),
+            "of_gb": round(card.memory_total_bytes / BYTES_PER_GB, 1),
             "free": card.free,
             "holders": "; ".join(
-                f"{h.pid} {h.user or '?'} {h.age_s // 3600}h {h.command}".strip()
+                f"{h.pid} {h.user or '?'} {h.age_s // SECONDS_PER_HOUR}h {h.command}".strip()
                 for h in card.holders
             ),
         }

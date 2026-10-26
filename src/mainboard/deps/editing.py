@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import tomlkit
 import tomlkit.items
 from tomlkit.container import OutOfOrderTableProxy
@@ -53,7 +55,7 @@ class ManifestText:
         return len(clauses) == 1 and clauses[0].startswith("==") and "*" not in clauses[0]
 
     @staticmethod
-    def _level(table: _Level, path: tuple[str, ...], made: tomlkit.items.Table | None) -> _Level:
+    def _level(table: _Level, path: Sequence[str], made: tomlkit.items.Table | None) -> _Level:
         """The table `path`'s last key names inside `table`, `made` there when absent."""
         key, where = path[-1], f"[{'.'.join(path)}]"
         if key not in table:
@@ -87,6 +89,15 @@ class ManifestText:
     def __init__(self, text: str) -> None:
         self.document = tomlkit.parse(text)
 
+    def _walk(self, path: Sequence[str], *, create: bool = False) -> _Level:
+        """The table or out-of-order proxy at `path`, each missing level made on request."""
+        table: _Level = self.document
+        for at in range(len(path)):
+            # Every level but the last is only a heading prefix, never written on its own.
+            made = tomlkit.table(is_super_table=at < len(path) - 1) if create else None
+            table = ManifestText._level(table, path[: at + 1], made)
+        return table
+
     def constraint(self, path: tuple[str, ...], name: str) -> str:
         """What `name` is pinned to in the table at `path`.
 
@@ -112,8 +123,8 @@ class ManifestText:
         """Remove `name` from the table at `path`, and any table left empty, undoing a `put`."""
         del self.table(path)[name]
         emptied = path
-        while emptied and not self.table(emptied):
-            parent = self.document if len(emptied) == 1 else self.table(emptied[:-1])
+        while emptied and not self._walk(emptied):
+            parent = self.document if len(emptied) == 1 else self._walk(emptied[:-1])
             del parent[emptied[-1]]
             emptied = emptied[:-1]
 
@@ -139,13 +150,8 @@ class ManifestText:
         `OutOfOrderTableProxy`, which is walked through like a table; the requirements' own
         table at the end is always a real one.
         """
-        table: _Level = self.document
-        for at in range(len(path)):
-            # Every level but the last is only a heading prefix, never written on its own.
-            made = tomlkit.table(is_super_table=at < len(path) - 1) if create else None
-            table = ManifestText._level(table, path[: at + 1], made)
-        match table:
-            case tomlkit.items.Table():
+        match self._walk(path, create=create):
+            case tomlkit.items.Table() as table:
                 return table
             case _:
                 raise MissionError(f"[{'.'.join(path)}] is not a table of requirements")

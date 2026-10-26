@@ -336,17 +336,26 @@ class Ruff(Tool):
                 rows.append((fact_id, len(rows), path, *start, *end, text, None))
         return rows
 
-    def run(self, root: Path) -> dict[str, Table]:
-        files = [name for name in listed(root) if name.endswith((".py", ".pyi"))]
+    def _lane(self, root: Path, files: list[str]) -> list[RuffDiagnostic]:
+        """The `extended` diagnostics that the project's own configuration does not report."""
         own = {self._key(item) for item in self._check(root, files)}
-        ceilings = [f"lint.pylint.{name}={value}" for name, value in self.limits.items()]
-        flags = ["--extend-select", ",".join(self.extended)]
-        flags += [arg for ceiling in ceilings for arg in ("--config", ceiling)]
-        lane = [
+        flags = [
+            "--extend-select",
+            ",".join(self.extended),
+            *(
+                arg
+                for name, value in self.limits.items()
+                for arg in ("--config", f"lint.pylint.{name}={value}")
+            ),
+        ]
+        return [
             item
             for item in self._check(root, files, flags)
             if item.code in self.extended and self._key(item) not in own
         ]
+
+    def _rows(self, root: Path, lane: Sequence[RuffDiagnostic]) -> tuple[list[Row], list[Row]]:
+        """The diagnostic and edit rows of the `lane` diagnostics that name a Python file."""
         sources, base = Sources(root), root.resolve()
         diagnostics: list[Row] = []
         edits: list[Row] = []
@@ -358,6 +367,11 @@ class Ruff(Tool):
                     self._diagnostic(fact_id, path=path, item=item, sources=sources)
                 )
                 edits += self._edits(fact_id, path=path, fix=item.fix, sources=sources)
+        return diagnostics, edits
+
+    def run(self, root: Path) -> dict[str, Table]:
+        files = [name for name in listed(root) if name.endswith((".py", ".pyi"))]
+        diagnostics, edits = self._rows(root, self._lane(root, files))
         return {"diagnostics": (_RUFF_DIAGNOSTICS, diagnostics), "edits": (_EDITS, edits)}
 
 

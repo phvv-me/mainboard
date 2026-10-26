@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from matplotlib.axes import Axes
     from matplotlib.backend_bases import RendererBase
+    from matplotlib.transforms import BboxBase, Transform
 
 _RADIUS = 1.25
 _BAR_GAP = 0.75
@@ -46,6 +47,11 @@ class RoundedBar(FancyBboxPatch):
     box is therefore rebuilt in display space at each draw: it runs a radius past the baseline
     and is clipped there, which cuts that end square while the data end keeps its corners.
     """
+
+    @property
+    def _pixels(self) -> float:
+        """Display pixels in one point at the figure's resolution."""
+        return self.figure.dpi / 72
 
     def __init__(
         self,
@@ -78,6 +84,37 @@ class RoundedBar(FancyBboxPatch):
         self.radius = radius
         self.gap = gap
 
+    def _clip_box(self, bbox: BboxBase, *, foot: np.ndarray, head: np.ndarray) -> Bbox:
+        """The axes box clipped at the baseline, which cuts the bar's flat end square."""
+        along = self.orientation.value_axis
+        limits = list(bbox.extents)
+        limits[along if head[along] - foot[along] >= 0 else along + 2] = foot[along]
+        return Bbox.from_extents(*limits)
+
+    def _display_ends(self, transform: Transform) -> tuple[np.ndarray, np.ndarray]:
+        """The bar's baseline end and value end, in display pixels."""
+        half = self.thickness / 2
+        foot, head = transform.transform(
+            [
+                self.orientation.point(self.baseline, position=self.position - half),
+                self.orientation.point(self.value, position=self.position + half),
+            ]
+        )
+        return foot, head
+
+    def _outline(self, *, foot: np.ndarray, head: np.ndarray) -> tuple[list[float], float]:
+        """The bounds box in display pixels, and the corner radius that rounds the data end."""
+        along = self.orientation.value_axis
+        across = 1 - along
+        span = max(abs(head[across] - foot[across]) - self.gap * self._pixels, 1.0)
+        length = head[along] - foot[along]
+        radius = min(self.radius * self._pixels, span / 2, abs(length))
+        start = foot[along] - math.copysign(radius, length)
+        box = [0.0, 0.0, 0.0, 0.0]
+        box[along], box[along + 2] = min(start, head[along]), abs(head[along] - start)
+        box[across], box[across + 2] = (foot[across] + head[across]) / 2 - span / 2, span
+        return box, radius
+
     def draw(self, renderer: RendererBase) -> None:
         self.reshape()
         super().draw(renderer)
@@ -87,31 +124,23 @@ class RoundedBar(FancyBboxPatch):
         axes = self.axes
         if axes is None:
             raise RuntimeError("a bar takes its shape from an axes, so add it to one first")
-        half = self.thickness / 2
-        foot, head = axes.transData.transform(
-            [
-                self.orientation.point(self.baseline, position=self.position - half),
-                self.orientation.point(self.value, position=self.position + half),
-            ]
-        )
+        foot, head = self._display_ends(axes.transData)
         self.set_visible(bool(np.isfinite([*foot, *head]).all()))
         if not self.get_visible():
             return
-        along = self.orientation.value_axis
-        across = 1 - along
-        pixels = self.figure.dpi / 72
-        span = max(abs(head[across] - foot[across]) - self.gap * pixels, 1.0)
-        length = head[along] - foot[along]
-        radius = min(self.radius * pixels, span / 2, abs(length))
-        start = foot[along] - math.copysign(radius, length)
-        box = [0.0, 0.0, 0.0, 0.0]
-        box[along], box[along + 2] = min(start, head[along]), abs(head[along] - start)
-        box[across], box[across + 2] = (foot[across] + head[across]) / 2 - span / 2, span
+        box, radius = self._outline(foot=foot, head=head)
         self.set_bounds(*box)
         self.set_boxstyle("round", pad=0, rounding_size=radius)
-        limits = list(axes.bbox.extents)
-        limits[along if length >= 0 else along + 2] = foot[along]
-        self.set_clip_box(Bbox.from_extents(*limits))
+        self.set_clip_box(self._clip_box(axes.bbox, foot=foot, head=head))
+
+
+def _corners(bar: RoundedBar, baseline: float) -> list[tuple[float, float]]:
+    """The data-space corners of one bar at its value end and at its baseline end."""
+    return [
+        bar.orientation.point(end, position=bar.position + edge * bar.thickness / 2)
+        for end in (bar.value, baseline)
+        for edge in (-1, 1)
+    ]
 
 
 def bars(
@@ -152,13 +181,10 @@ def bars(
     ]
     for bar in drawn:
         axis.add_patch(bar)
-    corners = [
-        orientation.point(end, position=bar.position + edge * bar.thickness / 2)
-        for bar in drawn
-        for end in (bar.value, baseline)
-        for edge in (-1, 1)
-        if math.isfinite(bar.value)
-    ]
+    corners: list[tuple[float, float]] = []
+    for bar in drawn:
+        if math.isfinite(bar.value):
+            corners.extend(_corners(bar, baseline))
     axis.update_datalim(corners)
     axis.autoscale_view()
     return drawn

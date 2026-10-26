@@ -200,7 +200,10 @@ class AppleBundle:
 
     def inspect(self, path: Path, checks: BundleChecks = _UNCHECKED) -> BundleReport:
         """Read the bundle at `path` and judge it against `checks`."""
-        bundle = path.expanduser().resolve(strict=True)
+        try:
+            bundle = path.expanduser().resolve(strict=True)
+        except FileNotFoundError as fault:
+            raise MissionError(f"no Apple bundle directory at {path}") from fault
         if not bundle.is_dir():
             raise MissionError(f"no Apple bundle directory at {bundle}")
         entries = AppleBundle._entries(bundle)

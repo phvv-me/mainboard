@@ -18,13 +18,19 @@ from cyclopts import Parameter
 from patos import FrozenModel
 
 from ....core.errors import MissionError
+from ....core.project import Project
 from ....git.process import Git
 from ....log import logger
 from ..report import Report
 from ..workspace import Workspace
 from .experiments import node_status, read_papers
 
-_MANIFESTS = frozenset({"mainboard.toml", "pytest.ini"})
+_EXPERIMENT_NODES_BY_NAME_SQL = (
+    "SELECT name, dir, settled FROM experiment_nodes() WHERE name IN (SELECT unnest($names))"
+)
+_TRIAL_FILES_SQL = "SELECT path, experiment FROM trial_files()"
+
+_MANIFESTS = frozenset({*Project().manifests, "pytest.ini"})
 _SHOWN = 12
 
 _CHANGES = """
@@ -179,38 +185,61 @@ class ImpactReport(Report):
         more = len(lines) - shown
         return [*lines[:shown], *([f"  +{more} more (--json lists all)"] if more > 0 else [])]
 
-    def text(self) -> str:
-        if not self.changed:
-            return "no changed files"
-        importers = [reached for reached in self.reached if reached.hops]
-        direct = [reached for reached in importers if reached.hops == 1]
-        deepest = max((reached.hops for reached in importers), default=0)
-        lines = [f"{len(self.changed)} changed in {self.root}"]
-        lines += self._head([self._change(change) for change in self.changed])
-        lines.append(
-            f"imported by {len(importers)} files over {deepest} hops, {len(direct)} directly, "
-            f"{sum(reached.design for reached in importers)} through design imports alone"
-        )
-        lines += self._head([f"  {reached.path}" for reached in direct])
-        if self.experiments:
-            trials = sum(len(experiment.trials) for experiment in self.experiments)
-            lines.append(f"{len(self.experiments)} experiments reached, {trials} trials to rerun:")
-            lines += self._head([self._experiment(e) for e in self.experiments], shown=30)
-        if self.sealed_experiments:
-            lines.append(
-                f"the seal also marks {self.sealed_trials} trials in "
-                f"{len(self.sealed_experiments)} experiments that do not import the change"
-            )
-        if self.papers:
-            lines.append(f"{len(self.papers)} paper sections cite the experiments reached:")
-            lines += self._head(
+    def _experiment_lines(self) -> list[str]:
+        """The reached experiments and their trials to rerun, none when there are none."""
+        if not self.experiments:
+            return []
+        trials = sum(len(experiment.trials) for experiment in self.experiments)
+        return [
+            f"{len(self.experiments)} experiments reached, {trials} trials to rerun:",
+            *self._head([self._experiment(e) for e in self.experiments], shown=30),
+        ]
+
+    def _paper_lines(self) -> list[str]:
+        """The paper sections citing a reached experiment, none when no section cites one."""
+        if not self.papers:
+            return []
+        return [
+            f"{len(self.papers)} paper sections cite the experiments reached:",
+            *self._head(
                 [
                     f"  {paper.path}:{paper.line}  {paper.section or '-'}  <- "
                     f"{', '.join(paper.experiments)}"
                     for paper in self.papers
                 ],
                 shown=20,
-            )
+            ),
+        ]
+
+    def _reach_lines(self) -> list[str]:
+        """How many files import the changed code, directly and through design imports alone."""
+        importers = [reached for reached in self.reached if reached.hops]
+        direct = [reached for reached in importers if reached.hops == 1]
+        deepest = max((reached.hops for reached in importers), default=0)
+        return [
+            f"imported by {len(importers)} files over {deepest} hops, {len(direct)} directly, "
+            f"{sum(reached.design for reached in importers)} through design imports alone",
+            *self._head([f"  {reached.path}" for reached in direct]),
+        ]
+
+    def _sealed_lines(self) -> list[str]:
+        """The trials the seal marks beyond the reached ones, none when it marks none."""
+        if not self.sealed_experiments:
+            return []
+        return [
+            f"the seal also marks {self.sealed_trials} trials in "
+            f"{len(self.sealed_experiments)} experiments that do not import the change"
+        ]
+
+    def text(self) -> str:
+        if not self.changed:
+            return "no changed files"
+        lines = [f"{len(self.changed)} changed in {self.root}"]
+        lines += self._head([self._change(change) for change in self.changed])
+        lines += self._reach_lines()
+        lines += self._experiment_lines()
+        lines += self._sealed_lines()
+        lines += self._paper_lines()
         return "\n".join(lines)
 
 
@@ -266,8 +295,7 @@ class ImpactAnalysis:
         status = {
             row["name"]: row
             for row in self.workspace.rows(
-                "SELECT name, dir, settled FROM experiment_nodes() "
-                "WHERE name IN (SELECT unnest($names))",
+                _EXPERIMENT_NODES_BY_NAME_SQL,
                 {"names": names},
             )
         }
@@ -289,7 +317,7 @@ class ImpactAnalysis:
     def _sealed(self, parameters: dict) -> list[tuple[str, str | None]]:
         """The trials the seal marks as stale, (path, experiment)."""
         if _MANIFESTS & set(self.changed):
-            rows = self.workspace.rows("SELECT path, experiment FROM trial_files()")
+            rows = self.workspace.rows(_TRIAL_FILES_SQL)
         else:
             rows = self.workspace.rows(_SEALED, parameters)
         return [(row["path"], row["experiment"]) for row in rows]

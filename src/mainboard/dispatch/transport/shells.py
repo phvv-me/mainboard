@@ -18,6 +18,7 @@ from .targets import placed
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from types import TracebackType
 
     from ...context.plan import ExecutionPlan
     from .core import Machine, SshTransport
@@ -115,7 +116,12 @@ class HostShell:
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *_: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         if isinstance(self.remote, BoundedSshMachine):
             self.remote.close()
 

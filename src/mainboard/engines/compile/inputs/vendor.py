@@ -63,15 +63,21 @@ def relocated(name: str, *, path: str) -> str:
 
 def path_deps(manifest: Manifest) -> dict[str, str]:
     """Every Python path dependency `manifest` declares in any scope, name to location."""
-    declared: dict[str, str] = {}
-    for scope in _scopes(manifest):
-        python = scope.toolchains().get("python")
-        if not python:
-            continue
-        for name, spec in python.all_deps().items():
-            if spec.is_path and isinstance(path := (spec.model_extra or {})["path"], str):
-                declared[name] = path
-    return declared
+    return {
+        name: path for scope in _scopes(manifest) for name, path in _python_paths(scope).items()
+    }
+
+
+def _python_paths(scope: Scope) -> dict[str, str]:
+    """The Python path dependencies `scope` declares, name to location."""
+    python = scope.toolchains().get("python")
+    if not python:
+        return {}
+    return {
+        name: path
+        for name, spec in python.all_deps().items()
+        if spec.is_path and isinstance(path := (spec.model_extra or {})["path"], str)
+    }
 
 
 def _scopes(manifest: Manifest) -> Iterator[Scope]:
@@ -103,14 +109,18 @@ class Vendor:
         """
         target = self.base / name
         source = self.root / declared
-        if not source.is_dir():
-            if target.is_dir():
-                return
+        if source.is_dir():
+            self.__relink(files, name, source)
+        elif not target.is_dir():
             raise MissionError(
                 f"{name} is declared at {declared}, which is outside {self.root} and is not "
                 f"there either, so there is nothing to vendor into {target}. Run "
                 f"`{Project().name} install` where that source exists, or correct the path."
             )
+
+    def __relink(self, files: Writer, name: str, source: Path) -> None:
+        """Link each entry of `source` into `name`'s vendored directory, dropping stale entries."""
+        target = self.base / name
         target.mkdir(parents=True, exist_ok=True)
         entries = [entry for entry in sorted(source.iterdir()) if not entry.name.startswith(".")]
         for entry in entries:

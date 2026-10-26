@@ -5,6 +5,8 @@ from enum import Enum
 
 from patos import FrozenModel
 
+from ...constants import BYTES_PER_GB
+from ..constants import NANOSECONDS_PER_MILLISECOND
 from ..result import DeviceEvidence, Profile
 from ..trace import Activity, BottleneckReport, HotKernel, KernelTrace
 
@@ -204,7 +206,7 @@ class ProfileReport(FrozenModel):
         if self.device_evidence is DeviceEvidence.ABSENT:
             notes.append("no device evidence collected: asked for it and observed none")
         if self.peak_memory_bytes:
-            notes.append(f"peak memory {self.peak_memory_bytes / 1e9:.3f} GB")
+            notes.append(f"peak memory {self.peak_memory_bytes / BYTES_PER_GB:.3f} GB")
         if self.peak_bandwidth_gbps:
             pct = 100.0 * self.achieved_bandwidth_gbps / self.peak_bandwidth_gbps
             notes.append(
@@ -225,7 +227,7 @@ class ProfileReport(FrozenModel):
             return f"{head}\nNo kernels traced." + self._notes()
         rows = [f"{'kernel':<40}{'calls':>6}{'total ms':>10}{'share%':>8}{'regs':>6}"]
         rows += [
-            f"{k.name[:40]:<40}{k.calls:>6d}{k.total_ns / 1e6:>10.3f}"
+            f"{k.name[:40]:<40}{k.calls:>6d}{k.total_ns / NANOSECONDS_PER_MILLISECOND:>10.3f}"
             f"{k.share_pct:>8.1f}{k.registers:>6d}"
             for k in self.kernels
         ]

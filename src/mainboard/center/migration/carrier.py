@@ -68,7 +68,7 @@ class Carrier:
     def argv(self) -> tuple[str, ...]:
         """The ssh command line, the one part of a call a process listing shows."""
         line = (
-            f'"{self.uv}" run --no-project --quiet --managed-python '
+            f'"{self.uv_path}" run --no-project --quiet --managed-python '
             f"--python {shlex.quote(self.python)} "
             f'python -c "{_BOOTSTRAP}"'
         )
@@ -97,7 +97,7 @@ class Carrier:
         self, host: str, *, uv: str, transport: SshTransport | None = None, python: str
     ) -> None:
         self.host = host
-        self.uv = uv
+        self.uv_path = uv
         self.python = python
         self.transport = transport or SshTransport()
 

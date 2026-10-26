@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, ClassVar, NamedTuple
 
 from .process import Git, said
 
+_NON_SYMBOLIC_REF_NAME_FORMAT = "--format=%(if)%(symref)%(then)%(else)%(refname:short)%(end)"
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -298,7 +300,7 @@ class Repo:
         """
         found = self.git.run(
             "for-each-ref",
-            "--format=%(if)%(symref)%(then)%(else)%(refname:short)%(end)",
+            _NON_SYMBOLIC_REF_NAME_FORMAT,
             "--contains",
             commit,
             f"refs/remotes/{Repo.REMOTE}/",

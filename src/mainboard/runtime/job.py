@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from patos import FrozenModel
 from pydantic import Field
 
+from ..constants import SECONDS_PER_HOUR
 from ..core.project import Project
 from ..engines.compile.constants import ACTIVATION, STAMPED
 from .activation import Runtime, prepended
-from .entry import Refusal, activated
+from .entry import activated
+from .exceptions import Refusal
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -50,8 +52,10 @@ class PrefixActivation(FrozenModel):
     @staticmethod
     def _stamped(prefix: Path) -> bool:
         try:
-            stamp = Project().marked(prefix, STAMPED)
-            return stamp.read_text(encoding="utf-8").strip() == prefix.name
+            return (
+                Project().marked(prefix, STAMPED).read_text(encoding="utf-8").strip()
+                == prefix.name
+            )
         except OSError:
             return False
 
@@ -160,7 +164,7 @@ class Job(FrozenModel):
 def walltime_seconds(walltime: str) -> int:
     """A `HH:MM:SS` walltime as whole seconds."""
     hours, minutes, seconds = (int(part) for part in walltime.split(":"))
-    return hours * 3600 + minutes * 60 + seconds
+    return hours * SECONDS_PER_HOUR + minutes * 60 + seconds
 
 
 def walltime(seconds: float) -> str:
@@ -168,5 +172,5 @@ def walltime(seconds: float) -> str:
 
     A clock format wrapped a 25-hour allocation to one hour (B28).
     """
-    hours, rest = divmod(int(seconds), 3600)
+    hours, rest = divmod(int(seconds), SECONDS_PER_HOUR)
     return f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"

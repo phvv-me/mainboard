@@ -11,6 +11,13 @@ from matplotlib.colors import to_rgb
 from ..core import Project
 from ..manifest.loading import load_plot_config
 
+_RATIO = 1.618
+_SRGB_LINEAR_SEGMENT_DIVISOR = 12.92
+_SRGB_LINEAR_SEGMENT_THRESHOLD = 0.04045
+_SRGB_GAMMA_OFFSET_SCALE = 1.055
+_RED_LUMINANCE_WEIGHT = 0.2126
+_GREEN_LUMINANCE_WEIGHT = 0.7152
+
 if TYPE_CHECKING:
     import numpy as np
     from matplotlib.axes import Axes
@@ -35,7 +42,7 @@ def apply_style(style: PlotStyle) -> None:
 def subplots(
     width: float = 5.5,
     *,
-    ratio: float = 1.618,
+    ratio: float = _RATIO,
     ncols: int = 1,
     nrows: int = 1,
     sharex: bool | Literal["none", "all", "row", "col"] = False,
@@ -78,8 +85,16 @@ def figure_legend(
 
 def contrasting_text(fill: str, *, ink: str, surface: str) -> str:
     """Choose the configured foreground or background using linear-sRGB luminance."""
-    channels = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in to_rgb(fill)]
+    channels = [
+        c / _SRGB_LINEAR_SEGMENT_DIVISOR
+        if c <= _SRGB_LINEAR_SEGMENT_THRESHOLD
+        else ((c + 0.055) / _SRGB_GAMMA_OFFSET_SCALE) ** 2.4
+        for c in to_rgb(fill)
+    ]
     luminance = sum(
-        c * weight for c, weight in zip(channels, (0.2126, 0.7152, 0.0722), strict=True)
+        c * weight
+        for c, weight in zip(
+            channels, (_RED_LUMINANCE_WEIGHT, _GREEN_LUMINANCE_WEIGHT, 0.0722), strict=True
+        )
     )
     return ink if luminance > 0.2 else surface

@@ -33,6 +33,7 @@ from ..base import (
     hourly_cap,
     http_transport,
 )
+from ..constants import ADDRESS_ATTEMPTS, ADDRESS_SECONDS
 from .api import HpcAiApi, Instance, InstanceType, api_key
 
 if TYPE_CHECKING:
@@ -51,9 +52,6 @@ _LOG_PATH = f"{_SENTINEL_DIR}/mainboard.log"
 _EXIT_PATH = f"{_SENTINEL_DIR}/mainboard.exit"
 # The one status that can answer ssh at all.
 _RUNNING = "Running"
-# Fifteen minutes for an instance to pull its image and come up.
-_ADDRESS_ATTEMPTS = 90
-_ADDRESS_SECONDS = 10.0
 # Polls in a row a start may sit in a back-off before it is read as never starting: an image that
 # will not pull backs off for good (`DownloadImage` / `BackOff`, a pinned image id, 2026-09-29).
 _BACKOFF_POLLS = 18
@@ -243,7 +241,7 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Market, Rentable):
         key: the private key file the connection uses, empty to leave that to ssh's own config.
         """
         backing_off, found = 0, Instance(handle=handle)
-        for _ in range(_ADDRESS_ATTEMPTS):
+        for _ in range(ADDRESS_ATTEMPTS):
             found = self.api.instance(handle) or Instance(handle=handle)
             if found.status == _RUNNING and found.address and found.port:
                 return Endpoint(
@@ -256,7 +254,7 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Market, Rentable):
                     "In `DownloadImage` the image will not pull; pick an image the console offers "
                     "for this type and set its id as [hosts.<name>.vars] image-id"
                 )
-            self.sleeper(_ADDRESS_SECONDS)
+            self.sleeper(ADDRESS_SECONDS)
         raise MissionError(
             f"hpc-ai instance {handle} never published an ssh endpoint (last: {found.said}); look "
             "it up in the console and terminate it if it is still billing"

@@ -37,6 +37,7 @@ from ..base import (
     http_transport,
     image_cuda,
 )
+from ..constants import ADDRESS_ATTEMPTS, ADDRESS_SECONDS
 from .api import VastApi, api_key
 from .market import Ask, VastMarket, base_image, bid
 
@@ -72,10 +73,6 @@ _SAMPLE_GPU = "RTX 4090"
 _SSH_USER = "root"
 # The status a machine reaches before its sshd can answer at all.
 _RUNNING = "running"
-# Fifteen minutes to pull the image, start the container and publish the proxy ssh address: a
-# cold CUDA base image is gigabytes, and a machine still pulling must not be knocked at yet.
-_ADDRESS_ATTEMPTS = 90
-_ADDRESS_SECONDS = 10.0
 
 
 class OfferTaken(MissionError):
@@ -314,13 +311,13 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
 
         key: the private key file the connection uses, empty to leave that to ssh's own config.
         """
-        for _ in range(_ADDRESS_ATTEMPTS):
+        for _ in range(ADDRESS_ATTEMPTS):
             instance = self.api.instance(handle)
             address = str(instance.get("ssh_host") or "")
             port = int(instance.get("ssh_port") or 0)
             if address and port and str(instance.get("actual_status") or "") == _RUNNING:
                 return Endpoint(address=address, port=port, user=_SSH_USER, identity=key)
-            self.api.sleeper(_ADDRESS_SECONDS)
+            self.api.sleeper(ADDRESS_SECONDS)
         raise MissionError(
             f"vast instance {handle} never came up with an ssh address; look it up at "
             "https://cloud.vast.ai/instances/ and destroy it if it is still billing"

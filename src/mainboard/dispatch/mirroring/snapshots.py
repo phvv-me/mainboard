@@ -30,10 +30,11 @@ from abc import ABC, abstractmethod
 from contextlib import suppress
 from functools import reduce
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from patos import FrozenModel, FrozenOpenModel
 
+from ...constants import SECONDS_PER_DAY
 from ...core.execution.retention import Retention, RetentionPins
 from ...core.project import Project
 from ...jobs.targets.pins import staging
@@ -234,7 +235,7 @@ class Snapshots:
             )
         except OSError:
             return []
-        horizon = time.time() - _SNAPSHOT_DAYS * 86400
+        horizon = time.time() - _SNAPSHOT_DAYS * SECONDS_PER_DAY
         doomed = [
             tree
             for tree in trees[_KEPT_SNAPSHOTS:]
@@ -366,6 +367,20 @@ class _Task(FrozenOpenModel):
 class _Queue(FrozenOpenModel):
     tasks: dict[str, _Task]
 
+    @classmethod
+    def status(cls, pueue: str) -> Self:
+        """The queue `pueue status --json` reports, raising when pueue exits nonzero."""
+        said = subprocess.run(
+            [pueue, "status", "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=True,
+        ).stdout
+        return cls.model_validate_json(said)
+
 
 def queued_here() -> str | None:
     """Text naming every task this host's pueue lists, finished ones too, and their scripts.
@@ -377,15 +392,6 @@ def queued_here() -> str | None:
     if pueue is None:
         return None
     try:
-        said = subprocess.run(
-            [pueue, "status", "--json"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-            check=True,
-        ).stdout
-        return "\n".join(task.text() for task in _Queue.model_validate_json(said).tasks.values())
+        return "\n".join(task.text() for task in _Queue.status(pueue).tasks.values())
     except OSError, subprocess.SubprocessError, ValueError:
         return None

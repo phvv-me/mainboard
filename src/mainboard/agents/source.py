@@ -18,6 +18,10 @@ from pydantic import Field, field_validator
 from ..core.errors import MissionError
 from ..probe.census import Json
 
+_DEFAULTED_REFERENCE_MESSAGE = (
+    "a reference is `${NAME}`; a default would be honored by one harness"
+)
+
 _DEFAULTED = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-")
 
 
@@ -48,7 +52,7 @@ class Server(FrozenModel):
     def undefaulted(cls, values: dict[str, str]) -> dict[str, str]:
         """Refuse a `${NAME:-default}`, which every harness but Claude Code would mangle."""
         if any(_DEFAULTED.search(value) for value in values.values()):
-            raise ValueError("a reference is `${NAME}`; a default would be honored by one harness")
+            raise ValueError(_DEFAULTED_REFERENCE_MESSAGE)
         return values
 
     @property

@@ -4,7 +4,10 @@ from patos import FrozenModel
 from rich.console import RenderableType
 from rich.table import Table
 
+from ..constants import NANOSECONDS_PER_MILLISECOND
 from ..trace import KernelTrace, MemcpyTrace
+
+_MIN_GAP_NS = 10_000
 
 
 class DeviceGap(FrozenModel):
@@ -21,7 +24,7 @@ class DeviceGap(FrozenModel):
 
     @property
     def duration_ms(self) -> float:
-        return (self.end_ns - self.start_ns) / 1_000_000
+        return (self.end_ns - self.start_ns) / NANOSECONDS_PER_MILLISECOND
 
 
 class DeviceTimeline(FrozenModel):
@@ -44,7 +47,7 @@ class DeviceTimeline(FrozenModel):
         memcpys: Sequence[MemcpyTrace] = (),
         *,
         top_gaps: int = 10,
-        min_gap_ns: int = 10_000,
+        min_gap_ns: int = _MIN_GAP_NS,
     ) -> DeviceTimeline:
         """Build the timeline from observed activity.
 
@@ -57,21 +60,7 @@ class DeviceTimeline(FrozenModel):
         if not spans:
             return cls()
         spans.sort()
-
-        busy = 0
-        gaps: list[DeviceGap] = []
-        run_start, run_end, run_name = spans[0]
-        for start, end, name in spans[1:]:
-            if start > run_end:
-                busy += run_end - run_start
-                if start - run_end >= min_gap_ns:
-                    gaps.append(
-                        DeviceGap(start_ns=run_end, end_ns=start, after=run_name, before=name)
-                    )
-                run_start, run_end, run_name = start, end, name
-            elif end > run_end:
-                run_end, run_name = end, name
-        busy += run_end - run_start
+        busy, gaps = cls._merge_intervals(spans, min_gap_ns)
 
         # Latest end, not the last span's: a long kernel can outlast a later, shorter one.
         return cls(
@@ -89,14 +78,35 @@ class DeviceTimeline(FrozenModel):
     def occupancy_pct(self) -> float:
         return 100.0 * self.busy_ns / self.span_ns if self.span_ns else 0.0
 
+    @staticmethod
+    def _merge_intervals(
+        spans: Sequence[tuple[int, int, str]], min_gap_ns: int
+    ) -> tuple[int, list[DeviceGap]]:
+        """Union start-sorted activity intervals into their busy time and the gaps between them."""
+        busy = 0
+        gaps: list[DeviceGap] = []
+        run_start, run_end, run_name = spans[0]
+        for start, end, name in spans[1:]:
+            if start > run_end:
+                busy += run_end - run_start
+                if start - run_end >= min_gap_ns:
+                    gaps.append(
+                        DeviceGap(start_ns=run_end, end_ns=start, after=run_name, before=name)
+                    )
+                run_start, run_end, run_name = start, end, name
+            elif end > run_end:
+                run_end, run_name = end, name
+        busy += run_end - run_start
+        return busy, gaps
+
     def __rich__(self) -> RenderableType:
         table = Table(title="device timeline", title_style="bold")
         table.add_column("metric")
         table.add_column("value", justify="right")
         table.add_row("activities", f"{self.activities}")
-        table.add_row("span", f"{self.span_ns / 1e6:.2f} ms")
-        table.add_row("busy", f"{self.busy_ns / 1e6:.2f} ms")
-        table.add_row("idle", f"{self.idle_ns / 1e6:.2f} ms")
+        table.add_row("span", f"{self.span_ns / NANOSECONDS_PER_MILLISECOND:.2f} ms")
+        table.add_row("busy", f"{self.busy_ns / NANOSECONDS_PER_MILLISECOND:.2f} ms")
+        table.add_row("idle", f"{self.idle_ns / NANOSECONDS_PER_MILLISECOND:.2f} ms")
         table.add_row("occupancy", f"{self.occupancy_pct:.1f}%")
         for gap in self.gaps:
             table.add_row(f"gap {gap.after} → {gap.before}", f"{gap.duration_ms:.2f} ms")
@@ -104,6 +114,7 @@ class DeviceTimeline(FrozenModel):
 
     def __str__(self) -> str:
         return (
-            f"span {self.span_ns / 1e6:.1f} ms, busy {self.busy_ns / 1e6:.1f} ms, "
+            f"span {self.span_ns / NANOSECONDS_PER_MILLISECOND:.1f} ms, "
+            f"busy {self.busy_ns / NANOSECONDS_PER_MILLISECOND:.1f} ms, "
             f"occupancy {self.occupancy_pct:.1f}%, {len(self.gaps)} listed gaps"
         )

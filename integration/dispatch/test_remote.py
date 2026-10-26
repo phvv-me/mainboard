@@ -28,7 +28,7 @@ def hosts() -> list[str]:
     return sorted(alias for alias, host in declared.items() if host.get("kind") == "ssh")
 
 
-def test_the_fleet_is_listed(mb) -> None:
+def test_the_fleet_is_listed_without_error(mb) -> None:
     assert mb("host", "list", cwd=Path(_ROOT), timeout=300).code == 0
 
 

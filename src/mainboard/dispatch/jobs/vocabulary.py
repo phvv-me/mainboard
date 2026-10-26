@@ -41,8 +41,10 @@ class Word(StrEnum):
 
     @classmethod
     def settled(cls) -> frozenset[Word]:
-        """The words settled for good, so a durable sweep trusts the cache instead of a queue
-        that may have forgotten."""
+        """The words settled for good, which a durable sweep trusts instead of a queue.
+
+        A queue may have forgotten a job, so the cache answers for it.
+        """
         return frozenset(word for word, moves in _MOVES.items() if not moves)
 
     @classmethod

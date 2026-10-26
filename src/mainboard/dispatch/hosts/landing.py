@@ -35,7 +35,9 @@ from .rentals import Rental, handoff
 if TYPE_CHECKING:
     from ...context.plan import ExecutionPlan
     from ..dispatcher import Dispatcher
+    from ..state.cache import RunRecord
     from ..transport.core import Machine
+    from .allocation import Allocation
 
 
 def renter(backend: ProviderBackend, plan: ExecutionPlan) -> Rentable | None:
@@ -83,13 +85,24 @@ class Landing:
             logger.warning("launch of {} is uncertain; retaining the tracked rental", handle)
             return
         try:
-            if registered is not None:
-                self.dispatcher.cache.resolve(
-                    registered, vocabulary.Word.FAILED, None, vocabulary.Word.FAILED
-                )
+            self._mark_failed(registered)
         finally:
             logger.warning("landing on {} failed before launch; ending the rental", handle)
             self.backend.cancel(handle)
+
+    def _mark_failed(self, registered: RunRecord | None) -> None:
+        """Resolve the registered run as failed, when the rental was registered at all."""
+        if registered is not None:
+            self.dispatcher.cache.resolve(
+                registered, vocabulary.Word.FAILED, None, vocabulary.Word.FAILED
+            )
+
+    def _unwind(self, allocation: Allocation, rental: Rental | None) -> None:
+        """Release the allocation of a landing that never got a rental, or else abort it."""
+        if rental is None:
+            allocation.interrupted()
+        else:
+            self._abort(rental.handle)
 
     def equip(self, rental: Rental) -> None:
         """Python, mirror, install, provision, pin, launch: what the machine needs, in order."""
@@ -165,10 +178,7 @@ class Landing:
             started = True
         finally:
             if not started:
-                if rental is None:
-                    allocation.interrupted()
-                else:
-                    self._abort(rental.handle)
+                self._unwind(allocation, rental)
         return Handle(
             id=rental.handle,
             host=self.plan.host,

@@ -1,8 +1,8 @@
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+from ...constants import SECONDS_PER_HOUR
 from ...core.project import Project
 from ...dispatch.collection.collector import Collector
 from ...dispatch.collection.linking import link
@@ -13,10 +13,6 @@ from ...state import DirectoryReplica, Evidence, Lake, Serving
 from ...state.evidence import within
 from ..base import Verbs
 from ..options import Output
-
-if TYPE_CHECKING:
-    pass
-
 
 # The verbs' defaults: compact output, the lake served on Quack's own port.
 _COMPACT = Output()
@@ -193,4 +189,4 @@ class LakeVerbs(Verbs):
             logger.result(said)
             with suppress(KeyboardInterrupt):
                 while True:
-                    time.sleep(3600)
+                    time.sleep(SECONDS_PER_HOUR)

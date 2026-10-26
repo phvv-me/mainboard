@@ -24,6 +24,15 @@ from ..transport.core import (
 )
 from .program import constants, exceptions, snapshot, transfer, walking
 
+_AGENT_PACKAGE_BOOTSTRAP_CODE = (
+    "p=types.ModuleType('mainboard_agent');p.__path__=[];sys.modules[p.__name__]=p"
+)
+_TRANSFER_ENTRYPOINT_CALL_CODE = (
+    "sys.exit(sys.modules[p.__name__+'.transfer'].main("
+    "sys.stdin.buffer,stdout=sys.stdout.buffer,stderr=sys.stderr))"
+)
+_STDERR_READ_CHUNK_BYTES = 4096
+
 if TYPE_CHECKING:
     from collections.abc import Buffer, Callable
 
@@ -39,15 +48,14 @@ def _bundled(*modules: ModuleType) -> bytes:
     """
     lines = [
         "import sys,types",
-        "p=types.ModuleType('mainboard_agent');p.__path__=[];sys.modules[p.__name__]=p",
+        _AGENT_PACKAGE_BOOTSTRAP_CODE,
         *(
             f"m=types.ModuleType(p.__name__+'.{module.__name__.rpartition('.')[2]}');"
             "m.__package__=p.__name__;sys.modules[m.__name__]=m;"
             f"exec(compile({inspect.getsource(module)!r},m.__name__,'exec'),m.__dict__)"
             for module in modules
         ),
-        "sys.exit(sys.modules[p.__name__+'.transfer'].main("
-        "sys.stdin.buffer,stdout=sys.stdout.buffer,stderr=sys.stderr))",
+        _TRANSFER_ENTRYPOINT_CALL_CODE,
     ]
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -214,7 +222,7 @@ class _Exchange:
         stderr = self.process.stderr
         if stderr is None:
             return
-        for chunk in iter(lambda: stderr.read(4096), b""):
+        for chunk in iter(lambda: stderr.read(_STDERR_READ_CHUNK_BYTES), b""):
             self.touch()
             self.tail += chunk
             del self.tail[:-_TAIL]

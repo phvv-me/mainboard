@@ -175,7 +175,7 @@ class Compiler:
             solved_by=state.solved_by,
             lock=self.pixi.lock.read_bytes().decode("utf-8"),
         )
-        lockfile.put(files, self.environment, solved, declared={"default", *self.manifest.envs})
+        lockfile.put(files, self.environment, solved)
         logger.info(
             f"{Project().name}: adopted {self.pixi.lock} into {lockfile.path} as "
             f"[environments.{self.environment}]; commit {lockfile.path.name}"
@@ -209,7 +209,7 @@ class Compiler:
             lock=self.pixi.lock.read_bytes().decode("utf-8"),
         )
         committed = Lockfile(self.root)
-        committed.put(files, self.environment, solved, declared={"default", *self.manifest.envs})
+        committed.put(files, self.environment, solved)
         if mixed := committed.mixed_sources():
             raise MissionError(
                 "the lock takes a workspace package from an index in one environment: "
@@ -331,10 +331,8 @@ class Compiler:
             self.__commit(files, freed=not update)
             return True
         if policy is LockPolicy.UPDATE and not self.fresh():
-            if moved := SyncState.load(self.out).moved:
-                self.pixi.update(self.environment, moved)
-            else:
-                self.pixi.solve()
+            owed = SyncState.load(self.out).moved
+            self.pixi.update(self.environment, owed) if owed else self.pixi.solve()
             self.__commit(files, freed=True)
             return True
         if policy is LockPolicy.LOCKED:

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ..core.project import Project
 from ..dispatch.shared import now
 from ..dispatch.state import MonitorReport
 
@@ -56,7 +57,7 @@ class Events:
         return event.model_copy(update={"name": run.label, "node": run.node})
 
     def __init__(self, root: Path) -> None:
-        self.path = root / ".mainboard" / "events" / "jobs.jsonl"
+        self.path = Project().out(root) / "events" / "jobs.jsonl"
 
     def record(self, cache: Cache, report: MonitorReport) -> list[JobEvent]:
         """Append what `report` moved, naming each run from the dispatch cache."""

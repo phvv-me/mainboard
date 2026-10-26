@@ -52,13 +52,13 @@ def _kinds() -> dict[str, dict[str, str]]:
 
 def _left_out() -> dict[str, str]:
     """Each code the lane does not report, with its kind and reason."""
-    return {
-        code: f"{kind}: {reason}"
+    described = [
+        (f"{kind}: {reason}", codes)
         for kind, reasons in _kinds().items()
         if kind != "extended"
         for reason, codes in reasons.items()
-        for code in codes.split()
-    }
+    ]
+    return {code: text for text, codes in described for code in codes.split()}
 
 
 def _extended() -> tuple[str, ...]:

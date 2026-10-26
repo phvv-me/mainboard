@@ -8,6 +8,7 @@ import pytest
 
 from mainboard.profile import Profiler
 from mainboard.profile.bottleneck import annotate
+from mainboard.profile.bottleneck.owned import module_codes, owned_codes
 
 
 @pytest.fixture
@@ -88,7 +89,7 @@ def nested():
 def test_owned_bodies_descriptors_and_foreign_wrappers(modules: tuple[ModuleType, ModuleType]):
     owned, foreign = modules
     assert owned.first.__code__ is owned.second.__code__ is foreign.unrelated.__code__
-    selected = Profiler.owned_codes(owned)
+    selected = owned_codes(owned)
     assert len(selected) == len(set(selected))
     assert {code.co_qualname for code in selected} == {
         "plain",
@@ -151,7 +152,7 @@ def test_nested_functions_survive_generated_parent(
             for item in code.co_consts
         )
     )
-    selected = Profiler.module_codes((owned.__name__,))
+    selected = module_codes((owned.__name__,))
     assert {item.co_name for item in selected} >= {"nested", "values", "<lambda>"}
     assert generated not in {item.co_name for item in selected}
     with Profiler(features=Profiler.Feature.SPANS, auto=(owned.__name__,)) as profiler:

@@ -8,6 +8,7 @@ import pathlib
 import re
 import stat
 from contextlib import suppress
+from itertools import chain
 from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
 from .constants import DIRECTORY, FILE, LINK
@@ -456,8 +457,10 @@ def _visit(
     elif directory and not (scope.follow and (status.st_dev, status.st_ino) in seen):
         seen.add((status.st_dev, status.st_ino))
         yield Entry(relative, kind=DIRECTORY)
-        for name in sorted(os.listdir(path)):
-            yield from _visit(root, relative=f"{relative}/{name}", scope=scope, seen=seen)
+        yield from chain.from_iterable(
+            _visit(root, relative=f"{relative}/{name}", scope=scope, seen=seen)
+            for name in sorted(os.listdir(path))
+        )
 
 
 def digested(entry: Entry, root: str, digests: Digests) -> Entry | None:

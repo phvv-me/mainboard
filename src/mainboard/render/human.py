@@ -1,7 +1,7 @@
 import os
 import sys
 import time
-from contextlib import contextmanager, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -83,10 +83,14 @@ def diverted() -> Generator[None]:
     sys.stdout.flush()
     held = os.dup(_STDOUT_FD)
     os.dup2(_STDERR_FD, _STDOUT_FD)
-    try:
-        with redirect_stdout(sys.stderr):
-            yield
-    finally:
-        sys.stdout.flush()
-        os.dup2(held, _STDOUT_FD)
-        os.close(held)
+    with ExitStack() as stack:
+        stack.callback(_restore, held)
+        stack.enter_context(redirect_stdout(sys.stderr))
+        yield
+
+
+def _restore(held: int) -> None:
+    """Point stdout back at the descriptor `held` saved, flushing what the block wrote."""
+    sys.stdout.flush()
+    os.dup2(held, _STDOUT_FD)
+    os.close(held)

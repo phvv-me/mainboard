@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from ..core.project import Project
 from ..dispatch.constants import RECEIPTS_VAR
 from ..dispatch.jobs.evidence import framed
-from .entry import Refusal
+from .exceptions import Refusal
 from .job import walltime_seconds
 from .tree import FileBudget, ProcessTree
 
@@ -80,6 +80,16 @@ class Runner:
     tool: tuple[str, ...] = (sys.executable, "-m", Project().package)
 
     @contextmanager
+    def _sampling(self, environment: Mapping[str, str]) -> Generator[None]:
+        """Run the sampler beside the body, stopping it however the body ends."""
+        sampler = self.sample(environment)
+        try:
+            yield
+        finally:
+            if sampler is not None:
+                ProcessTree(sampler, grace=_SAMPLER_GRACE).stop()
+
+    @contextmanager
     def endings(self) -> Generator[None]:
         """Hold every ending signal for the run, ending the command's tree when one arrives."""
         previous = {number: signal.signal(number, self.ended) for number in _ENDINGS}
@@ -110,10 +120,7 @@ class Runner:
         try:
             yield
         finally:
-            self.flush()
-            for stream, descriptor in zip((1, 2), kept, strict=True):
-                os.dup2(descriptor, stream)
-                os.close(descriptor)
+            self._restore(kept)
 
     @property
     def job_id(self) -> str:
@@ -134,6 +141,13 @@ class Runner:
         self.tree: ProcessTree | None = None
         self.signalled = 0
         self.deadline = monotonic() + walltime_seconds(job.walltime) if job.walltime else None
+
+    def _restore(self, kept: list[int]) -> None:
+        """Point the runner's own streams back at the descriptors `output` saved in `kept`."""
+        self.flush()
+        for stream, descriptor in zip((1, 2), kept, strict=True):
+            os.dup2(descriptor, stream)
+            os.close(descriptor)
 
     def _verb(
         self, call: ToolCall, environment: Mapping[str, str], *extra: str, quiet: bool = True
@@ -214,16 +228,12 @@ class Runner:
             self.say(refused.message, error=True)
             return refused.status
         self.call(self.job.attestation, environment)
-        sampler = self.sample(environment)
-        try:
+        with self._sampling(environment):
             self.receipts.stage(environment)
             if self.signalled:
                 return self.signalled
             status = self.command(environment)
             return self.signalled or status
-        finally:
-            if sampler is not None:
-                ProcessTree(sampler, grace=_SAMPLER_GRACE).stop()
 
     def provide(self) -> None:
         """Build the environment this job was dispatched against, unless the host has it.

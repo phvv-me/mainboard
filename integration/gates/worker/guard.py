@@ -6,6 +6,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+_PATH_BUFFER_BYTES = 1024
+
 type Argument = str | bytes | Path | int | tuple | None
 
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
@@ -36,7 +38,7 @@ class Guard:
     @staticmethod
     def _where(descriptor: int) -> str:
         if sys.platform == "darwin":
-            found = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(1024))
+            found = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(_PATH_BUFFER_BYTES))
             return os.fsdecode(found.split(b"\0", 1)[0])
         return os.readlink(f"/proc/self/fd/{descriptor}")
 

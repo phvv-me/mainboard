@@ -30,12 +30,17 @@ def wait_for_idle(
     idle_since: float | None = None
     while True:
         now = time.monotonic()
-        if not gpu_busy(util_threshold=util_threshold, memory_threshold_pct=memory_threshold_pct):
-            idle_since = now if idle_since is None else idle_since
-            if now - idle_since >= idle_duration:
-                return True
-        else:
-            idle_since = None
+        busy = gpu_busy(util_threshold=util_threshold, memory_threshold_pct=memory_threshold_pct)
+        idle_since = _idle_window(idle_since, now, busy=busy)
+        if idle_since is not None and now - idle_since >= idle_duration:
+            return True
         if now >= deadline:
             return False
         time.sleep(min(poll_interval, max(deadline - now, 0.0)))
+
+
+def _idle_window(idle_since: float | None, now: float, *, busy: bool) -> float | None:
+    """The instant the current idle window opened, `None` while the card is busy."""
+    if busy:
+        return None
+    return now if idle_since is None else idle_since

@@ -14,7 +14,7 @@ import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=git argv built from typed fields, not untrusted input since=2026-09-25
 from concurrent.futures import ThreadPoolExecutor
 from fnmatch import fnmatchcase
-from functools import cached_property
+from functools import cache, cached_property
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, ClassVar, Self
 
@@ -176,11 +176,6 @@ class GitignoreFilter:
             Path(configured) if configured else Path.home() / ".config" / "git" / "ignore"
         )
 
-    @cached_property
-    def __git(self) -> str | None:
-        """The git this machine answers with, None when it has none."""
-        return shutil.which("git")
-
     @staticmethod
     def _within(repository: str, roots: Sequence[str]) -> list[str] | None:
         """The pathspecs that narrow `repository`'s untracked listing to `roots`.
@@ -220,7 +215,7 @@ class GitignoreFilter:
         gitdir = _gitdir(directory)
         if gitdir is None:
             return rows, False
-        global_rows = self.__excludes if self.__git is not None else []
+        global_rows = self.__excludes if _git() is not None else []
         return [*global_rows, *_read(gitdir / "info" / "exclude"), *rows], True
 
     def __indexed(self, repository: str) -> tuple[list[str], list[str]]:
@@ -310,7 +305,7 @@ class GitignoreFilter:
     def __run(self, arguments: list[str], *, check: bool = True) -> str:
         """One git command's output; a failing one refuses by what git said, unless unchecked."""
         answered = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=git argv built from typed fields since=2026-09-25
-            [self.__git or "git", "--literal-pathspecs", *arguments],
+            [_git() or "git", "--literal-pathspecs", *arguments],
             capture_output=True,
             check=False,
         )
@@ -363,7 +358,7 @@ class GitignoreFilter:
         deny: what is excluded whatever the repositories say, so a repository nested where it
             claims is never asked at all.
         """
-        if self.__git is None or not (self.root / ".git").exists():
+        if _git() is None or not (self.root / ".git").exists():
             return None
         found: list[str] = []
         kept: list[str] = []
@@ -385,6 +380,12 @@ class GitignoreFilter:
                     kept += ignored
                     level += nested
         return Listing(files=_under(found, roots=roots), kept=_under(kept, roots=roots))
+
+
+@cache
+def _git() -> str | None:
+    """The git this machine answers with, None when it has none."""
+    return shutil.which("git")
 
 
 def _read(ignore: Path) -> list[tuple[str, bool]]:

@@ -29,10 +29,6 @@ def evaluate(expression: str, *, attempt: int) -> int:
 
 def _evaluated(node: ast.expr, *, attempt: int, source: str) -> float:
     match node:
-        case ast.Constant(value=int() | float() as value):
-            return value
-        case ast.Name(id="attempt"):
-            return attempt
         case ast.BinOp(left=left, op=op, right=right) if type(op) in _OPERATORS:
             return _OPERATORS[type(op)](
                 _evaluated(left, attempt=attempt, source=source),
@@ -42,6 +38,16 @@ def _evaluated(node: ast.expr, *, attempt: int, source: str) -> float:
             return _FUNCTIONS[name](
                 *(_evaluated(arg, attempt=attempt, source=source) for arg in args)
             )
+        case _:
+            return _leaf(node, attempt=attempt, source=source)
+
+
+def _leaf(node: ast.expr, *, attempt: int, source: str) -> float:
+    match node:
+        case ast.Constant(value=int() | float() as value):
+            return value
+        case ast.Name(id="attempt"):
+            return attempt
         case _:
             raise MissionError(
                 f"resource expression {source!r} uses more than integers, attempt, "

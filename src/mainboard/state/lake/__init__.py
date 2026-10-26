@@ -46,7 +46,7 @@ from .attachment import Access
 from .core import Lake, Serving
 from .maintenance import Finding, Health
 from .session import Session
-from .staging import inlined, insert, ndjson, staged
+from .staging import inlined, insert, staged
 
 __all__ = [
     "Access",
@@ -57,7 +57,6 @@ __all__ = [
     "Session",
     "inlined",
     "insert",
-    "ndjson",
     "quoted",
     "staged",
 ]

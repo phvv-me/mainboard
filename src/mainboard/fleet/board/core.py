@@ -1,12 +1,13 @@
 import json
 import time
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from ...batch.estimate.core import Estimator, JobEstimate
 from ...batch.estimate.transfer import TransferSet
 from ...batch.runner import Batch
 from ...batch.spec import BatchJob, Selection
 from ...batch.watch import Watch
+from ...constants import SSH_FAMILY
 from ...context.admission import admit
 from ...core.errors import MissionError
 from ...core.section import Section
@@ -31,9 +32,6 @@ from .dispatching import Dispatching
 if TYPE_CHECKING:
     from ...batch.spec import BatchSpec
     from ...dispatch.shared import Watcher
-
-
-_SSH_FAMILY: Final = "ssh-family"
 
 
 class Board(Dispatching):
@@ -154,7 +152,7 @@ class Board(Dispatching):
             return self.on(asked.target).dispatch(asked, watch=watch)
         order = self._order(asked, watch=watch)
         destination = route(order.plan.profile.kind)
-        if destination != _SSH_FAMILY:
+        if destination != SSH_FAMILY:
             backend = destination()
             run: Run = ProviderJob(self.on(order.plan.host), backend, self.rented(backend, order))
         else:

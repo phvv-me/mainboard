@@ -19,6 +19,24 @@ from .expressions import expressions
 from .resolution import resolution
 from .sql import PythonBase, listed
 
+_SQL = "SELECT 1 FROM ast_files, ast_nodes, source_files"
+_CALL_SITE_RANGES_SQL = (
+    "SELECT file, start_line, start_column, end_line, end_column FROM call_sites "
+    "UNION ALL SELECT file, callee_start_line, callee_start_column, callee_end_line, "
+    "callee_end_column FROM call_sites "
+    "UNION ALL SELECT file, start_line, start_column, end_line, end_column FROM call_tree "
+    "UNION ALL SELECT file, key_start_line, key_start_column, key_end_line, "
+    "key_end_column FROM call_keys "
+    "UNION ALL SELECT v.file, v.start_line, v.start_column, v.end_line, v.end_column "
+    "FROM call_nodes k JOIN call_nodes v ON v.file = k.file AND v.parent = k.node "
+    "AND v.sibling_index = 2 WHERE k.type = 'keyword_argument'"
+)
+_CALL_NATIVE_SITE_RANGES_SQL = (
+    "SELECT file, start_line, start_column, end_line, end_column FROM call_native_sites "
+    "UNION ALL SELECT file, callee_start_line, callee_start_column, callee_end_line, "
+    "callee_end_column FROM call_native_sites"
+)
+
 _BASE = PythonBase("CallFact")
 
 
@@ -43,25 +61,13 @@ def _relations() -> dict[str, str]:
         "tree": walking["tree"],
         "keys": walking["keys"],
         "bools": walking["bools"],
-        "texts": _BASE.texts(
-            "SELECT file, start_line, start_column, end_line, end_column FROM call_sites "
-            "UNION ALL SELECT file, callee_start_line, callee_start_column, callee_end_line, "
-            "callee_end_column FROM call_sites "
-            "UNION ALL SELECT file, start_line, start_column, end_line, end_column FROM call_tree "
-            "UNION ALL SELECT file, key_start_line, key_start_column, key_end_line, "
-            "key_end_column FROM call_keys "
-            "UNION ALL SELECT v.file, v.start_line, v.start_column, v.end_line, v.end_column "
-            "FROM call_nodes k JOIN call_nodes v ON v.file = k.file AND v.parent = k.node "
-            "AND v.sibling_index = 2 WHERE k.type = 'keyword_argument'"
-        ),
+        "texts": _BASE.texts(_CALL_SITE_RANGES_SQL),
         "resolved": resolving["resolved"],
         "native_files": _NATIVE_FILES,
         "native_lines": _NATIVE_LINES,
         "native_sites": _NATIVE_SITES,
         "native_texts": _BASE.texts(
-            "SELECT file, start_line, start_column, end_line, end_column FROM call_native_sites "
-            "UNION ALL SELECT file, callee_start_line, callee_start_column, callee_end_line, "
-            "callee_end_column FROM call_native_sites",
+            _CALL_NATIVE_SITE_RANGES_SQL,
             "call_native_lines",
         ),
         "assigned": _ASSIGNED,
@@ -317,4 +323,4 @@ class CallCalls(Family):
 
         Its own private tables are created as it is built.
         """
-        return [Query(sql="SELECT 1 FROM ast_files, ast_nodes, source_files")]
+        return [Query(sql=_SQL)]

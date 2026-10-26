@@ -28,6 +28,32 @@ from ...log import logger
 from ...state.storage.database import quoted
 from ..engine.facts import Budget, listed
 
+_CREATE_ASTCACHE_KEYS_TABLE_SQL = (
+    "CREATE TABLE IF NOT EXISTS astcache.keys (blob VARCHAR, language VARCHAR)"
+)
+_PYTHON_ERROR_FILES_SQL = (
+    "SELECT DISTINCT n.path FROM ast_nodes n JOIN ast_files f USING (path) "
+    "WHERE f.language = 'python' AND n.type = 'ERROR' ORDER BY 1"
+)
+_CACHED_PARSE_KEYS_SQL = "SELECT blob, language FROM astcache.keys"
+_ASTCACHE_NODES_EXISTS_SQL = (
+    "SELECT count(*) > 0 FROM duckdb_tables() "
+    "WHERE table_name = 'nodes' AND 'astcache' IN (database_name, schema_name)"
+)
+_CREATE_AST_SOURCES_TABLE_SQL = (
+    "CREATE TABLE ast_sources (fact_id VARCHAR, path VARCHAR, language VARCHAR, blob VARCHAR)"
+)
+_INSERT_AST_SOURCES_SQL = "INSERT INTO ast_sources VALUES (?, ?, ?, ?)"
+_AST_FILE_FACTS_SQL = """
+                    SELECT fact_id, path, language, blob, 1 AS start_line, 0 AS start_column
+                    FROM ast_sources"""
+_AST_NODE_FACTS_SQL = """
+                    SELECT s.fact_id, s.path,
+                           n.* EXCLUDE (blob, language, start_column, end_column),
+                           n.start_column - 1 AS start_column, n.end_column - 1 AS end_column
+                    FROM astcache.nodes n
+                    JOIN ast_sources s ON n.blob = s.blob AND n.language = s.language"""
+
 if TYPE_CHECKING:
     from ..engine.facts import Facts
 
@@ -79,6 +105,25 @@ class Ducks(FrozenModel):
             return False
         return True
 
+    @staticmethod
+    def _prune(db: duckdb.DuckDBPyConnection) -> None:
+        """Drop the trees of the contents `ast_sources` lacks from `astcache`."""
+        for table in ("nodes", "keys"):
+            db.execute(
+                f"DELETE FROM astcache.{table} "
+                "WHERE (blob, language) NOT IN (SELECT blob, language FROM ast_sources)"
+            )
+
+    @staticmethod
+    def _write_sources(db: duckdb.DuckDBPyConnection, sources: Sequence[Source]) -> None:
+        """Create `ast_sources`, one row per source, keyed by the fact `ast:<path>`."""
+        db.execute(_CREATE_AST_SOURCES_TABLE_SQL)
+        if sources:
+            db.executemany(
+                _INSERT_AST_SOURCES_SQL,
+                [(f"ast:{s.path}", s.path, s.language, s.blob) for s in sources],
+            )
+
     def _attach(self, db: duckdb.DuckDBPyConnection) -> bool:
         """Name the cache file `astcache` in `db`, answering whether the file is attached.
 
@@ -87,12 +132,13 @@ class Ducks(FrozenModel):
         self.cache.parent.mkdir(parents=True, exist_ok=True)
         try:
             db.execute(f"ATTACH {quoted(str(self.cache))} AS astcache")
-            attached = True
         except duckdb.Error as error:
             logger.info("{} is in use, parsing into this run's own tables: {}", self.cache, error)
             db.execute("CREATE SCHEMA astcache")
             attached = False
-        db.execute("CREATE TABLE IF NOT EXISTS astcache.keys (blob VARCHAR, language VARCHAR)")
+        else:
+            attached = True
+        db.execute(_CREATE_ASTCACHE_KEYS_TABLE_SQL)
         return attached
 
     def _nodes(self, db: duckdb.DuckDBPyConnection, scratch: str) -> str:
@@ -124,10 +170,7 @@ class Ducks(FrozenModel):
 
         That is syntax the grammar lacks (PEP 646 `x[*idx]`), which the derived families skip.
         """
-        broken = facts.db.execute(
-            "SELECT DISTINCT n.path FROM ast_nodes n JOIN ast_files f USING (path) "
-            "WHERE f.language = 'python' AND n.type = 'ERROR' ORDER BY 1"
-        ).fetchall()
+        broken = facts.db.execute(_PYTHON_ERROR_FILES_SQL).fetchall()
         if gaps := [path for (path,) in broken if Ducks._parses(root / path)]:
             logger.warning(
                 "the Python grammar misreads {} valid files, so derived facts skip them: {}",
@@ -182,16 +225,13 @@ class Ducks(FrozenModel):
         every node. A content that yields no nodes is still recorded, so it is not parsed again.
         With nothing to parse and no table yet, an empty Python file gives the table its columns.
         """
-        parsed = set(db.execute("SELECT blob, language FROM astcache.keys").fetchall())
+        parsed = set(db.execute(_CACHED_PARSE_KEYS_SQL).fetchall())
         files = {
             (s.blob, s.language): root / s.path
             for s in sources
             if s.language in self.LANGUAGES and (s.blob, s.language) not in parsed
         }
-        (exists,) = db.execute(
-            "SELECT count(*) > 0 FROM duckdb_tables() WHERE table_name = 'nodes' "
-            "AND 'astcache' IN (database_name, schema_name)"
-        ).fetchone() or (False,)
+        (exists,) = db.execute(_ASTCACHE_NODES_EXISTS_SQL).fetchone() or (False,)
         if not files and exists:
             return 0
         with tempfile.TemporaryDirectory() as scratch:
@@ -221,41 +261,22 @@ class Ducks(FrozenModel):
         The views are `ast_files` (path, language, blob) and `ast_nodes`, their columns zero-based
         like mcmr's.
         """
-        db = facts.db
-        attached = self._attach(db)
+        database = facts.db
+        attached = self._attach(database)
         sources = self.sources(root)
-        self.parse(db, root, sources)
-        db.execute(
-            "CREATE TABLE ast_sources (fact_id VARCHAR, path VARCHAR, language VARCHAR, "
-            "blob VARCHAR)"
-        )
-        if sources:
-            db.executemany(
-                "INSERT INTO ast_sources VALUES (?, ?, ?, ?)",
-                [(f"ast:{s.path}", s.path, s.language, s.blob) for s in sources],
-            )
+        self.parse(database, root, sources)
+        self._write_sources(database, sources)
         facts.adopt(
             "Ast",
             {
-                "files": """
-                    SELECT fact_id, path, language, blob, 1 AS start_line, 0 AS start_column
-                    FROM ast_sources""",
-                "nodes": """
-                    SELECT s.fact_id, s.path,
-                           n.* EXCLUDE (blob, language, start_column, end_column),
-                           n.start_column - 1 AS start_column, n.end_column - 1 AS end_column
-                    FROM astcache.nodes n
-                    JOIN ast_sources s ON n.blob = s.blob AND n.language = s.language""",
+                "files": _AST_FILE_FACTS_SQL,
+                "nodes": _AST_NODE_FACTS_SQL,
             },
         )
         if self.exclusive:
-            for table in ("nodes", "keys"):
-                db.execute(
-                    f"DELETE FROM astcache.{table} "
-                    "WHERE (blob, language) NOT IN (SELECT blob, language FROM ast_sources)"
-                )
+            self._prune(database)
         if attached:
-            db.execute("DETACH astcache")
+            database.execute("DETACH astcache")
         if self.report_gaps:
             self._report_gaps(facts, root)
 

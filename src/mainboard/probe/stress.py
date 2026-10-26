@@ -22,8 +22,14 @@ from typing import TYPE_CHECKING
 from cyclopts import App
 from patos import FrozenModel, FrozenOpenModel
 
+from ..constants import BYTES_PER_GB
 from ..log import logger
 from .machine import Machine
+
+_FLOPS_PER_TERAFLOP = 1e12
+_HZ_PER_KHZ = 1e3
+# The side of the square matrices a GEMM is timed on.
+_MATRIX_SIDE = 8192
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -175,7 +181,7 @@ class Stress:
         self,
         kernels: TorchKernels | None = None,
         *,
-        n: int = 8192,
+        n: int = _MATRIX_SIDE,
         megabytes: int = 256,
         warmups: int = 2,
         repetitions: int = 5,
@@ -189,7 +195,7 @@ class Stress:
     def _link(self, path: str) -> Link:
         seconds = self._timed(self.kernels.copy(path, self.megabytes))
         moved = (self.megabytes << 20) * (2 if path == "device_to_device" else 1)
-        return Link(path=path, megabytes=self.megabytes, gb_s=moved / seconds / 1e9)
+        return Link(path=path, megabytes=self.megabytes, gb_s=moved / seconds / BYTES_PER_GB)
 
     def _rate(self, precision: Precision) -> Rate:
         n = self.n // 2 if precision == Precision.FP64 else self.n
@@ -197,7 +203,12 @@ class Stress:
             seconds = self._timed(self.kernels.gemm(precision, n))
         except (RuntimeError, AttributeError, KeyError) as error:
             return Rate(precision=precision, n=n, supported=False, note=str(error).splitlines()[0])
-        return Rate(precision=precision, n=n, seconds=seconds, tflops=2 * n**3 / seconds / 1e12)
+        return Rate(
+            precision=precision,
+            n=n,
+            seconds=seconds,
+            tflops=2 * n**3 / seconds / _FLOPS_PER_TERAFLOP,
+        )
 
     def _timed(self, call: Callable[[], None]) -> float:
         """The median wall time of `call` over the timed repetitions, device synchronized.
@@ -233,7 +244,12 @@ class Stress:
             capability=f"{capability[0]}.{capability[1]}",
             sm_count=sm_count,
             clock_khz=clock_khz,
-            datasheet_fp32_tflops=sm_count * lanes * 2 * clock_khz * 1e3 / 1e12,
+            datasheet_fp32_tflops=sm_count
+            * lanes
+            * 2
+            * clock_khz
+            * _HZ_PER_KHZ
+            / _FLOPS_PER_TERAFLOP,
             rates=rates,
             links=links,
             seconds=perf_counter() - start,
@@ -244,7 +260,7 @@ app = App(name="stress", help="Measure this device's achieved rates and print th
 
 
 @app.default
-def main(*, device: int = 0, n: int = 8192, repetitions: int = 5) -> None:
+def main(*, device: int = 0, n: int = _MATRIX_SIDE, repetitions: int = 5) -> None:
     """Measure the device and print the report as JSON, for a dispatched probe.
 
     device: the CUDA device index.

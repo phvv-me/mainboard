@@ -81,10 +81,7 @@ class Spool:
         live = self.__live_path()
         data = live.read_bytes()
         end = self.segment_start + len(data)
-        archive = self.dir / f"{self.segment_start:020d}-{end:020d}.ndjson.zst"
-        temporary = archive.with_suffix(".tmp")
-        temporary.write_bytes(zstd.compress(data))
-        temporary.replace(archive)
+        self.__write_archive(data, end)
         live.unlink()
         self.segment_start = end
         self.handle = live.open("ab")
@@ -97,6 +94,13 @@ class Spool:
             return archives
         base = archives[-1][1] if archives else 0
         return [*archives, (base, base + live.stat().st_size, live, False)]
+
+    def __write_archive(self, data: bytes, end: int) -> None:
+        """Write `data` as the compressed archive that ends at global offset `end`."""
+        archive = self.dir / f"{self.segment_start:020d}-{end:020d}.ndjson.zst"
+        temporary = archive.with_suffix(".tmp")
+        temporary.write_bytes(zstd.compress(data))
+        temporary.replace(archive)
 
     def append(self, frame: Frame) -> Frame:
         """Write `frame`, its `offset` set to the true write position, rolling a grown segment."""

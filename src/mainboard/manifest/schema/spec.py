@@ -1,3 +1,4 @@
+from collections.abc import Set
 from typing import Self
 
 from patos import FlexModel
@@ -32,6 +33,15 @@ class Spec(FlexModel):
     def is_path(self) -> bool:
         return "path" in (self.model_extra or {})
 
+    @staticmethod
+    def _superseded(declared: Set[str], version: str) -> set[str]:
+        """The inherited fields a spec declaring `declared` keys at `version` drops."""
+        if _SOURCES & declared:
+            return {"version", *_SOURCE_FIELDS}
+        if version != "*":
+            return {*_SOURCE_FIELDS, "editable"}
+        return set()
+
     def merged(self, over: Self) -> Self:
         """This spec layered over `over`, later keys winning key-by-key.
 
@@ -41,13 +51,8 @@ class Spec(FlexModel):
         base = {"version": over.version, **(over.model_extra or {})}
         extras = self.model_extra or {}
         top = {"version": self.version, **extras}
-        if _SOURCES & extras.keys():
-            base.pop("version", None)
-            for field in _SOURCE_FIELDS:
-                base.pop(field, None)
-        elif self.version != "*":
-            for field in _SOURCE_FIELDS | {"editable"}:
-                base.pop(field, None)
+        for field in self._superseded(extras.keys(), self.version):
+            base.pop(field, None)
         if top["version"] == "*":
             top.pop("version")
         return type(self).model_validate({**base, **top})

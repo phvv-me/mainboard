@@ -1,5 +1,6 @@
 from pydantic import Field
 
+from ....constants import SECONDS_PER_HOUR
 from ....core.base import Declared
 
 
@@ -56,4 +57,4 @@ class Defaults(Declared):
 
 def _seconds(walltime: str) -> int:
     hours, minutes, seconds = (int(part) for part in walltime.split(":"))
-    return hours * 3600 + minutes * 60 + seconds
+    return hours * SECONDS_PER_HOUR + minutes * 60 + seconds

@@ -15,6 +15,8 @@ from patos import FrozenModel
 
 from ....state.storage.parsed import names
 
+_CAMEL_CASE_BOUNDARY_PATTERN = r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])"
+
 # Sequences and mappings, which accept a `list[str]` where a list of settings is read.
 type Setting = str | int | float | bool | None | Sequence[Setting] | Mapping[str, Setting]
 
@@ -79,7 +81,7 @@ _NAMES = SqlNames()
 
 def snake(name: str) -> str:
     """`ImportBindingFact` -> `import_binding`, `symbols.reference` -> `symbols_reference`."""
-    words = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name)
+    words = re.sub(_CAMEL_CASE_BOUNDARY_PATTERN, "_", name)
     return words.removesuffix("_Fact").replace(".", "_").lower()
 
 

@@ -59,6 +59,25 @@ class Go(Ecosystem):
         numbered = version[0].isdigit() and not re.fullmatch(r"[0-9a-f]{40}", version)
         return f"{module}@{f'v{version}' if numbered else version}"
 
+    def _install(self) -> None:
+        self.gobin.mkdir(parents=True, exist_ok=True)
+        with local.env(GOBIN=str(self.gobin)):
+            for module, spec in self.deps.items():
+                self.pixi(
+                    "run",
+                    "go",
+                    "install",
+                    self.reference(module, spec),
+                    environment=self.env,
+                    frozen=True,
+                )
+
+    def _unlink_stale(self) -> None:
+        declared = {self.executable(module) for module in self.deps}
+        for installed in sorted(self.gobin.glob("*")):
+            if installed.name not in declared:
+                installed.unlink()
+
     def binary_dirs(self) -> tuple[Path, ...]:
         return (self.gobin,)
 
@@ -76,20 +95,6 @@ class Go(Ecosystem):
         """
         if not resolve:
             self.frozen_inputs()
-        declared = {self.executable(module) for module in self.deps}
-        for installed in sorted(self.gobin.glob("*")):
-            if installed.name not in declared:
-                installed.unlink()
-        if not self.deps:
-            return
-        self.gobin.mkdir(parents=True, exist_ok=True)
-        with local.env(GOBIN=str(self.gobin)):
-            for module, spec in self.deps.items():
-                self.pixi(
-                    "run",
-                    "go",
-                    "install",
-                    self.reference(module, spec),
-                    environment=self.env,
-                    frozen=True,
-                )
+        self._unlink_stale()
+        if self.deps:
+            self._install()

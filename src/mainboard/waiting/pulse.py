@@ -17,6 +17,7 @@ from patos import FrozenModel
 from plumbum import ProcessExecutionError
 from sqlalchemy import select
 
+from ..constants import SSH_FAMILY
 from ..core.errors import MissionError
 from ..dispatch.backends.base import route
 from ..dispatch.schedulers import HostUnreachable, registry
@@ -31,8 +32,6 @@ if TYPE_CHECKING:
     from ..dispatch.transport.core import Machine
     from ..fleet.board import Board
 
-# The family of schedulers reached over ssh, whose logs are read over one connection per host.
-_SSH_FAMILY = "ssh-family"
 # The scheduler kinds whose jobs run on the machine the connection lands on, so its cards are
 # the job's cards. A PBS or Slurm login node runs nothing of the job's.
 _ON_HOST = frozenset({"ssh", "local"})
@@ -156,7 +155,7 @@ class Probe:
         readings: dict[RunRecord, Reading] = {}
         hosts: dict[str, list[RunRecord]] = {}
         for record in records:
-            if route(record.kind) == _SSH_FAMILY:
+            if route(record.kind) == SSH_FAMILY:
                 hosts.setdefault(record.target, []).append(record)
                 continue
             output = self.board.job(record.handle, host=record.target).transcript()
@@ -168,20 +167,24 @@ class Probe:
     def __init__(self, board: Board) -> None:
         self.board = board
 
-    def hosted(self, target: str, records: Sequence[RunRecord]) -> dict[RunRecord, Reading]:
-        """One ssh host's runs, read over a single connection, its cards read on the way out."""
-        try:
-            root = self.board.on(target).remote_root()
-            # One knock: the next look asks again, and a wait's every pass would pay for four.
-            with connection(target, attempts=1) as remote:
-                outputs = {record: Probe._logged(remote, root, record) for record in records}
-                on_host = any(record.kind in _ON_HOST for record in records)
-                busiest = Probe._utilization(remote) if on_host else None
-        except HostUnreachable, MissionError, OSError:
-            return {}
+    def __read_host(self, target: str, records: Sequence[RunRecord]) -> dict[RunRecord, Reading]:
+        """The readings of one ssh host's runs, raising when the host will not answer."""
+        root = self.board.on(target).remote_root()
+        # One knock: the next look asks again, and a wait's every pass would pay for four.
+        with connection(target, attempts=1) as remote:
+            outputs = {record: Probe._logged(remote, root, record) for record in records}
+            on_host = any(record.kind in _ON_HOST for record in records)
+            busiest = Probe._utilization(remote) if on_host else None
         return {
             record: Reading(output=output, gpu_pct=busiest) for record, output in outputs.items()
         }
+
+    def hosted(self, target: str, records: Sequence[RunRecord]) -> dict[RunRecord, Reading]:
+        """One ssh host's runs, read over a single connection, its cards read on the way out."""
+        try:
+            return self.__read_host(target, records)
+        except HostUnreachable, MissionError, OSError:
+            return {}
 
 
 def _key(record: RunRecord) -> str:

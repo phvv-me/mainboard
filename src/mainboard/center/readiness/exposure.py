@@ -85,10 +85,12 @@ class Exposure:
     def _is_written(path: Path, text: str) -> bool:
         """Write `text` to `path` unless it already holds it, answering whether it changed."""
         try:
-            if path.read_text(encoding="utf-8") == text:
-                return False
+            current = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            if current == text:
+                return False
         path.write_text(text, encoding="utf-8", newline="\n")
         return True
 

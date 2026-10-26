@@ -112,10 +112,9 @@ def marked(root: Path, paths: Iterable[str], attribute: str) -> set[str]:
 
 def _walked(root: Path) -> list[str]:
     """Every file under `root`, relative to it, outside git's, Python's and mainboard's folders."""
+    skipped = {".git", "__pycache__", *Project().out_dirs}
     names: list[str] = []
     for folder, folders, files in os.walk(root):
-        folders[:] = [
-            name for name in folders if name not in {".git", "__pycache__", ".mainboard"}
-        ]
+        folders[:] = [name for name in folders if name not in skipped]
         names += [os.path.relpath(os.path.join(folder, name), root) for name in files]
     return names

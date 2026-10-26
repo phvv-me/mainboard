@@ -1,11 +1,15 @@
 """A named figure combines native panel layouts without combining measurement units."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 from pydantic import JsonValue, model_validator
 
 from .panel import Panel
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class FigureSpec(FrozenModel):
@@ -29,14 +33,19 @@ class FigureSpec(FrozenModel):
         names = {name for row in cells for name in row} - {"."}
         if names != set(self.panels):
             raise ValueError("figure mosaic must contain exactly its named panels")
-        for name in names:
-            positions = [
-                (r, c)
-                for r, row in enumerate(cells)
-                for c, value in enumerate(row)
-                if value == name
-            ]
-            rows, columns = zip(*positions, strict=True)
-            if len(positions) != (max(rows) - min(rows) + 1) * (max(columns) - min(columns) + 1):
-                raise ValueError(f"mosaic panel {name!r} is not a rectangle")
+        ragged = [name for name in names if not self._is_rectangle(cells, name)]
+        if ragged:
+            raise ValueError(f"mosaic panel {ragged[0]!r} is not a rectangle")
         return self
+
+    @staticmethod
+    def _is_rectangle(cells: Sequence[Sequence[str]], name: str) -> bool:
+        """Whether the cells named `name` fill their bounding box exactly."""
+        positions = [
+            (row_index, column_index)
+            for row_index, row in enumerate(cells)
+            for column_index, value in enumerate(row)
+            if value == name
+        ]
+        rows, columns = zip(*positions, strict=True)
+        return len(positions) == (max(rows) - min(rows) + 1) * (max(columns) - min(columns) + 1)

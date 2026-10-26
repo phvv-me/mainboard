@@ -9,6 +9,7 @@ from typing import Annotated
 
 from pydantic import BeforeValidator
 
+from ..constants import SECONDS_PER_DAY, SECONDS_PER_HOUR
 from ..core.project import Project
 from ..log import logger
 
@@ -33,8 +34,8 @@ def since(stamp: str) -> str:
     except ValueError:
         return ""
     aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
-    days, rest = divmod(max(0, int((datetime.now(UTC) - aware).total_seconds())), 86400)
-    hours, rest = divmod(rest, 3600)
+    days, rest = divmod(max(0, int((datetime.now(UTC) - aware).total_seconds())), SECONDS_PER_DAY)
+    hours, rest = divmod(rest, SECONDS_PER_HOUR)
     minutes, seconds = divmod(rest, 60)
     if days:
         return f"{days}d{hours}h"

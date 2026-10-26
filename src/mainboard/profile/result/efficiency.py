@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 from rich.table import Table
 
+from ...constants import BYTES_PER_GB, MILLISECONDS_PER_SECOND
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -120,7 +122,7 @@ class EfficiencyReport(FrozenModel):
         """Payload bytes over total device time."""
         if not self.total_ms or not self.bytes_moved:
             return 0.0
-        return self.bytes_moved / (self.total_ms / 1000) / 1e9
+        return self.bytes_moved / (self.total_ms / MILLISECONDS_PER_SECOND) / BYTES_PER_GB
 
     @property
     def bandwidth_utilisation_pct(self) -> float:

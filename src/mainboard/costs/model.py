@@ -2,6 +2,8 @@ import math
 
 from patos import FrozenModel
 
+from ..constants import SECONDS_PER_HOUR
+
 
 class BillingModel(FrozenModel):
     """One provider's billing mechanics, the static half of the cost equation.
@@ -29,4 +31,4 @@ class BillingModel(FrozenModel):
 
     def cost_usd(self, *, setup_s: float, run_s: float, drain_s: float = 0.0) -> float:
         seconds = self.billed_seconds(setup_s=setup_s, run_s=run_s, drain_s=drain_s)
-        return self.fees_usd + self.rate_usd_hr * seconds / 3600.0
+        return self.fees_usd + self.rate_usd_hr * seconds / SECONDS_PER_HOUR

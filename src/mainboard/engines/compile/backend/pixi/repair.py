@@ -70,19 +70,21 @@ def _record_paths(dist: Distribution) -> list[str]:
     return [row[0] for row in csv.reader((dist.read_text("RECORD") or "").splitlines()) if row]
 
 
+def _record_root(path: PurePosixPath) -> str | None:
+    """The top-level import name a RECORD path provides, or `None` when it provides none."""
+    if ".." in path.parts or path.parts[0].endswith(".dist-info"):
+        return None
+    if len(path.parts) > 1:
+        return path.parts[0]
+    return getmodulename(path.name)
+
+
 def _import_roots(dist: Distribution) -> set[str]:
     """The top-level import names `dist` claims, declared or inferred from its RECORD."""
     if declared := _declared_roots(dist):
         return set(declared)
-    roots: set[str] = set()
-    for path in map(PurePosixPath, _record_paths(dist)):
-        if ".." in path.parts or path.parts[0].endswith(".dist-info"):
-            continue
-        if len(path.parts) > 1:
-            roots.add(path.parts[0])
-        elif stem := getmodulename(path.name):
-            roots.add(stem)
-    return roots
+    paths = map(PurePosixPath, _record_paths(dist))
+    return {root for path in paths if (root := _record_root(path))}
 
 
 def _recorded(dist: Distribution, site: Path, suffixes: frozenset[str]) -> tuple[Path, ...]:

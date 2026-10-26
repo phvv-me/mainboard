@@ -9,7 +9,8 @@
 
 import gzip
 import re
-from collections.abc import Set
+from collections.abc import Iterator, Set
+from itertools import islice
 from pathlib import Path
 
 from patos import FrozenModel
@@ -90,14 +91,22 @@ class SyncTex:
         page = 0
         for line in text.splitlines():
             if line.startswith("Input:"):
-                tag, _, path = line.removeprefix("Input:").partition(":")
-                self.inputs[tag] = (directory / path).resolve()
+                self._input(line, directory)
             elif line.startswith("{") and line[1:].isdigit():
                 page = int(line[1:])
             elif record := _RECORD.match(line):
-                source = self.inputs.get(record["tag"])
-                if source is not None and page:
-                    self.pages.setdefault(page, set()).add((source, int(record["line"])))
+                self._typeset(record, page)
+
+    def _input(self, line: str, directory: Path) -> None:
+        """Map the input tag of an `Input:` line to the source file it names."""
+        tag, _, path = line.removeprefix("Input:").partition(":")
+        self.inputs[tag] = (directory / path).resolve()
+
+    def _typeset(self, record: re.Match[str], page: int) -> None:
+        """Record the source line of `record` as typeset on `page`, if its input file is known."""
+        source = self.inputs.get(record["tag"])
+        if source is not None and page:
+            self.pages.setdefault(page, set()).add((source, int(record["line"])))
 
     def last_page(self, lines: Set[tuple[Path, int]]) -> int:
         """The last page carrying any of `lines`, 0 when none of them was typeset."""
@@ -164,18 +173,19 @@ def _plain(markup: str) -> str:
 
 def _groups(text: str, *, count: int) -> list[str]:
     """The first `count` brace groups of `text`, their braces balanced and removed."""
-    groups: list[str] = []
+    groups = list(islice(_top_groups(text), count))
+    return groups + [""] * (count - len(groups))
+
+
+def _top_groups(text: str) -> Iterator[str]:
+    """Each brace group of `text` that opens at depth zero, in order, without its braces."""
     depth = 0
     start = 0
     for index, character in enumerate(text):
         if character == "{":
             depth += 1
-            if depth == 1:
-                start = index + 1
+            start = index + 1 if depth == 1 else start
         elif character == "}":
             depth -= 1
             if depth == 0:
-                groups.append(text[start:index])
-                if len(groups) == count:
-                    break
-    return groups + [""] * (count - len(groups))
+                yield text[start:index]

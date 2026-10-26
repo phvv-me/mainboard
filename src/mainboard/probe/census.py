@@ -17,6 +17,8 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+_NVIDIA_SMI_QUERY_GPU_ARG = "--query-gpu=name,compute_cap,memory.total"
+
 # How long one version or driver query may take; a tool that hangs answers as an absent one.
 _SECONDS = 20.0
 
@@ -87,6 +89,17 @@ class Census:
     """
 
     @staticmethod
+    def _is_case_sensitive(anchor: Path) -> bool:
+        with tempfile.TemporaryDirectory(dir=anchor) as scratch:
+            (Path(scratch) / "Probe").write_text("", encoding="utf-8", newline="\n")
+            return not (Path(scratch) / "probe").exists()
+
+    @staticmethod
+    def _probe_symlink(anchor: Path) -> None:
+        with tempfile.TemporaryDirectory(dir=anchor) as scratch:
+            Path(scratch, "link").symlink_to(Path(scratch, "target"))
+
+    @staticmethod
     def anchor(root: str) -> Path:
         """The nearest existing directory at or above `root`, where a clone would land."""
         path = Path(root).expanduser()
@@ -109,9 +122,7 @@ class Census:
     def case_sensitive(anchor: Path) -> bool:
         """Whether two names differing only in case are two files where the workspace lives."""
         try:
-            with tempfile.TemporaryDirectory(dir=anchor) as scratch:
-                (Path(scratch) / "Probe").write_text("", encoding="utf-8", newline="\n")
-                return not (Path(scratch) / "probe").exists()
+            return Census._is_case_sensitive(anchor)
         except OSError:
             return True
 
@@ -119,8 +130,7 @@ class Census:
     def symlinks(anchor: Path) -> str:
         """Why a symbolic link cannot be made where the workspace lives, empty when it can."""
         try:
-            with tempfile.TemporaryDirectory(dir=anchor) as scratch:
-                Path(scratch, "link").symlink_to(Path(scratch, "target"))
+            Census._probe_symlink(anchor)
         except OSError as refusal:
             return str(refusal) or type(refusal).__name__
         return ""
@@ -154,7 +164,7 @@ class Census:
         status, listing = self.runner(
             (
                 "nvidia-smi",
-                "--query-gpu=name,compute_cap,memory.total",
+                _NVIDIA_SMI_QUERY_GPU_ARG,
                 "--format=csv,noheader,nounits",
             )
         )

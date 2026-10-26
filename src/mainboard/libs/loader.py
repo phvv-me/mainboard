@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ..constants import ASK_SECONDS
 from .elf import Elf
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-_ASK_SECONDS = 30
 # The directories glibc searches last, after the cache, for a name the cache does not list.
 _TRUSTED = ("/lib", "/usr/lib", "/lib64", "/usr/lib64")
 
@@ -29,7 +29,7 @@ def system_cache() -> dict[str, Path]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=_ASK_SECONDS,
+            timeout=ASK_SECONDS,
             check=False,
         ).stdout
     except OSError, subprocess.TimeoutExpired:

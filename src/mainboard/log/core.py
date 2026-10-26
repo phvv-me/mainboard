@@ -21,7 +21,10 @@
 
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
+from enum import Enum
+from pathlib import PurePath
+from types import SimpleNamespace
 
 import structlog
 from patos import FrozenModel
@@ -43,32 +46,43 @@ _NAMES = {
 }
 
 
+# What a log call formats or attaches: text, numbers, paths, enums, exceptions, string collections.
+type Loggable = (
+    str | int | float | bool | bytes | PurePath | Enum | BaseException | Collection[str] | None
+)
+
+
 class Logger(structlog.BoundLoggerBase):
     """mb's logger: structlog's levels with loguru's positional formatting, plus the two streams a
     verb speaks on besides events. The configured floor drops what is below it (`_Floor`)."""
 
     def _emit(
-        self, method: str, *, event: str, args: tuple[object, ...], fields: dict[str, object]
+        self,
+        method: str,
+        *,
+        event: str,
+        args: tuple[Loggable, ...],
+        fields: dict[str, Loggable],
     ) -> None:
         self._proxy_to_logger(method, event.format(*args) if args else event, **fields)
 
-    def critical(self, event: str, *args: object, **fields: object) -> None:
+    def critical(self, event: str, *args: Loggable, **fields: Loggable) -> None:
         self._emit("critical", event=event, args=args, fields=fields)
 
-    def debug(self, event: str, *args: object, **fields: object) -> None:
+    def debug(self, event: str, *args: Loggable, **fields: Loggable) -> None:
         self._emit("debug", event=event, args=args, fields=fields)
 
-    def error(self, event: str, *args: object, **fields: object) -> None:
+    def error(self, event: str, *args: Loggable, **fields: Loggable) -> None:
         self._emit("error", event=event, args=args, fields=fields)
 
-    def exception(self, event: str, *args: object, **fields: object) -> None:
+    def exception(self, event: str, *args: Loggable, **fields: Loggable) -> None:
         """An error carrying the exception being handled."""
         self._emit("error", event=event, args=args, fields={"exc_info": True, **fields})
 
-    def info(self, event: str, *args: object, **fields: object) -> None:
+    def info(self, event: str, *args: Loggable, **fields: Loggable) -> None:
         self._emit("info", event=event, args=args, fields=fields)
 
-    def log(self, level: int, event: str, *args: object, **fields: object) -> None:
+    def log(self, level: int, event: str, *args: Loggable, **fields: Loggable) -> None:
         """An event at the numeric `logging` level `level`."""
         self._emit(_NAMES[level], event=event, args=args, fields=fields)
 
@@ -82,7 +96,7 @@ class Logger(structlog.BoundLoggerBase):
         sys.stdout.write(f"{text}{end}")
         sys.stdout.flush()
 
-    def warning(self, event: str, *args: object, **fields: object) -> None:
+    def warning(self, event: str, *args: Loggable, **fields: Loggable) -> None:
         self._emit("warning", event=event, args=args, fields=fields)
 
     fatal = critical
@@ -94,30 +108,29 @@ class _Floor(FrozenModel):
 
     level: int
 
-    def __call__(self, _: object, method: str, event: EventDict) -> EventDict:
+    def __call__(self, _: SimpleNamespace, method: str, event: EventDict) -> EventDict:
         if NAME_TO_LEVEL[method] < self.level:
             raise structlog.DropEvent
         return event
 
 
-class _Stderr:
-    """Writes each line to whatever `sys.stderr` is at that moment (a test capture swaps it)."""
-
-    def msg(self, message: str) -> None:
-        sys.stderr.write(f"{message}\n")
-        sys.stderr.flush()
-
-    debug = info = warning = error = critical = msg
+def _write(message: str) -> None:
+    """One line to whatever `sys.stderr` is now (a test capture swaps it), flushed."""
+    sys.stderr.write(f"{message}\n")
+    sys.stderr.flush()
 
 
-def _route(_: object, __: str, event: EventDict) -> EventDict:
+_STDERR = SimpleNamespace(debug=_write, info=_write, warning=_write, error=_write, critical=_write)
+
+
+def _route(_: SimpleNamespace, __: str, event: EventDict) -> EventDict:
     """Hand an event naming a sink to that sink, dropping the name so no renderer shows it."""
     if (sink := sinks.get(event.pop(SINK, ""))) is not None:
         sink(dict(event))
     return event
 
 
-def _line(_: object, __: str, event: EventDict) -> str:
+def _line(_: SimpleNamespace, __: str, event: EventDict) -> str:
     """One short line: the event, its fields as `key=value`, a level word only above info."""
     level = event.pop("level", "info")
     event.pop("timestamp", None)
@@ -163,7 +176,7 @@ def configure(level: str = "", *, output: str = "") -> None:
     structlog.configure(
         processors=[*shared, *rendered],
         wrapper_class=Logger,
-        logger_factory=lambda *_: _Stderr(),
+        logger_factory=lambda *_: _STDERR,
         cache_logger_on_first_use=False,
     )
 

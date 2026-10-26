@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
     from pydantic import JsonValue
 
-    from ..dispatch.state import RunRecord
+    from ..dispatch.state import DownHost, RunRecord
     from ..fleet.board import Board, Run
     from ..settling.monitor import Monitor
 
@@ -195,16 +195,36 @@ class Verdicts:
         ]
 
     @staticmethod
+    def __outcome(
+        record: RunRecord, *, ended: str, exit_code: int | None
+    ) -> tuple[str, int | None, str]:
+        """The word, exit code and verdict a stop settles `record` on, keeping what it recorded."""
+        verdict = (
+            record.verdict
+            if record.verdict is not None and record.verdict in vocabulary.Word.settled()
+            else ended
+        )
+        code = record.exit_code if exit_code is None else exit_code
+        word = (
+            vocabulary.Word.CANCELLED
+            if ended == vocabulary.Word.CANCELLED
+            else vocabulary.Word.FINISHED
+        )
+        return word, code, verdict
+
+    @staticmethod
     def __preserved(record: RunRecord, run: Run, settlement: Settlement) -> tuple[str, ...]:
         """Capture and verify what `run` left before it stops, recording how far that got."""
         receipts: tuple[str, ...] = ()
         try:
             receipts = settlement.capture(record, run, required=False)
+        except (MissionError, OSError, ValueError) as fault:
+            Verdicts.__unverified(settlement, record, receipts, fault)
+            return receipts
+        try:
             settlement.verify(run, settlement.pull(run), receipts, owed=owes_receipt(record))
         except (MissionError, OSError, ValueError) as fault:
-            settlement.evidence(
-                record, receipts, status="unverified", detail=f"cancelled: {fault}"
-            )
+            Verdicts.__unverified(settlement, record, receipts, fault)
         else:
             settlement.evidence(record, receipts, status="copied")
         return receipts
@@ -215,6 +235,13 @@ class Verdicts:
             f"creation {record.creation} has no confirmed provider handle; reconcile "
             "its provider label before cancellation; absence from one listing is not proof"
         )
+
+    @staticmethod
+    def __unverified(
+        settlement: Settlement, record: RunRecord, receipts: tuple[str, ...], fault: Exception
+    ) -> None:
+        """Record that the evidence `record` left could not be verified, and why."""
+        settlement.evidence(record, receipts, status="unverified", detail=f"cancelled: {fault}")
 
     @staticmethod
     def _killed(run: Run, settlement: Settlement) -> str:
@@ -301,6 +328,18 @@ class Verdicts:
             "another shape settles here as soon as it prints one of those two per trial"
         )
 
+    def __announce_down(
+        self, watched: _Watched, hosts: Iterable[DownHost], *, say: Callable[[str], None]
+    ) -> None:
+        """Say each host that went silent under `watched` once."""
+        for down in hosts:
+            # Said once: a wait on a run whose host went silent otherwise reads as a job that
+            # is merely slow, until the timeout.
+            if down.host not in watched.silent:
+                watched.silent.add(down.host)
+                asked = self.board.declares(down.host)
+                say(f"{down.host} is not answering: {down.reason}" if asked else down.reason)
+
     def __explained(self, trial: TrialVerdict, record: RunRecord) -> TrialVerdict:
         """A failed `trial` with its cause read off the log the sweep brought home."""
         if trial.code != 1:
@@ -315,11 +354,42 @@ class Verdicts:
         self.board = board
         self.kept = Captured(board.dispatcher.cache.session)
 
+    def __journaled(
+        self, target: str, events: list[Event], harvested: tuple[TrialVerdict, ...]
+    ) -> StreamVerdict:
+        """The verdict of a stream with events or harvested receipts, one row per job it ran."""
+        recorded = _eventful(events)
+        seen = {(trial.target, trial.handle) for trial in recorded}
+        missing = tuple(
+            self.__floor(record, job=job)
+            for record in self.board.dispatcher.cache.listed("tracked")
+            for stream, job in [streamed(record.name or "", handle=record.handle)]
+            if stream == target and (record.target, record.handle) not in seen
+        )
+        found = (*self._swept(recorded), *missing, *harvested)
+        return StreamVerdict(
+            stream=target,
+            trials=_qualified(found, events),
+            note=Verdicts._silent(target, events, found),
+        )
+
+    def __local(self, target: str, *, host: str, run: str) -> StreamVerdict | None:
+        """A local receipts store or file's answer for `target`, None when there is neither."""
+        path = self.board.dispatcher.local(target)
+        stored = self.stored(path, stream=target, run=run)
+        if stored is not None:
+            return stored
+        if path.is_file():
+            return self.of(target, host=host, run=run)
+        return None
+
     def __looked(
         self, watched: _Watched, vigil: Vigil, *, patience: Patience
     ) -> StreamVerdict | None:
-        """Settle the watched runs whose session ended while their process lingers; the
-        answer once one stalled, after a pause when nothing lingered."""
+        """Settle the watched runs whose session ended while their process lingers.
+
+        It answers once one stalled, or after a pause when nothing lingered.
+        """
         scope = self.__scope(watched)
         look = vigil.look(
             [
@@ -350,28 +420,10 @@ class Verdicts:
         events = Journal(self.board.dispatcher.cache.session, target).replay()
         harvested = self._harvest(target)
         if monitor is not None:
-            stream = bool(events or harvested)
-            watched = _Watched(handle=target, host=host, stream=stream)
-            report = monitor.once(scope=self.__scope(watched))
-            if not stream and report.resumed:
-                resumed = report.resumed[0]
-                return self.of(resumed.handle, host=resumed.target, run=run)
-            return self.of(target, host=host, run=run)
+            watched = _Watched(handle=target, host=host, stream=bool(events or harvested))
+            return self.__refreshed(watched, monitor=monitor, run=run)
         if events or harvested:
-            recorded = _eventful(events)
-            seen = {(trial.target, trial.handle) for trial in recorded}
-            missing = tuple(
-                self.__floor(record, job=job)
-                for record in self.board.dispatcher.cache.listed("tracked")
-                for stream, job in [streamed(record.name or "", handle=record.handle)]
-                if stream == target and (record.target, record.handle) not in seen
-            )
-            found = (*self._swept(recorded), *missing, *harvested)
-            return StreamVerdict(
-                stream=target,
-                trials=_qualified(found, events),
-                note=Verdicts._silent(target, events, found),
-            )
+            return self.__journaled(target, events, harvested)
         return self._handled(target, host=host)
 
     def __pass(
@@ -394,16 +446,18 @@ class Verdicts:
             return None
         if not watched.stream and report.resumed:
             watched.handle, watched.host = report.resumed[0].handle, report.resumed[0].target
-        for down in report.unreachable_hosts:
-            # Said once: a wait on a run whose host went silent otherwise reads as a job that
-            # is merely slow, until the timeout.
-            if down.host not in watched.silent:
-                watched.silent.add(down.host)
-                asked = self.board.declares(down.host)
-                say(f"{down.host} is not answering: {down.reason}" if asked else down.reason)
+        self.__announce_down(watched, report.unreachable_hosts, say=say)
         if self.__settled(watched) is not None:
             return None
         return self.__looked(watched, vigil, patience=patience)
+
+    def __refreshed(self, watched: _Watched, *, monitor: Monitor, run: str) -> StreamVerdict:
+        """Settle what ended under `watched`, answering the run a resumed dispatch moved to."""
+        report = monitor.once(scope=self.__scope(watched))
+        if not watched.stream and report.resumed:
+            resumed = report.resumed[0]
+            return self.of(resumed.handle, host=resumed.target, run=run)
+        return self.of(watched.handle, host=watched.host, run=run)
 
     def __registered(self, trial: TrialVerdict) -> TrialVerdict:
         """`trial` under its registry row: its provenance always, its outcome while it flies.
@@ -440,17 +494,7 @@ class Verdicts:
         run = self.board.job(record.handle, host=record.target)
         settlement = Settlement(self.board)
         receipts = Verdicts.__preserved(record, run, settlement)
-        verdict = (
-            record.verdict
-            if record.verdict is not None and record.verdict in vocabulary.Word.settled()
-            else ended
-        )
-        code = record.exit_code if exit_code is None else exit_code
-        word = (
-            vocabulary.Word.CANCELLED
-            if ended == vocabulary.Word.CANCELLED
-            else vocabulary.Word.FINISHED
-        )
+        word, code, verdict = Verdicts.__outcome(record, ended=ended, exit_code=exit_code)
         state = JobState(handle=record.handle, state=word, exit_code=code, verdict=verdict)
         unheard = self._killed(run, settlement)
         stored = cache.resolve(record, word, code, verdict)
@@ -725,12 +769,8 @@ class Verdicts:
             on an idle card stops the wait.
         say: where the cells and the heartbeat go.
         """
-        path = self.board.dispatcher.local(handle)
-        stored = self.stored(path, stream=handle, run=run)
-        if stored is not None:
-            return stored
-        if path.is_file():
-            return self.of(handle, host=host, run=run)
+        if (local := self.__local(handle, host=host, run=run)) is not None:
+            return local
         stream = bool(Journal(self.board.dispatcher.cache.session, handle).replay())
         watched = _Watched(handle=handle, host=host, stream=stream)
         deadline = monotonic() + patience.timeout if patience.timeout else None

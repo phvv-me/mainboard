@@ -36,6 +36,13 @@ from ..graphs.scope import Scope
 from .constants import LANGUAGES
 from .models import AppleSourceFile, Condition, SourceKind, SwiftInventory, SyntaxStatus
 
+_SOURCE_CONDITIONS_SQL = (
+    "SELECT path, start_line, start_column, condition FROM swift_source_conditions "
+    "ORDER BY path, start_line, start_column"
+)
+_PARSER_PROGRESS_SQL = "SELECT path, parser_gaps, parser_message FROM swift_source_facts"
+_SOURCE_IMPORTS_SQL = "SELECT DISTINCT path, name FROM swift_source_imports ORDER BY path, name"
+
 _RULES = (
     SwiftParserCoverage,
     PrivateViewState,
@@ -108,10 +115,7 @@ class SwiftSourceInventory:
     @staticmethod
     def _conditions(facts: Facts, files: dict[str, AppleSourceFile]) -> None:
         """Note every `#if`/`#elseif` each file holds, in source order."""
-        for name, line, column, expression in facts.db.execute(
-            "SELECT path, start_line, start_column, condition FROM swift_source_conditions "
-            "ORDER BY path, start_line, start_column"
-        ).fetchall():
+        for name, line, column, expression in facts.db.execute(_SOURCE_CONDITIONS_SQL).fetchall():
             condition = Condition(
                 path=name, start_line=line, start_column=column, expression=expression
             )
@@ -120,9 +124,7 @@ class SwiftSourceInventory:
     @staticmethod
     def _coverage(facts: Facts, files: dict[str, AppleSourceFile]) -> None:
         """Note how far the parser read each file."""
-        for name, gaps, message in facts.db.execute(
-            "SELECT path, parser_gaps, parser_message FROM swift_source_facts"
-        ).fetchall():
+        for name, gaps, message in facts.db.execute(_PARSER_PROGRESS_SQL).fetchall():
             if name in files:
                 files[name] = files[name].model_copy(
                     update={
@@ -141,9 +143,7 @@ class SwiftSourceInventory:
     @staticmethod
     def _imports(facts: Facts, files: dict[str, AppleSourceFile]) -> None:
         """Note the modules each file imports, each once, by name."""
-        for name, module in facts.db.execute(
-            "SELECT DISTINCT path, name FROM swift_source_imports ORDER BY path, name"
-        ).fetchall():
+        for name, module in facts.db.execute(_SOURCE_IMPORTS_SQL).fetchall():
             _appended(files, name, field="imports", value=module)
 
     @staticmethod

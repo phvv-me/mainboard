@@ -116,8 +116,10 @@ class Shipper:
         self.project = Shipper._dispatched_from(self.root)
 
     def _present(self, plan: ExecutionPlan, required: Sequence[Sequence[str]]) -> list[str]:
-        """The sync include paths present here, refusing a mirror with nothing to ship or a
-        required group missing a file."""
+        """The sync include paths present here, refusing a mirror with nothing to ship.
+
+        A required group with a file missing is refused as well.
+        """
         scope = plan.profile.sync
         if not scope.include:
             raise LookupError(

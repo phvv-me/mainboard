@@ -7,6 +7,53 @@ cuts source text for the spans a family asks for."""
 
 from ....catalog import Function
 
+_PYTHON_FILES_SQL = r"""
+            WITH py AS (
+              SELECT row_number() OVER (ORDER BY path)::INT AS file, fact_id, path
+              FROM ast_files WHERE language = 'python'
+            ), regular AS (
+              SELECT DISTINCT regexp_replace(path, '(^|/)[^/]*$', '') AS directory
+              FROM py WHERE regexp_matches(path, '(^|/)__init__\.py$')
+            ), outer_packages AS (
+              SELECT p.directory FROM regular p
+              WHERE p.directory <> '' AND NOT EXISTS (
+                SELECT 1 FROM regular q WHERE q.directory <> '' AND q.directory <> p.directory
+                  AND starts_with(p.directory, q.directory || '/'))
+            ), package_names AS (
+              SELECT DISTINCT regexp_extract(directory, '[^/]*$') AS name FROM outer_packages
+            ), ancestors AS (
+              SELECT DISTINCT array_to_string(list_slice(parts, 1, i), '/') AS directory
+              FROM (SELECT list_slice(string_split(path, '/'), 1, -2) AS parts FROM py),
+                   range(1, 40) AS r(i)
+              WHERE i <= len(parts)
+            ), namespaces AS (
+              SELECT a.directory FROM ancestors a
+              WHERE regexp_extract(a.directory, '[^/]*$') IN (SELECT name FROM package_names)
+                AND NOT EXISTS (
+                  SELECT 1 FROM regular r
+                  WHERE (r.directory = a.directory OR starts_with(r.directory, a.directory || '/'))
+                    AND regexp_extract(r.directory, '[^/]*$')
+                      = regexp_extract(a.directory, '[^/]*$'))
+            ), directories AS (
+              SELECT directory FROM regular WHERE directory <> ''
+              UNION SELECT directory FROM namespaces
+            ), roots AS (
+              SELECT DISTINCT regexp_replace(p.directory, '(^|/)[^/]*$', '') AS root
+              FROM directories p
+              WHERE NOT EXISTS (SELECT 1 FROM directories q WHERE q.directory <> p.directory
+                                AND starts_with(p.directory, q.directory || '/'))
+                AND contains(p.directory, '/')
+            )
+            SELECT py.file, py.fact_id AS ast_fact, py.path,
+                   replace(regexp_replace(regexp_replace(
+                     CASE WHEN r.root IS NULL THEN py.path ELSE substr(py.path, length(r.root) + 2)
+                     END, '\.pyi?$', ''), '/__init__$', ''), '/', '.') AS module,
+                   regexp_matches(py.path, '(^|/)__init__\.py$') AS is_package
+            FROM py LEFT JOIN LATERAL (
+              SELECT max_by(root, length(root)) AS root FROM roots
+              WHERE starts_with(py.path, root || '/')) r ON true
+        """
+
 
 class CallsMemberVisibility(Function):
     """`public`, `protected` (one leading underscore) or `private` (two) for an attribute name;
@@ -188,52 +235,7 @@ class PythonBase:
         mcmr names a module by walking up `__init__.py` directories to an import root, and joins a
         namespace portion to a package of the same name under another root.
         """
-        return r"""
-            WITH py AS (
-              SELECT row_number() OVER (ORDER BY path)::INT AS file, fact_id, path
-              FROM ast_files WHERE language = 'python'
-            ), regular AS (
-              SELECT DISTINCT regexp_replace(path, '(^|/)[^/]*$', '') AS directory
-              FROM py WHERE regexp_matches(path, '(^|/)__init__\.py$')
-            ), outer_packages AS (
-              SELECT p.directory FROM regular p
-              WHERE p.directory <> '' AND NOT EXISTS (
-                SELECT 1 FROM regular q WHERE q.directory <> '' AND q.directory <> p.directory
-                  AND starts_with(p.directory, q.directory || '/'))
-            ), package_names AS (
-              SELECT DISTINCT regexp_extract(directory, '[^/]*$') AS name FROM outer_packages
-            ), ancestors AS (
-              SELECT DISTINCT array_to_string(list_slice(parts, 1, i), '/') AS directory
-              FROM (SELECT list_slice(string_split(path, '/'), 1, -2) AS parts FROM py),
-                   range(1, 40) AS r(i)
-              WHERE i <= len(parts)
-            ), namespaces AS (
-              SELECT a.directory FROM ancestors a
-              WHERE regexp_extract(a.directory, '[^/]*$') IN (SELECT name FROM package_names)
-                AND NOT EXISTS (
-                  SELECT 1 FROM regular r
-                  WHERE (r.directory = a.directory OR starts_with(r.directory, a.directory || '/'))
-                    AND regexp_extract(r.directory, '[^/]*$')
-                      = regexp_extract(a.directory, '[^/]*$'))
-            ), directories AS (
-              SELECT directory FROM regular WHERE directory <> ''
-              UNION SELECT directory FROM namespaces
-            ), roots AS (
-              SELECT DISTINCT regexp_replace(p.directory, '(^|/)[^/]*$', '') AS root
-              FROM directories p
-              WHERE NOT EXISTS (SELECT 1 FROM directories q WHERE q.directory <> p.directory
-                                AND starts_with(p.directory, q.directory || '/'))
-                AND contains(p.directory, '/')
-            )
-            SELECT py.file, py.fact_id AS ast_fact, py.path,
-                   replace(regexp_replace(regexp_replace(
-                     CASE WHEN r.root IS NULL THEN py.path ELSE substr(py.path, length(r.root) + 2)
-                     END, '\.pyi?$', ''), '/__init__$', ''), '/', '.') AS module,
-                   regexp_matches(py.path, '(^|/)__init__\.py$') AS is_package
-            FROM py LEFT JOIN LATERAL (
-              SELECT max_by(root, length(root)) AS root FROM roots
-              WHERE starts_with(py.path, root || '/')) r ON true
-        """
+        return _PYTHON_FILES_SQL
 
     def relations(self) -> dict[str, str]:
         return {

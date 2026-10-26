@@ -13,6 +13,16 @@ from ....catalog import Family, Function
 from ....engine.facts import Facts
 from .core import ProjectTree
 
+_GUIDE_FILE_ENTRIES_SQL = (
+    "SELECT entry FROM project_entries "
+    "WHERE NOT is_directory AND regexp_matches(entry, '[.](md|rst|txt)$')"
+)
+_CREATE_GUIDES_TABLE_SQL = "CREATE TABLE project_guides (path VARCHAR, content VARCHAR)"
+_LOAD_GUIDE_CONTENTS_SQL = (
+    "INSERT INTO project_guides SELECT substr(filename, length($root) + 2), content "
+    "FROM read_text($files)"
+)
+
 
 class ProjectHeads(Function):
     """The program each part of a shell `command` runs, with the parts joined by `&`, `|`, `;`
@@ -183,16 +193,11 @@ class AutomationTask(Family):
         """Load the guides the tasks relation reads: `project_guides` (path, content)."""
         ProjectTree(root=root).register(facts)
         files = [
-            str(root / entry)
-            for (entry,) in facts.db.execute(
-                "SELECT entry FROM project_entries "
-                "WHERE NOT is_directory AND regexp_matches(entry, '[.](md|rst|txt)$')"
-            ).fetchall()
+            str(root / entry) for (entry,) in facts.db.execute(_GUIDE_FILE_ENTRIES_SQL).fetchall()
         ]
-        facts.db.execute("CREATE TABLE project_guides (path VARCHAR, content VARCHAR)")
+        facts.db.execute(_CREATE_GUIDES_TABLE_SQL)
         if files:
             facts.db.execute(
-                "INSERT INTO project_guides SELECT substr(filename, length($root) + 2), content "
-                "FROM read_text($files)",
+                _LOAD_GUIDE_CONTENTS_SQL,
                 {"root": str(root), "files": files},
             )

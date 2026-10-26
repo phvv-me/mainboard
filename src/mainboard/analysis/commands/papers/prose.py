@@ -22,6 +22,8 @@ from ....core.errors import MissionError
 from ....log import logger
 from ..report import Report
 
+_MANUSCRIPT_TABLE_SQL = "CREATE TABLE manuscript (position INT, path VARCHAR, content VARCHAR)"
+
 _INCLUDE = re.compile(r"\\(?:input|include|subfile)\{([^}]+)\}")
 _COMMENT = re.compile(r"(?<!\\)%.*$")
 _BODY = "\\begin{document}"
@@ -252,9 +254,9 @@ def prose(
     as_json: print JSON for a program.
     """
     files = Manuscript(paper).files()
-    db = duckdb.connect()
-    db.execute("CREATE TABLE manuscript (position INT, path VARCHAR, content VARCHAR)")
-    db.executemany(
+    connection = duckdb.connect()
+    connection.execute(_MANUSCRIPT_TABLE_SQL)
+    connection.executemany(
         "INSERT INTO manuscript VALUES (?, ?, ?)",
         [(n, _relative(file), file.read_text(errors="replace")) for n, file in enumerate(files)],
     )
@@ -263,7 +265,7 @@ def prose(
         files=[_relative(file) for file in files],
         paragraphs=[
             Paragraph(path=path, line=line, kind=kind, text=text)
-            for _, path, line, kind, text in db.execute(_PARAGRAPHS).fetchall()
+            for _, path, line, kind, text in connection.execute(_PARAGRAPHS).fetchall()
         ],
     )
     logger.result(report.render(as_json=as_json))

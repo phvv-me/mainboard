@@ -101,19 +101,9 @@ class Source(FrozenModel):
     root: Path
     mirrored: bool = False
 
-    @property
-    def admissibility(self) -> Admissibility:
-        """Only captured and verified bytes qualify as identified source."""
-        return (
-            Admissibility.ADMISSIBLE if self.digest and self.closure else Admissibility.UNRECORDED
-        )
-
-
-def source(repo: Path) -> Source:
-    """Verify a dispatched snapshot or preserve a local source bundle before acquisition."""
-    declared = CLOSURE_VAR.read()
-    expected = DIGEST_VAR.read()
-    if declared:
+    @classmethod
+    def dispatched(cls, repo: Path, *, declared: str, expected: str) -> Source:
+        """Verify a dispatched snapshot's listing and bytes against its declared digest."""
         closure = Path(declared).resolve()
         # Snapshots keep the listing at their root; local runs stage it under workspace state.
         root = (
@@ -134,19 +124,39 @@ def source(repo: Path) -> Source:
         )
         if verified.digest != expected:
             raise RuntimeError("source bytes differ from the captured bundle")
-        return Source(digest=expected, closure=str(closure), root=tree.root, mirrored=True)
-    tree = SourceTree(repo)
-    captured, rows = tree.seal(tree.sources())
-    manifest = listing(rows)
-    tree.archive(manifest)
-    # The listing a later read of this trial verifies against, staged where dispatch stages its
-    # own; the record of it is the lake's.
-    closure = (
-        Project().out(tree.root) / "dispatch" / "jobs" / f"closure-{captured.digest[:12]}.tsv"
-    )
-    closure.parent.mkdir(parents=True, exist_ok=True)
-    closure.write_text(manifest, encoding="utf-8", newline="\n")
-    return Source(digest=captured.digest, closure=str(closure), root=tree.root)
+        return cls(digest=expected, closure=str(closure), root=tree.root, mirrored=True)
+
+    @classmethod
+    def local(cls, repo: Path) -> Source:
+        """Seal and archive a local source tree, then stage its listing for the trial to verify."""
+        tree = SourceTree(repo)
+        captured, rows = tree.seal(tree.sources())
+        manifest = listing(rows)
+        tree.archive(manifest)
+        # The listing a later read of this trial verifies against, staged where dispatch stages its
+        # own; the record of it is the lake's.
+        closure = (
+            Project().out(tree.root) / "dispatch" / "jobs" / f"closure-{captured.digest[:12]}.tsv"
+        )
+        closure.parent.mkdir(parents=True, exist_ok=True)
+        closure.write_text(manifest, encoding="utf-8", newline="\n")
+        return cls(digest=captured.digest, closure=str(closure), root=tree.root)
+
+    @property
+    def admissibility(self) -> Admissibility:
+        """Only captured and verified bytes qualify as identified source."""
+        return (
+            Admissibility.ADMISSIBLE if self.digest and self.closure else Admissibility.UNRECORDED
+        )
+
+
+def source(repo: Path) -> Source:
+    """Verify a dispatched snapshot or preserve a local source bundle before acquisition."""
+    declared = CLOSURE_VAR.read()
+    expected = DIGEST_VAR.read()
+    if declared:
+        return Source.dispatched(repo, declared=declared, expected=expected)
+    return Source.local(repo)
 
 
 def installed(name: str) -> str:
@@ -158,11 +168,16 @@ def installed(name: str) -> str:
     try:
         return version(name)
     except PackageNotFoundError:
-        found: set[str] = set()
-        for distribution in packages_distributions().get(name, ()):
-            with suppress(PackageNotFoundError):
-                found.add(version(distribution))
-        return found.pop() if len(found) == 1 else "absent"
+        return _shipped_version(name)
+
+
+def _shipped_version(name: str) -> str:
+    """The one version every distribution shipping the import `name` agrees on, or `absent`."""
+    found: set[str] = set()
+    for distribution in packages_distributions().get(name, ()):
+        with suppress(PackageNotFoundError):
+            found.add(version(distribution))
+    return found.pop() if len(found) == 1 else "absent"
 
 
 class Card(FrozenModel):

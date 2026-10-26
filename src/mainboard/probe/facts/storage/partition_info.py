@@ -3,6 +3,8 @@ from functools import cached_property
 import psutil
 from patos import FrozenModel
 
+from ....constants import BYTES_PER_KIBIBYTE
+
 
 class DiskUsage(FrozenModel):
     """The `psutil.disk_usage()` fields read here, in bytes."""
@@ -48,7 +50,7 @@ class PartitionInfo(FrozenModel):
     @property
     def free_gb(self) -> float:
         """Free space in gibibytes."""
-        return self.free_bytes / 1024**3
+        return self.free_bytes / BYTES_PER_KIBIBYTE**3
 
     @property
     def readonly(self) -> bool:
@@ -63,7 +65,7 @@ class PartitionInfo(FrozenModel):
     @property
     def total_gb(self) -> float:
         """Total capacity in gibibytes."""
-        return self.total_bytes / 1024**3
+        return self.total_bytes / BYTES_PER_KIBIBYTE**3
 
     @property
     def used_bytes(self) -> int:
@@ -73,7 +75,7 @@ class PartitionInfo(FrozenModel):
     @property
     def used_gb(self) -> float:
         """Used space in gibibytes."""
-        return self.used_bytes / 1024**3
+        return self.used_bytes / BYTES_PER_KIBIBYTE**3
 
     @property
     def utilization_pct(self) -> float:

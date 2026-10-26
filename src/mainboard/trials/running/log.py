@@ -51,27 +51,26 @@ class Log:
     """A trial-scoped logger; identity and artifact paths come from pytest, never retyped."""
 
     @contextmanager
+    def _profile_evidence(
+        self, profiler: Profiler, name: str, policy: Collection
+    ) -> Generator[None]:
+        """Attach the profile once its body has run, whether the body completed or raised."""
+        try:
+            yield
+        except BaseException:
+            self._record_profile(profiler, name, policy, completed=False)
+            raise
+        self._record_profile(profiler, name, policy, completed=True)
+
+    @contextmanager
     def profile(
         self, *, name: str = "", collection: Collection | None = None
     ) -> Generator[Profiler]:
         """Capture with the existing profiler and attach evidence even when the body raises."""
         policy = collection or self.trial.session.declared.collection
         profiler = Profiler.under(policy)
-        completed = False
-        try:
-            with profiler:
-                yield profiler
-            completed = True
-        finally:
-            self.model(
-                profiler.result(),
-                name=name or self._name("profile"),
-                schema_name="mainboard.Profile",
-            )
-            self._event(
-                "profile",
-                {"completed": completed, "collection": json.loads(policy.model_dump_json())},
-            )
+        with self._profile_evidence(profiler, name, policy), profiler:
+            yield profiler
 
     def __getattr__(self, name: str) -> Callable[..., None]:
         """Expose the logger's severity methods and the project's settlement vocabulary."""
@@ -85,38 +84,29 @@ class Log:
 
     def __init__(self, trial: Trial) -> None:
         self.trial = trial
-        session = trial.session
-        universe = session.declared.universe
-        path = Path(str(trial.item.path))
-        manifest = session.manifest(path)
-        if manifest is not None:
-            trial.artifacts["run"] = manifest.model_dump(mode="json")
-        node = universe.node_of(path)
-        key = hashlib.sha256(trial.item.nodeid.encode()).hexdigest()
-        directory = universe.dataset(node).root.parent / "artifacts" / session.run / key
-        self.artifacts = session.store(node)
-        self.spool = Spool(directory, "events")
-        trial.artifacts["events"] = self.spool.dir.relative_to(self.artifacts.root).as_posix()
         self.counts: Counter[str] = Counter()
         self.metadata: dict[str, JsonValue] = {}
-        self.identity = f"{session.run}/{key}"
-        self.context: dict[str, JsonValue] = {
+        node, key, manifest = self._locate()
+        self.identity = f"{trial.session.run}/{key}"
+        self._open(node, key)
+        self.context = self._context(node, manifest)
+        self._start()
+
+    def _context(self, node: str, manifest: Artifact | None) -> dict[str, JsonValue]:
+        """The provenance every event of this trial carries, read from its session and item."""
+        session = self.trial.session
+        universe = session.declared.universe
+        return {
             **session.common,
             "project": universe.root.parent.name
             if universe.root.name == "experiments"
             else session.declared.tree.name,
             "node": node,
-            "trial": trial.item.nodeid,
+            "trial": self.trial.item.nodeid,
             "run": session.run,
-            "params": params_of(trial.item, universe.axes),
+            "params": params_of(self.trial.item, universe.axes),
             "manifest": manifest.model_dump(mode="json") if manifest is not None else None,
         }
-        # Every line logged while the trial runs is kept with it, whichever library logged it;
-        # the trial's own methods name the sink explicitly, so they are kept from any thread.
-        sinks[self.identity] = self._message
-        self.bound = bind_contextvars(**{SINK: self.identity})
-        self.logger = logger.bind(**{SINK: self.identity})
-        self._event("started", self.context, kind=Kind.started)
 
     def _event(
         self, topic: str, payload: Mapping[str, JsonValue], *, kind: Kind = Kind.line
@@ -135,6 +125,28 @@ class Log:
             )
         )
 
+    def _finish(self, *, passed: bool) -> None:
+        """Record the end of the trial's stream, refusing a settled trial whose artifacts moved."""
+        self._event("ended", {"passed": passed, "verdict": self.trial.settled}, kind=Kind.ended)
+        if self.trial.settled and self.trial.artifacts != self.trial.recorded_artifacts:
+            reason = (
+                "Artifacts changed after the last receipt was settled; "
+                "settle only after output checks and cleanup evidence are attached"
+            )
+            self.trial.record("", reason=reason, measured={}, outcome=Outcome.FAILED)
+            raise RuntimeError(reason)
+
+    def _locate(self) -> tuple[str, str, Artifact | None]:
+        """The node and key that place this trial, with its run manifest recorded on it if any."""
+        session = self.trial.session
+        path = Path(str(self.trial.item.path))
+        manifest = session.manifest(path)
+        if manifest is not None:
+            self.trial.artifacts["run"] = manifest.model_dump(mode="json")
+        node = session.declared.universe.node_of(path)
+        key = hashlib.sha256(self.trial.item.nodeid.encode()).hexdigest()
+        return node, key, manifest
+
     def _message(self, event: EventDict) -> None:
         self._event(
             "message",
@@ -148,6 +160,38 @@ class Log:
     def _name(self, kind: str) -> str:
         self.counts[kind] += 1
         return f"{kind}-{self.counts[kind]}"
+
+    def _open(self, node: str, key: str) -> None:
+        """Open this trial's spool beside its node's store and name the spool on the trial."""
+        session = self.trial.session
+        universe = session.declared.universe
+        directory = universe.dataset(node).root.parent / "artifacts" / session.run / key
+        self.artifacts = session.store(node)
+        self.spool = Spool(directory, "events")
+        self.trial.artifacts["events"] = self.spool.dir.relative_to(self.artifacts.root).as_posix()
+
+    def _record_profile(
+        self, profiler: Profiler, name: str, policy: Collection, *, completed: bool
+    ) -> None:
+        """Attach a profiler's result under its name, noting whether the body completed."""
+        self.model(
+            profiler.result(),
+            name=name or self._name("profile"),
+            schema_name="mainboard.Profile",
+        )
+        self._event(
+            "profile",
+            {"completed": completed, "collection": json.loads(policy.model_dump_json())},
+        )
+
+    def _start(self) -> None:
+        """Route the logger's lines into this trial's spool and emit the started event."""
+        # Every line logged while the trial runs is kept with it, whichever library logged it;
+        # the trial's own methods name the sink explicitly, so they are kept from any thread.
+        sinks[self.identity] = self._message
+        self.bound = bind_contextvars(**{SINK: self.identity})
+        self.logger = logger.bind(**{SINK: self.identity})
+        self._event("started", self.context, kind=Kind.started)
 
     def artifact(
         self,
@@ -187,16 +231,7 @@ class Log:
     def close(self, *, passed: bool) -> None:
         """Flush the trial stream and remove only this logger's handler."""
         try:
-            self._event(
-                "ended", {"passed": passed, "verdict": self.trial.settled}, kind=Kind.ended
-            )
-            if self.trial.settled and self.trial.artifacts != self.trial.recorded_artifacts:
-                reason = (
-                    "Artifacts changed after the last receipt was settled; "
-                    "settle only after output checks and cleanup evidence are attached"
-                )
-                self.trial.record("", reason=reason, measured={}, outcome=Outcome.FAILED)
-                raise RuntimeError(reason)
+            self._finish(passed=passed)
         finally:
             sinks.pop(self.identity, None)
             reset_contextvars(**self.bound)

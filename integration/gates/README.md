@@ -37,7 +37,7 @@ fault and recovery witnesses to the existing fixtures and passes them as `target
 includes every cumulative witness. The launcher runs an environment's own interpreter beneath
 `mainboard proc timeout`, so no compile, sync lock or install touches the live workspace: the
 environment `uv run` leaves in `VIRTUAL_ENV` when there is one, else the workspace's
-(`$MB_GATE_PROJECTS/.mainboard/envs/default`, default `/Users/pedro/Developer/projects`). It prints
+(`$MB_GATE_PROJECTS/.mb/envs/default`, default `/Users/pedro/Developer/projects`). It prints
 and asserts `mainboard.__file__` on every invocation. Every pytest command names this
 worktree's `pyproject.toml`, disables `randomly`, the cache provider and plugin autoload, and uses a
 temporary basetemp. The worker and each test start in an empty directory, never in the checkout.

@@ -78,16 +78,20 @@ class Vigil:
     """One wait's looks at the jobs it blocks on, and what it says about each."""
 
     @staticmethod
+    def _cells(pulses: Sequence[Pulse]) -> str:
+        """The cells across some jobs, `?` while any of them does not yet know its total."""
+        totals = [pulse.progress.total for pulse in pulses]
+        return "?" if None in totals else str(sum(total or 0 for total in totals))
+
+    @staticmethod
     def _heartbeat(pulses: Iterable[Pulse]) -> str:
         """One line over some jobs' pulses: cells, failures, freshest output, busiest card."""
         seen = list(pulses)
-        totals = [pulse.progress.total for pulse in seen]
-        total = "?" if None in totals else str(sum(total or 0 for total in totals))
         done = sum(pulse.progress.done for pulse in seen)
         failed = sum(pulse.progress.failed for pulse in seen)
         quiet = [pulse.quiet_s for pulse in seen if pulse.quiet_s is not None]
         cards = [pulse.gpu_pct for pulse in seen if pulse.gpu_pct is not None]
-        parts = [f"{len(seen)} running", f"{done}/{total} cells", f"{failed} failed"]
+        parts = [f"{len(seen)} running", f"{done}/{Vigil._cells(seen)} cells", f"{failed} failed"]
         if quiet:
             parts.append(f"output {min(quiet)}s ago")
         if cards:

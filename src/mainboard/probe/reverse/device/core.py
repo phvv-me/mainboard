@@ -84,15 +84,18 @@ class _CudaProvider(ReverseProvider, abc.ABC):
 
     @staticmethod
     def _narrowed(result: DeviceResult, *, arch: str, function: str) -> tuple[DeviceResult, bool]:
-        """`result` narrowed to the selected architecture and function, and whether none is left."""
+        """`result` narrowed to the chosen architecture and function, and whether none is left."""
         match result:
             case KernelInventory():
                 kernels = tuple(
                     kernel
                     for kernel in result.kernels
-                    if _wanted(kernel.arch, selected=arch) and _wanted(kernel.name, selected=function)
+                    if _wanted(kernel.arch, selected=arch)
+                    and _wanted(kernel.name, selected=function)
                 )
-                arches = tuple(target for target in result.arches if _wanted(target, selected=arch))
+                arches = tuple(
+                    target for target in result.arches if _wanted(target, selected=arch)
+                )
                 return KernelInventory(kernels=kernels, arches=arches), not kernels
             case SassResult():
                 listings = tuple(
@@ -104,7 +107,9 @@ class _CudaProvider(ReverseProvider, abc.ABC):
                 return SassResult(listings=listings), not listings
             case ArchCoverage():
                 narrowed = ArchCoverage(
-                    arches=tuple(target for target in result.arches if _wanted(target, selected=arch)),
+                    arches=tuple(
+                        target for target in result.arches if _wanted(target, selected=arch)
+                    ),
                     ptx_arches=tuple(
                         target for target in result.ptx_arches if _wanted(target, selected=arch)
                     ),
@@ -155,7 +160,9 @@ class _CudaProvider(ReverseProvider, abc.ABC):
         *,
         options: Mapping[str, JsonValue] | None = None,
     ) -> Evidence[DeviceResult]:
-        result, empty = _CudaProvider._narrowed(parsed.result, arch=request.arch, function=request.function)
+        result, empty = _CudaProvider._narrowed(
+            parsed.result, arch=request.arch, function=request.function
+        )
         statuses, limitations = self._assessed(outputs)
         statuses.insert(0, parsed.coverage)
         unknowns = list(parsed.unresolved)

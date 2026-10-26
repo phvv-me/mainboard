@@ -6,6 +6,8 @@ from patos import FrozenModel
 
 from ..log import logger
 
+_MICROSECONDS_PER_SECOND = 1e6
+
 
 class BenchSample(FrozenModel):
     """Timing of one callable.
@@ -57,7 +59,7 @@ def benchmark[T, S](
         start = time.perf_counter()
         fn()
         barrier()
-        samples.append((time.perf_counter() - start) * 1e6)
+        samples.append((time.perf_counter() - start) * _MICROSECONDS_PER_SECOND)
     return BenchSample(label=label, samples=tuple(samples))
 
 

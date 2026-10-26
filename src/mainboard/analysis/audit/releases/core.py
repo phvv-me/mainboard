@@ -27,6 +27,8 @@ from .manifests import Manifests
 from .models import Declaration, Failure, Record, Release, Repository, Simple
 from .web import Web
 
+_RELEASE_RUNS_TABLE_EXISTS_SQL = "SELECT 1 FROM duckdb_tables() WHERE table_name = 'release_runs'"
+
 if TYPE_CHECKING:
     from ...engine.facts import Facts
 
@@ -222,9 +224,7 @@ class ReleaseEvidence(FrozenModel):
 
     def register(self, facts: Facts) -> None:
         """Create the three tables in `facts`, once."""
-        if facts.db.execute(
-            "SELECT 1 FROM duckdb_tables() WHERE table_name = 'release_runs'"
-        ).fetchone():
+        if facts.db.execute(_RELEASE_RUNS_TABLE_EXISTS_SQL).fetchone():
             return
         facts.db.execute(_TABLES)
         try:

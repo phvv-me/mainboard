@@ -27,6 +27,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ...core.project import Project
 from ...log import logger
 from ..engine.facts import Budget, Facts
 from ..providers.ducks import Ducks
@@ -191,7 +192,7 @@ class Consumers:
     def _excluded(top: Path) -> list[str]:
         """The workspace's `[lint].exclude` patterns, which no consumer file may sit under."""
         try:
-            return list(tomllib.loads((top / "mainboard.toml").read_text())["lint"]["exclude"])
+            return list(tomllib.loads(Project().manifest(top).read_text())["lint"]["exclude"])
         except FileNotFoundError, KeyError:
             return []
 

@@ -15,6 +15,33 @@ from ....core.errors import MissionError
 from ....git.process import Git
 from ..workspace import Workspace
 
+_FILE_LINKS_SQL = """
+            CREATE OR REPLACE TABLE file_links AS
+            SELECT DISTINCT e.importer AS src, e.imported AS dst FROM design_edges() e
+            JOIN scope_files a ON a.path = e.importer JOIN scope_files b ON b.path = e.imported
+            """
+_FILE_NODES_SQL = "CREATE OR REPLACE TABLE file_nodes AS SELECT path AS node FROM scope_files"
+_UNIT_EDGES_SQL = """
+            CREATE OR REPLACE TABLE unit_edges AS
+            SELECT a.unit AS src, b.unit AS dst, count(*) AS count
+            FROM file_links l
+            JOIN scope_files a ON a.path = l.src JOIN scope_files b ON b.path = l.dst
+            GROUP BY a.unit, b.unit
+            """
+_UNIT_LINKS_SQL = (
+    "CREATE OR REPLACE TABLE unit_links AS SELECT src, dst FROM unit_edges WHERE src <> dst"
+)
+_UNIT_NODES_SQL = (
+    "CREATE OR REPLACE TABLE unit_nodes AS SELECT DISTINCT unit AS node FROM scope_files"
+)
+_UNIT_SUMMARY_SQL = """
+            SELECT unit AS name, count(*) AS files,
+                   coalesce((SELECT count FROM unit_edges e
+                             WHERE e.src = unit AND e.dst = unit), 0) AS internal
+            FROM scope_files GROUP BY unit
+            """
+_UNIT_EDGE_ROWS_SQL = "SELECT src, dst, count FROM unit_edges ORDER BY src, dst"
+
 _UNIT = r"regexp_replace(split_part(substr(path, $skip), '/', 1), '\.py$', '')"
 
 _COMPONENTS = """
@@ -124,53 +151,27 @@ class UnitGraph:
 
     def _materialize(self) -> None:
         """Create the scope's files, file dependencies and unit dependencies as tables."""
-        db = self.workspace.db
+        connection = self.workspace.connection
         self.workspace.install("SELECT 1 FROM design_edges()")
-        db.execute(
+        connection.execute(
             f"""
             CREATE OR REPLACE TABLE scope_files AS
             SELECT path, {_UNIT} AS unit FROM module_files() WHERE starts_with(path, $prefix)
             """,
             self.scope.parameters,
         )
-        db.execute(
-            """
-            CREATE OR REPLACE TABLE file_links AS
-            SELECT DISTINCT e.importer AS src, e.imported AS dst FROM design_edges() e
-            JOIN scope_files a ON a.path = e.importer JOIN scope_files b ON b.path = e.imported
-            """
-        )
-        db.execute("CREATE OR REPLACE TABLE file_nodes AS SELECT path AS node FROM scope_files")
-        db.execute(
-            """
-            CREATE OR REPLACE TABLE unit_edges AS
-            SELECT a.unit AS src, b.unit AS dst, count(*) AS count
-            FROM file_links l
-            JOIN scope_files a ON a.path = l.src JOIN scope_files b ON b.path = l.dst
-            GROUP BY a.unit, b.unit
-            """
-        )
-        db.execute(
-            "CREATE OR REPLACE TABLE unit_links AS "
-            "SELECT src, dst FROM unit_edges WHERE src <> dst"
-        )
-        db.execute(
-            "CREATE OR REPLACE TABLE unit_nodes AS SELECT DISTINCT unit AS node FROM scope_files"
-        )
+        connection.execute(_FILE_LINKS_SQL)
+        connection.execute(_FILE_NODES_SQL)
+        connection.execute(_UNIT_EDGES_SQL)
+        connection.execute(_UNIT_LINKS_SQL)
+        connection.execute(_UNIT_NODES_SQL)
 
     def fields(self) -> dict:
         """The `Graph` fields of the scope."""
-        units = self.workspace.rows(
-            """
-            SELECT unit AS name, count(*) AS files,
-                   coalesce((SELECT count FROM unit_edges e
-                             WHERE e.src = unit AND e.dst = unit), 0) AS internal
-            FROM scope_files GROUP BY unit
-            """
-        )
+        units = self.workspace.rows(_UNIT_SUMMARY_SQL)
         units_by = self._components("unit_nodes", edges="unit_links")
         files_by = self._components("file_nodes", edges="file_links")
-        links = self.workspace.rows("SELECT src, dst, count FROM unit_edges ORDER BY src, dst")
+        links = self.workspace.rows(_UNIT_EDGE_ROWS_SQL)
         return {
             "scope": self.scope.prefix or ".",
             "units": [

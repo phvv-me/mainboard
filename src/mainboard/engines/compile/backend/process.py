@@ -1,15 +1,16 @@
 import codecs
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from io import BufferedReader
 from subprocess import PIPE
-from typing import TYPE_CHECKING, TextIO, cast
+from typing import TYPE_CHECKING, TextIO
 
 from ....core import MissionError
 from .result import CommandResult
 
-if TYPE_CHECKING:
-    from io import BufferedReader
+_STREAM_READ_CHUNK_BYTES = 4096
 
+if TYPE_CHECKING:
     from plumbum.commands.base import BaseCommand
 
 
@@ -34,9 +35,12 @@ class Process:
     def stream(cls, command: BaseCommand) -> CommandResult:
         """Run `command` while teeing and retaining both output streams."""
         process = command.popen(stdin=None, stdout=PIPE, stderr=PIPE)
-        # `PIPE` on both streams guarantees Popen hands back real pipes, never `None`.
-        stdout_pipe = cast("BufferedReader", process.stdout)
-        stderr_pipe = cast("BufferedReader", process.stderr)
+        stdout_pipe, stderr_pipe = process.stdout, process.stderr
+        # `PIPE` on both streams guarantees Popen hands back real binary pipes, never `None`.
+        if not (
+            isinstance(stdout_pipe, BufferedReader) and isinstance(stderr_pipe, BufferedReader)
+        ):
+            raise RuntimeError("Popen did not return binary pipes for a child's output streams")
         encoding = sys.getfilesystemencoding()
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="mainboard-compile") as pool:
             stdout = pool.submit(cls.relay, stdout_pipe, sys.stdout, encoding)
@@ -88,7 +92,7 @@ class Process:
         """
         decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
         chunks: list[str] = []
-        while chunk := stream.read1(4096):
+        while chunk := stream.read1(_STREAM_READ_CHUNK_BYTES):
             text = decoder.decode(chunk)
             chunks.append(text)
             Process._display(destination, text)

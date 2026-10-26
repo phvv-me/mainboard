@@ -12,8 +12,68 @@ from ..dispatch.jobs import vocabulary
 from ..observe.files import FrameFile
 from .constants import ALIAS
 from .evidence import EvidenceTree
-from .lake import Lake, ndjson
+from .lake import Lake
 from .storage.parsed import names
+from .storage.records import ndjson
+
+_EMITTED_ARTIFACTS_VIEW_SQL = """
+            CREATE VIEW emitted_artifacts AS SELECT DISTINCT e.project, e.stream,
+                e.root AS root,
+                json_merge_patch(s.data, json_object('verdict',
+                    coalesce(t.verdict, v.data->>'verdict'))) AS context,
+                e.data->>'name' AS name,
+                json_merge_patch(e.data, '{"name":null}') AS reference
+            FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
+            LEFT JOIN events v ON v.stream = s.stream AND v.project = s.project
+                AND v.topic = 'settled'
+            LEFT JOIN trials t ON t.project = s.project AND t.run = (s.data->>'run')
+                AND t.trial = s.trial
+            WHERE e.topic = 'artifact' AND s.topic = 'started';
+        """
+_RECEIPT_CONTEXTS_TABLE_SQL = """
+            CREATE TABLE receipt_contexts AS SELECT project, run, trial,
+                json_merge_patch(to_json(t), json_object('params', t.params::JSON)) AS context
+            FROM (SELECT * EXCLUDE (artifacts) FROM trials) t;
+            CREATE TABLE receipt_maps AS SELECT project, run, trial,
+                regexp_extract(artifacts::JSON->>'events',
+                    'artifacts/([^/]+/[^/]+)/events$', 1) AS stream,
+                json_transform(artifacts::JSON, '"MAP(VARCHAR, JSON)"') AS listed
+            FROM trials;
+            CREATE TABLE receipt_entries AS SELECT project, run, trial, stream,
+                unnest(map_entries(listed)) AS entry
+            FROM receipt_maps;
+            DROP TABLE receipt_maps;
+        """
+_RECEIPT_ARTIFACTS_TABLE_SQL = """
+            CREATE TABLE receipt_artifacts AS SELECT DISTINCT
+                r.project, r.stream, p.row->>'root' AS root, c.context AS context,
+                r.entry.key AS name, r.entry.value AS reference
+            FROM receipt_entries r JOIN receipt_contexts c USING (project, run, trial),
+                unnest(?::JSON[]) AS p(row)
+            WHERE r.project = (p.row->>'project')
+                AND json_type(r.entry.value) = 'OBJECT'
+                AND (r.entry.value->>'media_type') IS NOT NULL
+                AND (r.entry.value->>'path') IS NOT NULL;
+            """
+_ARTIFACTS_VIEW_SQL = """
+            CREATE VIEW artifacts AS SELECT * FROM emitted_artifacts
+            UNION ALL SELECT r.* FROM receipt_artifacts r
+            WHERE NOT EXISTS (
+                SELECT 1 FROM emitted_artifacts e WHERE e.project = r.project
+                    AND e.stream = r.stream AND e.name = r.name
+                    AND (e.reference->>'path') = (r.reference->>'path')
+            );
+        """
+_RECEIPT_SCHEMA_TABLE_SQL = (
+    "CREATE TABLE _receipt_schema(project VARCHAR, run VARCHAR, trial VARCHAR, "
+    "verdict VARCHAR, artifacts JSON, host VARCHAR, card_name VARCHAR, commit VARCHAR, "
+    "params VARCHAR)"
+)
+_TRIALS_PARQUET_SELECT_SQL = (
+    "SELECT ?::VARCHAR AS project, * FROM read_parquet(?, "
+    "union_by_name=true, hive_partitioning=false)"
+)
+_TRIALS_TABLE_SQL = "CREATE TABLE trials AS SELECT DISTINCT * FROM ("
 
 # What each view reads besides itself.
 _DEPENDENCIES: dict[str, set[str]] = {
@@ -47,20 +107,7 @@ class Views:
 
     @staticmethod
     def _artifacts(connection: duckdb.DuckDBPyConnection, roots: Iterable[Path]) -> None:
-        connection.execute("""
-            CREATE VIEW emitted_artifacts AS SELECT DISTINCT e.project, e.stream,
-                e.root AS root,
-                json_merge_patch(s.data, json_object('verdict',
-                    coalesce(t.verdict, v.data->>'verdict'))) AS context,
-                e.data->>'name' AS name,
-                json_merge_patch(e.data, '{"name":null}') AS reference
-            FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
-            LEFT JOIN events v ON v.stream = s.stream AND v.project = s.project
-                AND v.topic = 'settled'
-            LEFT JOIN trials t ON t.project = s.project AND t.run = (s.data->>'run')
-                AND t.trial = s.trial
-            WHERE e.topic = 'artifact' AND s.topic = 'started';
-        """)
+        connection.execute(_EMITTED_ARTIFACTS_VIEW_SQL)
         # Final receipts own artifact references even when a live event stream was interrupted.
         # Preserve surviving events verbatim; this fallback does not invent their lost times.
         # An artifact's provenance does not contain its siblings' references. Replicating the
@@ -70,32 +117,9 @@ class Views:
         # from, and parsing a receipt's artifacts in the statement that expands them did the
         # same, so cutok's 230,000 references (a receipt holds up to 1.5 MB of them) ran a
         # 24 GB machine out of memory; parsed once into a map, then expanded, they take 0.9 GiB.
-        connection.execute("""
-            CREATE TABLE receipt_contexts AS SELECT project, run, trial,
-                json_merge_patch(to_json(t), json_object('params', t.params::JSON)) AS context
-            FROM (SELECT * EXCLUDE (artifacts) FROM trials) t;
-            CREATE TABLE receipt_maps AS SELECT project, run, trial,
-                regexp_extract(artifacts::JSON->>'events',
-                    'artifacts/([^/]+/[^/]+)/events$', 1) AS stream,
-                json_transform(artifacts::JSON, '"MAP(VARCHAR, JSON)"') AS listed
-            FROM trials;
-            CREATE TABLE receipt_entries AS SELECT project, run, trial, stream,
-                unnest(map_entries(listed)) AS entry
-            FROM receipt_maps;
-            DROP TABLE receipt_maps;
-        """)
+        connection.execute(_RECEIPT_CONTEXTS_TABLE_SQL)
         connection.execute(
-            """
-            CREATE TABLE receipt_artifacts AS SELECT DISTINCT
-                r.project, r.stream, p.row->>'root' AS root, c.context AS context,
-                r.entry.key AS name, r.entry.value AS reference
-            FROM receipt_entries r JOIN receipt_contexts c USING (project, run, trial),
-                unnest(?::JSON[]) AS p(row)
-            WHERE r.project = (p.row->>'project')
-                AND json_type(r.entry.value) = 'OBJECT'
-                AND (r.entry.value->>'media_type') IS NOT NULL
-                AND (r.entry.value->>'path') IS NOT NULL;
-            """,
+            _RECEIPT_ARTIFACTS_TABLE_SQL,
             [
                 [
                     json.dumps({"project": root.parents[1].name, "root": str(root.parents[1])})
@@ -104,15 +128,7 @@ class Views:
             ],
         )
         connection.execute("DROP TABLE receipt_entries")
-        connection.execute("""
-            CREATE VIEW artifacts AS SELECT * FROM emitted_artifacts
-            UNION ALL SELECT r.* FROM receipt_artifacts r
-            WHERE NOT EXISTS (
-                SELECT 1 FROM emitted_artifacts e WHERE e.project = r.project
-                    AND e.stream = r.stream AND e.name = r.name
-                    AND (e.reference->>'path') = (r.reference->>'path')
-            );
-        """)
+        connection.execute(_ARTIFACTS_VIEW_SQL)
 
     @staticmethod
     def _needed(sql: str) -> set[str]:
@@ -201,11 +217,7 @@ class Views:
         # never match; a later query sees newly published immutable fragments automatically.
         # Read in once as a table: every view below reads it again, and a lazy DISTINCT over
         # cutok's 3,625 fragments feeding an expansion took 19 GiB where the table takes 0.14.
-        connection.execute(
-            "CREATE TABLE _receipt_schema(project VARCHAR, run VARCHAR, trial VARCHAR, "
-            "verdict VARCHAR, artifacts JSON, host VARCHAR, card_name VARCHAR, commit VARCHAR, "
-            "params VARCHAR)"
-        )
+        connection.execute(_RECEIPT_SCHEMA_TABLE_SQL)
         inventories = ["SELECT * FROM _receipt_schema"]
         for root in roots:
             parts = [
@@ -217,16 +229,11 @@ class Views:
             if parts:
                 name = f"_trials_{len(inventories)}"
                 connection.sql(
-                    "SELECT ?::VARCHAR AS project, * FROM read_parquet(?, "
-                    "union_by_name=true, hive_partitioning=false)",
+                    _TRIALS_PARQUET_SELECT_SQL,
                     params=[root.parents[1].name, parts],
                 ).create_view(name)
                 inventories.append(f"SELECT * FROM {name}")
-        connection.execute(
-            "CREATE TABLE trials AS SELECT DISTINCT * FROM ("
-            + " UNION ALL BY NAME ".join(inventories)
-            + ")"
-        )
+        connection.execute(_TRIALS_TABLE_SQL + " UNION ALL BY NAME ".join(inventories) + ")")
 
     def load(self, connection: duckdb.DuckDBPyConnection, project: str, *, sql: str) -> None:
         """Load only the collected sources the statement depends on."""

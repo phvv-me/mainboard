@@ -72,87 +72,87 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_a_card_reads_the_same_however_it_is_spelled",
+      "nodeid": "integration/scenarios/test_clouds.py::test_a_card_reads_the_same_however_it_is_spelled",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
+      "nodeid": "integration/scenarios/test_clouds.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
+      "nodeid": "integration/scenarios/test_clouds.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
+      "nodeid": "integration/scenarios/test_clouds.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
+      "nodeid": "integration/scenarios/test_clouds.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_lambda_registers_the_key_once_then_launches_with_it",
+      "nodeid": "integration/scenarios/test_clouds.py::test_lambda_registers_the_key_once_then_launches_with_it",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
+      "nodeid": "integration/scenarios/test_clouds.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_lambda_insufficient_capacity_is_a_retry",
+      "nodeid": "integration/scenarios/test_clouds.py::test_lambda_insufficient_capacity_is_a_retry",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_one_catalog_failing_leaves_every_other_clouds_offers",
+      "nodeid": "integration/scenarios/test_clouds.py::test_one_catalog_failing_leaves_every_other_clouds_offers",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_an_architecture_matches_the_capability_its_kernels_load_on",
+      "nodeid": "integration/scenarios/test_clouds.py::test_an_architecture_matches_the_capability_its_kernels_load_on",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_vast_asks_its_own_capability_field_for_an_architecture",
+      "nodeid": "integration/scenarios/test_clouds.py::test_vast_asks_its_own_capability_field_for_an_architecture",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture",
+      "nodeid": "integration/scenarios/test_clouds.py::test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
+      "nodeid": "integration/scenarios/test_clouds.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_hpcai_gives_up_on_an_image_that_will_not_pull",
+      "nodeid": "integration/scenarios/test_clouds.py::test_hpcai_gives_up_on_an_image_that_will_not_pull",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_a_rate_limited_vast_create_waits_and_asks_again",
+      "nodeid": "integration/scenarios/test_clouds.py::test_a_rate_limited_vast_create_waits_and_asks_again",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_reliability_charges_the_machine_not_the_job",
+      "nodeid": "integration/scenarios/test_clouds.py::test_reliability_charges_the_machine_not_the_job",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/test_clouds.py::test_a_path_under_another_root_is_listed_once",
+      "nodeid": "integration/scenarios/test_clouds.py::test_a_path_under_another_root_is_listed_once",
       "classification": "passed",
       "reason": ""
     },
@@ -227,7 +227,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_commands.py::test_relation_queries_execute_once",
+      "nodeid": "integration/cli/test_commands.py::test_relation_queries_execute_exactly_once",
       "classification": "passed",
       "reason": ""
     },
@@ -322,7 +322,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/test_consumers.py::test_every_imported_name_exists",
+      "nodeid": "integration/scenarios/test_consumers.py::test_every_imported_name_exists_in_its_module",
       "classification": "skipped",
       "reason": "not inside the monorepo"
     },
@@ -417,387 +417,387 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/lake/test_duckdb_settings.py::test_instants_read_in_utc_unless_a_setting_says_otherwise",
+      "nodeid": "integration/state/lake/test_duckdb_settings.py::test_every_connection_takes_the_settings_with_the_environment_winning[instants-read-in-utc-by-default]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/lake/test_duckdb_settings.py::test_the_environment_overrides_a_setting",
+      "nodeid": "integration/state/lake/test_duckdb_settings.py::test_every_connection_takes_the_settings_with_the_environment_winning[the-environment-overrides-a-setting]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/lake/test_duckdb_settings.py::test_a_setting_name_that_is_not_a_plain_name_is_refused",
+      "nodeid": "integration/state/lake/test_duckdb_settings.py::test_a_setting_name_that_is_not_a_plain_name_is_refused",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/lake/test_duckdb_settings.py::test_the_latest_record_of_a_log_without_drops_is_kept",
+      "nodeid": "integration/state/lake/test_duckdb_settings.py::test_the_latest_record_of_a_log_without_drops_is_kept",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/lake/test_duckdb_settings.py::test_the_lake_lives_where_the_workspace_says",
+      "nodeid": "integration/state/lake/test_duckdb_settings.py::test_the_lake_lives_where_the_workspace_says",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/lake/test_duckdb_settings.py::test_only_an_undeclared_host_reads_the_holds",
+      "nodeid": "integration/state/lake/test_duckdb_settings.py::test_only_an_undeclared_host_reads_the_holds",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[add]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[add]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[agents]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[agents check]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents check]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[agents sync]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents sync]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[agents update]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents update]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[attest]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[attest]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[ci]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[ci]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[completion]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[completion]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[doctor]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[doctor]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[execute]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[execute]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[git]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[git check]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git check]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[git commit]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git commit]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[git pull]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git pull]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[git push]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git push]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[git status]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git status]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[help]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[help]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host hold]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host hold]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host list]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host list]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host offers]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host offers]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host release]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host release]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host serve]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host serve]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host setup]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host setup]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host sync]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host sync]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[host upgrade]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host upgrade]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[install]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[install]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[job]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[job cancel]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job cancel]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[job collect]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job collect]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[job list]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job list]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[job logs]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job logs]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[job monitor]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job monitor]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[job show]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job show]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[job submit]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job submit]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake check]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake check]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake compact]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake compact]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake dedup]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake dedup]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake evict]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake evict]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake ingest]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake ingest]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake materialize]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake materialize]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake replicate]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake replicate]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake serve]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake serve]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lake upgrade]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake upgrade]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lint]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lint]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[list]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[list]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[lock]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lock]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[new]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[new]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[pack]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[pack]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[paper]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[paper build]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper build]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[paper plot]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper plot]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[plot]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[plot]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[proc]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[proc kill]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc kill]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[proc list]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc list]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[proc timeout]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc timeout]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[proc wait]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc wait]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[provide]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[provide]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[query]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[query]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[remove]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[remove]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[run]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[run]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[sample]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[sample]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[self]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[self update]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self update]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[self version]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self version]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[shell]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[shell]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[tree]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[tree]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[update]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[update]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_help[upgrade]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[upgrade]",
       "classification": "passed",
       "reason": ""
     },
@@ -1162,147 +1162,112 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_ingest_materialize_and_check_round_trip",
+      "nodeid": "integration/state/evidence/delivery/test_lake_verbs.py::test_evidence_survives_a_round_trip_through_the_lake_verbs[absolute]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_every_lake_verb_takes_paths_relative_to_where_it_runs",
+      "nodeid": "integration/state/evidence/delivery/test_lake_verbs.py::test_evidence_survives_a_round_trip_through_the_lake_verbs[relative]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_a_lake_verb_refuses_a_path_outside_the_workspace",
+      "nodeid": "integration/state/evidence/delivery/test_lake_verbs.py::test_a_lake_verb_refuses_a_path_outside_the_workspace[dedup]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_evict_deletes_only_what_the_lake_keeps_intact",
+      "nodeid": "integration/state/evidence/custody/test_custody.py::test_evict_deletes_only_what_the_lake_keeps_intact",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_collection_keeps_transfers_in_the_lake_never_the_tree",
+      "nodeid": "integration/state/evidence/delivery/test_collection.py::test_collection_keeps_transfers_in_the_lake_never_the_tree",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_a_host_sends_only_what_the_lake_lacks",
+      "nodeid": "integration/state/evidence/delivery/test_collection.py::test_a_host_sends_only_what_the_lake_lacks",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_a_pass_collects_each_folder_once",
+      "nodeid": "integration/state/evidence/delivery/test_settlement.py::test_a_pass_collects_each_folder_once",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_dedup_links_settled_duplicates_to_one_copy",
+      "nodeid": "integration/state/evidence/delivery/test_lake_verbs.py::test_dedup_links_settled_duplicates_to_one_copy",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_artifacts_are_held_once_per_node",
+      "nodeid": "integration/state/evidence/delivery/test_artifacts.py::test_artifacts_are_held_once_per_node_and_a_damaged_copy_is_replaced",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_a_closed_run_moves_into_the_center_lake[True]",
+      "nodeid": "integration/state/evidence/custody/test_closed_runs.py::test_a_closed_run_moves_into_the_center_lake[center]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_a_closed_run_moves_into_the_center_lake[False]",
+      "nodeid": "integration/state/evidence/delivery/test_artifacts.py::test_settling_verifies_what_only_the_lake_holds",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_settling_verifies_what_only_the_lake_holds",
+      "nodeid": "integration/state/evidence/delivery/test_artifacts.py::test_receipts_and_the_artifacts_they_pin_read_back_once_the_tree_lost_them",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_readers_find_evidence_that_left_the_tree",
+      "nodeid": "integration/state/evidence/store/test_blobs.py::test_an_object_is_kept_in_ordered_chunks_with_a_checksum_each",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_a_large_object_is_kept_in_ordered_chunks",
+      "nodeid": "integration/state/evidence/store/test_blobs.py::test_membership_answers_the_requested_digests_the_lake_holds",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_a_blob_from_before_chunking_still_reads",
+      "nodeid": "integration/state/evidence/store/test_ingest.py::test_ingest_deduplicates_within_and_across_windows",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_blob_membership_is_limited_to_requested_digests",
+      "nodeid": "integration/state/evidence/custody/test_custody.py::test_verify_checks_chunks_kept_before_checksums_by_digest_and_records_none[intact]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_blob_membership_handles_large_requested_sets",
+      "nodeid": "integration/state/evidence/custody/test_custody.py::test_a_damaged_object_is_judged_alike_by_every_reader_and_only_ingest_repairs_it[a-chunk-at-a-time-a-cell-lost]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_ingest_deduplicates_within_and_across_windows",
+      "nodeid": "integration/state/evidence/delivery/test_lake_verbs.py::test_check_finds_a_data_file_damaged_on_disk",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_ingest_records_each_chunks_checksum",
+      "nodeid": "integration/state/evidence/store/test_ingest.py::test_a_group_of_small_files_lands_in_one_data_file",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_check_leaves_the_checksums_of_chunks_kept_before_them_unrecorded",
+      "nodeid": "integration/state/evidence/store/test_restore.py::test_source_archives_restore_through_the_same_blobs",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_check_finds_a_chunk_whose_bytes_changed",
+      "nodeid": "integration/state/evidence/store/test_replica.py::test_a_replica_holds_each_object_once_whatever_the_window_that_reads_it",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/evidence/test_core.py::test_check_finds_a_chunk_gone_missing",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/evidence/test_core.py::test_check_finds_a_data_file_damaged_on_disk",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/evidence/test_core.py::test_a_group_of_small_files_lands_in_one_data_file",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/evidence/test_core.py::test_source_archives_restore_through_the_same_blobs",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/evidence/test_core.py::test_a_directory_replica_keeps_each_object_once_and_the_index",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/evidence/test_core.py::test_a_replica_reads_objects_in_windows_and_a_larger_one_alone",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/evidence/test_core.py::test_ingest_refuses_what_lies_outside_the_workspace",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/evidence/test_core.py::test_the_lake_records_when_evidence_landed",
+      "nodeid": "integration/state/evidence/delivery/test_lake_verbs.py::test_a_lake_verb_refuses_a_path_outside_the_workspace[ingest]",
       "classification": "passed",
       "reason": ""
     },
@@ -1332,87 +1297,87 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_status_survives_an_unreadable_checkout_and_names_it",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_status_survives_an_unreadable_checkout_and_names_it",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_check_survives_an_unreadable_checkout_and_names_it",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_check_survives_an_unreadable_checkout_and_names_it",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one[true]",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one[true]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one[false]",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one[false]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[mine.txt-commit]",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[mine.txt-commit]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[mine.txt-pull]",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[mine.txt-pull]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[shared.txt-commit]",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[shared.txt-commit]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[shared.txt-pull]",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[shared.txt-pull]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_withholds_a_nested_repository_gitmodules_does_not_declare",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_withholds_a_nested_repository_gitmodules_does_not_declare",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_takes_only_the_named_paths_and_leaves_the_index_alone",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_takes_only_the_named_paths_and_leaves_the_index_alone",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_takes_a_directory_already_removed_with_git_rm",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_takes_a_directory_already_removed_with_git_rm",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_takes_a_named_file_that_replaced_a_link_and_refuses_a_flattened_one",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_takes_a_named_file_that_replaced_a_link_and_refuses_a_flattened_one",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_without_paths_commits_the_index_and_refuses_an_empty_one",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_without_paths_commits_the_index_and_refuses_an_empty_one",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_refuses_an_empty_message_before_staging_anything",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_refuses_an_empty_message_before_staging_anything",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_refuses_a_named_never_commit_path",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_refuses_a_named_never_commit_path",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_records_the_pointer_of_a_submodule_that_committed",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_records_the_pointer_of_a_submodule_that_committed",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_git_tree.py::test_commit_without_paths_takes_the_parents_index_with_the_pointer",
+      "nodeid": "integration/verbs/workspace/test_git_tree.py::test_commit_without_paths_takes_the_parents_index_with_the_pointer",
       "classification": "passed",
       "reason": ""
     },
@@ -1537,17 +1502,17 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/lake/test_core.py::test_a_fresh_lake_is_whole_and_compacts",
+      "nodeid": "integration/state/lake/test_core.py::test_a_fresh_lake_is_whole_and_compacts",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/lake/test_core.py::test_a_second_workspace_reads_and_writes_the_served_lake",
+      "nodeid": "integration/state/lake/test_core.py::test_a_second_workspace_reads_and_writes_the_served_lake",
       "classification": "environment_restriction",
       "reason": "Restricted macOS process enumeration/cleanup; required isolated Linux lane M06/M22"
     },
     {
-      "nodeid": "integration/lake/test_core.py::test_a_served_lake_refuses_maintenance_and_strangers",
+      "nodeid": "integration/state/lake/test_core.py::test_a_served_lake_refuses_maintenance_and_strangers",
       "classification": "environment_restriction",
       "reason": "Restricted macOS process enumeration/cleanup; required isolated Linux lane M06/M22"
     },
@@ -1572,37 +1537,22 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_local_wheel.py::test_local_files_are_shipped_without_becoming_editable_roots",
+      "nodeid": "integration/engines/environments/compile/test_local_wheel.py::test_local_files_are_shipped_without_becoming_editable_roots",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_local_wheel.py::test_sources_in_features_and_targets_are_deduplicated",
+      "nodeid": "integration/engines/environments/compile/test_local_wheel.py::test_workspace_sources_are_listed_once_across_every_table_and_only_editable_ones_install",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_lock_policy.py::test_locked_and_frozen_exclude_each_other",
+      "nodeid": "integration/engines/environments/test_lock_policy.py::test_locked_and_frozen_exclude_each_other[locked-and-as-is]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_lock_policy.py::test_raising_a_table_requirement_keeps_its_other_fields",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/environments/test_lock_policy.py::test_a_raised_requirement_keeps_its_comment_column[>=2.5.12-33]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/environments/test_lock_policy.py::test_a_raised_requirement_keeps_its_comment_column[>=2.4.6,<2.5,!=2.4.9-33]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/environments/test_lock_policy.py::test_a_raised_requirement_keeps_its_comment_column[>=2.4.6,<2.5,!=2.4.9,!=2.4.10-41]",
+      "nodeid": "integration/engines/environments/requirements/test_manifest_text.py::test_raising_a_requirement_changes_its_version_and_nothing_else_of_the_manifest",
       "classification": "passed",
       "reason": ""
     },
@@ -1627,117 +1577,117 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/workspace/test_login_guard.py::test_a_line_outgrowing_the_guard_is_stopped_whole",
+      "nodeid": "integration/verbs/workspace/test_login_guard.py::test_a_line_outgrowing_the_guard_is_stopped_whole",
       "classification": "skipped",
       "reason": "needs a shell with setsid"
     },
     {
-      "nodeid": "integration/workspace/test_login_guard.py::test_a_calm_line_keeps_its_own_status",
+      "nodeid": "integration/verbs/workspace/test_login_guard.py::test_a_calm_line_keeps_its_own_status",
       "classification": "skipped",
       "reason": "needs a shell with setsid"
     },
     {
-      "nodeid": "integration/workspace/test_login_guard.py::test_no_limit_leaves_the_line_alone",
+      "nodeid": "integration/verbs/workspace/test_login_guard.py::test_no_limit_leaves_the_line_alone",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_the_workspace_environment_runs_first[sh]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-sh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_the_workspace_environment_runs_first[bash]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-bash]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_the_workspace_environment_runs_first[zsh]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-zsh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_uv_managed_cpython_runs_before_the_environment_exists[sh]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-sh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_uv_managed_cpython_runs_before_the_environment_exists[bash]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-bash]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_uv_managed_cpython_runs_before_the_environment_exists[zsh]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-zsh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_a_host_with_neither_is_refused_by_name",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-sh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python[a-bare-path-is-refused-by-name]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_the_agent_answers_through_the_launcher[sh]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[sh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_the_agent_answers_through_the_launcher[bash]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[bash]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_the_agent_answers_through_the_launcher[zsh]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[zsh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_dispatch_starts_every_remote_python_through_the_launcher",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[a-fetch-from-a-declared-host]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_onboarding_puts_uv_and_its_cpython_there_first_or_refuses",
+      "nodeid": "integration/engines/environments/managed_python/test_bootstrap.py::test_onboarding_puts_uv_and_its_cpython_there_first_or_refuses[a-host-with-neither-is-refused-before-it-runs-anything]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_the_tool_installs_through_uv_alone[vendored]",
+      "nodeid": "integration/engines/environments/managed_python/test_bootstrap.py::test_the_tool_installs_through_uv_alone[vendored]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_the_tool_installs_through_uv_alone[indexed]",
+      "nodeid": "integration/engines/environments/managed_python/test_bootstrap.py::test_the_tool_installs_through_uv_alone[indexed]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_a_host_names_no_interpreter_of_its_own",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_host_names_no_interpreter_of_its_own",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[dispatch]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[dispatch]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[manifest]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[manifest]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[center]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[center]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[engines]",
+      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[engines]",
       "classification": "passed",
       "reason": ""
     },
@@ -1897,7 +1847,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_remote.py::test_the_fleet_is_listed",
+      "nodeid": "integration/dispatch/test_remote.py::test_the_fleet_is_listed_without_error",
       "classification": "skipped",
       "reason": "set MB_REMOTE_WORKSPACE to reach the real fleet"
     },
@@ -1972,27 +1922,27 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/environments/test_lock_policy.py::test_install_solves_a_stale_lock_and_locked_refuses_it",
+      "nodeid": "integration/engines/environments/test_lock_policy.py::test_install_solves_a_stale_lock_and_locked_refuses_it",
       "reason": "Installs and solves environments",
       "classification": "excluded"
     },
     {
-      "nodeid": "integration/environments/test_lock_policy.py::test_as_is_runs_what_is_installed_without_solving",
+      "nodeid": "integration/engines/environments/test_lock_policy.py::test_as_is_runs_what_is_installed_without_solving",
       "reason": "Installs an environment before testing --as-is",
       "classification": "excluded"
     },
     {
-      "nodeid": "integration/environments/test_lock_policy.py::test_a_failed_solve_leaves_the_manifest_and_lock_as_they_were",
+      "nodeid": "integration/engines/environments/test_lock_policy.py::test_a_failed_solve_leaves_the_manifest_and_lock_as_they_were",
       "reason": "Installs and solves environments",
       "classification": "excluded"
     },
     {
-      "nodeid": "integration/environments/test_lock_policy.py::test_upgrade_leaves_a_member_named_by_version",
+      "nodeid": "integration/engines/environments/test_lock_policy.py::test_upgrade_leaves_a_member_named_by_version",
       "reason": "Calls dependency upgrade/solver",
       "classification": "excluded"
     },
     {
-      "nodeid": "integration/test_clouds.py::test_offers_list_every_cloud_and_mark_what_mb_rents",
+      "nodeid": "integration/scenarios/test_clouds.py::test_offers_list_every_cloud_and_mark_what_mb_rents",
       "reason": "Live external offer-catalog request",
       "classification": "excluded"
     }
@@ -2084,6 +2034,195 @@
         "integration/test_snapshot_retention.py": "integration/workspace/test_snapshot_retention.py",
         "integration/reverse/test_models.py": "integration/reverse/evidence/test_models.py",
         "integration/reverse/test_store.py": "integration/reverse/evidence/test_store.py"
+      }
+    },
+    {
+      "date": "2026-10-26",
+      "reason": "Test rework (milestone M1): ALL-TEST0004 moved test folders to the package they cover, and the apple, lake, evidence and environments tests were merged into parametrized tests and Hypothesis properties. Each old id below is replaced by the id that took its place; the per-area ledgers (TESTS-<area>.md) hold the full old-to-new map and the before/after coverage showed no line or branch lost.",
+      "moves": {
+        "integration/test_clouds.py::test_a_card_reads_the_same_however_it_is_spelled": "integration/scenarios/test_clouds.py::test_a_card_reads_the_same_however_it_is_spelled",
+        "integration/test_clouds.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key": "integration/scenarios/test_clouds.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
+        "integration/test_clouds.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port": "integration/scenarios/test_clouds.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
+        "integration/test_clouds.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure": "integration/scenarios/test_clouds.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
+        "integration/test_clouds.py::test_a_gone_pod_reads_as_gone_and_ends_quietly": "integration/scenarios/test_clouds.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
+        "integration/test_clouds.py::test_lambda_registers_the_key_once_then_launches_with_it": "integration/scenarios/test_clouds.py::test_lambda_registers_the_key_once_then_launches_with_it",
+        "integration/test_clouds.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh": "integration/scenarios/test_clouds.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
+        "integration/test_clouds.py::test_lambda_insufficient_capacity_is_a_retry": "integration/scenarios/test_clouds.py::test_lambda_insufficient_capacity_is_a_retry",
+        "integration/test_clouds.py::test_one_catalog_failing_leaves_every_other_clouds_offers": "integration/scenarios/test_clouds.py::test_one_catalog_failing_leaves_every_other_clouds_offers",
+        "integration/test_clouds.py::test_an_architecture_matches_the_capability_its_kernels_load_on": "integration/scenarios/test_clouds.py::test_an_architecture_matches_the_capability_its_kernels_load_on",
+        "integration/test_clouds.py::test_vast_asks_its_own_capability_field_for_an_architecture": "integration/scenarios/test_clouds.py::test_vast_asks_its_own_capability_field_for_an_architecture",
+        "integration/test_clouds.py::test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture": "integration/scenarios/test_clouds.py::test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture",
+        "integration/test_clouds.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves": "integration/scenarios/test_clouds.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
+        "integration/test_clouds.py::test_hpcai_gives_up_on_an_image_that_will_not_pull": "integration/scenarios/test_clouds.py::test_hpcai_gives_up_on_an_image_that_will_not_pull",
+        "integration/test_clouds.py::test_a_rate_limited_vast_create_waits_and_asks_again": "integration/scenarios/test_clouds.py::test_a_rate_limited_vast_create_waits_and_asks_again",
+        "integration/test_clouds.py::test_reliability_charges_the_machine_not_the_job": "integration/scenarios/test_clouds.py::test_reliability_charges_the_machine_not_the_job",
+        "integration/test_clouds.py::test_a_path_under_another_root_is_listed_once": "integration/scenarios/test_clouds.py::test_a_path_under_another_root_is_listed_once",
+        "integration/cli/test_commands.py::test_relation_queries_execute_once": "integration/cli/test_commands.py::test_relation_queries_execute_exactly_once",
+        "integration/test_consumers.py::test_every_imported_name_exists": "integration/scenarios/test_consumers.py::test_every_imported_name_exists_in_its_module",
+        "integration/lake/test_duckdb_settings.py::test_a_setting_name_that_is_not_a_plain_name_is_refused": "integration/state/lake/test_duckdb_settings.py::test_a_setting_name_that_is_not_a_plain_name_is_refused",
+        "integration/lake/test_duckdb_settings.py::test_the_latest_record_of_a_log_without_drops_is_kept": "integration/state/lake/test_duckdb_settings.py::test_the_latest_record_of_a_log_without_drops_is_kept",
+        "integration/lake/test_duckdb_settings.py::test_the_lake_lives_where_the_workspace_says": "integration/state/lake/test_duckdb_settings.py::test_the_lake_lives_where_the_workspace_says",
+        "integration/lake/test_duckdb_settings.py::test_only_an_undeclared_host_reads_the_holds": "integration/state/lake/test_duckdb_settings.py::test_only_an_undeclared_host_reads_the_holds",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[add]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[add]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[agents]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[agents check]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents check]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[agents sync]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents sync]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[agents update]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents update]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[attest]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[attest]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[ci]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[ci]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[completion]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[completion]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[doctor]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[doctor]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[execute]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[execute]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[git]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[git check]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git check]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[git commit]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git commit]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[git pull]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git pull]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[git push]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git push]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[git status]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git status]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[help]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[help]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host hold]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host hold]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host list]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host list]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host offers]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host offers]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host release]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host release]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host serve]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host serve]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host setup]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host setup]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host sync]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host sync]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[host upgrade]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host upgrade]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[install]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[install]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[job]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[job cancel]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job cancel]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[job collect]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job collect]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[job list]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job list]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[job logs]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job logs]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[job monitor]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job monitor]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[job show]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job show]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[job submit]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job submit]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake check]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake check]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake compact]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake compact]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake dedup]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake dedup]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake evict]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake evict]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake ingest]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake ingest]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake materialize]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake materialize]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake replicate]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake replicate]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake serve]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake serve]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lake upgrade]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake upgrade]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lint]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lint]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[list]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[list]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[lock]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lock]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[new]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[new]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[pack]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[pack]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[paper]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[paper build]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper build]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[paper plot]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper plot]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[plot]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[plot]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[proc]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[proc kill]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc kill]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[proc list]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc list]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[proc timeout]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc timeout]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[proc wait]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[proc wait]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[provide]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[provide]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[query]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[query]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[remove]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[remove]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[run]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[run]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[sample]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[sample]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[self]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[self update]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self update]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[self version]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self version]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[shell]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[shell]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[tree]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[tree]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[update]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[update]",
+        "integration/cli/test_every_command.py::test_every_command_answers_help[upgrade]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[upgrade]",
+        "integration/workspace/test_git_tree.py::test_status_survives_an_unreadable_checkout_and_names_it": "integration/verbs/workspace/test_git_tree.py::test_status_survives_an_unreadable_checkout_and_names_it",
+        "integration/workspace/test_git_tree.py::test_check_survives_an_unreadable_checkout_and_names_it": "integration/verbs/workspace/test_git_tree.py::test_check_survives_an_unreadable_checkout_and_names_it",
+        "integration/workspace/test_git_tree.py::test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one[true]": "integration/verbs/workspace/test_git_tree.py::test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one[true]",
+        "integration/workspace/test_git_tree.py::test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one[false]": "integration/verbs/workspace/test_git_tree.py::test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one[false]",
+        "integration/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[mine.txt-commit]": "integration/verbs/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[mine.txt-commit]",
+        "integration/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[mine.txt-pull]": "integration/verbs/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[mine.txt-pull]",
+        "integration/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[shared.txt-commit]": "integration/verbs/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[shared.txt-commit]",
+        "integration/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[shared.txt-pull]": "integration/verbs/workspace/test_git_tree.py::test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict[shared.txt-pull]",
+        "integration/workspace/test_git_tree.py::test_commit_withholds_a_nested_repository_gitmodules_does_not_declare": "integration/verbs/workspace/test_git_tree.py::test_commit_withholds_a_nested_repository_gitmodules_does_not_declare",
+        "integration/workspace/test_git_tree.py::test_commit_takes_only_the_named_paths_and_leaves_the_index_alone": "integration/verbs/workspace/test_git_tree.py::test_commit_takes_only_the_named_paths_and_leaves_the_index_alone",
+        "integration/workspace/test_git_tree.py::test_commit_takes_a_directory_already_removed_with_git_rm": "integration/verbs/workspace/test_git_tree.py::test_commit_takes_a_directory_already_removed_with_git_rm",
+        "integration/workspace/test_git_tree.py::test_commit_takes_a_named_file_that_replaced_a_link_and_refuses_a_flattened_one": "integration/verbs/workspace/test_git_tree.py::test_commit_takes_a_named_file_that_replaced_a_link_and_refuses_a_flattened_one",
+        "integration/workspace/test_git_tree.py::test_commit_without_paths_commits_the_index_and_refuses_an_empty_one": "integration/verbs/workspace/test_git_tree.py::test_commit_without_paths_commits_the_index_and_refuses_an_empty_one",
+        "integration/workspace/test_git_tree.py::test_commit_refuses_an_empty_message_before_staging_anything": "integration/verbs/workspace/test_git_tree.py::test_commit_refuses_an_empty_message_before_staging_anything",
+        "integration/workspace/test_git_tree.py::test_commit_refuses_a_named_never_commit_path": "integration/verbs/workspace/test_git_tree.py::test_commit_refuses_a_named_never_commit_path",
+        "integration/workspace/test_git_tree.py::test_commit_records_the_pointer_of_a_submodule_that_committed": "integration/verbs/workspace/test_git_tree.py::test_commit_records_the_pointer_of_a_submodule_that_committed",
+        "integration/workspace/test_git_tree.py::test_commit_without_paths_takes_the_parents_index_with_the_pointer": "integration/verbs/workspace/test_git_tree.py::test_commit_without_paths_takes_the_parents_index_with_the_pointer",
+        "integration/lake/test_core.py::test_a_fresh_lake_is_whole_and_compacts": "integration/state/lake/test_core.py::test_a_fresh_lake_is_whole_and_compacts",
+        "integration/lake/test_core.py::test_a_second_workspace_reads_and_writes_the_served_lake": "integration/state/lake/test_core.py::test_a_second_workspace_reads_and_writes_the_served_lake",
+        "integration/lake/test_core.py::test_a_served_lake_refuses_maintenance_and_strangers": "integration/state/lake/test_core.py::test_a_served_lake_refuses_maintenance_and_strangers",
+        "integration/workspace/test_login_guard.py::test_a_line_outgrowing_the_guard_is_stopped_whole": "integration/verbs/workspace/test_login_guard.py::test_a_line_outgrowing_the_guard_is_stopped_whole",
+        "integration/workspace/test_login_guard.py::test_a_calm_line_keeps_its_own_status": "integration/verbs/workspace/test_login_guard.py::test_a_calm_line_keeps_its_own_status",
+        "integration/workspace/test_login_guard.py::test_no_limit_leaves_the_line_alone": "integration/verbs/workspace/test_login_guard.py::test_no_limit_leaves_the_line_alone",
+        "integration/dispatch/test_remote.py::test_the_fleet_is_listed": "integration/dispatch/test_remote.py::test_the_fleet_is_listed_without_error",
+        "integration/environments/test_lock_policy.py::test_install_solves_a_stale_lock_and_locked_refuses_it": "integration/engines/environments/test_lock_policy.py::test_install_solves_a_stale_lock_and_locked_refuses_it",
+        "integration/environments/test_lock_policy.py::test_as_is_runs_what_is_installed_without_solving": "integration/engines/environments/test_lock_policy.py::test_as_is_runs_what_is_installed_without_solving",
+        "integration/environments/test_lock_policy.py::test_a_failed_solve_leaves_the_manifest_and_lock_as_they_were": "integration/engines/environments/test_lock_policy.py::test_a_failed_solve_leaves_the_manifest_and_lock_as_they_were",
+        "integration/environments/test_lock_policy.py::test_upgrade_leaves_a_member_named_by_version": "integration/engines/environments/test_lock_policy.py::test_upgrade_leaves_a_member_named_by_version",
+        "integration/test_clouds.py::test_offers_list_every_cloud_and_mark_what_mb_rents": "integration/scenarios/test_clouds.py::test_offers_list_every_cloud_and_mark_what_mb_rents"
+      },
+      "merged": {
+        "integration/lake/test_duckdb_settings.py::test_instants_read_in_utc_unless_a_setting_says_otherwise": "integration/state/lake/test_duckdb_settings.py::test_every_connection_takes_the_settings_with_the_environment_winning[instants-read-in-utc-by-default]",
+        "integration/lake/test_duckdb_settings.py::test_the_environment_overrides_a_setting": "integration/state/lake/test_duckdb_settings.py::test_every_connection_takes_the_settings_with_the_environment_winning[the-environment-overrides-a-setting]",
+        "integration/evidence/test_core.py::test_ingest_materialize_and_check_round_trip": "integration/state/evidence/delivery/test_lake_verbs.py::test_evidence_survives_a_round_trip_through_the_lake_verbs[absolute]",
+        "integration/evidence/test_core.py::test_every_lake_verb_takes_paths_relative_to_where_it_runs": "integration/state/evidence/delivery/test_lake_verbs.py::test_evidence_survives_a_round_trip_through_the_lake_verbs[relative]",
+        "integration/evidence/test_core.py::test_a_lake_verb_refuses_a_path_outside_the_workspace": "integration/state/evidence/delivery/test_lake_verbs.py::test_a_lake_verb_refuses_a_path_outside_the_workspace[dedup]",
+        "integration/evidence/test_core.py::test_evict_deletes_only_what_the_lake_keeps_intact": "integration/state/evidence/custody/test_custody.py::test_evict_deletes_only_what_the_lake_keeps_intact",
+        "integration/evidence/test_core.py::test_collection_keeps_transfers_in_the_lake_never_the_tree": "integration/state/evidence/delivery/test_collection.py::test_collection_keeps_transfers_in_the_lake_never_the_tree",
+        "integration/evidence/test_core.py::test_a_host_sends_only_what_the_lake_lacks": "integration/state/evidence/delivery/test_collection.py::test_a_host_sends_only_what_the_lake_lacks",
+        "integration/evidence/test_core.py::test_a_pass_collects_each_folder_once": "integration/state/evidence/delivery/test_settlement.py::test_a_pass_collects_each_folder_once",
+        "integration/evidence/test_core.py::test_dedup_links_settled_duplicates_to_one_copy": "integration/state/evidence/delivery/test_lake_verbs.py::test_dedup_links_settled_duplicates_to_one_copy",
+        "integration/evidence/test_core.py::test_artifacts_are_held_once_per_node": "integration/state/evidence/delivery/test_artifacts.py::test_artifacts_are_held_once_per_node_and_a_damaged_copy_is_replaced",
+        "integration/evidence/test_core.py::test_a_closed_run_moves_into_the_center_lake[True]": "integration/state/evidence/custody/test_closed_runs.py::test_a_closed_run_moves_into_the_center_lake[center]",
+        "integration/evidence/test_core.py::test_a_closed_run_moves_into_the_center_lake[False]": "integration/state/evidence/custody/test_closed_runs.py::test_a_closed_run_moves_into_the_center_lake[center]",
+        "integration/evidence/test_core.py::test_settling_verifies_what_only_the_lake_holds": "integration/state/evidence/delivery/test_artifacts.py::test_settling_verifies_what_only_the_lake_holds",
+        "integration/evidence/test_core.py::test_readers_find_evidence_that_left_the_tree": "integration/state/evidence/delivery/test_artifacts.py::test_receipts_and_the_artifacts_they_pin_read_back_once_the_tree_lost_them",
+        "integration/evidence/test_core.py::test_a_large_object_is_kept_in_ordered_chunks": "integration/state/evidence/store/test_blobs.py::test_an_object_is_kept_in_ordered_chunks_with_a_checksum_each",
+        "integration/evidence/test_core.py::test_a_blob_from_before_chunking_still_reads": "integration/state/evidence/store/test_blobs.py::test_membership_answers_the_requested_digests_the_lake_holds",
+        "integration/evidence/test_core.py::test_blob_membership_is_limited_to_requested_digests": "integration/state/evidence/store/test_blobs.py::test_membership_answers_the_requested_digests_the_lake_holds",
+        "integration/evidence/test_core.py::test_blob_membership_handles_large_requested_sets": "integration/state/evidence/store/test_blobs.py::test_membership_answers_the_requested_digests_the_lake_holds",
+        "integration/evidence/test_core.py::test_ingest_deduplicates_within_and_across_windows": "integration/state/evidence/store/test_ingest.py::test_ingest_deduplicates_within_and_across_windows",
+        "integration/evidence/test_core.py::test_ingest_records_each_chunks_checksum": "integration/state/evidence/store/test_blobs.py::test_an_object_is_kept_in_ordered_chunks_with_a_checksum_each",
+        "integration/evidence/test_core.py::test_check_leaves_the_checksums_of_chunks_kept_before_them_unrecorded": "integration/state/evidence/custody/test_custody.py::test_verify_checks_chunks_kept_before_checksums_by_digest_and_records_none[intact]",
+        "integration/evidence/test_core.py::test_check_finds_a_chunk_whose_bytes_changed": "integration/state/evidence/custody/test_custody.py::test_a_damaged_object_is_judged_alike_by_every_reader_and_only_ingest_repairs_it[a-chunk-at-a-time-a-cell-lost]",
+        "integration/evidence/test_core.py::test_check_finds_a_chunk_gone_missing": "integration/state/evidence/custody/test_custody.py::test_a_damaged_object_is_judged_alike_by_every_reader_and_only_ingest_repairs_it[a-chunk-at-a-time-a-cell-lost]",
+        "integration/evidence/test_core.py::test_check_finds_a_data_file_damaged_on_disk": "integration/state/evidence/delivery/test_lake_verbs.py::test_check_finds_a_data_file_damaged_on_disk",
+        "integration/evidence/test_core.py::test_a_group_of_small_files_lands_in_one_data_file": "integration/state/evidence/store/test_ingest.py::test_a_group_of_small_files_lands_in_one_data_file",
+        "integration/evidence/test_core.py::test_source_archives_restore_through_the_same_blobs": "integration/state/evidence/store/test_restore.py::test_source_archives_restore_through_the_same_blobs",
+        "integration/evidence/test_core.py::test_a_directory_replica_keeps_each_object_once_and_the_index": "integration/state/evidence/store/test_replica.py::test_a_replica_holds_each_object_once_whatever_the_window_that_reads_it",
+        "integration/evidence/test_core.py::test_a_replica_reads_objects_in_windows_and_a_larger_one_alone": "integration/state/evidence/store/test_replica.py::test_a_replica_holds_each_object_once_whatever_the_window_that_reads_it",
+        "integration/evidence/test_core.py::test_ingest_refuses_what_lies_outside_the_workspace": "integration/state/evidence/delivery/test_lake_verbs.py::test_a_lake_verb_refuses_a_path_outside_the_workspace[ingest]",
+        "integration/evidence/test_core.py::test_the_lake_records_when_evidence_landed": "integration/state/evidence/delivery/test_lake_verbs.py::test_evidence_survives_a_round_trip_through_the_lake_verbs[absolute]",
+        "integration/environments/test_local_wheel.py::test_local_files_are_shipped_without_becoming_editable_roots": "integration/engines/environments/compile/test_local_wheel.py::test_local_files_are_shipped_without_becoming_editable_roots",
+        "integration/environments/test_local_wheel.py::test_sources_in_features_and_targets_are_deduplicated": "integration/engines/environments/compile/test_local_wheel.py::test_workspace_sources_are_listed_once_across_every_table_and_only_editable_ones_install",
+        "integration/environments/test_lock_policy.py::test_locked_and_frozen_exclude_each_other": "integration/engines/environments/test_lock_policy.py::test_locked_and_frozen_exclude_each_other[locked-and-as-is]",
+        "integration/environments/test_lock_policy.py::test_raising_a_table_requirement_keeps_its_other_fields": "integration/engines/environments/requirements/test_manifest_text.py::test_raising_a_requirement_changes_its_version_and_nothing_else_of_the_manifest",
+        "integration/environments/test_lock_policy.py::test_a_raised_requirement_keeps_its_comment_column[>=2.5.12-33]": "integration/engines/environments/requirements/test_manifest_text.py::test_raising_a_requirement_changes_its_version_and_nothing_else_of_the_manifest",
+        "integration/environments/test_lock_policy.py::test_a_raised_requirement_keeps_its_comment_column[>=2.4.6,<2.5,!=2.4.9-33]": "integration/engines/environments/requirements/test_manifest_text.py::test_raising_a_requirement_changes_its_version_and_nothing_else_of_the_manifest",
+        "integration/environments/test_lock_policy.py::test_a_raised_requirement_keeps_its_comment_column[>=2.4.6,<2.5,!=2.4.9,!=2.4.10-41]": "integration/engines/environments/requirements/test_manifest_text.py::test_raising_a_requirement_changes_its_version_and_nothing_else_of_the_manifest",
+        "integration/environments/test_managed_python.py::test_the_workspace_environment_runs_first[sh]": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-sh]",
+        "integration/environments/test_managed_python.py::test_the_workspace_environment_runs_first[bash]": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-bash]",
+        "integration/environments/test_managed_python.py::test_the_workspace_environment_runs_first[zsh]": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-zsh]",
+        "integration/environments/test_managed_python.py::test_uv_managed_cpython_runs_before_the_environment_exists[sh]": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-sh]",
+        "integration/environments/test_managed_python.py::test_uv_managed_cpython_runs_before_the_environment_exists[bash]": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-bash]",
+        "integration/environments/test_managed_python.py::test_uv_managed_cpython_runs_before_the_environment_exists[zsh]": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-zsh]",
+        "integration/environments/test_managed_python.py::test_a_host_with_neither_is_refused_by_name": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-sh]",
+        "integration/environments/test_managed_python.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python": "integration/engines/environments/managed_python/test_launcher.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python[a-bare-path-is-refused-by-name]",
+        "integration/environments/test_managed_python.py::test_the_agent_answers_through_the_launcher[sh]": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[sh]",
+        "integration/environments/test_managed_python.py::test_the_agent_answers_through_the_launcher[bash]": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[bash]",
+        "integration/environments/test_managed_python.py::test_the_agent_answers_through_the_launcher[zsh]": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[zsh]",
+        "integration/environments/test_managed_python.py::test_dispatch_starts_every_remote_python_through_the_launcher": "integration/engines/environments/managed_python/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[a-fetch-from-a-declared-host]",
+        "integration/environments/test_managed_python.py::test_onboarding_puts_uv_and_its_cpython_there_first_or_refuses": "integration/engines/environments/managed_python/test_bootstrap.py::test_onboarding_puts_uv_and_its_cpython_there_first_or_refuses[a-host-with-neither-is-refused-before-it-runs-anything]",
+        "integration/environments/test_managed_python.py::test_the_tool_installs_through_uv_alone[vendored]": "integration/engines/environments/managed_python/test_bootstrap.py::test_the_tool_installs_through_uv_alone[vendored]",
+        "integration/environments/test_managed_python.py::test_the_tool_installs_through_uv_alone[indexed]": "integration/engines/environments/managed_python/test_bootstrap.py::test_the_tool_installs_through_uv_alone[indexed]",
+        "integration/environments/test_managed_python.py::test_a_host_names_no_interpreter_of_its_own": "integration/engines/environments/managed_python/test_launcher.py::test_a_host_names_no_interpreter_of_its_own",
+        "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[dispatch]": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[dispatch]",
+        "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[manifest]": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[manifest]",
+        "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[center]": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[center]",
+        "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[engines]": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[engines]"
       }
     }
   ]

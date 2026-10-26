@@ -5,9 +5,13 @@ import re
 import socket
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..log import logger
 from ..state.relations import Relations, records, write_parquet
+
+if TYPE_CHECKING:
+    from pydantic import JsonValue
 
 # The knee of the size against speed curve for zstd on tabular rows.
 _ZSTD_LEVEL = 9
@@ -42,13 +46,13 @@ class RowLog:
     def __len__(self) -> int:
         return len(self._keys)
 
-    def _key(self, row: Mapping[str, object]) -> tuple[str, ...]:
+    def _key(self, row: Mapping[str, JsonValue]) -> tuple[str, ...]:
         return tuple(str(row[field]) for field in self.id_fields)
 
     def _read(self, file: Path) -> list[dict]:
         return records(Relations().files([file])) if file.exists() else []
 
-    def append(self, row: Mapping[str, object]) -> bool:
+    def append(self, row: Mapping[str, JsonValue]) -> bool:
         """Append one row unless its identity is already recorded; return whether it was taken."""
         key = self._key(row)
         if key in self._keys:
@@ -63,7 +67,7 @@ class RowLog:
         self.rows = [row for row in self.rows if not predicate(row)]
         self._keys -= dropped
 
-    def extend(self, rows: Sequence[Mapping[str, object]]) -> int:
+    def extend(self, rows: Sequence[Mapping[str, JsonValue]]) -> int:
         """Append many rows, returning how many were new."""
         return sum(self.append(row) for row in rows)
 
@@ -77,6 +81,6 @@ class RowLog:
         temporary.replace(self.part)
         logger.info("wrote {} rows to {}", len(self.rows), self.part)
 
-    def has(self, **ids: object) -> bool:
+    def has(self, **ids: JsonValue) -> bool:
         """Whether a row with this identity already exists in any part."""
         return self._key(ids) in self._keys

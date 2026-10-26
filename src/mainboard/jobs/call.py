@@ -137,26 +137,40 @@ class Guard(MetaPathFinder):
 
 def _main(argv: Sequence[str] | None = None) -> int:
     """Run one target, from the tokens after the runner's name (this process's when None)."""
-    tokens = list(sys.argv[1:] if argv is None else argv)
-    if not tokens or tokens[0] == _DELIMITER:
-        raise SystemExit(f"usage: python -m {_MODULE} <file>{Target.SEPARATOR}<name> [-- args]")
-    spelling, args = tokens[0], tokens[1:]
-    if args and args[0] == _DELIMITER:
-        args = args[1:]
+    spelling, args = _target_and_args(list(sys.argv[1:] if argv is None else argv))
     fresh = Fresh.parsed(args)
     if fresh is not None:
         return fresh.run(spelling)
     file, _, name = spelling.partition(Target.SEPARATOR)
     guard = Guard.armed(Path.cwd())
+    _pin_hub_cache()
+    if Path(file).stem.startswith(Target.TEST_PREFIX):
+        return _pytested(spelling if name else file, args, guard)
+    return _called(getattr(_loaded(Path(file)), name), name, args)
+
+
+def _target_and_args(tokens: list[str]) -> tuple[str, list[str]]:
+    """The target's spelling and the arguments after it, past any delimiter before them."""
+    if not tokens or tokens[0] == _DELIMITER:
+        raise SystemExit(f"usage: python -m {_MODULE} <file>{Target.SEPARATOR}<name> [-- args]")
+    spelling, args = tokens[0], tokens[1:]
+    if args and args[0] == _DELIMITER:
+        args = args[1:]
+    return spelling, args
+
+
+def _pin_hub_cache() -> None:
+    """Point the Hub cache at the pins a job declared, whatever the host caches elsewhere."""
     pins = Path.cwd() / staging(Path.cwd())
     if pins.is_dir():
-        # A job that declared Hub pins reads exactly them, whatever the host caches elsewhere.
         os.environ["HF_HUB_CACHE"] = str(pins)
-    if Path(file).stem.startswith(Target.TEST_PREFIX):
-        # The one environment-dependent import: an env without pytest still runs other targets.
-        runner = importlib.import_module(".pytest", package=__package__)
-        return runner.Runner(guard).run([spelling if name else file, *args])
-    return _called(getattr(_loaded(Path(file)), name), name, args)
+
+
+def _pytested(spelling: str, args: Sequence[str], guard: Guard | None) -> int:
+    """Run a test target through pytest, with the guard already armed."""
+    # The one environment-dependent import: an env without pytest still runs other targets.
+    runner = importlib.import_module(".testing.pytest", package=__package__)
+    return runner.Runner(guard).run([spelling, *args])
 
 
 class Fresh:

@@ -22,13 +22,13 @@ class Owners:
         self.root = root
         self.patterns = tuple(patterns)
         self.markers = tuple(markers)
-        self.of = cache(self._of)
+        self.owner_of = cache(self._owner_of)
 
-    def _of(self, directory: Path) -> Path:
+    def _owner_of(self, directory: Path) -> Path:
         """The owner of everything in `directory`, an absolute directory beneath the root."""
         if directory == self.root or self._owns(directory):
             return directory
-        return self.of(directory.parent)
+        return self.owner_of(directory.parent)
 
     def _owns(self, directory: Path) -> bool:
         relative = PurePosixPath(directory.relative_to(self.root).as_posix())

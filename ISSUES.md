@@ -164,7 +164,8 @@ instead, so every item here is open.
 2. **`integration/gates/baseline.json` names a renamed test.** It still lists
    `integration/evidence/test_core.py::test_check_records_the_checksums_of_chunks_kept_before_them`, so the
    gate's inspect lane fails its baseline accounting (the suite lane is unaffected). Present on `main`
-   before this work. Refresh the nodeid when the baseline is next re-measured.
+   before this work. Fixed 2026-10-26 by the milestone M1 rebaseline: the case is now
+   `integration/state/evidence/custody/test_custody.py::test_verify_checks_chunks_kept_before_checksums_by_digest_and_records_none`.
 
 ## Found renting a vast RTX 4090 for the cutok version sweep, 2026-10-11 23:30
 
@@ -903,7 +904,7 @@ root unit files, no `/etc` edits.
   toolchain, so an env declaring only a `dependency-overrides` (no `deps`/`dev`) still carries it;
   `members._alone` carries the env's own pypi-options through composition so the member path-pins no
   longer overwrite them. A `[envs.<name>.python.dependency-overrides]` now lands in
-  `[feature.<name>.pypi-options]`. Test: `integration/environments/test_env_overrides.py`.
+  `[feature.<name>.pypi-options]`. Test: `integration/engines/environments/compile/test_env_overrides.py`.
 - **`mb update`/`mb upgrade` with editable members** now work. `Pixi.update`
   (`engines/compile/backend/pixi.py`) drops pixi's `--no-install` when `_has_editable_paths()` is
   true, so pixi builds the env to read the editable sources' metadata instead of failing
@@ -1503,7 +1504,7 @@ same gitignore spec `RuleConfig.accepts` uses).
   through `from ..log import logger` (and, on a later lint, `from mb import logger`, which even
   broke `mb` locally with a circular import). Both are standard-library-only again, with waivers
   saying why (PY-CONS0001/0002 for `pack.py`, PY-LOGG0002 for `census.py`).
-- The guard: `integration/test_standalone_programs.py` runs the collection script and the
+- The guard: `integration/scenarios/test_standalone_programs.py` runs the collection script and the
   migration agent the way a host meets them, in `python -I -S` with nothing of mainboard
   importable (the agent through the real loader, via a new public `Carrier.preamble`). Both
   broken variants fail it, so the fixer's proof now withholds any fix that hands those programs an
@@ -1856,8 +1857,9 @@ alike and the codebases come out uniform.
   fixed both.
 - BUG (mine, from the fixer split): `mb rules gate --fix`, which `mb lint` runs over changed
   files, read `Fixpoint.refusals`, which had moved to the planner; `mb lint` died with an
-  AttributeError once a safe fix applied. `Fixpoint.refusals` is a property again. OPEN: no test
-  runs `rules gate --fix` with a fix that applies, which is why the suite passed.
+  AttributeError once a safe fix applied. `Fixpoint.refusals` is a property again. Fixed
+  2026-10-26: `test_a_gate_that_applies_a_safe_fix_writes_it_and_names_the_change` runs the gate
+  with a fix that applies, which is what the suite lacked.
 - Two more operations, and the operations split into a package (`operations/base.py`,
   `operations/python/` with `source`, `imports`, `moves`, `classes` and `constants`, and
   `operations/toml.py`):
@@ -2076,3 +2078,189 @@ Five Haiku 5.5 surveys, each reviewed by a Sonnet 5.5 agent; reports in the sess
   pinning `duckdb==2.0.0.dev2609250715` through a stale editable-mainboard record; nothing pruned
   sections of retired environments. `Lockfile.put` keeps only declared environments, and
   `mb lock` drops undeclared sections (`Lockfile.retain`). The section is gone.
+
+## 2026-10-26: the lock-pruning change of 10-25 erased sibling environments (fixed)
+
+- BUG (mine, fixed): `Lockfile.put(..., declared=...)` pruned a written lock to the environments
+  the compiler's manifest declares. A compiler's manifest is projected to its own environment
+  (`selected_manifest`: `envs` holds only that one, empty for `default`), so every real solve
+  dropped all its siblings. It hid on 10-25 because the lock already answered and `put` never ran;
+  the owner's relock on the morning of 10-26 ran with the change live and committed an `mb.lock`
+  holding `default` alone (`lock --check` then appended only `tl`). `put` is back to keeping every
+  other section; `Lockfile.retain` (called by `mb lock` with the full declared list) is the only
+  pruning. `integration/engines/environments/test_lockfile.py` pins both. Restored: all six
+  environments in `mb.lock`, no DuckDB dev pin, `lock --check` stable.
+- The teleport of 10-26 left the root repo's uncommitted work in `stash@{0}`; applied by the
+  owner's word with two conflicts resolved by hand (`apps/usagiunagi` kept at the committed
+  `cd394eff`, `mb.lock` re-solved). The stash is kept as a backup until the owner drops it.
+
+## 2026-10-26: `mb` as the only name (manifest, state folder, docs)
+
+Done in this workspace: `mainboard.toml` -> `mb.toml` (root, `packages/dataclass`, `research/bale`);
+a fresh `.mb/` state folder (environment installed there in 3 minutes; `audits`, `dispatch`,
+`events`, `evidence`, `chrome`, `source-archives`, `pins` cloned from `.mainboard/` with APFS
+copy-on-write, sizes equal); hooks, `.vscode`, `.codex/hooks.json`, `scripts/*`, ignore files,
+`AGENTS.md`, every skill and the project template now say `mb`/`mb.toml`/`.mb`. The settler's
+launchd job was re-registered against `.mb`. `lock --check` still exits 0 (the digest hashes
+content, not names).
+
+- Six hardcoded legacy names were bugs waiting for the rename and are fixed: the analysis walk
+  skipped `.mainboard` but not `.mb` (`facts/files.py`), `settling/events.py` wrote to
+  `.mainboard/events`, `analysis/project/workspace.py` and `consumers.py` read the lint config from
+  `mainboard.toml`, `commands/papers/impact.py` and `audit/releases/manifests.py` named it too.
+  All now ask `Project()`.
+- `Sync.shipped` resolves an include naming any manifest to the one the workspace holds, so
+  `include = ["mainboard.toml", ...]` keeps shipping the manifest after a rename (before, the
+  entry was silently dropped as "missing locally"). Pinned by `test_sync_manifest_name.py`.
+- OPEN (hosts, needs CVLAB back): a host that synced `mainboard.toml` before the rename keeps it
+  beside the shipped `mb.toml`; the mirror prunes only include paths present here, and the tool
+  then refuses to run ("holds both ... keep mb.toml and delete the other"). Before the first
+  `mb host sync` on each host, delete the old manifest there, or have the mirror prune the retired
+  manifest and lock names (untested here: no host answers and no test exercises `Mirror.push`).
+- OPEN: the launchd settler stores an absolute path to the environment's executable
+  (`Settler._pass` takes `which(tool)` at install time), so any environment move silently breaks
+  it until `job list --every` is run again from the new PATH.
+- NOT renamed on purpose: the manifests of separate repos (`packages/mcmr`, `apps/usagiunagi`,
+  `research/llm-head`, `research/reproducibility`, a frozen paper's staged artifact), nested
+  projects' state folders (their lakes live there), and the ~4,800 research files whose receipts
+  and provenance text mention `.mainboard`. Both names stay readable, so they keep working.
+- STILL TO DO: delete `.mainboard/` (12 GB) after the session that was launched from it restarts
+  (its hooks, MCP servers and PATH still point there); drop the second console script
+  (`mainboard = ...`) in a later release, once every host has synced.
+- BUG (mine, harmless): `cp -c` is not a clone flag for the GNU `cp` first on PATH; the first
+  clone silently produced an empty folder. Use `/bin/cp -cR` on macOS.
+
+## 2026-10-26: the refactor campaign, 651 to 476 findings
+
+`mb refactor check` went from 814 findings (10-25) to 651 after the constants fixers, and to 476
+after 18 mechanical packages (B01-B18; Haiku 5.5 workers, nine Sonnet 5.5 review batches, every
+changed function compared old against new on probes, none left WRONG). Nothing is committed.
+
+- Fixers: PY-CONS0004 wrote 78 files and PY-CONS0005 wrote 34, each proven by the full suite. The
+  fixers decline what they cannot place (mixed `3600` and `3600.0`, the same constant in eleven
+  modules), so `SECONDS_PER_HOUR` and `ASK_SECONDS` went into `mainboard/constants.py` by hand and
+  `_MATRIX_SIDE`, `NANOSECONDS_PER_MILLISECOND` were named where they are used. The fixers also
+  left imports at block ends and one misplaced block in `dispatch/shared.py` and `upkeep/machine.py`;
+  `ruff --select I --fix` and `ruff format` closed them.
+- The triage's "fixer-ready: 71" was an over-claim: eight "ready" rules applied two findings. A
+  rule's fix SQL declines most of what its finding matches, so count what a dry run writes.
+- Bugs the campaign found in the package: `jobs/call.py` imported `.pytest`, a module that moved to
+  `.testing.pytest`, so every test target failed with `ModuleNotFoundError`; `log/core.py` printed
+  through structlog's `PrintLogger`, which tears lines when two threads write stderr (replaced by
+  one `sys.stderr.write` per event); a worker's rewrite of `walking._visit` lost the recursion depth
+  until it was written as `yield from chain.from_iterable(...)`; `integration/gates/run.sh` still
+  defaulted to the retired `.mainboard` environment, so the proof had been running against the old
+  environment since the rename.
+- Structure: `runtime/exceptions.py` (Refusal), `rules/core/family.py`, `state/storage/records.py`
+  (`ndjson` moved down from `state/lake`, clearing an ALL-ARCH0003 on `state/relations.py`),
+  `state/storage/database.py::scratch` (one temporary-file helper where two existed),
+  `profile/bottleneck/owned.py` (`owned_codes`/`module_codes` out of `Profiler`, 521 to 474 lines).
+- Left on purpose, for the owner (collected in the session's DECISIONS list): ALL-ARCH0003 (98:
+  layering tolerance), PY-INTE0003/PY-TYPE0009 (Protocols and casts for untyped libraries; the
+  owner prefers neither, `.pyi` stubs proposed), PLR0913/PARA0004 on CLI verbs, policy
+  calibrations (PY-TEST0012 integration exemption, HIST0003 hubs, S105), module and class size
+  splits (`profile/profiler.py` still 14 public methods and 283 statements), `Facts.db` rename
+  (33 outside uses), `torch._scaled_mm` to the public `scaled_mm` (needs GPU timing), ALL-BIND0001
+  string extraction (rule defect), and the 15 PY-COLL0004 plus ~190 test findings, which the test
+  rework takes (merge overlapping tests, Hypothesis properties, fewer denser cases).
+- Process notes: a worker whose change widened a signature (`lake/staging.py` `Value`) caused 24
+  type errors in callers and was reverted whole; a clean `gate` run records findings as known for
+  the Stop hook, so run it on every file edited; workers cannot run the suite, so the lead runs
+  `mb refactor proof .` once at the end (about 9 minutes, budget 900 s).
+
+### Found by the test rework (2026-10-26)
+
+- FIXED 2026-10-26: `Apple().bundle(Path("/nonexistent/App.app"))` raised `FileNotFoundError`
+  (`apple/bundle/core.py`, `resolve(strict=True)`) while `results` and `diagnostics` answer a
+  missing path with a `MissionError`. `bundle` raises `MissionError` now, before any native tool
+  runs (`test_a_path_that_does_not_exist_is_no_bundle`). A dangling symlink inside a bundle still
+  surfaces `FileNotFoundError` from `_entries` (`entry.resolve(strict=True)`); untested.
+- The gate runs pytest with plugin autoload off, so `data_regression` and every other plugin
+  fixture is absent there; the runner loads only `pytest_cov` (by name, with `MB_GATE_COVERAGE=1`,
+  which writes `<mode>.coverage.json` into the report for the before/after test guard).
+- FIXED 2026-10-26 (found by the environments rework): `ManifestText.drop` raised `MissionError:
+  [on.linux] is not a table of requirements` when the emptied table had an out-of-order parent,
+  so `mb remove` failed on a manifest with interleaved `[on.*]` tables. `drop` walks its parents
+  through `_walk`, which answers tomlkit's `OutOfOrderTableProxy` as well as a table; pinned by
+  an `@example` on the put-then-drop property and by
+  `test_dropping_the_last_requirement_of_a_table_under_interleaved_parents_removes_it`.
+- OPEN (unreachable today): `Lockfile.put` writes a section that `Lockfile.environments` cannot
+  read back when `solved_from` or `solved_by` holds a non-BMP character; `local_sources` and
+  `self_installed` keep a path that climbs past the workspace root (`../../../../outside` comes
+  back as `../outside`).
+- FIXED in the test: the old `test_failed_uv_preserves_its_complete_diagnostic[python]` ran
+  `curl ... | sh` under its fake HOME; the gate has no network so it exited 0 by accident, outside
+  the gate it would fetch and run uv's installer.
+- OPEN (engine bug): a fix that returns one `Rename` of a populated directory dies in
+  `Mirror.adopt` (`engine/mirror.py:122`): `PermissionError: [Errno 1] Operation not permitted` on
+  macOS, `IsADirectoryError` on Linux. `Plan.touched()` and `Fixpoint._join` put the directory
+  path in the pending set and `adopt` calls `Path.unlink` on it (it would `shutil.copy2` it too).
+  The mirror holds only copied files in real directories, so empty directories escape
+  (ALL-FILE0001) and populated ones always crash. ALL-TEST0004 works around it with one `Rename`
+  per file; the fix is to expand directories with `_files` in `adopt` and `publish`.
+- Process (fixers over the test tree): each proven state is one full suite on the mirror (about 9
+  minutes), and `mb refactor fix` bisects a failing state file by file, so four test-convention
+  rules took 70 minutes; a first run with `timeout 3400` was killed in its last proof, wrote
+  nothing and left its `pytest` running as an orphan. Give the fixer 7200 s and check `ps` after a
+  kill. The proof withheld the `workspace` folder move (10 files) because two of its tests skip
+  with a reason that is not an `M00-` code, which the gate pins by node id: a moved skip is an
+  unexpected skip until `baseline.json` is rebased. Move the folder, rebase, then prove.
+- Editing a member `pyproject.toml` (ALL-TEST0004's `targets` table was added to this one) makes
+  the next `mb run` reinstall the live environment in place; run the fixers as `mb refactor ...`,
+  which does not.
+
+## Deferred after milestone M1 (2026-10-26)
+
+Milestone M1 is the source refactor (814 to 476 findings, full proof green), the test convention
+(`integration/README.md`), the coverage guard, the reworked and reviewed test areas `apple`,
+`lake`, `evidence` and `environments` (every area with zero lines or branches lost), and the new
+test rules with their autofixes applied: `integration/` now mirrors `src/mainboard` (`lake` under
+`state/`, `environments` under `engines/`, `workspace` under `verbs/`, `reverse` under `probe/`,
+`swift` under `analysis/`, three cross-cutting modules under `scenarios/`), helpers sit in
+`conftest/constants/fakes/builders/readers`, and `gates/baseline.json` was rebased (392 cases:
+123 moved, 58 merged or renamed; the `case_rebaselines` entry lists each). Final state: suite
+gate 1243 passed, 12 skipped; `mb refactor proof .` passed; ruff clean. Everything below is
+deliberately NOT in it. Each item says where its detail lives.
+
+Left in the tree on purpose, all in areas not yet reworked: ALL-TEST0004 on
+`integration/machines/test_binary_tools.py` (its tests span `profile`, `engines`, `libs` and
+`runtime`, so the `machines` target is empty), and the findings in `cli`, `dispatch`,
+`probe/reverse`, `verbs/workspace` and `trials` that their area rework will take (PY-TEST0012/0013,
+PY-TEST0022, PY-COLL0004, PLR0912/0913). The seven four-word test names ALL-TEST0006 found were
+renamed (ids rebased with them). ALL-MODU0005 on `apple/fakes.py` (`ProcessLog` and
+`ResultTool`) is the collision of the closed helper vocabulary with one class per module; it is
+on the design list below. A moved file reports its older findings as new to the Stop hook, which
+is why a rename shows up as a fresh list.
+
+- DEFERRED, tests: the other test areas follow `integration/README.md` and
+  `plan/TEST-WORKER.md` (a worker per area, a reviewer after, `MB_GATE_COVERAGE=1` before and
+  after): `analysis`, `cli`, `dispatch`, `jobs`, `machines`, `reverse`, `state`, `swift`,
+  `trials`, `workspace`, and the three modules at the top of `integration/` (folders already moved
+  by ALL-TEST0004). Their findings stay (about 100) until then. Files a worker left unconverted
+  inside a finished area are listed in its ledger.
+- DEFERRED, ALL-ARCH0003 in `src` (95 findings, owner: "fix"): stable-dependencies violations
+  between packages (the `mainboard` facade, `manifest`, `trials.store`, `probe`, `dispatch`,
+  `runtime` are the most imported unstable targets). Needs a design pass: move the small shared
+  definitions down into stable packages with `mb refactor move`, invert the few real inversions.
+  Also make the rule's test exemption generic: it knows `tests/` and `*_test.*` but not
+  `integration/`, and `classes_is_test` misses test helper modules, so a project's `testpaths`
+  should decide.
+- DEFERRED, casts and Protocols (owner agreed the policy, now in AGENTS.md): migrate the optional
+  library providers (`probe/providers/nvidia`, `profile/providers/{nvidia,amd,apple}`) from
+  `cast("Protocol", import_module(...))` to `.pyi` stubs on the checkers' extra paths plus a plain
+  import, and validate `pixi list --json` with a model that allows `version: null` instead of the
+  cast in `engines/compile/backend/pixi/core.py`. Typing-only, but the GPU providers cannot run on
+  the Mac: verify by import, ty and pyrefly. PY-INTE0003 (36) and PY-TYPE0009 (25) shrink with it.
+- DEFERRED, rules: PY-TEST0021/0022 may ship flag-only; analogues for Swift Testing, Rust and
+  Vitest wait for test-function facts of those languages; ALL-TEST0006 has no fix because a test
+  name is a sentence only its author can write.
+- DEFERRED, design calls collected in the session (`plan/DECISIONS.md`): layering tolerance,
+  PLR0913/PARA0004 on CLI verbs, policy calibrations (PY-TEST0012 integration exemption,
+  HIST0003 hubs, S105), module and class size splits (`profile/profiler.py` 14 public methods and
+  283 statements), `Facts.db` rename, `torch._scaled_mm`, ALL-BIND0001.
+- DEFERRED, parked features: `.plot.sql`, the structural edit language, the ast-grep tier,
+  LibCST, the Haiku `generate` operation (see the earlier sections of this file).
+- DEFERRED, ops: delete `.mainboard/` after the session restarts; stale `mainboard.toml` on the
+  hosts before the first `mb host sync`; deploy the read-only lake endpoint; file the two upstream
+  issues (duckdb-web, ruff) once the owner agrees; ingest `~/.aizk-pending/` into AIZK when it
+  answers.

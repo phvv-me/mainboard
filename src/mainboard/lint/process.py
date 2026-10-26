@@ -69,6 +69,15 @@ class Invocation(FrozenModel):
             output=output,
         )
 
+    def _timed_out(self, process: subprocess.Popen[bytes], started: float) -> Outcome:
+        """The outcome of a command killed at its deadline, with what it printed before."""
+        self._kill(process)
+        output, _ = process.communicate()
+        said = output.decode(errors="replace")
+        return self._outcome(
+            Exit.TIMED_OUT, started, f"{said}\n{self.step} exceeded its {self.timeout:g}s deadline"
+        )
+
     def run(self, environment: Mapping[str, str]) -> Outcome:
         """Run the command under `environment`, stopping it and its children at the deadline.
 
@@ -96,12 +105,5 @@ class Invocation(FrozenModel):
         try:
             output, _ = process.communicate(timeout=self.timeout)
         except subprocess.TimeoutExpired:
-            Invocation._kill(process)
-            output, _ = process.communicate()
-            said = output.decode(errors="replace")
-            return self._outcome(
-                Exit.TIMED_OUT,
-                started,
-                f"{said}\n{self.step} exceeded its {self.timeout:g}s deadline",
-            )
+            return self._timed_out(process, started)
         return self._outcome(process.returncode, started, output.decode(errors="replace"))

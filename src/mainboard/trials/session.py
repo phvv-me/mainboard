@@ -25,6 +25,7 @@ from uuid import uuid7
 
 from pydantic import JsonValue
 
+from ..constants import NANOSECONDS_PER_SECOND
 from ..dispatch.provenance import registered
 from ..state.evidence import EvidenceTree
 from .artifacts import Artifact, Artifacts
@@ -102,25 +103,96 @@ class Session:
 
     def __init__(self, declared: Declaration) -> None:
         self.declared = declared
-        self.opened = time_ns()
-        opened = datetime.fromtimestamp(self.opened // 1_000_000_000, UTC)
-        self.run = f"{opened:%Y%m%dT%H%M%SZ}-{uuid7().hex}"
-        self.taken = Preflight(
-            declared.universe.root, repo=declared.tree, probed=declared.universe.probed
-        )
-        self.baseline = reading(declared.flags)
-        self.common: dict[str, JsonValue] = {
-            **self.taken.stamp,
-            OPENED: self.opened,
-            **{f"session_{name}": value for name, value in self.baseline.items()},
-        }
+        self._identify()
         self.writers: dict[str, TrialReceipts] = {}
         self.stores: dict[str, Artifacts] = {}
         self.manifests: dict[str, Artifact] = {}
         self.lanes: tuple[LaneStatus, ...] = ()
         self.leaked: dict[str, str] = {}
-        self.staged: Stage = Stage("", resident=declared.resident)
+        self.staged: Stage = Stage("", resident=self.declared.resident)
         self.leased: CardLease | None = None
+
+    def _describe(self, path: Path) -> dict[str, JsonValue]:
+        """The run manifest of one node, after its registration is checked against the listing."""
+        source = self.taken.source
+        if not source.digest or not source.closure:
+            raise RuntimeError("research logging requires a captured Mainboard source bundle")
+        registration = path.parent / "node.md"
+        sources = parsed(Path(source.closure).read_text(encoding="utf-8"))
+        registered(registration, sources, root=Path.cwd())
+        return {
+            "run": self.run,
+            "registration": registration.relative_to(Path.cwd()).as_posix(),
+            "source": source.model_dump(mode="json", exclude={"closure"}),
+            "files": [row.model_dump(mode="json") for row in sources],
+            "environment": self.taken.versions,
+            "inputs": {
+                key: value.model_dump(mode="json") for key, value in self.declared.inputs.items()
+            },
+            "hardware": self.taken.card.model_dump(mode="json"),
+            "arithmetic": self.baseline,
+            "opened_at_ns": self.opened,
+        }
+
+    def _identify(self) -> None:
+        """Open the run's identity and capture the source, flags and card it is measured on."""
+        self.opened = time_ns()
+        opened = datetime.fromtimestamp(self.opened // NANOSECONDS_PER_SECOND, UTC)
+        self.run = f"{opened:%Y%m%dT%H%M%SZ}-{uuid7().hex}"
+        self.taken = Preflight(
+            self.declared.universe.root,
+            repo=self.declared.tree,
+            probed=self.declared.universe.probed,
+        )
+        self.baseline = reading(self.declared.flags)
+        self.common: dict[str, JsonValue] = {
+            **self.taken.stamp,
+            OPENED: self.opened,
+            **{f"session_{name}": value for name, value in self.baseline.items()},
+        }
+
+    def _refusal(self, drifted: Mapping[str, JsonValue]) -> list[str]:
+        """The lines that refuse a session whose tracked flags ended off their baseline."""
+        lines = [
+            f"  {name}: opened at {self.baseline[name]!r}, ended at {value!r}, first moved by "
+            f"{self.leaked.get(name, 'a trial that settled no receipt')}"
+            for name, value in drifted.items()
+        ]
+        return [
+            f"trials REFUSE this session: {len(drifted)} tracked flag(s) ended off baseline, "
+            "so every trial collected after the move measured a machine nobody can identify.",
+            *lines,
+            "Move a tracked flag only inside `mainboard.trials.held(...)`, which writes it "
+            "back on the way out.",
+        ]
+
+    def _release(self) -> list[str]:
+        """Drop the staged claim and release the card, returning what refused to drop."""
+        refusals: list[str] = []
+        try:
+            self.staged.drop()
+        except RuntimeError as residue:
+            refusals.append(str(residue))
+        if self.leased is not None:
+            self.leased.release()
+        return refusals
+
+    def _remint(self) -> list[Path]:
+        """Remint each claim's ledger and return every receipt and artifact path this run wrote."""
+        written: list[Path] = []
+        for node, writer in self.writers.items():
+            store = self.declared.universe.dataset(node)
+            if store.full(self.run):
+                store.as_jsonl(store.root / dataset.LEDGER)
+            else:
+                store.as_jsonl(store.root / dataset.Dataset.PARTIAL.format(self.run), self.run)
+            artifacts = store.root.parent / "artifacts" / self.run
+            written += [writer.directory, *([artifacts] if artifacts.is_dir() else [])]
+        # An object a concurrent run already moved into the lake is gone from the tree, and kept.
+        written += sorted(
+            path for store in self.stores.values() for path in store.written if path.is_file()
+        )
+        return written
 
     def cell(self, params: Mapping[str, JsonValue]) -> Cell:
         """Where a trial sits on the declared axes, and why each axis reads what it does.
@@ -159,47 +231,15 @@ class Session:
         receipt partitions, event streams and the store objects it referenced are then kept in
         the workspace lake.
         """
-        refusals = []
-        try:
-            self.staged.drop()
-        except RuntimeError as residue:
-            refusals.append(str(residue))
-        if self.leased is not None:
-            self.leased.release()
-        written: list[Path] = []
-        for node, writer in self.writers.items():
-            store = self.declared.universe.dataset(node)
-            if store.full(self.run):
-                store.as_jsonl(store.root / dataset.LEDGER)
-            else:
-                store.as_jsonl(store.root / dataset.Dataset.PARTIAL.format(self.run), self.run)
-            artifacts = store.root.parent / "artifacts" / self.run
-            written += [writer.directory, *([artifacts] if artifacts.is_dir() else [])]
-        # An object a concurrent run already moved into the lake is gone from the tree, and kept.
-        written += sorted(
-            path for store in self.stores.values() for path in store.written if path.is_file()
-        )
+        refusals = self._release()
+        written = self._remint()
         # The run's receipts and artifacts move into the center's lake as soon as they exist, the
         # tree's copies dropped; on a job host the center keeps them on collection.
         EvidenceTree(self.declared.universe.root).keep(written)
         drifted = moved(self.declared.flags, self.baseline)
         if not drifted:
             return "\n".join(refusals)
-        lines = [
-            f"  {name}: opened at {self.baseline[name]!r}, ended at {value!r}, first moved by "
-            f"{self.leaked.get(name, 'a trial that settled no receipt')}"
-            for name, value in drifted.items()
-        ]
-        return "\n".join(
-            [
-                *refusals,
-                f"trials REFUSE this session: {len(drifted)} tracked flag(s) ended off baseline, "
-                "so every trial collected after the move measured a machine nobody can identify.",
-                *lines,
-                "Move a tracked flag only inside `mainboard.trials.held(...)`, which writes it "
-                "back on the way out.",
-            ]
-        )
+        return "\n".join([*refusals, *self._refusal(drifted)])
 
     def enter(self, node: str) -> None:
         """Make `node` the claim now running, releasing whatever the previous one held."""
@@ -218,32 +258,13 @@ class Session:
         if universe.root.name != "experiments":
             return None
         node = universe.node_of(path)
-        if node in self.manifests:
-            return self.manifests[node]
-        source = self.taken.source
-        if not source.digest or not source.closure:
-            raise RuntimeError("research logging requires a captured Mainboard source bundle")
-        registration = path.parent / "node.md"
-        sources = parsed(Path(source.closure).read_text(encoding="utf-8"))
-        registered(registration, sources, root=Path.cwd())
-        manifest = {
-            "run": self.run,
-            "registration": registration.relative_to(Path.cwd()).as_posix(),
-            "source": source.model_dump(mode="json", exclude={"closure"}),
-            "files": [row.model_dump(mode="json") for row in sources],
-            "environment": self.taken.versions,
-            "inputs": {
-                key: value.model_dump(mode="json") for key, value in self.declared.inputs.items()
-            },
-            "hardware": self.taken.card.model_dump(mode="json"),
-            "arithmetic": self.baseline,
-            "opened_at_ns": self.opened,
-        }
-        self.manifests[node] = self.store(node).write(
-            json.dumps(manifest).encode(),
-            media_type="application/json",
-            schema_name="mainboard.run.v1",
-        )
+        if node not in self.manifests:
+            manifest = self._describe(path)
+            self.manifests[node] = self.store(node).write(
+                json.dumps(manifest).encode(),
+                media_type="application/json",
+                schema_name="mainboard.run.v1",
+            )
         return self.manifests[node]
 
     def store(self, node: str) -> Artifacts:

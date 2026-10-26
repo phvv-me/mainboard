@@ -42,7 +42,7 @@ def paths(node=None, prefix: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
 
 
 @pytest.mark.parametrize("path", paths(), ids=" ".join)
-def test_every_command_answers_help(mb, path: tuple[str, ...]) -> None:
+def test_every_command_answers_the_help_flag(mb, path: tuple[str, ...]) -> None:
     ran = mb(*path, "--help")
     assert ran.code == 0, ran.said
     assert "Usage:" in ran.out

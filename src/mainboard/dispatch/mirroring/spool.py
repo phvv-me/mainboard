@@ -21,6 +21,22 @@ from patos import FrozenModel
 from ...runtime.job import walltime_seconds
 from ..shared import state_dir
 
+_CLAIM_TEMP_FILE_STEP = "  t=$(mktemp claims/.tmp.XXXXXX) || return 4"
+_SPOOL_TEMP_FILE_STEP = 'mkdir -p "$d" && t=$(mktemp "$d/.tmp.XXXXXX") || exit 4'
+_LINE_RECORD_REPORT_COMMAND = '[ -f line.json ] && echo "L $(tr -d "\\n" < line.json)"'
+_CLAIM_RECORD_REPORT_COMMAND = (
+    '  [ -f claims/"$h".json ] && echo "C $h $(tr -d "\\n" < claims/"$h".json)"'
+)
+_KEEPER_RECORD_REPORT_COMMAND = '[ -f keeper.json ] && echo "K $(tr -d "\\n" < keeper.json)"'
+_KEEPER_BEAT_REPORT_COMMAND = '[ -f keeper.beat ] && echo "B $(tr -d "\\n" < keeper.beat)"'
+_LATEST_GENERATION_LOOKUP_COMMAND = "g=$(ls gen 2>/dev/null | sort -n | tail -1)"
+_GENERATION_FIELD_REPORT_COMMAND = (
+    '    [ -f gen/"$g"/$f ] && echo "$f $(tr -d "\\n" < gen/"$g"/$f)"'
+)
+_CANCEL_MARK_OR_FAIL_COMMAND = (
+    '  case $? in 0) : > cancel/"$h" || failed=4;; 1) ;; *) failed=4;; esac'
+)
+
 _VERSION = 1
 
 
@@ -124,7 +140,7 @@ class Remote:
         return "\n".join(
             (
                 "claim_cancelled() {",
-                "  t=$(mktemp claims/.tmp.XXXXXX) || return 4",
+                _CLAIM_TEMP_FILE_STEP,
                 f'  if printf %s {claim} > "$t" && ln "$t" claims/"$1".json 2>/dev/null; then c=0',
                 '  elif [ -e claims/"$1".json ]; then c=1',
                 "  else c=4; fi",
@@ -164,7 +180,7 @@ class Remote:
             (
                 "umask 077",
                 f"d={shlex.quote(f'{self.path}/{directory}')}",
-                'mkdir -p "$d" && t=$(mktemp "$d/.tmp.XXXXXX") || exit 4',
+                _SPOOL_TEMP_FILE_STEP,
                 'cat > "$t"',
                 f'if ln "$t" "$d"/{shlex.quote(name)} 2>/dev/null; then r=0; else r=3; fi',
                 'rm -f "$t"',
@@ -184,11 +200,11 @@ class Remote:
             (
                 f"cd {shlex.quote(self.path)} || exit 4",
                 'echo "T $(date +%s)"',
-                '[ -f line.json ] && echo "L $(tr -d "\\n" < line.json)"',
+                _LINE_RECORD_REPORT_COMMAND,
                 "[ -e stop ] && echo S",
                 f"for h in {named}; do",
                 f'  [ -f {logs}/"$h".exit ] && echo "E $h $(tr -d "\\n" < {logs}/"$h".exit)"',
-                '  [ -f claims/"$h".json ] && echo "C $h $(tr -d "\\n" < claims/"$h".json)"',
+                _CLAIM_RECORD_REPORT_COMMAND,
                 '  [ -f inbox/"$h".json ] && echo "Q $h"',
                 '  [ -e cancel/"$h" ] && echo "X $h"',
                 "done",
@@ -206,15 +222,15 @@ class Remote:
             (
                 f"cd {shlex.quote(self.path)} || exit 4",
                 'echo "T $(date +%s)"',
-                '[ -f line.json ] && echo "L $(tr -d "\\n" < line.json)"',
+                _LINE_RECORD_REPORT_COMMAND,
                 "[ -e stop ] && echo S",
-                '[ -f keeper.json ] && echo "K $(tr -d "\\n" < keeper.json)"',
-                '[ -f keeper.beat ] && echo "B $(tr -d "\\n" < keeper.beat)"',
-                "g=$(ls gen 2>/dev/null | sort -n | tail -1)",
+                _KEEPER_RECORD_REPORT_COMMAND,
+                _KEEPER_BEAT_REPORT_COMMAND,
+                _LATEST_GENERATION_LOOKUP_COMMAND,
                 'if [ -n "$g" ]; then',
                 '  echo "G $g"',
                 "  for f in alloc node beat ended; do",
-                '    [ -f gen/"$g"/$f ] && echo "$f $(tr -d "\\n" < gen/"$g"/$f)"',
+                _GENERATION_FIELD_REPORT_COMMAND,
                 "  done",
                 "fi",
                 "exit 0",
@@ -238,7 +254,7 @@ class Remote:
                 '  [ -f "$f" ] || continue',
                 '  h=$(basename "$f" .json)',
                 '  claim_cancelled "$h"',
-                '  case $? in 0) : > cancel/"$h" || failed=4;; 1) ;; *) failed=4;; esac',
+                _CANCEL_MARK_OR_FAIL_COMMAND,
                 "done",
                 "exit $failed",
             )
@@ -250,7 +266,7 @@ class Remote:
             (
                 "umask 077",
                 f"d={shlex.quote(self.path)}",
-                'mkdir -p "$d" && t=$(mktemp "$d/.tmp.XXXXXX") || exit 4',
+                _SPOOL_TEMP_FILE_STEP,
                 'cat > "$t" && mv -f "$t" "$d"/' + shlex.quote(name),
             )
         )

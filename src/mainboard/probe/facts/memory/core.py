@@ -1,6 +1,8 @@
 import psutil
 from patos import FrozenModel
 
+from ....constants import BYTES_PER_KIBIBYTE
+
 
 class Memory(FrozenModel):
     """Memory usage for a host, unit, or memory region.
@@ -36,7 +38,7 @@ class Memory(FrozenModel):
     @property
     def free_gb(self) -> float:
         """Free capacity in gibibytes."""
-        return self.free_bytes / 1024**3
+        return self.free_bytes / BYTES_PER_KIBIBYTE**3
 
     @property
     def percent_used(self) -> float:
@@ -46,9 +48,9 @@ class Memory(FrozenModel):
     @property
     def total_gb(self) -> float:
         """Total capacity in gibibytes."""
-        return self.total_bytes / 1024**3
+        return self.total_bytes / BYTES_PER_KIBIBYTE**3
 
     @property
     def used_gb(self) -> float:
         """Used capacity in gibibytes."""
-        return self.used_bytes / 1024**3
+        return self.used_bytes / BYTES_PER_KIBIBYTE**3

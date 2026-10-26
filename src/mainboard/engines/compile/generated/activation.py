@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING
 
 from ....core.project import Project
 
+_STOP = "{ _mb_status=$?; return $_mb_status 2>/dev/null || exit $_mb_status; }"
+_RESTORE_NOUNSET_SHELL_LINE = 'if [ "$_mb_nounset" = 1 ]; then set -u; fi; unset _mb_nounset'
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
@@ -59,7 +62,7 @@ def _activation(
     runtime: end with what `runtime.activation` prints, for a caller not applying it itself.
     """
     # A failure returns its status from a sourced activation and exits one run by `bash -c`.
-    stop = "{ _mb_status=$?; return $_mb_status 2>/dev/null || exit $_mb_status; }"
+    stop = _STOP
     lines = ["case $- in *u*) _mb_nounset=1; set +u;; *) _mb_nounset=0;; esac"]
     if modules:
         lines += [
@@ -76,7 +79,7 @@ def _activation(
     if runtime:
         module = shlex.join([sys.executable, "-m", f"{Project().package}.runtime.activation"])
         lines.append(f'eval "$({module})"')
-    lines.append('if [ "$_mb_nounset" = 1 ]; then set -u; fi; unset _mb_nounset')
+    lines.append(_RESTORE_NOUNSET_SHELL_LINE)
     return "\n".join(lines) + "\n"
 
 

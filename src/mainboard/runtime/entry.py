@@ -9,12 +9,15 @@ import json
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs this machine's own generated activation, not untrusted input since=2026-09-25
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import mkstemp
 from typing import TYPE_CHECKING
 
+from .exceptions import Refusal
+
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Generator, Mapping
 
 # What a shell adds to its environment describing the shell rather than the activation.
 _SHELL_OWN = frozenset({"_", "PWD", "OLDPWD", "SHLVL"})
@@ -27,24 +30,21 @@ with open(sys.argv[1], 'w', encoding='utf-8') as sink:
 """
 
 
-class Refusal(Exception):
-    """An environment that could not be entered, with the exit status the job ends on.
-
-    message: what the job says about it, empty when the activation already said it.
-    """
-
-    def __init__(self, message: str, status: int = 1) -> None:
-        super().__init__(message)
-        self.message = message
-        self.status = status
-
-
-def activated(base: Mapping[str, str], *, script: Path, cwd: str) -> dict[str, str]:
-    """`base` after `bash` sources `script` from `cwd`, raising `Refusal` when it fails."""
+@contextmanager
+def _dump_file() -> Generator[Path]:
+    """A fresh temporary file for the activation to dump its environment into, removed after."""
     descriptor, dump = mkstemp(prefix="mainboard-activation-", suffix=".json")
     os.close(descriptor)
     sink = Path(dump)
     try:
+        yield sink
+    finally:
+        sink.unlink(missing_ok=True)
+
+
+def activated(base: Mapping[str, str], *, script: Path, cwd: str) -> dict[str, str]:
+    """`base` after `bash` sources `script` from `cwd`, raising `Refusal` when it fails."""
+    with _dump_file() as sink:
         status = subprocess.call(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=a fixed argv sourcing this machine's own activation since=2026-09-25
             [
                 "bash",
@@ -54,7 +54,7 @@ def activated(base: Mapping[str, str], *, script: Path, cwd: str) -> dict[str, s
                 str(script),
                 sys.executable,
                 _DUMP,
-                dump,
+                str(sink),
             ],
             cwd=cwd,
             env=dict(base),
@@ -62,6 +62,4 @@ def activated(base: Mapping[str, str], *, script: Path, cwd: str) -> dict[str, s
         if status:
             raise Refusal("", status)
         entered: dict[str, str] = json.loads(sink.read_text(encoding="utf-8"))
-    finally:
-        sink.unlink(missing_ok=True)
     return {name: value for name, value in entered.items() if name not in _SHELL_OWN}

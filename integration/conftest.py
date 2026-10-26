@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 import pytest
+from hypothesis import settings
 from patos import FrozenModel
 
 import mainboard
@@ -19,6 +20,11 @@ from mainboard.cli import build
 
 from .constants import MB, SCRIPTS
 from .legacy import LegacyRuntime
+
+# Every property runs without Hypothesis's example database (a sandbox cannot write one) and
+# without a per-example deadline (a loaded machine would fail a correct property).
+settings.register_profile("mb", database=None, deadline=None)
+settings.load_profile("mb")
 
 _OUTCOMES: dict[str, dict[str, str]] = {}
 _CATALOG_TEST = "test_offers_list_every_cloud_and_mark_what_mb_rents"
@@ -36,51 +42,50 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         }
 
 
-# The skip reasons a fix mirror accounts for (see `pytest_sessionfinish`).
+# Explicit infrastructure obligations, never xfails standing in for bug regressions.
+_SOLVER = {
+    "test_install_solves_a_stale_lock_and_locked_refuses_it": "M00-SOLVER/M15",
+    "test_as_is_runs_what_is_installed_without_solving": "M00-SOLVER/M15",
+    "test_a_failed_solve_leaves_the_manifest_and_lock_as_they_were": "M00-SOLVER/M14",
+    "test_upgrade_leaves_a_member_named_by_version": "M00-SOLVER/M16",
+}
+
+# A skip reason starting `M00-` is an explicit infrastructure obligation; so are the two a fix
+# mirror cannot avoid.
+_LANE_SKIP = "M00-"
 _MIRROR_SKIPS = (
     "the legacy archive needs the git history of this tree",
     "not inside the monorepo",
 )
 
 
-def pytest_sessionfinish(session: pytest.Session) -> None:
-    if session.config.option.collectonly or not os.environ.get("MB_GATE_REPORT"):
-        return
+def _unexpected_skips() -> list[str]:
+    """The skipped tests that neither the baseline nor this lane's obligations account for."""
     baseline = json.loads(
         (Path(__file__).parent / "gates/baseline.json").read_text(encoding="utf-8")
     )
-    known_skips = {
+    known = {
         case["nodeid"]
         for case in baseline["cases"]
         if case["classification"] in {"skipped", "excluded"}
     }
-    known_skips.update(
-        {
-            "integration/lake/test_core.py::test_a_second_workspace_reads_and_writes_the_served_lake",
-            "integration/lake/test_core.py::test_a_served_lake_refuses_maintenance_and_strangers",
-            "integration/lake/test_core.py::test_a_blocking_served_query_obeys_the_server_timeout",
-            "integration/gates/test_harness.py::test_postgres_is_a_temporary_catalog",
-        }
-    )
-    if sys.platform != "darwin":
-        known_skips.update(
-            item.nodeid for item in session.items if item.get_closest_marker("swift_native")
-        )
-    # In the mirror `mb refactor fix` proves a fix in, a test needing the tree's git history or its
-    # place in the monorepo cannot run, and its skip is the mirror's, not the code's.
-    mirrored = _MIRROR_SKIPS if os.environ.get("MB_FIX_MIRROR") else ()
-    unexpected = [
+    accounted = (_LANE_SKIP, *(_MIRROR_SKIPS if os.environ.get("MB_FIX_MIRROR") else ()))
+    return [
         node
         for node, report in _OUTCOMES.items()
         if report["outcome"] == "skipped"
-        and node not in known_skips
-        and not any(reason in report["reason"] for reason in mirrored)
+        and node not in known
+        and not any(reason in report["reason"] for reason in accounted)
     ]
-    failed = any(report["outcome"] == "failed" for report in _OUTCOMES.values())
-    if unexpected or failed:
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    if session.config.option.collectonly or not os.environ.get("MB_GATE_REPORT"):
+        return
+    unexpected = _unexpected_skips()
+    if unexpected or any(report["outcome"] == "failed" for report in _OUTCOMES.values()):
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
-    destination = Path(os.environ["MB_GATE_REPORT"]) / "outcomes.json"
-    destination.write_text(
+    (Path(os.environ["MB_GATE_REPORT"]) / "outcomes.json").write_text(
         json.dumps(
             {
                 "cases": _OUTCOMES,
@@ -109,31 +114,22 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         )
 
 
+def _skipped(item: pytest.Item) -> str:
+    """Why this lane never runs `item`, empty when it runs; the first reason is reported."""
+    if sys.platform != "darwin" and item.get_closest_marker("swift_native"):
+        return "M00-SWIFT27: native SwiftSyntax cases run in the macOS/Xcode 27 lane"
+    if reason := _SOLVER.get(item.name):
+        return f"{reason}: needs an offline native fixture"
+    if item.path.name == "test_remote.py":
+        return "M00-FLEET/M17: real fleet always forbidden"
+    served = isinstance(item, pytest.Function) and "served" in item.fixturenames
+    return "M00-QUACK/M22: isolated Linux TCP lane" if sys.platform != "linux" and served else ""
+
+
 def pytest_collection_modifyitems(items: Sequence[pytest.Item]) -> None:
-    # Explicit infrastructure obligations, never xfails standing in for bug regressions.
-    external = {
-        "test_install_solves_a_stale_lock_and_locked_refuses_it": "M00-SOLVER/M15",
-        "test_as_is_runs_what_is_installed_without_solving": "M00-SOLVER/M15",
-        "test_a_failed_solve_leaves_the_manifest_and_lock_as_they_were": "M00-SOLVER/M14",
-        "test_upgrade_leaves_a_member_named_by_version": "M00-SOLVER/M16",
-    }
     for item in items:
-        if sys.platform != "darwin" and item.get_closest_marker("swift_native"):
-            item.add_marker(
-                pytest.mark.skip(
-                    reason="M00-SWIFT27: native SwiftSyntax cases run in the macOS/Xcode 27 lane"
-                )
-            )
-        if reason := external.get(item.name):
-            item.add_marker(pytest.mark.skip(reason=f"{reason}: needs an offline native fixture"))
-        if item.path.name == "test_remote.py":
-            item.add_marker(pytest.mark.skip(reason="M00-FLEET/M17: real fleet always forbidden"))
-        if (
-            sys.platform != "linux"
-            and isinstance(item, pytest.Function)
-            and "served" in item.fixturenames
-        ):
-            item.add_marker(pytest.mark.skip(reason="M00-QUACK/M22: isolated Linux TCP lane"))
+        if reason := _skipped(item):
+            item.add_marker(pytest.mark.skip(reason=reason))
 
 
 @pytest.fixture(autouse=True)

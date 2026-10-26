@@ -17,10 +17,11 @@ from .engine import PixiEngine
 from .repair import EnvironmentAudit
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Generator, Iterator, Sequence
 
     from plumbum.commands.base import BaseCommand
 
+    from ...inputs.toml import Toml
     from ..result import CommandResult
 
 # What pixi writes into a prefix's `conda-meta/` once an installation has finished.
@@ -102,6 +103,18 @@ class Pixi(Tool):
         }
 
     @staticmethod
+    def _nested_tables(document: Toml) -> Iterator[dict[str, Toml]]:
+        """Every table in `document`, `document` itself included, at any depth."""
+        pending = [document]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, dict):
+                yield node
+                pending.extend(node.values())
+            elif isinstance(node, list):
+                pending.extend(node)
+
+    @staticmethod
     def _raise_on_lock_drift(result: CommandResult) -> None:
         """Turn Pixi's pre-task lock rejection into an actionable recovery message."""
         failure = f"{result.stdout}\n{result.stderr}".lower().replace("-", " ")
@@ -126,16 +139,10 @@ class Pixi(Tool):
             manifest = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return False
-        pending = [manifest]
-        while pending:
-            value = pending.pop()
-            if isinstance(value, dict):
-                if isinstance(value.get("path"), str) and value.get("editable") is True:
-                    return True
-                pending.extend(value.values())
-            elif isinstance(value, list):
-                pending.extend(value)
-        return False
+        return any(
+            isinstance(table.get("path"), str) and table.get("editable") is True
+            for table in self._nested_tables(manifest)
+        )
 
     def capture(
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None

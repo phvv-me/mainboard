@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 from pydantic import TypeAdapter
 
+from ...constants import NANOSECONDS_PER_SECOND
 from ...core.errors import MissionError
 from ...log import logger
 from ..agent import Digests, Entry, program, walk
@@ -91,6 +92,15 @@ class Mirror:
             folded.setdefault(path.casefold(), []).append(path)
         return sorted(path for group in folded.values() if len(group) > 1 for path in group)
 
+    def __add(self, archive: tarfile.TarFile, entry: Entry, *, named: frozenset[str]) -> None:
+        """Add `entry` to `archive`, skipping it with a warning when it vanished unless named."""
+        try:
+            self.__member(archive, entry)
+        except FileNotFoundError as vanished:
+            if entry.path in named:
+                raise MissionError(f"{entry.path} vanished before it could be sent") from vanished
+            logger.warning("skipping {}, gone before the stream reached it", entry.path)
+
     def __hashed(self, entry: Entry, digests: Digests) -> Entry:
         if entry.kind != program.FILE:
             return entry
@@ -115,6 +125,15 @@ class Mirror:
             found[relative] = self.__hashed(Entry.stated(relative, status), digests)
         return found
 
+    def __member(self, archive: tarfile.TarFile, entry: Entry) -> None:
+        """Write `entry` to `archive` as one tar member, read straight from the workspace."""
+        with open(native(str(self.workspace), relative=entry.path), "rb") as source:
+            info = tarfile.TarInfo(entry.path)
+            info.size = os.fstat(source.fileno()).st_size
+            info.mtime = entry.mtime // NANOSECONDS_PER_SECOND
+            info.mode = 0o755 if entry.executable else 0o644
+            archive.addfile(info, source)
+
     def __pack(self, files: Sequence[Entry], sink: Sink, *, named: frozenset[str]) -> None:
         """Stream `files` into `sink` as one gzip tar, a file at a time and a chunk at a time.
 
@@ -125,35 +144,12 @@ class Mirror:
             fileobj=sink, mode="w|gz", bufsize=_BUFFER, compresslevel=_LEVEL
         ) as archive:
             for entry in files:
-                try:
-                    with open(native(str(self.workspace), relative=entry.path), "rb") as source:
-                        info = tarfile.TarInfo(entry.path)
-                        info.size = os.fstat(source.fileno()).st_size
-                        info.mtime = entry.mtime // 1_000_000_000
-                        info.mode = 0o755 if entry.executable else 0o644
-                        archive.addfile(info, source)
-                except FileNotFoundError as vanished:
-                    if entry.path in named:
-                        raise MissionError(
-                            f"{entry.path} vanished before it could be sent"
-                        ) from vanished
-                    logger.warning("skipping {}, gone before the stream reached it", entry.path)
+                self.__add(archive, entry, named=named)
 
-    def push(
-        self,
-        root: str,
-        *,
-        scopes: Sequence[Scope],
-        named: Sequence[str] = (),
-        protected: Rules,
-    ) -> Pushed:
-        """Bring `root` on the target up to date and answer what that took.
-
-        scopes: the trees mirrored whole, each pruned on the target down to what it holds here.
-        named: files shipped by name whatever the rules say, never pruned, each required to
-            exist here and to still exist when the stream reaches it.
-        protected: what the target never prunes, whether or not this workspace holds it.
-        """
+    def __survey(
+        self, root: str, *, scopes: Sequence[Scope], named: Sequence[str]
+    ) -> tuple[dict[str, Entry], dict[str, Entry]]:
+        """This workspace's entries and the target's copy of `root`, each keyed by path."""
         digests = KeptDigests(self.workspace, "mirror")
         local = self.__local(scopes, named, digests=digests)
         first, *records = self.agent.ask(
@@ -177,6 +173,24 @@ class Mirror:
             entry.path: entry
             for entry in (Entry._make(_RECORD.validate_python(record)) for record in records)
         }
+        return local, held
+
+    def push(
+        self,
+        root: str,
+        *,
+        scopes: Sequence[Scope],
+        named: Sequence[str] = (),
+        protected: Rules,
+    ) -> Pushed:
+        """Bring `root` on the target up to date and answer what that took.
+
+        scopes: the trees mirrored whole, each pruned on the target down to what it holds here.
+        named: files shipped by name whatever the rules say, never pruned, each required to
+            exist here and to still exist when the stream reaches it.
+        protected: what the target never prunes, whether or not this workspace holds it.
+        """
+        local, held = self.__survey(root, scopes=scopes, named=named)
         delta = Delta.between(local, held=held, protected=protected)
         logger.info(
             "mirroring {} of {} path(s) to {}:{}",

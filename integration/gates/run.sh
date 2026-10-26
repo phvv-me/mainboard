@@ -6,7 +6,7 @@ set -eu
 projects=${MB_GATE_PROJECTS:-/Users/pedro/Developer/projects}
 # `uv run` leaves VIRTUAL_ENV on the project environment it ran from, so CI and `mainboard ci`
 # gate the installation the lock builds; run bare, the workspace's environment answers.
-environment=${VIRTUAL_ENV:-$projects/.mainboard/envs/default/.pixi/envs/default}
+environment=${VIRTUAL_ENV:-$projects/.mb/envs/default/.pixi/envs/default}
 bin=$environment/bin
 gate_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 mode=${1:-suite}

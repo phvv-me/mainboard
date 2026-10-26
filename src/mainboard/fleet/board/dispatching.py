@@ -1,9 +1,10 @@
 import shlex
 from functools import partial
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from plumbum import local as localhost
 
+from ...constants import SSH_FAMILY
 from ...core.errors import MissionError
 from ...core.execution.shell import foreground
 from ...dispatch.backends.base import ProviderBackend, route
@@ -24,9 +25,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ...context.plan import ExecutionPlan
-
-
-_SSH_FAMILY: Final = "ssh-family"
 
 
 class Dispatching(Tracking):
@@ -61,7 +59,7 @@ class Dispatching(Tracking):
             fetch_path=record.fetch_path,
         )
         destination = route(record.kind)
-        if destination == _SSH_FAMILY:
+        if destination == SSH_FAMILY:
             return Job(bound, rebuilt(root=bound.remote_root()))
         return ProviderJob(bound, destination(), rebuilt(root=""))
 

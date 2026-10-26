@@ -23,6 +23,29 @@ from .budget import Budget
 from .files import listed
 from .sql import Query, snake
 
+_ABSOLUTE_IMPORT_FROM_NAMES_SQL = """
+            SELECT name FROM ast_nodes
+            WHERE type = 'import_from_statement' AND NOT starts_with(name, '.')
+            UNION
+            SELECT d.name FROM ast_nodes d
+            JOIN ast_nodes p ON p.fact_id = d.fact_id AND p.node_id = d.parent_id
+            WHERE d.type = 'dotted_name' AND p.type IN ('import_statement', 'aliased_import')
+            """
+_PATH_COLUMN_TABLES_SQL = (
+    "SELECT table_name, column_name FROM duckdb_columns() WHERE schema_name = 'main' "
+    "AND data_type = 'VARCHAR' AND (column_name = 'path' OR suffix(column_name, '_path')) "
+    "AND table_name IN (SELECT table_name FROM duckdb_tables())"
+)
+_SOURCE_FILES_TABLE_SQL = (
+    "CREATE TABLE main.source_files AS SELECT path, content FROM "
+    "(SELECT unnest($paths) AS path, unnest($files) AS file) "
+    "JOIN read_text($files) r ON r.filename = file"
+)
+_CATALOG_OBJECT_NAMES_SQL = (
+    "SELECT view_name FROM duckdb_views() UNION SELECT table_name FROM duckdb_tables()"
+    " UNION SELECT function_name FROM duckdb_functions()"
+)
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
@@ -148,16 +171,7 @@ class Facts:
         Both `import a.b` and `from a.b import c` count. A name `from m import n as x` binds is
         counted too, so the set holds every module imported and possibly more.
         """
-        rows = self.db.execute(
-            """
-            SELECT name FROM ast_nodes
-            WHERE type = 'import_from_statement' AND NOT starts_with(name, '.')
-            UNION
-            SELECT d.name FROM ast_nodes d
-            JOIN ast_nodes p ON p.fact_id = d.fact_id AND p.node_id = d.parent_id
-            WHERE d.type = 'dotted_name' AND p.type IN ('import_statement', 'aliased_import')
-            """
-        ).fetchall()
+        rows = self.db.execute(_ABSOLUTE_IMPORT_FROM_NAMES_SQL).fetchall()
         return frozenset(name for (name,) in rows)
 
     @cached_property
@@ -249,11 +263,7 @@ class Facts:
         """
         if self.root is None:
             raise ValueError("these facts were registered without a root to read sources from")
-        columns = self.db.execute(
-            "SELECT table_name, column_name FROM duckdb_columns() WHERE schema_name = 'main' "
-            "AND data_type = 'VARCHAR' AND (column_name = 'path' OR suffix(column_name, '_path')) "
-            "AND table_name IN (SELECT table_name FROM duckdb_tables())"
-        ).fetchall()
+        columns = self.db.execute(_PATH_COLUMN_TABLES_SQL).fetchall()
         named = " UNION ".join(
             f'SELECT "{column}" AS path FROM "{table}"' for table, column in columns
         )
@@ -265,9 +275,7 @@ class Facts:
             if (self.root / path).is_file()
         )
         self.db.execute(
-            "CREATE TABLE main.source_files AS SELECT path, content FROM "
-            "(SELECT unnest($paths) AS path, unnest($files) AS file) "
-            "JOIN read_text($files) r ON r.filename = file",
+            _SOURCE_FILES_TABLE_SQL,
             {"paths": paths, "files": [str(self.root / path) for path in paths]},
         )
 
@@ -326,13 +334,7 @@ class Facts:
         wanted = query.views()
         if wanted <= self.known:
             return
-        self.known = {
-            name
-            for (name,) in self.db.execute(
-                "SELECT view_name FROM duckdb_views() UNION SELECT table_name FROM duckdb_tables()"
-                " UNION SELECT function_name FROM duckdb_functions()"
-            ).fetchall()
-        }
+        self.known = {name for (name,) in self.db.execute(_CATALOG_OBJECT_NAMES_SQL).fetchall()}
         for view in wanted - self.known:
             self.known.add(view)
             if view == "source_files":

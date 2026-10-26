@@ -13,7 +13,9 @@
 
 import os
 import sys
-from collections.abc import Iterable, Mapping
+import tempfile
+from collections.abc import Generator, Iterable, Mapping
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 
@@ -42,6 +44,17 @@ def quoted(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
 
 
+@contextmanager
+def scratch(suffix: str) -> Generator[Path]:
+    """A fresh empty temporary file ending in `suffix`, removed once the block ends."""
+    descriptor, name = tempfile.mkstemp(prefix="mb-", suffix=suffix)
+    os.close(descriptor)
+    try:
+        yield Path(name)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
 def cache_home(
     platform: str = sys.platform,
     environ: Mapping[str, str] = os.environ,
@@ -62,6 +75,12 @@ def extension_home() -> Path:
     return cache_home() / Project().name / "duckdb"
 
 
+def _install_and_load(connection: duckdb.DuckDBPyConnection, name: str) -> None:
+    """Install extension `name` from its repository, then load it."""
+    connection.install_extension(name, repository="community" if name in _COMMUNITY else None)
+    connection.load_extension(name)
+
+
 def load(
     connection: duckdb.DuckDBPyConnection, names: Iterable[str], folder: Path | None = None
 ) -> None:
@@ -79,10 +98,7 @@ def load(
             connection.load_extension(name)
         except duckdb.IOException:
             try:
-                connection.install_extension(
-                    name, repository="community" if name in _COMMUNITY else None
-                )
-                connection.load_extension(name)
+                _install_and_load(connection, name)
             except duckdb.Error as fault:
                 raise MissionError(
                     f"DuckDB extension {name} is not in {folder} and could not be installed: "
@@ -96,8 +112,10 @@ def first_line(fault: BaseException) -> str:
 
 
 def bare(database: str = ":memory:") -> duckdb.DuckDBPyConnection:
-    """A DuckDB connection with the startup options alone, for code that must not read the
-    workspace's settings."""
+    """A DuckDB connection with the startup options alone.
+
+    For code that must not read the workspace's settings.
+    """
     return duckdb.connect(database, config={**_STARTUP})
 
 

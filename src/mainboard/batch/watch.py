@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ..constants import SECONDS_PER_HOUR
 from ..costs import Ledger, Observation
 from ..dispatch.jobs import vocabulary
 from ..dispatch.shared import now
@@ -75,6 +76,29 @@ class Watch:
     Built from the batch id alone, since the receipts name its handles and the dispatch cache
     says what became of them, so any process can watch it, as a cron settles it.
     """
+
+    @staticmethod
+    def _timeline(row: JobStatus, events: Sequence[Event]) -> tuple[str, float, float, float]:
+        """The platform key, then the submit, running and end instants of `row` as epoch seconds.
+
+        The running instant is zero when no pass caught the run in flight.
+        """
+        mine = [
+            event
+            for event in events
+            if event.job == row.job and event.data.get("handle") == row.handle
+        ]
+        submitted = [event for event in mine if event.topic is Topic.SUBMITTED]
+        started = [
+            event
+            for event in mine
+            if event.topic is Topic.STATE and event.data.get("verdict") == vocabulary.Word.RUNNING
+        ]
+        key = platform(alias=row.target, kind=str(submitted[0].data["kind"]) if submitted else "")
+        ended = _epoch(now())
+        opened = _epoch(submitted[0].at) if submitted else ended
+        running = _epoch(started[0].at) if started else 0.0
+        return key, opened, running, ended
 
     @staticmethod
     def detail(handle: str, swept: MonitorReport) -> str:
@@ -171,23 +195,9 @@ class Watch:
         batch's `job.estimated` line is published beside the actual cost (a zero delta when
         unpriced), so the cost model learns from its misses.
         """
-        mine = [
-            event
-            for event in events
-            if event.job == row.job and event.data.get("handle") == row.handle
-        ]
-        submitted = [event for event in mine if event.topic is Topic.SUBMITTED]
-        started = [
-            event
-            for event in mine
-            if event.topic is Topic.STATE and event.data.get("verdict") == vocabulary.Word.RUNNING
-        ]
-        key = platform(alias=row.target, kind=str(submitted[0].data["kind"]) if submitted else "")
-        ended = _epoch(now())
-        opened = _epoch(submitted[0].at) if submitted else ended
-        running = _epoch(started[0].at) if started else 0.0
+        key, opened, running, ended = self._timeline(row, events)
         quoted = latest(events, Topic.ESTIMATED).get(row.job)
-        actual = _money(quoted, "rate_usd_hr") * (ended - opened) / 3600.0
+        actual = _money(quoted, "rate_usd_hr") * (ended - opened) / SECONDS_PER_HOUR
         expected = _money(quoted, "expected_usd")
         publish(
             self.bus,

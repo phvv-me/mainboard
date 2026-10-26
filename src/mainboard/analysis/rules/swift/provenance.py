@@ -4,11 +4,13 @@ from datetime import date
 
 from ...catalog import RuleProvenance
 
+_REVIEWED_ON_YEAR = 2026
+
 
 def apple_review(*inspected: str) -> RuleProvenance:
     """Record this source/guidance review without claiming a build or resolved API check."""
     return RuleProvenance(
-        reviewed_on=date(2026, 10, 20),
+        reviewed_on=date(_REVIEWED_ON_YEAR, 10, 20),
         method="Offline rule/source review with installed public SDK declarations",
         review_context="Xcode 27.0 (27A266a); macOS 27.0 and iOS 27.0 SDK public interfaces",
         inspected=inspected,

@@ -85,14 +85,8 @@ class Manuscript:
             + ["--outdir", str(self.build), str(self.main)]
         )
 
-    def _limited(self, pages: int) -> tuple[int, list[Problem]]:
-        """The last page of the closing section, and what the page rule makes of the build."""
-        limit, ends = self.paper.limit, self.paper.ends
-        if not limit:
-            return 0, []
-        if not ends:
-            over = pages > limit
-            return 0, [_over(f"{pages} pages, past the {limit}-page limit")] if over else []
+    def _ends_within(self, ends: str, limit: int) -> tuple[int, list[Problem]]:
+        """The last page of section `ends` by SyncTeX, and whether it stays within `limit`."""
         span = Source(self.main).span(ends)
         if not span:
             return 0, [_over(f"no section titled {ends!r} in the sources")]
@@ -105,6 +99,16 @@ class Manuscript:
                 _over(f"{ends!r} ends on page {ends_on}, past the {limit}-page limit")
             ]
         return ends_on, []
+
+    def _limited(self, pages: int) -> tuple[int, list[Problem]]:
+        """The last page of the closing section, and what the page rule makes of the build."""
+        limit, ends = self.paper.limit, self.paper.ends
+        if not limit:
+            return 0, []
+        if not ends:
+            over = pages > limit
+            return 0, [_over(f"{pages} pages, past the {limit}-page limit")] if over else []
+        return self._ends_within(ends, limit)
 
     def _read(self, suffix: str) -> str:
         """The build file with `suffix` beside the PDF, empty when the build wrote none."""

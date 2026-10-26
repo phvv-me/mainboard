@@ -7,8 +7,6 @@
 # Everything that opens Parquet files does so under the permitted file limit: matching columns by
 # name opens every file at once, and a store of 3,625 fragments met macOS's default of 256.
 
-import os
-import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import CapsuleType
@@ -17,8 +15,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import duckdb
 
 from ..runtime.tree import FileBudget
-from .lake import ndjson
-from .storage.database import connect
+from .storage.database import connect, scratch
+from .storage.records import ndjson
 
 if TYPE_CHECKING:
     from pydantic import JsonValue
@@ -76,13 +74,9 @@ class Relations:
 
     def parquet(self, data: bytes) -> Relation:
         """Parquet bytes as one table."""
-        descriptor, name = tempfile.mkstemp(prefix="mb-", suffix=".parquet")
-        try:
-            with os.fdopen(descriptor, "wb") as staged:
-                staged.write(data)
-            return self.kept("SELECT * FROM read_parquet(?)", [name])
-        finally:
-            Path(name).unlink(missing_ok=True)
+        with scratch(".parquet") as staged:
+            staged.write_bytes(data)
+            return self.kept("SELECT * FROM read_parquet(?)", [str(staged)])
 
     def rows(self, rows: Sequence[Mapping[str, JsonValue]]) -> Relation:
         """`rows` as one table, each column's type read from every row.
@@ -141,13 +135,9 @@ def write_parquet(relation: Relation, target: Path, *, level: int = LEVEL) -> No
 
 def parquet_bytes(relation: Relation, *, level: int = LEVEL) -> bytes:
     """`relation` as the bytes of one zstd Parquet file."""
-    descriptor, name = tempfile.mkstemp(prefix="mb-", suffix=".parquet")
-    os.close(descriptor)
-    try:
-        write_parquet(relation, Path(name), level=level)
-        return Path(name).read_bytes()
-    finally:
-        Path(name).unlink(missing_ok=True)
+    with scratch(".parquet") as target:
+        write_parquet(relation, target, level=level)
+        return target.read_bytes()
 
 
 def records(relation: Relation) -> list[dict[str, JsonValue]]:

@@ -126,6 +126,16 @@ class LibraryAudit:
         self.inventory = Inventory(prefix)
         self.loader = Loader(library_path, cache, trusted)
 
+    def _answers(self, path: Path) -> list[Resolution]:
+        """The resolution of each family soname the library at `path` asks for."""
+        elf = Elf.read(path)
+        return [
+            Resolution(
+                soname=soname, requester=path, found=self.loader.find(soname, elf), linked=linked
+            )
+            for soname, linked in self._asked(elf)
+        ]
+
     def _asked(self, elf: Elf) -> list[tuple[str, bool]]:
         """The family sonames `elf` links against, then those it may open by name.
 
@@ -325,14 +335,9 @@ class LibraryAudit:
             if (real := path.resolve()) in visited:
                 continue
             visited.add(real)
-            elf = Elf.read(path)
-            for soname, linked in self._asked(elf):
-                found = self.loader.find(soname, elf)
-                resolutions.append(
-                    Resolution(soname=soname, requester=path, found=found, linked=linked)
-                )
-                if found is not None:
-                    queue.append(found.path)
+            answers = self._answers(path)
+            resolutions.extend(answers)
+            queue.extend(answer.found.path for answer in answers if answer.found is not None)
         return resolutions
 
     def section(self) -> Section:

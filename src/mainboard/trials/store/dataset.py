@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from itertools import chain
 from typing import TYPE_CHECKING, ClassVar
 
+from ...constants import NANOSECONDS_PER_SECOND
 from ...core.errors import MissionError
 from ...state.evidence import EvidenceTree
 from ...state.lake import quoted
@@ -191,7 +192,7 @@ class Dataset:
             named = datetime.strptime(run[:DATED], STAMP).replace(tzinfo=UTC)
         except ValueError:
             return (0, 0, run)
-        return (1, int(named.timestamp()) * 1_000_000_000, "")
+        return (1, int(named.timestamp()) * NANOSECONDS_PER_SECOND, "")
 
     @staticmethod
     def _tagged(

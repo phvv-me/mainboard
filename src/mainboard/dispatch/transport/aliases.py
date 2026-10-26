@@ -10,11 +10,26 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from .core import Endpoint
 
 
 class SshAliases:
     """The marked alias blocks in one ssh config file, the user's own when `path` is None."""
+
+    @staticmethod
+    def _outside(lines: Iterable[str], alias: str) -> list[str]:
+        """The lines outside the run from `alias`'s opening marker through its closing one."""
+        opening, closing = _opening(alias), _closing(alias)
+        kept: list[str] = []
+        inside = False
+        for line in lines:
+            if line in (opening, closing):
+                inside = line == opening
+            elif not inside:
+                kept.append(line)
+        return kept
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or Path.home() / ".ssh" / "config"
@@ -25,16 +40,7 @@ class SshAliases:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return ""
-        opening, closing = _opening(alias), _closing(alias)
-        kept: list[str] = []
-        inside = False
-        for line in text.splitlines():
-            if line == opening:
-                inside = True
-            elif line == closing:
-                inside = False
-            elif not inside:
-                kept.append(line)
+        kept = self._outside(text.splitlines(), alias)
         body = "\n".join(kept).strip("\n")
         return f"{body}\n" if body else ""
 

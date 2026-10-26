@@ -38,7 +38,7 @@ class Env(Scope):
         declares.
         """
         merged = super().merged(over)
-        on = {
+        scopes = {
             platform: self.on[platform].merged(over.on[platform])
             if platform in self.on and platform in over.on
             else self.on.get(platform) or over.on[platform]
@@ -47,7 +47,7 @@ class Env(Scope):
         return merged.model_copy(
             update={
                 "channels": list(dict.fromkeys([*self.channels, *over.channels])),
-                "on": on,
+                "on": scopes,
                 "tasks": over.tasks | self.tasks,
                 "no_default": self.no_default or over.no_default,
                 "platforms": self.platforms or over.platforms,

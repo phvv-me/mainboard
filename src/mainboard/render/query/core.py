@@ -11,6 +11,9 @@ from ...log import logger
 from ..stamps import Ending, ResultHash, Stamp, Value, canonical, normalized
 from .sinks import Rendered, Sink, Streamed, Window, Windowed
 
+_MAX_ROWS = 1000
+_MAX_BYTES = 10000
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -140,7 +143,7 @@ class Query:
         return cells, Rendered(cells=displayed, text=text)
 
     def render(
-        self, *, mode: str | None = None, max_rows: int = 1000, max_bytes: int = 10000
+        self, *, mode: str | None = None, max_rows: int = _MAX_ROWS, max_bytes: int = _MAX_BYTES
     ) -> Stamp:
         """Print every row within the caps, then a footer stamping what was read.
 

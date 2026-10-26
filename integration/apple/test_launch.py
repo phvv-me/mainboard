@@ -1,218 +1,262 @@
-"""Launching a built app must keep explicit identity and native failure boundaries."""
-
 import json
 import plistlib
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import BinaryIO
 
 import pytest
+from pydantic import JsonValue
 
 from mainboard import MissionError
 from mainboard.apple import Apple
-from mainboard.cli import build
 from mainboard.core import Runner, ToolOutput
-from mainboard.proc import Processes
 
-_USR_BIN_XCRUN = "/usr/bin/xcrun"
+from .builders import Node, devices_reply
+from .constants import SIMCTL_LIST, XCRUN
+
+_IOS27 = "com.apple.CoreSimulator.SimRuntime.iOS-27-0"
+_IOS26 = "com.apple.CoreSimulator.SimRuntime.iOS-26-0"
+_PHONE: Node = {"name": "Phone", "udid": "one", "state": "Shutdown", "isAvailable": True}
+_TWIN: Node = {"name": "Phone", "udid": "two", "state": "Booted", "isAvailable": True}
+_ONE_PHONE = {"simulator": "one"}
+_ONE = {_IOS27: [_PHONE]}
+_TWINS = {_IOS27: [_PHONE], _IOS26: [_TWIN]}
+_BUILT = "Literal '$() app.app"
+_VALID = plistlib.dumps({"CFBundleIdentifier": "example.study"})
+_NO_IDENTIFIER = "needs a nonempty CFBundleIdentifier"
+_REQUEST = "Apple launch needs an explicit simulator and a positive timeout"
 
 
 class LaunchTools(Runner):
-    def __init__(self, root: Path) -> None:
-        self.simctl = root / "Selected Xcode.app/Contents/Developer/usr/bin/simctl"
-        self.viewer = self.simctl.parents[3] / "Applications/DeviceHub.app"
-        self.viewer.mkdir(parents=True, exist_ok=True)
-        self.devices = {
-            "com.apple.CoreSimulator.SimRuntime.iOS-27-0": [
-                {"name": "Phone", "udid": "one", "state": "Shutdown", "isAvailable": True}
-            ]
-        }
+    """Answers xcrun's simctl location and device inventory for a made-up Xcode under `root`.
+
+    devices: the inventory, by runtime; one available phone when unset.
+    viewer: whether the Xcode holds a Device Hub.
+    simctl: the path `xcrun --find simctl` answers; the made-up Xcode's when unset.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        devices: Mapping[str, Sequence[JsonValue]] | None = None,
+        viewer: bool = True,
+        simctl: str | None = None,
+    ) -> None:
+        contents = root / "Selected Xcode.app/Contents"
+        self.viewer = contents / "Applications/DeviceHub.app"
+        self.simctl = simctl or str(contents / "Developer/usr/bin/simctl")
+        self.devices = devices or _ONE
+        if viewer:
+            self.viewer.mkdir(parents=True)
 
     def run(self, tool: str, args: Sequence[str], *, cwd: Path | None = None) -> ToolOutput:
-        assert tool == _USR_BIN_XCRUN and cwd is None
+        assert tool == XCRUN and cwd is None
         if args == ("--find", "simctl"):
-            return ToolOutput(stdout=str(self.simctl))
-        assert args == ("simctl", "list", "devices", "available", "--json")
-        return ToolOutput(stdout=json.dumps({"devices": self.devices}))
+            return ToolOutput(stdout=self.simctl)
+        assert args == SIMCTL_LIST
+        return devices_reply(self.devices)
 
 
 @pytest.fixture
 def built_app(tmp_path: Path) -> Path:
-    app = tmp_path / "Literal '$() app.app"
+    app = tmp_path / _BUILT
     app.mkdir()
-    (app / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": "example.study"}))
+    (app / "Info.plist").write_bytes(_VALID)
     return app
 
 
-@pytest.mark.parametrize("selection", ["Phone", "one"])
-def test_launch_exact_device(
-    built_app: Path, monkeypatch: pytest.MonkeyPatch, selection: str
-) -> None:
-    calls: list[list[str]] = []
+@pytest.fixture
+def stalling(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], list[float]]:
+    """Replace `subprocess.run` and the clocks: the inventory takes two seconds, a call stalls.
 
-    def run(_self: Processes, seconds: float, command: list[str]) -> int:
-        assert 0 < seconds <= 180
-        calls.append(command)
-        return 0
+    Answers `stall(hang)`, which arranges it and answers the time limit each tool run was given.
+    hang: `inventory` stalls the first run; `lookup` lets the inventory finish, then stalls.
+    """
 
-    monkeypatch.setattr(Processes, "timeout", run)
-    result = Apple(LaunchTools(built_app.parent)).launch(built_app, simulator=selection)
-    assert result["udid"] == "one" and result["bundle_identifier"] == "example.study"
-    assert calls == [
-        [_USR_BIN_XCRUN, "simctl", "bootstatus", "one", "-b"],
-        [_USR_BIN_XCRUN, "simctl", "install", "one", str(built_app)],
-        [_USR_BIN_XCRUN, "simctl", "launch", "one", "example.study"],
-        [
-            "/usr/bin/open",
-            "-a",
-            str(built_app.parent / "Selected Xcode.app/Contents/Applications/DeviceHub.app"),
-            "devices://device/open?id=one",
-        ],
-    ]
+    def stall(hang: str) -> list[float]:
+        now, limits = [0.0], []
 
+        def run(
+            command: tuple[str, ...],
+            *,
+            stdout: BinaryIO,
+            timeout: float,
+            **_ignored: Path | BinaryIO | bool | None,
+        ) -> subprocess.CompletedProcess[bytes]:
+            limits.append(timeout)
+            if hang == "inventory" or command[1:] == ("--find", "simctl"):
+                raise subprocess.TimeoutExpired(command, timeout)
+            assert command[1:] == SIMCTL_LIST
+            stdout.write(devices_reply(_ONE).stdout.encode())
+            now[0] = 2.0
+            return subprocess.CompletedProcess(command, 0)
 
-@pytest.mark.parametrize("stage", range(4))
-def test_launch_stops_at_native_failure(
-    built_app: Path, monkeypatch: pytest.MonkeyPatch, stage: int
-) -> None:
-    calls: list[list[str]] = []
+        monkeypatch.setattr("mainboard.apple.bundle.launch.monotonic", lambda: now[0])
+        monkeypatch.setattr("mainboard.core.execution.tool.monotonic", lambda: now[0])
+        monkeypatch.setattr(subprocess, "run", run)
+        return limits
 
-    def run(_self: Processes, seconds: float, command: list[str]) -> int:
-        calls.append(command)
-        return 124 if len(calls) == stage + 1 else 0
-
-    monkeypatch.setattr(Processes, "timeout", run)
-    with pytest.raises(MissionError, match="exit 124"):
-        Apple(LaunchTools(built_app.parent)).launch(built_app, simulator="one")
-    assert len(calls) == stage + 1
-
-
-def test_launch_requires_unique_available_match(
-    built_app: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tools = LaunchTools(built_app.parent)
-    tools.devices["com.apple.CoreSimulator.SimRuntime.iOS-26-0"] = [
-        {"name": "Phone", "udid": "two", "state": "Booted", "isAvailable": True}
-    ]
-    apple = Apple(tools)
-    with pytest.raises(MissionError, match="matched 2"):
-        apple.launch(built_app, simulator="Phone")
-    with pytest.raises(MissionError, match="matched 0"):
-        apple.launch(built_app, simulator="missing")
-    tools.devices["com.apple.CoreSimulator.SimRuntime.iOS-26-0"][0]["isAvailable"] = False
-    with pytest.raises(MissionError, match="matched 0"):
-        apple.launch(built_app, simulator="two")
-    monkeypatch.setattr(Processes, "timeout", lambda *_args: 0)
-    assert apple.launch(built_app, simulator="Phone", os_version="27.0")["udid"] == "one"
+    return stall
 
 
 @pytest.mark.parametrize(
-    "content", [b"not a plist", plistlib.dumps({}), plistlib.dumps(["wrong"])]
+    ("devices", "simulator", "os_version"),
+    [
+        pytest.param(_ONE, "Phone", "", id="a-device-by-name"),
+        pytest.param(_ONE, "one", "", id="a-device-by-udid"),
+        pytest.param(_TWINS, "Phone", "27.0", id="a-shared-name-told-apart-by-runtime-version"),
+    ],
 )
-def test_launch_rejects_invalid_bundle(built_app: Path, content: bytes) -> None:
-    (built_app / "Info.plist").write_bytes(content)
-    with pytest.raises(MissionError, match="Info.plist"):
-        Apple().launch(built_app, simulator="one")
+def test_launch_boots_installs_launches_and_opens_the_device_hub_for_the_one_matching_device(
+    built_app: Path, processes, devices, simulator: str, os_version: str
+) -> None:
+    tools = LaunchTools(built_app.parent, devices=devices)
+    launched = Apple(tools).launch(built_app, simulator=simulator, os_version=os_version)
+    assert launched == {
+        "simulator": "Phone",
+        "udid": "one",
+        "runtime": _IOS27,
+        "bundle_identifier": "example.study",
+        "app": str(built_app),
+    }
+    assert all(0 < seconds <= 180 for seconds in processes.seconds)
+    assert processes.commands == [
+        [XCRUN, "simctl", "bootstatus", "one", "-b"],
+        [XCRUN, "simctl", "install", "one", str(built_app)],
+        [XCRUN, "simctl", "launch", "one", "example.study"],
+        ["/usr/bin/open", "-a", str(tools.viewer), "devices://device/open?id=one"],
+    ]
 
 
-def test_launch_rejects_missing_bundle_and_invalid_request(tmp_path: Path) -> None:
-    with pytest.raises(MissionError, match="built simulator"):
-        Apple().launch(tmp_path / "missing.app", simulator="one")
-    with pytest.raises(MissionError, match="positive timeout"):
-        Apple().launch(tmp_path, simulator="one", timeout=0)
-    with pytest.raises(MissionError, match="explicit simulator"):
-        Apple().launch(tmp_path, simulator="")
+@pytest.mark.parametrize(
+    ("stage", "name"),
+    [
+        pytest.param(0, "boot readiness", id="boot-readiness"),
+        pytest.param(1, "installation", id="installation"),
+        pytest.param(2, "launch", id="launch"),
+        pytest.param(3, "Device Hub window", id="the-device-hub-window"),
+    ],
+)
+def test_launch_stops_at_the_first_failing_native_stage(
+    built_app: Path, processes, stage: int, name: str
+) -> None:
+    processes.exits = iter([0] * stage + [124])
+    with pytest.raises(MissionError, match=rf"failed during {name} \(exit 124\)"):
+        Apple(LaunchTools(built_app.parent)).launch(built_app, simulator="one")
+    assert len(processes.commands) == stage + 1
 
 
-def test_launch_cli_forwards_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    captured: list[tuple[Path, str, str, float]] = []
+@pytest.mark.parametrize(
+    ("info", "app", "call", "match"),
+    [
+        pytest.param(
+            b"not a plist", _BUILT, _ONE_PHONE, "cannot read app Info.plist", id="no-plist"
+        ),
+        pytest.param(plistlib.dumps({}), _BUILT, _ONE_PHONE, _NO_IDENTIFIER, id="no-identifier"),
+        pytest.param(
+            plistlib.dumps(["wrong"]), _BUILT, _ONE_PHONE, _NO_IDENTIFIER, id="no-dictionary"
+        ),
+        pytest.param(
+            plistlib.dumps({"CFBundleIdentifier": " "}),
+            _BUILT,
+            _ONE_PHONE,
+            _NO_IDENTIFIER,
+            id="blank-identifier",
+        ),
+        pytest.param(
+            plistlib.dumps({"CFBundleIdentifier": 5}),
+            _BUILT,
+            _ONE_PHONE,
+            _NO_IDENTIFIER,
+            id="numeric-identifier",
+        ),
+        pytest.param(
+            _VALID, "missing.app", _ONE_PHONE, "expected a built simulator .app", id="missing-app"
+        ),
+        pytest.param(_VALID, _BUILT, {**_ONE_PHONE, "timeout": 0}, _REQUEST, id="zero-timeout"),
+        pytest.param(
+            _VALID, _BUILT, {**_ONE_PHONE, "timeout": float("inf")}, _REQUEST, id="endless-timeout"
+        ),
+        pytest.param(_VALID, _BUILT, {"simulator": " "}, _REQUEST, id="blank-simulator"),
+        pytest.param(
+            b"not a plist",
+            _BUILT,
+            {"simulator": " "},
+            _REQUEST,
+            id="a-blank-simulator-is-refused-before-the-bundle-is-read",
+        ),
+    ],
+)
+def test_launch_refuses_an_unreadable_bundle_or_an_invalid_request(
+    built_app: Path, info: bytes, app: str, call, match: str
+) -> None:
+    (built_app / "Info.plist").write_bytes(info)
+    with pytest.raises(MissionError, match=match):
+        Apple().launch(built_app.parent / app, **call)
 
-    def launch(
-        _self: Apple, path: Path, *, simulator: str, os_version: str, timeout: float
-    ) -> dict[str, str]:
-        captured.append((path, simulator, os_version, timeout))
-        return {"udid": simulator}
 
-    monkeypatch.setattr(Apple, "launch", launch)
-    with pytest.raises(SystemExit) as result:
-        build()(
-            [
-                "apple",
-                "launch",
-                str(tmp_path),
-                "--simulator",
-                "one",
-                "--os-version",
-                "27.0",
-                "--timeout",
-                "60",
-            ]
-        )
-    assert result.value.code == 0
-    assert captured == [(tmp_path, "one", "27.0", 60)]
+@pytest.mark.parametrize(
+    ("world", "call", "match"),
+    [
+        pytest.param({"devices": _TWINS}, {"simulator": "Phone"}, "matched 2", id="a-shared-name"),
+        pytest.param({}, {"simulator": "missing"}, "matched 0", id="an-unknown-simulator"),
+        pytest.param(
+            {"devices": {_IOS27: [_PHONE], _IOS26: [{**_TWIN, "isAvailable": False}]}},
+            {"simulator": "two"},
+            "matched 0",
+            id="an-unavailable-device",
+        ),
+        pytest.param(
+            {"viewer": False}, _ONE_PHONE, "requires Xcode 27 Device Hub", id="no-device-hub"
+        ),
+        pytest.param(
+            {"simctl": "simctl"}, _ONE_PHONE, "invalid selected simctl path", id="relative-simctl"
+        ),
+    ],
+)
+def test_launch_refuses_an_unresolvable_device_or_viewer_before_any_native_stage(
+    built_app: Path, processes, world, call, match: str
+) -> None:
+    with pytest.raises(MissionError, match=match):
+        Apple(LaunchTools(built_app.parent, **world)).launch(built_app, **call)
+    assert processes.commands == []
 
 
 def test_launch_deadline_prevents_later_steps(
-    built_app: Path, monkeypatch: pytest.MonkeyPatch
+    built_app: Path, processes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ticks = iter([0.0, 5.0, 181.0])
-    calls: list[list[str]] = []
-
-    def run(_self: Processes, seconds: float, command: list[str]) -> int:
-        assert seconds == 175
-        calls.append(command)
-        return 0
-
     monkeypatch.setattr("mainboard.apple.bundle.launch.monotonic", lambda: next(ticks))
-    monkeypatch.setattr(Processes, "timeout", run)
     with pytest.raises(MissionError, match="timed out before installation"):
         Apple(LaunchTools(built_app.parent)).launch(built_app, simulator="one")
-    assert len(calls) == 1
+    assert processes.seconds == [175]
 
 
-def test_launch_requires_selected_xcode_viewer_before_mutations(built_app: Path) -> None:
-    tools = LaunchTools(built_app.parent)
-    tools.viewer.rmdir()
-    with pytest.raises(MissionError, match="requires Xcode 27 Device Hub"):
-        Apple(tools).launch(built_app, simulator="one")
-
-
-def test_launch_rejects_invalid_toolchain_path(built_app: Path) -> None:
-    tools = LaunchTools(built_app.parent)
-    tools.simctl = Path("simctl")
-    with pytest.raises(MissionError, match="invalid selected simctl path"):
-        Apple(tools).launch(built_app, simulator="one")
-
-
-@pytest.mark.parametrize("failed_stage", ["inventory", "lookup"])
+@pytest.mark.parametrize(
+    ("hang", "limits"),
+    [
+        pytest.param("inventory", [3.0], id="the-inventory-stalls"),
+        pytest.param("lookup", [3.0, 1.0], id="the-lookup-gets-what-the-inventory-left"),
+    ],
+)
 def test_launch_metadata_processes_share_deadline(
-    built_app: Path, monkeypatch: pytest.MonkeyPatch, failed_stage: str
+    built_app: Path, stalling, hang: str, limits: list[float]
 ) -> None:
-    clock = [0.0]
-    limits: list[float] = []
-    tools = LaunchTools(built_app.parent)
-
-    def run(
-        command: tuple[str, ...],
-        *,
-        cwd: Path | None,
-        stdout: BinaryIO,
-        stderr: BinaryIO,
-        timeout: float,
-        check: bool,
-    ) -> subprocess.CompletedProcess[bytes]:
-        limits.append(timeout)
-        if failed_stage == "inventory" or command[1:] == ("--find", "simctl"):
-            raise subprocess.TimeoutExpired(command, timeout)
-        assert command[1:] == ("simctl", "list", "devices", "available", "--json")
-        stdout.write(json.dumps({"devices": tools.devices}).encode())
-        clock[0] = 2.0
-        return subprocess.CompletedProcess(command, 0)
-
-    monkeypatch.setattr("mainboard.apple.bundle.launch.monotonic", lambda: clock[0])
-    monkeypatch.setattr("mainboard.core.execution.tool.monotonic", lambda: clock[0])
-    monkeypatch.setattr(subprocess, "run", run)
+    asked = stalling(hang)
     with pytest.raises(MissionError, match="exit 124"):
         Apple().launch(built_app, simulator="one", timeout=3)
-    assert limits == ([3.0] if failed_stage == "inventory" else [3.0, 1.0])
+    assert asked == limits
+
+
+def test_the_launch_verb_forwards_its_options(cli, built_app: Path, processes) -> None:
+    tools = LaunchTools(built_app.parent, devices=_TWINS)
+    code, out = cli(
+        Apple(tools),
+        "launch",
+        str(built_app),
+        *["--simulator", "Phone", "--os-version", "27.0", "--timeout", "60", "--json"],
+    )
+    assert code == 0 and json.loads(out)["udid"] == "one"
+    assert 0 < max(processes.seconds) <= 60

@@ -18,6 +18,7 @@ from patos import FrozenModel
 from pydantic import ConfigDict, Field
 from sqlalchemy import Table
 
+from ...constants import MILLISECONDS_PER_SECOND
 from ...core.errors import MissionError
 from ...core.project import Project
 from ...manifest.composing import composition
@@ -28,6 +29,11 @@ from ..storage.database import connect, first_line, quoted
 from .maintenance import Maintained
 from .session import Session, patiently
 from .staging import insert
+
+_DATA_PATH_UPDATE_SQL = (
+    "UPDATE ducklake_metadata SET value = ? "
+    "WHERE key = 'data_path' AND scope IS NULL AND value <> ?"
+)
 
 # Quack's own default port.
 _PORT = 9494
@@ -166,8 +172,7 @@ class Lake(Maintained):
         here = self.data.as_posix() + "/"
         with FileLock(self.lock), sqlite3.connect(self.catalog) as catalog:
             catalog.execute(
-                "UPDATE ducklake_metadata SET value = ? "
-                "WHERE key = 'data_path' AND scope IS NULL AND value <> ?",
+                _DATA_PATH_UPDATE_SQL,
                 (here, here),
             )
         catalog.close()
@@ -178,7 +183,9 @@ class Lake(Maintained):
         """Start Quack serving the lake on `served` at `uri`, each query bounded by `timeout`."""
         served.execute(f"SET GLOBAL ducklake_max_retry_count = {RETRIES}")
         served.execute("SET GLOBAL TimeZone = 'UTC'")
-        served.execute(f"SET GLOBAL max_execution_time = {math.ceil(timeout * 1000)}")
+        served.execute(
+            f"SET GLOBAL max_execution_time = {math.ceil(timeout * MILLISECONDS_PER_SECOND)}"
+        )
         self._load(served, QUACK)
         served.execute(f"CALL quack_serve({quoted(uri)}, token => {quoted(token)})")
         # A client may send the server any statement, so file access is confined to the data

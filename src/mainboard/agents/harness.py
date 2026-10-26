@@ -194,6 +194,14 @@ class Codex(Harness):
     managed = (".codex/config.toml", ".codex/hooks.json", ".codex/agents/*.toml")
 
     @staticmethod
+    def _bearer_token(*, header: str, value: str) -> str | None:
+        """The variable a `Bearer ${NAME}` authorization header names, None for other headers."""
+        referenced = Server.REFERENCE.fullmatch(value.removeprefix("Bearer "))
+        if referenced and value.startswith("Bearer ") and header.lower() == "authorization":
+            return referenced[1]
+        return None
+
+    @staticmethod
     def _local(name: str, server: Server) -> dict[str, Json]:
         literal = {
             key: value for key, value in server.env.items() if not Server.REFERENCE.search(value)
@@ -209,21 +217,26 @@ class Codex(Harness):
         )
 
     @staticmethod
+    def _named_variable(name: str, *, header: str, value: str) -> str:
+        """The variable a header reads when its whole value is `${NAME}`, refusing any other."""
+        whole = Server.REFERENCE.fullmatch(value)
+        if whole is None:
+            raise MissionError(
+                f"MCP server {name!r}: Codex sends header {header} only as a literal, a "
+                "whole `${NAME}` or `Bearer ${NAME}`"
+            )
+        return whole[1]
+
+    @staticmethod
     def _remote(name: str, server: Server) -> dict[str, Json]:
         literal, named, bearer = {}, {}, {}
         for header, value in server.headers.items():
-            referenced = Server.REFERENCE.fullmatch(value.removeprefix("Bearer "))
             if not Server.REFERENCE.search(value):
                 literal[header] = value
-            elif referenced and value.startswith("Bearer ") and header.lower() == "authorization":
-                bearer["bearer_token_env_var"] = referenced[1]
-            elif referenced and referenced[0] == value:
-                named[header] = referenced[1]
+            elif token := Codex._bearer_token(header=header, value=value):
+                bearer["bearer_token_env_var"] = token
             else:
-                raise MissionError(
-                    f"MCP server {name!r}: Codex sends header {header} only as a literal, a "
-                    "whole `${NAME}` or `Bearer ${NAME}`"
-                )
+                named[header] = Codex._named_variable(name, header=header, value=value)
         return _present(url=server.url, http_headers=literal, env_http_headers=named) | bearer
 
     def files(self, source: Source) -> dict[str, str]:

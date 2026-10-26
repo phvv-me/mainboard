@@ -5,6 +5,8 @@ from pathlib import Path
 import psutil
 from patos import FrozenModel
 
+from ....constants import BYTES_PER_KIBIBYTE
+
 _CGROUP_PROC = Path("/proc/self/cgroup")
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _V1_FILES = ("memory.limit_in_bytes", "memory.memsw.limit_in_bytes")
@@ -59,18 +61,32 @@ class CgroupMemory(FrozenModel):
         except OSError:
             return None
         records = [line.split(":", 2) for line in lines if line.count(":") >= 2]
-        for hierarchy, controllers, path in records:
-            if hierarchy == "0" and controllers == "":
-                return _CGROUP_ROOT / path.strip().lstrip("/"), (_V2_FILE,)
+        return cls._unified_membership(records) or cls._legacy_membership(records)
+
+    @property
+    def limit_gb(self) -> float:
+        """The enforced cap in gibibytes."""
+        return self.limit_bytes / BYTES_PER_KIBIBYTE**3
+
+    @staticmethod
+    def _legacy_membership(
+        records: Sequence[Sequence[str]],
+    ) -> tuple[Path, tuple[str, ...]] | None:
+        """The cgroup v1 memory controller's node and cap files, `None` without one."""
         for _, controllers, path in records:
             if "memory" in controllers.split(","):
                 return _CGROUP_ROOT / "memory" / path.strip().lstrip("/"), _V1_FILES
         return None
 
-    @property
-    def limit_gb(self) -> float:
-        """The enforced cap in gibibytes."""
-        return self.limit_bytes / 1024**3
+    @staticmethod
+    def _unified_membership(
+        records: Sequence[Sequence[str]],
+    ) -> tuple[Path, tuple[str, ...]] | None:
+        """The cgroup v2 node and cap file from the unified `0::/path` line, `None` without one."""
+        for hierarchy, controllers, path in records:
+            if hierarchy == "0" and controllers == "":
+                return _CGROUP_ROOT / path.strip().lstrip("/"), (_V2_FILE,)
+        return None
 
     @staticmethod
     def ancestors(node: Path) -> list[Path]:

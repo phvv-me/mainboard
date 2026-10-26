@@ -24,6 +24,11 @@ from ...core.execution.tool import ToolOutput, ToolRunner
 from ...log import logger
 from ..transport.core import Endpoint, HostUnreachable, SshTransport
 
+_SSH_DIR_SETUP_COMMAND = "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
+_AUTHORIZED_KEYS_PERMS_COMMAND = (
+    "chmod 600 /root/.ssh/authorized_keys && chown root:root /root/.ssh /root/.ssh/authorized_keys"
+)
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -151,11 +156,10 @@ def seeded(public: str) -> str:
     quoted = shlex.quote(public.strip())
     return "\n".join(
         (
-            "mkdir -p /root/.ssh && chmod 700 /root/.ssh",
+            _SSH_DIR_SETUP_COMMAND,
             f"grep -qxF {quoted} /root/.ssh/authorized_keys 2>/dev/null || "
             f"echo {quoted} >> /root/.ssh/authorized_keys",
-            "chmod 600 /root/.ssh/authorized_keys && "
-            "chown root:root /root/.ssh /root/.ssh/authorized_keys",
+            _AUTHORIZED_KEYS_PERMS_COMMAND,
         )
     )
 

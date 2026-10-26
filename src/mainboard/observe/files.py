@@ -6,6 +6,8 @@ from pathlib import Path
 from ..state.storage import database
 from .frames import Frame, parse_tail
 
+_PART_WIRE_ROWS_SQL = "SELECT ordinal, wire FROM read_parquet(?) ORDER BY ordinal"
+
 _PART_BYTES = 512 * 1024
 _CHUNK_BYTES = 64 * 1024
 
@@ -52,9 +54,7 @@ class FrameFile:
         if self.path.is_dir():
             parts = (self.path / "part-*.parquet").as_posix()
             with database.bare() as connection:
-                rows = connection.execute(
-                    "SELECT ordinal, wire FROM read_parquet(?) ORDER BY ordinal", [parts]
-                ).fetchall()
+                rows = connection.execute(_PART_WIRE_ROWS_SQL, [parts]).fetchall()
             if [ordinal for ordinal, _ in rows] != list(range(len(rows))):
                 raise ValueError(f"incomplete event archive: {self.path}")
             return b"".join(wire for _, wire in rows)

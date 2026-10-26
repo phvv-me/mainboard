@@ -13,6 +13,7 @@ import re
 import tomllib
 from collections.abc import Collection, Mapping
 from contextlib import suppress
+from itertools import chain
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -33,6 +34,7 @@ from .lock import packages
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ....manifest.schema.spec import Json
     from ..generated import Writer
 
 # The format this release reads and writes; a file claiming another is refused, never guessed at.
@@ -126,27 +128,8 @@ class Lockfile:
             f"{self.path.name}`), or solve it again with `{Project().name} lock `."
         )
 
-    def conda_names(self) -> dict[str, str]:
-        """Every package some environment takes from a conda channel, by canonical name.
-
-        The name is spelled as the channel spells it (`huggingface_hub` for `huggingface-hub`).
-        """
-        return {
-            canonicalize_name(found[1]): found[1]
-            for solved in self.environments().values()
-            for locations in packages(solved.lock).values()
-            for location in locations
-            if (found := _CONDA_FILE.match(PurePosixPath(urlsplit(location).path).name))
-        }
-
-    def environments(self) -> dict[str, Solved]:
-        """Every environment's solve, none when the file does not exist yet."""
-        try:
-            raw = self.path.read_bytes().decode("utf-8")
-        except FileNotFoundError:
-            return {}
-        except UnicodeDecodeError as error:
-            raise self._malformed(f"it is not UTF-8 ({error.reason})") from error
+    def _parsed_tables(self, raw: str) -> dict[str, Json]:
+        """The `environments` table of the lock's TOML, refused unless it is a version 1 lock."""
         try:
             parsed = tomllib.loads(raw)
         except tomllib.TOMLDecodeError as error:
@@ -156,22 +139,45 @@ class Lockfile:
             raise self._malformed(
                 f"it is not a version {_VERSION} lock, which is all this release reads"
             )
+        return tables
+
+    def _solved(self, name: str, table: Json, text: str | None) -> Solved:
+        """The solve `table` records for environment `name`, its lock being `text`."""
+        if (
+            not isinstance(table, dict)
+            or text is None
+            or text.replace("\r\n", "\n") != table.get("lock")
+        ):
+            raise self._malformed(f"[environments.{name}] is not in the shape it is written")
+        return Solved(
+            solved_from=str(table.get("solved_from", "")),
+            solved_by=str(table.get("solved_by", "")),
+            lock=text,
+        )
+
+    def conda_names(self) -> dict[str, str]:
+        """Every package some environment takes from a conda channel, by canonical name.
+
+        The name is spelled as the channel spells it (`huggingface_hub` for `huggingface-hub`).
+        """
+        names: dict[str, str] = {}
+        for solved in self.environments().values():
+            for location in chain.from_iterable(packages(solved.lock).values()):
+                if found := _CONDA_FILE.match(PurePosixPath(urlsplit(location).path).name):
+                    names[canonicalize_name(found[1])] = found[1]
+        return names
+
+    def environments(self) -> dict[str, Solved]:
+        """Every environment's solve, none when the file does not exist yet."""
+        try:
+            raw = self.path.read_bytes().decode("utf-8")
+        except FileNotFoundError:
+            return {}
+        except UnicodeDecodeError as error:
+            raise self._malformed(f"it is not UTF-8 ({error.reason})") from error
+        tables = self._parsed_tables(raw)
         texts = self._texts(raw)
-        found: dict[str, Solved] = {}
-        for name, table in tables.items():
-            text = texts.get(name)
-            if (
-                not isinstance(table, dict)
-                or text is None
-                or text.replace("\r\n", "\n") != table.get("lock")
-            ):
-                raise self._malformed(f"[environments.{name}] is not in the shape it is written")
-            found[name] = Solved(
-                solved_from=str(table.get("solved_from", "")),
-                solved_by=str(table.get("solved_by", "")),
-                lock=text,
-            )
-        return found
+        return {name: self._solved(name, table, texts.get(name)) for name, table in tables.items()}
 
     def get(self, environment: str) -> Solved | None:
         """`environment`'s committed solve, None when the file holds none."""
@@ -220,27 +226,16 @@ class Lockfile:
                 found[package] = str(version)
         return found
 
-    def retain(self, files: Writer, declared: Collection[str]) -> bool:
-        """Drop the sections of environments the manifest no longer declares; whether any went."""
-        environments = self.environments()
-        kept = {name: solved for name, solved in environments.items() if name in declared}
-        if len(kept) < len(environments):
-            files.write(self.path, self.render(kept))
-        return len(kept) < len(environments)
-
-    def put(
-        self, files: Writer, environment: str, solved: Solved, *, declared: Collection[str]
-    ) -> None:
-        """Record `environment`'s solve atomically, every other declared section kept as it reads.
+    def put(self, files: Writer, environment: str, solved: Solved) -> None:
+        """Record `environment`'s solve atomically, every other section kept as it reads.
 
         files: the writer holding the workspace sync lock, which serializes every
             read-modify-write of this one file across environments.
-        declared: the environments the manifest declares; a section of one it no longer declares
-            goes, so a retired environment's pins never ship (`gpu` kept a DuckDB dev build).
+
+        A compiler's manifest is projected to its own environment, so it cannot tell which others
+        are declared; dropping a retired environment's section is `retain`'s job, given them all.
         """
-        environments = {
-            name: kept for name, kept in self.environments().items() if name in declared
-        }
+        environments = self.environments()
         environments[environment] = solved
         files.write(self.path, self.render(environments))
 
@@ -288,3 +283,11 @@ class Lockfile:
                 f"lock = {_DELIMITER}\n{self._carriable(name, text=solved.lock)}{_DELIMITER}\n"
             )
         return "".join(parts)
+
+    def retain(self, files: Writer, declared: Collection[str]) -> bool:
+        """Drop the sections of environments the manifest no longer declares; whether any went."""
+        environments = self.environments()
+        kept = {name: solved for name, solved in environments.items() if name in declared}
+        if len(kept) < len(environments):
+            files.write(self.path, self.render(kept))
+        return len(kept) < len(environments)

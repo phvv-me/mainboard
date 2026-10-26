@@ -11,6 +11,8 @@ from ..core.project import Project
 from ..engines.compile.generated.activation import module_specs
 from .transport.core import BoundedSshMachine, HostUnreachable, SshTransport
 
+_HELD = """$(ps -u "$(id -u)" -o rss= | awk '{s += $1} END {print s + 0}')"""
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -52,7 +54,7 @@ def guarded(line: str, plan: ExecutionPlan) -> str:
         return line
     budget = plan.profile.login_memory_gb * _LOGIN_SHARE
     limit = int(budget * 2**20)  # KiB, the unit ps reports resident memory in
-    held = """$(ps -u "$(id -u)" -o rss= | awk '{s += $1} END {print s + 0}')"""
+    held = _HELD
     stop = (
         f"echo \"stopped: this user held $used KiB on {plan.host}'s login node, past "
         f'{budget:g} GB, {_LOGIN_SHARE:.0%} of its limit" >&2; kill -- -$pid; wait $pid; exit 137'

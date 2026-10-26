@@ -3,7 +3,7 @@ from copy import copy
 from functools import partial
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Self
 
 from ...batch.receipts import Journal
 from ...context.expressions import evaluate
@@ -17,6 +17,7 @@ from ...dispatch.transport.targets import rooted
 from ...engines.compile.provisioner import Provisioner
 from ...git import Tree
 from ...jobs.targets.target import Target
+from ...manifest.schema.root import Manifest
 from ...manuscript import Manuscript
 from ...state.storage.holds import holding
 from ..nodes import evidence_of
@@ -25,12 +26,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from ...context.plan import ExecutionPlan
-    from ...manifest.schema.root import Manifest
 
 
 # How long one manuscript build may take. A first build downloads the engine's bundle, so the
 # ceiling is minutes, and a TeX run looping on a bad macro still ends inside it.
 _PAPER_SECONDS = 900.0
+
+type Shared = Dispatcher | Manifest | Resolver
 
 
 class Workspace:
@@ -43,7 +45,7 @@ class Workspace:
         Rooted rather than left to the cwd, so a command typed in a subdirectory reads the same
         run registry, stages into the same jobs directory and mirrors the same tree.
         """
-        return self.once("dispatcher", lambda: Dispatcher(root=self.root))
+        return self.once("dispatcher", Dispatcher, lambda: Dispatcher(root=self.root))
 
     @property
     def floor(self) -> str:
@@ -63,12 +65,12 @@ class Workspace:
     @property
     def manifest(self) -> Manifest:
         """The loaded workspace manifest, shared across every `on` pivot."""
-        return self.once("manifest", lambda: holding(self.project.manifest(self.root)))
+        return self.once("manifest", Manifest, lambda: holding(self.project.manifest(self.root)))
 
     @property
     def resolver(self) -> Resolver:
         """The plan resolver over this workspace's manifest."""
-        return self.once("resolver", lambda: Resolver(self.manifest))
+        return self.once("resolver", Resolver, lambda: Resolver(self.manifest))
 
     def __init__(self, root: Path | None = None, *, host: str = "local") -> None:
         """root: the workspace root, discovered upward from the cwd when None.
@@ -78,7 +80,7 @@ class Workspace:
         self.project = Project()
         self.root = root or self.project.find_root(Path.cwd())
         self.host = host
-        self.shared: dict[str, object] = {}
+        self.shared: dict[str, Shared] = {}
         self.guard = RLock()
 
     def declares(self, host: str) -> bool:
@@ -102,8 +104,12 @@ class Workspace:
         bound.host = host
         return bound
 
-    def once[Built](self, key: str, build: Callable[[], Built]) -> Built:
+    def once[Built: Shared](
+        self, key: str, kind: type[Built], build: Callable[[], Built]
+    ) -> Built:
         """The one `key` this workspace shares, built on first ask and never a second time.
+
+        kind: the class a slot's value must be an instance of, so any other value is rebuilt.
 
         Locked because the first ask routinely comes from a worker thread (a doctor asks four
         questions at once, a survey probes a fleet in a pool), and two threads building a
@@ -113,9 +119,12 @@ class Workspace:
         from it be rebuilt (a test rewriting the manifest).
         """
         with self.guard:
-            built = self.shared.get(key) or build()
+            found = self.shared.get(key)
+            if isinstance(found, kind):
+                return found
+            built = build()
             self.shared[key] = built
-            return cast("Built", built)
+            return built
 
     def paper(self, name: str) -> Manuscript:
         """The declared manuscript `name` (`[papers.<name>]`), built through this environment."""

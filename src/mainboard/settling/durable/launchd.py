@@ -8,6 +8,7 @@ from os import environ
 from pathlib import Path
 from shutil import which
 
+from ...constants import SECONDS_PER_HOUR
 from ...core.errors import MissionError
 from ...core.execution import host
 from ...core.project import Project
@@ -54,7 +55,7 @@ class LaunchdAgent(Settler):
     @staticmethod
     def _spelled(seconds: int) -> str:
         """A period in the largest whole unit, the way `Every.parse` reads it back."""
-        for suffix, size in (("h", 3600), ("m", 60)):
+        for suffix, size in (("h", SECONDS_PER_HOUR), ("m", 60)):
             if seconds and seconds % size == 0:
                 return f"{seconds // size}{suffix}"
         return f"{seconds}s"
@@ -73,15 +74,19 @@ class LaunchdAgent(Settler):
         self.agents = agents or Path.home() / "Library" / "LaunchAgents"
         self.shell = shell
 
-    def install(self, every: Every) -> Settling:
-        """Write the agent and load it afresh, so changing the period is the same command."""
-        command = self._pass("an agent")
+    def _require_loopback(self) -> None:
+        """Refuse to install unless `ssh localhost` logs in, since the pass runs over it."""
         status, output = self.shell((*_LOOPBACK, "true"))
         if status:
             raise MissionError(
                 f"`ssh localhost` failed ({complaint(output)}), and the pass runs there to reach "
                 "the lake; allow Remote Login with Full Disk Access and a key login to this Mac"
             )
+
+    def install(self, every: Every) -> Settling:
+        """Write the agent and load it afresh, so changing the period is the same command."""
+        command = self._pass("an agent")
+        self._require_loopback()
         self.agents.mkdir(parents=True, exist_ok=True)
         self.log.parent.mkdir(parents=True, exist_ok=True)
         agent = {

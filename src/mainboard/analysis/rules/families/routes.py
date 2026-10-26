@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 from ...catalog import Family, Function
 from ...engine.facts import listed
 
+_ROUTE_CORPUS_TABLE_SQL = "CREATE TABLE route_corpus (path VARCHAR)"
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -238,6 +240,6 @@ class Route(Family):
         `source_files` then reads them.
         """
         paths = [path for path in listed(root) if path.rsplit(".", 1)[-1] in _SUFFIXES]
-        facts.db.execute("CREATE TABLE route_corpus (path VARCHAR)")
+        facts.db.execute(_ROUTE_CORPUS_TABLE_SQL)
         if paths:
             facts.db.executemany("INSERT INTO route_corpus VALUES (?)", [(p,) for p in paths])

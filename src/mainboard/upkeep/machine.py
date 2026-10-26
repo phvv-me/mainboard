@@ -20,16 +20,12 @@ from pathlib import Path
 
 from patos import FrozenModel
 
+from ..constants import ASK_SECONDS, BYTES_PER_GB, SECONDS_PER_DAY
 from ..core.execution import host
 from ..core.project import Project
 from ..core.section import Section, Verdict
 from ..log import logger
 from . import staleness
-
-# How long one manager may take to say what is pending before the audit calls it unknown. A
-# manager whose daemon is unreachable keeps retrying for minutes (`snap` without snapd's socket),
-# so the audit takes at most this long per manager, whatever the machine can reach.
-_ASK_SECONDS = 30
 
 # Below this share of the home filesystem free, the audit warns.
 _FREE_FLOOR = 0.10
@@ -141,7 +137,7 @@ def _ask(argv: Sequence[str]) -> str | None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=_ASK_SECONDS,
+            timeout=ASK_SECONDS,
             check=False,
             env={**os.environ, "PIXI_HOME": str(_pixi_home())},
         )
@@ -155,7 +151,7 @@ def _unknown(name: str, argv: Sequence[str]) -> Section:
     return Section(
         section=name,
         verdict=Verdict.WARN,
-        detail=f"unknown, no answer in {_ASK_SECONDS} s",
+        detail=f"unknown, no answer in {ASK_SECONDS} s",
         fix=shlex.join(argv),
     )
 
@@ -169,7 +165,7 @@ def audit() -> list[Section]:
 
     A row that warns names the command that fixes it; `host upgrade` runs every such command
     except firmware, which is the owner's to schedule. A manager that does not answer within
-    `_ASK_SECONDS` warns as unknown instead, naming the command to run by hand.
+    `ASK_SECONDS` warns as unknown instead, naming the command to run by hand.
     """
     rows: list[Section | None] = [_system()]
     for manager in _present():
@@ -252,7 +248,7 @@ def _apt_lists() -> Section | None:
     stamp = Path("/var/cache/apt/pkgcache.bin")
     if not stamp.exists():
         return None
-    days = (time.time() - stamp.stat().st_mtime) / 86400
+    days = (time.time() - stamp.stat().st_mtime) / SECONDS_PER_DAY
     stale = days > _LISTS_DAYS
     return Section(
         section="apt lists",
@@ -282,7 +278,7 @@ def _disk() -> Section:
     return Section(
         section="disk",
         verdict=Verdict.WARN if share < _FREE_FLOOR else Verdict.PASS,
-        detail=f"{usage.free / 1e9:.0f} GB free ({share:.0%})",
+        detail=f"{usage.free / BYTES_PER_GB:.0f} GB free ({share:.0%})",
         fix="pixi clean cache; uv cache prune; docker system prune" if share < _FREE_FLOOR else "",
     )
 

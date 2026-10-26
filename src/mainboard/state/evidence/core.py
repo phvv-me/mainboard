@@ -80,6 +80,15 @@ class Evidence(Keeping):
             return "", "missing"
         return digest, "identical" if digest == row.sha256 else "changed"
 
+    def _prune_folders(self, source: Path) -> None:
+        """Remove the folders the evicted `source` leaves empty, the workspace root never.
+
+        The root is never removed, holding its manifest.
+        """
+        for folder in source.relative_to(self.root).parents[:-1]:
+            with suppress(OSError):
+                (self.root / folder).rmdir()
+
     def _vacated(self, item: Inventory, closed: Identity) -> bool:
         owned = OwnedFile(self.root / item.path, root=self.root)
         with owned.quarantine() as isolated:
@@ -148,11 +157,7 @@ class Evidence(Keeping):
             if item.evictable and self._evict(item, closed[source]):
                 evicted.append(source)
         for source in evicted:
-            # Folders the file leaves empty go too; the workspace root never is, holding its
-            # manifest.
-            for folder in source.relative_to(self.root).parents[:-1]:
-                with suppress(OSError):
-                    (self.root / folder).rmdir()
+            self._prune_folders(source)
         return evicted
 
     def inventory(self, paths: Sequence[Path]) -> list[Inventory]:

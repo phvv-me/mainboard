@@ -265,6 +265,23 @@ class Gate:
         )
         return sum("::" in line for line in listed.stdout.splitlines())
 
+    def _coverage(self, mode: str) -> list[str]:
+        """The pytest-cov options that write the run's branch coverage of the source to the report.
+
+        `MB_GATE_COVERAGE=1` asks for them; plugin autoload is off, so the plugin loads by name.
+        """
+        return (
+            [
+                "-p",
+                "pytest_cov",
+                f"--cov={self.tree / 'src/mainboard'}",
+                "--cov-branch",
+                f"--cov-report=json:{self.report / f'{mode}.coverage.json'}",
+            ]
+            if os.environ.get("MB_GATE_COVERAGE")
+            else []
+        )
+
     def _environment(self) -> dict[str, str]:
         """The worker's environment, rebuilt from an allowlist, every state path in the root."""
         environment = {key: os.environ[key] for key in _INHERITED if key in os.environ}
@@ -344,16 +361,20 @@ class Gate:
         if not self._preflight():
             return 78
         self._seed_extensions()
-        command = [
-            sys.executable,
-            "-m",
-            "pytest",
-            *self._arguments(),
-            "--junitxml",
-            str(self.report / f"{mode}.xml"),
-            *(str(self.tree / node) for node in selection or ["integration"]),
-        ]
-        return self._execute(mode, command, self.budget)
+        return self._execute(
+            mode,
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                *self._arguments(),
+                *self._coverage(mode),
+                "--junitxml",
+                str(self.report / f"{mode}.xml"),
+                *(str(self.tree / node) for node in selection or ["integration"]),
+            ],
+            self.budget,
+        )
 
     def _refuse_children(self) -> None:
         guard = Guard.from_environment()

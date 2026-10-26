@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 from pydantic import Field
 
+from ..constants import BYTES_PER_GB
 from ..core.errors import MissionError
 from ..core.section import Verdict
 from ..dispatch.backends.base import Account, Credentials, Inventory, ProviderBackend, route
@@ -93,7 +94,7 @@ class ComputePath(FrozenModel):
 def summary(facts: HostFacts) -> str:
     """One line naming what a machine has, its GPUs by model then its memory."""
     counted = Counter(gpu.name for gpu in facts.gpus)
-    memory = f"{facts.memory_total_bytes / 1e9:.0f} GB RAM"
+    memory = f"{facts.memory_total_bytes / BYTES_PER_GB:.0f} GB RAM"
     return ", ".join([*(f"{count}x {name}" for name, count in counted.items()), memory])
 
 

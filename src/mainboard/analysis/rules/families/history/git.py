@@ -15,6 +15,11 @@ from patos import FrozenModel
 
 from ....engine.facts import Facts
 
+_TOUCHED_NAMES_SQL = (
+    "SELECT DISTINCT name FROM git_entries WHERE name IN (SELECT unnest($listed::VARCHAR[]))"
+)
+_GIT_FILES_TABLE_SQL = "CREATE TABLE git_files AS SELECT unnest($names::VARCHAR[]) AS path"
+
 _LOG = [
     "log",
     "-M",
@@ -63,23 +68,28 @@ class GitLog(FrozenModel):
             timeout=self.seconds,
         ).stdout.decode(errors="replace")
 
+    def _history(self) -> tuple[str, list[str]]:
+        """`git log`'s text and the files git lists, both empty when git fails."""
+        try:
+            return (
+                self._git("-c", "core.quotePath=false", *_LOG),
+                self._git("-c", "core.quotePath=false", *_LISTED).split("\0"),
+            )
+        except subprocess.CalledProcessError:
+            return "", []
+
     def register(self, facts: Facts) -> None:
         """Create `git_commits`, `git_entries` and `git_files` in `facts`."""
-        try:
-            log = self._git("-c", "core.quotePath=false", *_LOG)
-            listed = self._git("-c", "core.quotePath=false", *_LISTED).split("\0")
-        except subprocess.CalledProcessError:
-            log, listed = "", []
+        log, listed = self._history()
         facts.db.execute(_TABLES[0], {"log": log})
         for statement in _TABLES[1:]:
             facts.db.execute(statement)
         suffixes = tuple(s for ends in Facts.SUFFIXES.values() for s in ends)
         touched = facts.db.execute(
-            "SELECT DISTINCT name FROM git_entries "
-            "WHERE name IN (SELECT unnest($listed::VARCHAR[]))",
+            _TOUCHED_NAMES_SQL,
             {"listed": [name for name in listed if name.lower().endswith(suffixes)]},
         ).fetchall()
         facts.db.execute(
-            "CREATE TABLE git_files AS SELECT unnest($names::VARCHAR[]) AS path",
+            _GIT_FILES_TABLE_SQL,
             {"names": [name for (name,) in touched if (self.root / name).is_file()]},
         )

@@ -78,21 +78,52 @@ def check(package: Path | None = None) -> Snapshot:
     if root is None:
         return Snapshot(installed=False, detail="running from source")
     try:
-        declared = tomllib.loads((root / _RECEIPT).read_text(encoding="utf-8"))
-        requirement = next(
-            entry
-            for entry in declared["tool"]["requirements"]
-            if entry.get("name") == Project().package and "directory" in entry
-        )
+        directory, extras, python = _receipt(root)
     except OSError, tomllib.TOMLDecodeError, KeyError, StopIteration:
         return Snapshot(installed=True, detail="the uv receipt names no source directory")
-    package = root.joinpath(requirement["directory"]).resolve()
+    package = root.joinpath(directory).resolve()
     source = package / "src"
     if not source.is_dir():
         return Snapshot(installed=True, detail=f"no source tree at {source}")
-    extras = ",".join(requirement.get("extras") or [_EXTRA])
-    interpreter = _durable_interpreter(declared["tool"].get("python"))
-    uv = (
+    tree = _digest(source)
+    recorded = _recorded(root / _STATE)
+    stale = recorded != tree
+    return Snapshot(
+        installed=True,
+        stale=stale,
+        detail=_detail(package, stale=stale, recorded=recorded),
+        uv=_reinstall(package, extras, python),
+        source=package,
+        tool=root,
+        digest=tree,
+    )
+
+
+def _detail(package: Path, *, stale: bool, recorded: str) -> str:
+    """The state of `package` against the digest its snapshot was installed from."""
+    if not stale:
+        return f"current with {package}"
+    if recorded:
+        return f"the source at {package} changed since this snapshot was installed"
+    return f"nothing records which state of {package} this snapshot was installed from"
+
+
+def _receipt(root: Path) -> tuple[str, list[str], str | None]:
+    """The source, extras and interpreter the uv receipt in `root` gives this package."""
+    declared = tomllib.loads((root / _RECEIPT).read_text(encoding="utf-8"))
+    requirement = next(
+        entry
+        for entry in declared["tool"]["requirements"]
+        if entry.get("name") == Project().package and "directory" in entry
+    )
+    extras = requirement.get("extras") or [_EXTRA]
+    return requirement["directory"], extras, declared["tool"].get("python")
+
+
+def _reinstall(package: Path, extras: list[str], python: str | None) -> tuple[str, ...]:
+    """The uv argv reinstalling `package` with `extras` into the snapshot's own tool directory."""
+    interpreter = _durable_interpreter(python)
+    return (
         "uv",
         "tool",
         "install",
@@ -100,26 +131,9 @@ def check(package: Path | None = None) -> Snapshot:
         Project().package,
         *(("--python", str(interpreter)) if interpreter else ()),
         "--from",
-        f"{package}[{extras}]",
+        f"{package}[{','.join(extras)}]",
         Project().package,
         "--force",
-    )
-    tree = _digest(source)
-    recorded = _recorded(root / _STATE)
-    stale = recorded != tree
-    detail = (
-        f"the source at {package} changed since this snapshot was installed"
-        if recorded
-        else f"nothing records which state of {package} this snapshot was installed from"
-    )
-    return Snapshot(
-        installed=True,
-        stale=stale,
-        detail=detail if stale else f"current with {package}",
-        uv=uv,
-        source=package,
-        tool=root,
-        digest=tree,
     )
 
 

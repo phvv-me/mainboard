@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from functools import cached_property, partial
+from itertools import zip_longest
 from pathlib import Path, PurePosixPath
 
 import duckdb
@@ -117,6 +118,11 @@ def _media_type(path: Path, head: bytes) -> str:
     return named or (_PARQUET if head == _MAGIC else "application/octet-stream")
 
 
+def _first(values: Iterable[str]) -> str:
+    """The first non-empty of `values`, empty when none is."""
+    return next((value for value in values if value), "")
+
+
 def _labels(path: str) -> dict[str, str]:
     """The project, node and run a workspace-relative evidence path names.
 
@@ -124,19 +130,25 @@ def _labels(path: str) -> dict[str, str]:
     at the workspace root), the node the directory under `experiments`, and the run a `run=<id>`
     directory's id or the directory under `artifacts`; each empty where the path names none.
     """
-    parts = PurePosixPath(path).parts[:-1]
-    project = node = run = ""
-    for index, part in enumerate(parts):
-        following = parts[index + 1] if index + 1 < len(parts) else ""
-        if part in {"datasets", "experiments"} and not (project or node):
-            project = parts[index - 1] if index else ""
-        if part == "experiments" and not node:
-            node = following
-        if part.startswith("run=") and not run:
-            run = part.removeprefix("run=")
-        if part == "artifacts" and not run:
-            run = following
-    return {"project": project, "node": node, "run": run}
+    directories = PurePosixPath(path).parts[:-1]
+    steps = list(zip_longest(directories, directories[1:], fillvalue=""))
+    ceiling = next(
+        (index for index, (part, after) in enumerate(steps) if part == "experiments" and after),
+        len(directories),
+    )
+    return {
+        "project": _first(
+            directories[index - 1]
+            for index, part in enumerate(directories[: ceiling + 1])
+            if index and part in {"datasets", "experiments"}
+        ),
+        "node": _first(after for part, after in steps if part == "experiments"),
+        "run": _first(
+            part.removeprefix("run=") if part.startswith("run=") else after
+            for part, after in steps
+            if part.startswith("run=") or part == "artifacts"
+        ),
+    }
 
 
 class Keeping:
@@ -209,6 +221,32 @@ class Keeping:
             within(root or self.root, path=path)
             found.update(tree_of(path, root=root or self.root))
         return sorted(found)
+
+    def _keep_window(
+        self,
+        window: Sequence[Path],
+        *,
+        base: Path,
+        current: Mapping[str, str],
+        pool: ThreadPoolExecutor,
+    ) -> list[_Entry]:
+        """Read one window of files and commit each object or index row the lake lacks.
+
+        Answers the entries committed, each marked new when its object was not held.
+        """
+        batch = list(pool.map(partial(self._read, base=base), window))
+        held = self.session.run(
+            partial(self.blobs.held, digests={entry.sha256 for entry in batch})
+        )
+        entries: list[_Entry] = []
+        for entry in batch:
+            new = entry.sha256 not in held
+            held.add(entry.sha256)
+            if new or current.get(entry.path) != entry.sha256:
+                entries.append(entry.model_copy(update={"new": new}))
+        if entries:
+            self.lake.transact(partial(self._commit, group=entries))
+        return entries
 
     def _read(self, source: Path, *, base: Path) -> _Entry:
         """Read `source` once, through its folders under `base` and without following a link.
@@ -322,8 +360,7 @@ class Keeping:
         base = staged or self.root
         sources = self._files(given, root=base)
         self.lake.ready()
-        index = schema.evidence
-        current = dict(self.session.rows(select(index.c.path, index.c.sha256)))
+        current = dict(self.session.rows(select(schema.evidence.c.path, schema.evidence.c.sha256)))
         indexed = objects = size = 0
         with ThreadPoolExecutor(max_workers=READERS) as pool:
             # Each window of files is read, then committed as one insert, so memory stays
@@ -331,18 +368,7 @@ class Keeping:
             for window in windows(
                 sources, lambda source: source.stat().st_size, blobs.Blobs.STAGED_BYTES
             ):
-                batch = list(pool.map(partial(self._read, base=base), window))
-                held = self.session.run(
-                    partial(self.blobs.held, digests={entry.sha256 for entry in batch})
-                )
-                entries: list[_Entry] = []
-                for entry in batch:
-                    new = entry.sha256 not in held
-                    held.add(entry.sha256)
-                    if new or current.get(entry.path) != entry.sha256:
-                        entries.append(entry.model_copy(update={"new": new}))
-                if entries:
-                    self.lake.transact(partial(self._commit, group=entries))
+                entries = self._keep_window(window, base=base, current=current, pool=pool)
                 indexed += len(entries)
                 objects += sum(entry.new for entry in entries)
                 size += sum(entry.size for entry in entries if entry.new)

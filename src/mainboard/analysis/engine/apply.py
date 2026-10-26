@@ -9,6 +9,7 @@ wait.
 import ast
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from functools import singledispatchmethod
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,51 @@ class Plan:
 
     # How many findings' edits the pass put off, since they collided with edits it took.
     deferred = 0
+
+    @singledispatchmethod
+    def _anchored(self, edit: Edit) -> list[TextEdit]:
+        """The byte edits of an edit placed by an anchor, none for one that changes no text."""
+        raise TypeError(f"no expansion for edit kind {edit.kind}")
+
+    @_anchored.register
+    def _appended(self, edit: Append) -> list[TextEdit]:
+        source = self.source(edit.path)
+        end = len(source.data)
+        parted = source.data and not source.data.endswith(b"\n")
+        data = (source.newline if parted else b"") + source.encode(edit.text)
+        return [TextEdit(path=edit.path, start=end, end=end, text=data, stacks=True)]
+
+    @_anchored.register
+    def _created(self, edit: Create) -> list[TextEdit]:
+        return [TextEdit(path=edit.path, start=0, end=0, text=edit.text.encode())]
+
+    @_anchored.register
+    def _inserted(self, edit: Insert) -> list[TextEdit]:
+        anchor = edit.anchor()
+        source = self.source(anchor.path)
+        start = source.starts[anchor.start_line - 1] if edit.before else source.lines(anchor)[1]
+        indent = source.indent(anchor.start_line)
+        lines = b"".join(
+            indent + source.encode(line) + source.newline for line in edit.text.splitlines()
+        )
+        return [TextEdit(path=anchor.path, start=start, end=start, text=lines)]
+
+    @_anchored.register
+    def _moved(self, edit: Move) -> list[TextEdit]:
+        source = self.source(edit.span.path)
+        start, end = source.lines(edit.span)
+        width = len(source.indent(edit.span.start_line))
+        moved = "".join(
+            line[width:].decode() + "\n" for line in source.data[start:end].splitlines()
+        )
+        return [
+            TextEdit(path=edit.span.path, start=start, end=end, text=b""),
+            *self._expand(Insert(text=moved, before=edit.before, after=edit.after)),
+        ]
+
+    @_anchored.register
+    def _textless(self, edit: Remove | Import | Rename) -> list[TextEdit]:
+        return []
 
     @staticmethod
     def _collide(one: TextEdit, *, other: TextEdit) -> bool:
@@ -96,41 +142,6 @@ class Plan:
         self.imports: defaultdict[str, set[str]] = defaultdict(set)
         self._by_path: dict[str, list[TextEdit]] | None = None
         self._written: dict[str, bytes] | None = None
-
-    def _anchored(self, edit: Edit) -> list[TextEdit]:
-        """The byte edits of an edit placed by an anchor, none for one that changes no text."""
-        match edit:
-            case Insert(text=text, before=before) as insert:
-                anchor = insert.anchor()
-                source = self.source(anchor.path)
-                start = source.starts[anchor.start_line - 1] if before else source.lines(anchor)[1]
-                indent = source.indent(anchor.start_line)
-                lines = b"".join(
-                    indent + source.encode(line) + source.newline for line in text.splitlines()
-                )
-                return [TextEdit(path=anchor.path, start=start, end=start, text=lines)]
-            case Move(span=span, before=before, after=after):
-                source = self.source(span.path)
-                start, end = source.lines(span)
-                width = len(source.indent(span.start_line))
-                moved = "".join(
-                    line[width:].decode() + "\n" for line in source.data[start:end].splitlines()
-                )
-                return [
-                    TextEdit(path=span.path, start=start, end=end, text=b""),
-                    *self._expand(Insert(text=moved, before=before, after=after)),
-                ]
-            case Remove() | Import() | Rename():
-                return []
-            case Create(path=path, text=text):
-                return [TextEdit(path=path, start=0, end=0, text=text.encode())]
-            case Append(path=path, text=text):
-                source = self.source(path)
-                end = len(source.data)
-                parted = source.data and not source.data.endswith(b"\n")
-                data = (source.newline if parted else b"") + source.encode(text)
-                return [TextEdit(path=path, start=end, end=end, text=data, stacks=True)]
-        raise TypeError(f"no expansion for edit kind {edit.kind}")
 
     def _collides(self, edits: Sequence[Edit], expanded: Sequence[TextEdit]) -> bool:
         """Whether one finding's edits clash with what the plan already holds.

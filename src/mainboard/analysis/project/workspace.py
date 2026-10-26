@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 
 from pathspec import GitIgnoreSpec
 
+from ...core.project import Project
 from ...lint.files.git import topmost
 from ..engine.facts import listed, vendored
 
@@ -54,7 +55,7 @@ class Workspace:
         if self.top is None:
             return []
         try:
-            table = tomllib.loads((self.top / "mainboard.toml").read_text()).get("lint", {})
+            table = tomllib.loads(Project().manifest(self.top).read_text()).get("lint", {})
         except FileNotFoundError:
             return []
         excluded = GitIgnoreSpec.from_lines(table.get("exclude", ()))

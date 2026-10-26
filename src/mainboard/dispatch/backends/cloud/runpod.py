@@ -14,6 +14,11 @@ from ...hosts.rentals import seeded
 from .api import CloudApi, Machine
 from .core import CloudBackend
 
+_SSHD_INSTALL_COMMAND = (
+    "command -v sshd >/dev/null || (apt-get update -qq && apt-get install -y -qq "
+    "openssh-server curl ca-certificates >/dev/null)"
+)
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -64,8 +69,7 @@ class RunPodApi(CloudApi):
         return "\n".join(
             (
                 "export DEBIAN_FRONTEND=noninteractive",
-                "command -v sshd >/dev/null || (apt-get update -qq && apt-get install -y -qq "
-                "openssh-server curl ca-certificates >/dev/null)",
+                _SSHD_INSTALL_COMMAND,
                 "mkdir -p /run/sshd && ssh-keygen -A",
                 seeded(public_key),
                 "/usr/sbin/sshd",

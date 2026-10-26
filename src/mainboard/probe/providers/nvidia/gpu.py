@@ -3,6 +3,7 @@ from contextlib import suppress
 from functools import cached_property
 from itertools import takewhile
 
+from ....constants import BYTES_PER_GB
 from ....log import logger
 from ...enums import Vendor
 from ...facts.devices.telemetry import Energy, Telemetry, Thermal, UnitProcess
@@ -18,6 +19,10 @@ from .protocols import (  # ruff: ignore[typing-only-first-party-import] reason=
     NvmlHandle,
     SystemDevice,
 )
+
+_HZ_PER_MHZ = 1e6
+_KHZ_PER_MHZ = 1000
+_MILLIWATTS_PER_WATT = 1000.0
 
 
 def _bus_key(bus_id: str) -> str:
@@ -160,7 +165,7 @@ class NvidiaGPU(GPU):
             nvml = self.apis.nvml
             clock_mhz = nvml.device_get_max_clock_info(self.handle, nvml.ClockType.CLOCK_MEM)
             bus_bytes = nvml.device_get_memory_bus_width(self.handle) / 8
-            return clock_mhz * 1e6 * 2 * bus_bytes / 1e9
+            return clock_mhz * _HZ_PER_MHZ * 2 * bus_bytes / BYTES_PER_GB
         return 0.0
 
     @cached_property
@@ -168,7 +173,9 @@ class NvidiaGPU(GPU):
         """The maximum SM clock NVML reports, in kHz; 0 when NVML cannot say."""
         with suppress(*self.apis.nvml_errors):
             nvml = self.apis.nvml
-            return nvml.device_get_max_clock_info(self.handle, nvml.ClockType.CLOCK_SM) * 1000
+            return (
+                nvml.device_get_max_clock_info(self.handle, nvml.ClockType.CLOCK_SM) * _KHZ_PER_MHZ
+            )
         return 0
 
     @cached_property
@@ -177,7 +184,7 @@ class NvidiaGPU(GPU):
         if (runtime := self.apis.runtime) is None:
             return None
         _, raw = runtime.cudaRuntimeGetVersion()
-        return (raw // 1000, (raw % 1000) // 10)
+        return (raw // _KHZ_PER_MHZ, (raw % _KHZ_PER_MHZ) // 10)
 
     @cached_property
     def system_api(self) -> CoreSystem:
@@ -303,7 +310,7 @@ class NvidiaGPU(GPU):
     def power_w(self) -> float:
         """Instantaneous power draw in watts, 0.0 when NVML will not report it."""
         with suppress(*self.apis.nvml_errors):
-            return self.apis.nvml.device_get_power_usage(self.handle) / 1000.0
+            return self.apis.nvml.device_get_power_usage(self.handle) / _MILLIWATTS_PER_WATT
         return 0.0
 
     def processes(self) -> tuple[UnitProcess, ...]:

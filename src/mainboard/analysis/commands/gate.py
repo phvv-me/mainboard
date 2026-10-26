@@ -135,10 +135,10 @@ def gate(
     root = root.resolve()
     names = _named(root, files)
     with Pass(root, _selected(skip, rule), names, memory=memory, fixing=fix) as lint:
-        db = lint.facts(root)
-        if fix and any(lint.repairs(db, _SAFE).values()):
-            db = lint.repair(root)
-        found = lint.reported(db)
+        facts = lint.facts(root)
+        if fix and any(lint.repairs(facts, _SAFE).values()):
+            facts = lint.repair(root)
+        found = lint.reported(facts)
         fresh = Seen(root).fresh(found, names)
         found = fresh if new else found
         refused = lint.refused

@@ -1,3 +1,4 @@
+from ....constants import BYTES_PER_KIBIBYTE
 from ..constants import SKIP_PREFIXES, SYS_BLOCK
 from . import drive_info as drive_info_mod
 from .drive_info import DriveInfo
@@ -32,4 +33,4 @@ class HostDisk:
     @property
     def total_gb(self) -> float:
         """Combined raw capacity of all drives in gibibytes."""
-        return self.total_bytes / 1024**3
+        return self.total_bytes / BYTES_PER_KIBIBYTE**3

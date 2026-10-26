@@ -3,8 +3,9 @@ import shlex
 from enum import StrEnum, auto
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
+from ...constants import SSH_FAMILY
 from ...context.admission import admit
 from ...core.errors import MissionError
 from ...core.execution.shell import become, interactive_shell
@@ -40,9 +41,6 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...dispatch.shared import Watcher
-
-
-_SSH_FAMILY: Final = "ssh-family"
 
 # An interactive session as the host's profile shapes it, one node, not held.
 _ALLOCATION = Allocation()
@@ -286,7 +284,7 @@ class Environments(Workspace):
                 "this machine."
             )
         plan = self.plan(env=env, container="none")
-        if route(plan.profile.kind) != _SSH_FAMILY:
+        if route(plan.profile.kind) != SSH_FAMILY:
             raise MissionError(
                 f"host {self.host!r} rents instances through {plan.profile.kind!r} and hands "
                 f"out no terminal. Run `{self.project.name} job submit --on {self.host}` instead."

@@ -100,6 +100,8 @@ dev = [
     # The plotting layer and the search driver are extras for consumers but part of the source
     # the type checkers read, so the gate installs them the way such a workspace would.
     "mainboard[plot,adversarial,search]",
+    # The lake tests compare a printed document by the shape of its fields (`IsJson`, `IsStr`).
+    "dirty-equals>=0.11",
     "mypy>=1.11",
     "pyrefly>=1",
     "pytest>=8.0",
@@ -558,6 +560,13 @@ exclude = [
   "src/mainboard/probe/facts/storage/partition_info.py",
   "src/mainboard/profile/providers/nvidia/delivery.py",
 ]
+
+# Where each test folder that names no source package goes, decided once by the owner: the first
+# folder under `integration/` must be a package or module of `src/mainboard`, and a leaf name
+# several packages share (`lake`, `evidence`, `workspace`) cannot pick one. `machines` is left
+# unresolved on purpose, since its one same-named package (`verbs/machines`) is a false match.
+[tool.mcmr.rules."ALL-TEST0004"]
+targets = { lake = "state/lake", evidence = "state/evidence", environments = "engines/environments", workspace = "verbs/workspace", swift = "analysis/swift", reverse = "probe/reverse", machines = "" }
 
 # Without this table pyrefly walks upward looking for one and adopts whatever manifest it finds,
 # which inside a monorepo checkout means scanning the whole tree. Naming the package's own source

@@ -186,25 +186,27 @@ class MoveDefinitions(Operation):
     def edits(self, row: Mapping) -> list[Edit] | None:
         move = Relocation(row, literal=self.literal)
         if not (blocks := move.blocks()):
-            return self.refused(
+            self.refused(
                 "a definition is no top-level statement of its own, or the destination defines "
                 "its name otherwise"
             )
+            return None
         if (carried := move.carried(blocks)) is None:
-            return self.refused(
+            self.refused(
                 "a definition reads a top-level name of its module that stays, or a project "
                 "import made for type checking only"
             )
+            return None
         if None in (
             changes := MoveDefinitions._rewritten(row, blocks, destination=move.there.module)
         ):
-            return self.refused(
+            self.refused(
                 "an importer binds the module in a way the move cannot follow (`import a as b`)"
             )
+            return None
         if move.cycles(blocks):
-            return self.refused(
-                "the destination imports from the module, which would import it back"
-            )
+            self.refused("the destination imports from the module, which would import it back")
+            return None
         rewritten = (edit for edits in changes if edits for edit in edits)
         return [*move.arrival(blocks, carried), *move.departure(blocks), *rewritten]
 

@@ -10,6 +10,8 @@ from patos import FrozenModel
 
 from .formats.protocols import KernelActivity, MemcpyActivity
 
+_NANOSECONDS_PER_MICROSECOND = 1000.0
+
 
 class Activity(Flag):
     """The activity kinds to trace, combined with `|`, each mapped to a vendor's native kind.
@@ -91,7 +93,7 @@ class KernelTrace(FrozenModel):
 
     @property
     def duration_us(self) -> float:
-        return self.duration_ns / 1000.0
+        return self.duration_ns / _NANOSECONDS_PER_MICROSECOND
 
     @property
     def occupancy_pct(self) -> float:

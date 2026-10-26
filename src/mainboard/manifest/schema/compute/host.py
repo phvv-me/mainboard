@@ -27,15 +27,22 @@ class Sync(Declared):
     def shipped(self, root: Path) -> list[str]:
         """What a mirror ships from workspace `root`: the include, plus the committed lock.
 
+        An include naming any manifest (`mainboard.toml`) ships the one the workspace holds
+        (`mb.toml`), so a rename never stops the manifest travelling.
+
         The lock goes wherever the manifest goes, since a host installs nothing without it and a
         lock reached only through a link back to the mirror reads as source escaping the pinned
         tree.
         """
         project = Project()
+        own = project.manifest(root).name
+        include = list(
+            dict.fromkeys(own if name in project.manifests else name for name in self.include)
+        )
         lock = project.lock(root).name
-        if lock in self.include or not any(name in self.include for name in project.manifests):
-            return list(self.include)
-        return [*self.include, lock] if (root / lock).is_file() else list(self.include)
+        if lock in include or own not in include:
+            return include
+        return [*include, lock] if (root / lock).is_file() else include
 
 
 class HostProfile(Declared):

@@ -13,8 +13,9 @@ strings is kept with its values.
 
 import re
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import suppress
+from datetime import date, time
 from itertools import takewhile
 from pathlib import Path
 
@@ -26,8 +27,16 @@ from ....catalog import Family, Function
 from ....engine.facts import Facts, project_files
 from ....project.config import ProjectConfig
 
+_MANIFEST_REQUIREMENTS_EXISTS_SQL = (
+    "SELECT 1 FROM duckdb_tables() WHERE table_name = 'manifest_requirements'"
+)
+_MANIFEST_RULE_EXCLUDES_INSERT_SQL = "INSERT INTO manifest_rule_excludes VALUES (?, ?, ?, ?)"
+_MANIFEST_REQUIREMENTS_INSERT_SQL = "INSERT INTO manifest_requirements VALUES (?)"
+
 _CHECKERS = ("ruff", "pyrefly", "ty", "mypy", "pyright", "basedpyright")
 _TARGET_KEYS = ("target-version", "python_version", "python-version", "pythonVersion")
+
+type TomlValue = str | int | float | bool | date | time | list[TomlValue] | dict[str, TomlValue]
 
 
 class ProjectManifest(FrozenModel):
@@ -35,6 +44,31 @@ class ProjectManifest(FrozenModel):
     it inherits when it has none. Every table holds specifier text for `project_minor` to read."""
 
     root: Path
+
+    @staticmethod
+    def _create_tables(facts: Facts) -> None:
+        """Create the four manifest tables in `facts`, empty."""
+        for name, columns in (
+            ("manifest_requirements", "declaration VARCHAR"),
+            ("manifest_tools", "tool VARCHAR, declaration VARCHAR"),
+            ("manifest_file_targets", "pattern VARCHAR, declaration VARCHAR"),
+            (
+                "manifest_rule_excludes",
+                "path VARCHAR, line INTEGER, rule VARCHAR, pattern VARCHAR",
+            ),
+        ):
+            facts.db.execute(f"CREATE TABLE {name} ({columns})")
+
+    @staticmethod
+    def _declaration(target: Sequence[TomlValue], inherited: str | None) -> str | None:
+        """The text a tool's target states: its own when a string, else `inherited`, else None."""
+        match target:
+            case ():
+                return inherited
+            case (str() as declaration,):
+                return declaration
+            case _:
+                return None
 
     @staticmethod
     def _file_targets(tools: Mapping) -> list[tuple[str, str]]:
@@ -59,12 +93,7 @@ class ProjectManifest(FrozenModel):
         owned = (
             (name, number)
             for name, lines in manifests
-            for start, opening in enumerate(lines, 1)
-            if header.fullmatch(opening.strip())
-            for number, line in enumerate(
-                takewhile(lambda line: not line.lstrip().startswith("["), lines[start:]),
-                start + 1,
-            )
+            for number, line in ProjectManifest._table_lines(lines, header)
             if quoted in line
         )
         anywhere = (
@@ -87,7 +116,15 @@ class ProjectManifest(FrozenModel):
         return requires if isinstance(requires, str) else ""
 
     @staticmethod
-    def _target(settings: object) -> tuple[object, ...]:
+    def _table_lines(lines: Sequence[str], header: re.Pattern[str]) -> Iterator[tuple[int, str]]:
+        """Each (number, text) line of the tables `header` opens, numbered from one."""
+        for start, opening in enumerate(lines, 1):
+            if header.fullmatch(opening.strip()):
+                body = takewhile(lambda line: not line.lstrip().startswith("["), lines[start:])
+                yield from enumerate(body, start + 1)
+
+    @staticmethod
+    def _target(settings: TomlValue) -> tuple[TomlValue, ...]:
         """The one-tuple holding the value a tool states its target under, whatever its type.
 
         It is empty when the tool states none.
@@ -111,15 +148,24 @@ class ProjectManifest(FrozenModel):
         """
         rows = []
         for name, settings in sorted(tools.items()):
-            match ProjectManifest._target(settings):
-                case ():
-                    if name in _CHECKERS:
-                        rows.append((name, inherited))
-                case (str() as declaration,):
-                    rows.append((name, declaration))
-                case _:
-                    rows.append((name, None))
+            target = ProjectManifest._target(settings)
+            if target or name in _CHECKERS:
+                rows.append((name, ProjectManifest._declaration(target, inherited)))
         return rows
+
+    def _insert_manifest(self, facts: Facts, manifest: dict) -> None:
+        """Insert the requirement and the tool rows that the root `manifest` declares."""
+        requires = self._requires(self._project(manifest))
+        tools = manifest.get("tool")
+        tools = tools if isinstance(tools, dict) else {}
+        inherited = None if "project" in manifest else requires
+        facts.db.execute(_MANIFEST_REQUIREMENTS_INSERT_SQL, [requires])
+        for table, rows in (
+            ("manifest_tools", self._tools(tools, inherited)),
+            ("manifest_file_targets", self._file_targets(tools)),
+        ):
+            if rows:
+                facts.db.executemany(f"INSERT INTO {table} VALUES (?, ?)", rows)
 
     def _project(self, manifest: Mapping) -> dict | None:
         """The `project` table in force: the manifest's own, else the nearest ancestor's."""
@@ -159,39 +205,16 @@ class ProjectManifest(FrozenModel):
         declaration) and `manifest_rule_excludes` (path, line, rule, pattern: the rule excludes
         matching no file).
         """
-        if facts.db.execute(
-            "SELECT 1 FROM duckdb_tables() WHERE table_name = 'manifest_requirements'"
-        ).fetchone():
+        if facts.db.execute(_MANIFEST_REQUIREMENTS_EXISTS_SQL).fetchone():
             return
-        for name, columns in (
-            ("manifest_requirements", "declaration VARCHAR"),
-            ("manifest_tools", "tool VARCHAR, declaration VARCHAR"),
-            ("manifest_file_targets", "pattern VARCHAR, declaration VARCHAR"),
-            (
-                "manifest_rule_excludes",
-                "path VARCHAR, line INTEGER, rule VARCHAR, pattern VARCHAR",
-            ),
-        ):
-            facts.db.execute(f"CREATE TABLE {name} ({columns})")
+        self._create_tables(facts)
         if unmatched := self._unmatched():
-            facts.db.executemany(
-                "INSERT INTO manifest_rule_excludes VALUES (?, ?, ?, ?)", unmatched
-            )
+            facts.db.executemany(_MANIFEST_RULE_EXCLUDES_INSERT_SQL, unmatched)
         try:
             manifest = self._read(self.root / "pyproject.toml")
         except FileNotFoundError:
             return
-        requires = self._requires(self._project(manifest))
-        tools = manifest.get("tool")
-        tools = tools if isinstance(tools, dict) else {}
-        inherited = None if "project" in manifest else requires
-        facts.db.execute("INSERT INTO manifest_requirements VALUES (?)", [requires])
-        for table, rows in (
-            ("manifest_tools", self._tools(tools, inherited)),
-            ("manifest_file_targets", self._file_targets(tools)),
-        ):
-            if rows:
-                facts.db.executemany(f"INSERT INTO {table} VALUES (?, ?)", rows)
+        self._insert_manifest(facts, manifest)
 
 
 class ProjectLiteral(Function):

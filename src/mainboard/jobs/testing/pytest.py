@@ -83,6 +83,11 @@ class Runner:
         self.original = assertion.install_importhook
         self.installed: list[Judged] = []
 
+    def _pytest_main(self, args: Sequence[str]) -> int:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(assertion, "install_importhook", self.install)
+            return pytest.main(list(args), plugins=self.plugins())
+
     def install(self, config: Config) -> AssertionRewritingHook:
         hook = self.original(config)
         if self.guard is not None:
@@ -93,9 +98,7 @@ class Runner:
 
     def run(self, args: Sequence[str]) -> int:
         try:
-            with pytest.MonkeyPatch.context() as patch:
-                patch.setattr(assertion, "install_importhook", self.install)
-                return pytest.main(list(args), plugins=self.plugins())
+            return self._pytest_main(args)
         finally:
             for finder in self.installed:
                 with suppress(ValueError):

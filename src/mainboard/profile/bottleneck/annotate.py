@@ -70,12 +70,9 @@ def _on_unwind(code: CodeType, offset: int, exc: BaseException) -> None:
         _close()
 
 
-def enable_auto(codes: Iterable[CodeType]) -> None:
-    """Enable PEP 669 events only on `codes`, sparing every other function a callback."""
-    global _codes
-    _codes = tuple(dict.fromkeys(codes))
+def _register_callbacks() -> None:
+    """Route the profiler tool's PEP 669 events to this module's span callbacks."""
     monitor = sys.monitoring
-    monitor.use_tool_id(_tool_id, "mainboard")
     events = monitor.events
     monitor.register_callback(_tool_id, events.PY_START, _on_start)
     monitor.register_callback(_tool_id, events.PY_RESUME, _on_start)
@@ -83,6 +80,16 @@ def enable_auto(codes: Iterable[CodeType]) -> None:
     monitor.register_callback(_tool_id, events.PY_RETURN, lambda *_: _close())
     monitor.register_callback(_tool_id, events.PY_YIELD, lambda *_: _close())
     monitor.register_callback(_tool_id, events.PY_UNWIND, _on_unwind)
+
+
+def enable_auto(codes: Iterable[CodeType]) -> None:
+    """Enable PEP 669 events only on `codes`, sparing every other function a callback."""
+    global _codes
+    _codes = tuple(dict.fromkeys(codes))
+    monitor = sys.monitoring
+    monitor.use_tool_id(_tool_id, "mainboard")
+    _register_callbacks()
+    events = monitor.events
     monitor.set_events(_tool_id, events.PY_UNWIND)
     selected = events.PY_START | events.PY_RESUME | events.PY_RETURN | events.PY_YIELD
     for code in _codes:

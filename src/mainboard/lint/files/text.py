@@ -151,15 +151,20 @@ def _folded(name: str) -> str:
     return unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold())
 
 
+def _parse(name: str, *, text: str) -> None:
+    """Parse `text` as the format its suffix names, doing nothing for a suffix with none."""
+    if name.endswith(".toml"):
+        tomllib.loads(text)
+    elif name.endswith((".yaml", ".yml")):
+        # Events rather than objects: syntax is the question, and a custom tag such as
+        # `!reference` needs no constructor to be well formed.
+        list(yaml.parse(text, Loader=yaml.SafeLoader))
+
+
 def _syntax(name: str, *, text: str) -> str:
     """Why `text` does not parse as the format its suffix names, empty when it does."""
     try:
-        if name.endswith(".toml"):
-            tomllib.loads(text)
-        elif name.endswith((".yaml", ".yml")):
-            # Events rather than objects: syntax is the question, and a custom tag such as
-            # `!reference` needs no constructor to be well formed.
-            list(yaml.parse(text, Loader=yaml.SafeLoader))
+        _parse(name, text=text)
     except (tomllib.TOMLDecodeError, yaml.YAMLError) as error:
         return f"does not parse: {' '.join(str(error).split())}"
     return ""

@@ -91,6 +91,16 @@ class Node(Ecosystem):
     def manifest(self) -> Path:
         return self.directory / _MANIFEST
 
+    def _manager(self) -> NodeManager:
+        """The manager `[nodejs] manager` names, refused until its `package.json` is generated."""
+        manager = NodeManager(self.options.manager, self.directory)
+        if not manager.available():
+            raise MissionError(
+                f"{self.manifest} is missing despite declared Node dependencies/package fields; "
+                f"run `{Project().name} install {self.env}` to regenerate it"
+            )
+        return manager
+
     def binary_dirs(self) -> tuple[Path, ...]:
         return (self.directory / _MODULES / ".bin",)
 
@@ -163,12 +173,7 @@ class Node(Ecosystem):
         """
         if not (self.deps or self.fields):
             return
-        manager = NodeManager(self.options.manager, self.directory)
-        if not manager.available():
-            raise MissionError(
-                f"{self.manifest} is missing despite declared Node dependencies/package fields; "
-                f"run `{Project().name} install {self.env}` to regenerate it"
-            )
+        manager = self._manager()
         if resolve:
             manager("install")
             return

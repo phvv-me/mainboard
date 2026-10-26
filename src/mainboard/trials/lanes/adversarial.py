@@ -19,6 +19,7 @@ from .adaptive import Owed, driver
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from hypothesis.strategies import SearchStrategy
     from pydantic import JsonValue
 
     from ..session import Trial
@@ -74,7 +75,7 @@ class Hunt:
         self.calls = 0
         self.until = 0
 
-    def against(self, law: Callable[..., None], **operands: object) -> Breach | None:
+    def against[T](self, law: Callable[..., None], **operands: SearchStrategy[T]) -> Breach | None:
         """Hunt `law` over `operands`, settle this trial, and return the witness or None.
 
         law: the property, taking the drawn operands by name and raising `Breach` when it fails.
@@ -86,7 +87,7 @@ class Hunt:
         hypothesis = driver("adversarial")
         found: list[Breach] = []
 
-        def probe(**drawn: object) -> None:
+        def probe(**drawn: T) -> None:
             self.calls += 1
             try:
                 law(**drawn)

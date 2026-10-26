@@ -16,6 +16,7 @@ from tenacity import (
     wait_fixed,
 )
 
+from ....constants import BYTES_PER_KIBIBYTE
 from ....core.errors import MissionError
 from ....core.project import Project
 from ....engines.compile import backend
@@ -30,6 +31,8 @@ from ...transport.targets import Facts, probe_capabilities, resolve, rooted
 from .bootstrap import Bootstrap, reported
 from .constants import TOOL
 from .record import HostSetup, facts_command, read_facts
+
+_CHEZMOI = 'pixi exec chezmoi --force --source "$HOME/.local/share/chezmoi"'
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -105,7 +108,9 @@ class Onboarding:
         if hardware is None or not hardware.system.root:
             return hardware
         said = shell.run(f"df -Pk {shlex.quote(hardware.system.root)}").split()
-        system = hardware.system.model_copy(update={"free_bytes": int(said[-3]) * 1024})
+        system = hardware.system.model_copy(
+            update={"free_bytes": int(said[-3]) * BYTES_PER_KIBIBYTE}
+        )
         return hardware.model_copy(update={"system": system})
 
     def __init__(
@@ -307,7 +312,7 @@ class Onboarding:
         self.watch(f"applying the dotfiles on {host}")
         # The source is named, since a host's own chezmoi config may point anywhere.
         repository = shlex.quote(self.dotfiles)
-        chezmoi = 'pixi exec chezmoi --force --source "$HOME/.local/share/chezmoi"'
+        chezmoi = _CHEZMOI
         command = (
             f'if [ -d "$HOME/.local/share/chezmoi/.git" ]; then {chezmoi} update; '
             f"else {chezmoi} init --apply {repository}; fi"

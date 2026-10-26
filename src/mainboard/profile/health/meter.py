@@ -2,6 +2,8 @@ import time
 from types import TracebackType
 from typing import TYPE_CHECKING
 
+_NANOSECONDS_PER_SECOND = 1e9
+
 if TYPE_CHECKING:
     from ...probe.machine import Machine
 
@@ -39,7 +41,7 @@ class Meter:
         traceback: TracebackType | None,
     ) -> None:
         self.sample()
-        self.elapsed_s = (time.perf_counter_ns() - self.start_ns) / 1e9
+        self.elapsed_s = (time.perf_counter_ns() - self.start_ns) / _NANOSECONDS_PER_SECOND
 
     def __init__(self, machine: Machine) -> None:
         self.machine = machine

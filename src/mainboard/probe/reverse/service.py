@@ -22,37 +22,37 @@ from .store import EvidenceStore
 
 
 class DeviceProbe:
-    def __init__(self, lake: Lake) -> None:
-        self.store = EvidenceStore(lake)
-
-    def run(
-        self,
-        library: Path,
-        operation: str,
-        *,
-        arch: str = "",
-        function: str = "",
-        against: str = "",
-    ) -> Evidence[DeviceResult]:
+    @staticmethod
+    def _refuse_misuse(operation: str, *, function: str, against: str) -> None:
         if operation == "compare" and not against:
             raise MissionError("compare requires --against <newer-library>")
         if operation != "compare" and against:
             raise MissionError("--against belongs to compare")
         if operation == "arch" and function:
             raise MissionError("--function cannot filter an image's architecture coverage")
-        artifact = Artifact.at(library)
-        if operation != "compare":
-            provider = ReverseProvider.supporting("device", artifact.kind, operation)
-            evidence = provider.analyze(
-                Request(
-                    artifact=artifact,
-                    operation=operation,
-                    arch=arch,
-                    function=function,
-                )
-            )
-            self.store.ingest(evidence)
-            return evidence
+
+    def __init__(self, lake: Lake) -> None:
+        self.store = EvidenceStore(lake)
+
+    def _analyze(
+        self, artifact: Artifact, operation: str, *, arch: str, function: str
+    ) -> Evidence[DeviceResult]:
+        provider = ReverseProvider.supporting("device", artifact.kind, operation)
+        evidence = provider.analyze(
+            Request(artifact=artifact, operation=operation, arch=arch, function=function)
+        )
+        self.store.ingest(evidence)
+        return evidence
+
+    def _compare(
+        self,
+        library: Path,
+        artifact: Artifact,
+        against: str,
+        *,
+        arch: str,
+        function: str,
+    ) -> Evidence[DeviceResult]:
         before = self.run(library, "inventory", arch=arch, function=function)
         after = self.run(Path(against), "inventory", arch=arch, function=function)
         match before.result, after.result:
@@ -94,6 +94,21 @@ class DeviceProbe:
         )
         self.store.ingest(evidence)
         return evidence
+
+    def run(
+        self,
+        library: Path,
+        operation: str,
+        *,
+        arch: str = "",
+        function: str = "",
+        against: str = "",
+    ) -> Evidence[DeviceResult]:
+        self._refuse_misuse(operation, function=function, against=against)
+        artifact = Artifact.at(library)
+        if operation == "compare":
+            return self._compare(library, artifact, against, arch=arch, function=function)
+        return self._analyze(artifact, operation, arch=arch, function=function)
 
 
 def compact(evidence: Evidence[DeviceResult]) -> list[dict[str, Node]]:

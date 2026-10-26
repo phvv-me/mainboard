@@ -162,6 +162,13 @@ class Provisioner:
         with local.env(**added):
             yield
 
+    @staticmethod
+    def _stamped(directory: Path, current: str) -> bool:
+        """Whether `directory` carries the sync stamp `current`, false when it has none."""
+        with suppress(OSError):
+            return Project().marked(directory, _SYNCED).read_text(encoding="utf-8") == current
+        return False
+
     def __init__(self, root: Path, manifest: Manifest) -> None:
         _validate_environment_roster(manifest)
         self.root = root
@@ -350,16 +357,13 @@ class Provisioner:
         if not shard.pixi.lock.is_file():
             return
         current = f"{shard.compiler.resolution_digest()}:{shard.pixi.lock.stat().st_mtime_ns}"
-        if not shard.pixi.ready(env):
-            if shard.pixi.runs_here():
-                shard.pixi.install(env)
-                shard.stage.install(env)
-        else:
-            with suppress(OSError):
-                marked = Project().marked(shard.directory, _SYNCED).read_text(encoding="utf-8")
-                if marked == current:
-                    return
+        if shard.pixi.ready(env):
+            if self._stamped(shard.directory, current):
+                return
             shard.pixi.sync(env)
+        elif shard.pixi.runs_here():
+            shard.pixi.install(env)
+            shard.stage.install(env)
         with suppress(OSError):
             (shard.directory / Project().marker(_SYNCED)).write_text(
                 current, encoding="utf-8", newline="\n"

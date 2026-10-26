@@ -10,6 +10,8 @@ from ..result import Profile
 from ..spans import span
 from ..trace import Activity
 
+_US_PER_MS = 1e3
+
 
 class StageProfile(FrozenModel):
     """Result of `profile_stages`: wall-clock per stage and an optional deep trace.
@@ -35,7 +37,8 @@ class StageProfile(FrozenModel):
             return "No stages profiled."
         header = f"{'stage':<24}{'mean':>13}{'min':>16}"
         rows = [
-            f"{s.label:<24}{s.mean_us / 1e3:>10.3f} ms{s.min_us / 1e3:>10.3f} ms (min)"
+            f"{s.label:<24}{s.mean_us / _US_PER_MS:>10.3f} ms"
+            f"{s.min_us / _US_PER_MS:>10.3f} ms (min)"
             for s in self.samples
         ]
         return "\n".join([header, *rows])
@@ -78,8 +81,12 @@ def _trace_stages[T, S](
         activities=trace if isinstance(trace, Activity) else Activity.ALL,
     ) as profiler:
         for name, fn in cases.items():
-            with span(name):
-                fn()
-                if sync is not None:
-                    sync()
+            _trace_stage(name, fn, sync)
     return profiler.result()
+
+
+def _trace_stage[T, S](name: str, fn: Callable[[], T], sync: Callable[[], S] | None) -> None:
+    with span(name):
+        fn()
+        if sync is not None:
+            sync()

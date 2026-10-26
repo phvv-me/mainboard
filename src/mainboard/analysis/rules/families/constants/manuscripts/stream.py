@@ -26,6 +26,14 @@ from .reader import (
     THEOREMS,
 )
 
+_LABEL_ROWS_SQL = """SELECT path, pos, 100 + i AS sub, true AS pushes, 'label' AS elem, name AS a,
+                  NULL AS b, NULL AS n, line, NULL AS txt, false AS is_word
+           FROM raw_labels"""
+_REFERENCE_ROWS_SQL = """SELECT path, pos, i AS sub, true, 'reference', target, name, NULL, line, NULL, false
+           FROM targets"""
+_CITATION_ROWS_SQL = """SELECT path, pos, i AS sub, true, 'citation', target, pin, NULL, line, NULL, false
+           FROM sources"""
+
 _NAME = quoted(r"^\\([A-Za-z@]+)")
 
 _BEGIN = quoted(r"^\\begin\*?\{([^{}]*)\}")
@@ -232,16 +240,12 @@ def _parts() -> str:
     ]
     explicit = [
         # labels inside a raw environment, one per `\label` the body spells
-        """SELECT path, pos, 100 + i AS sub, true AS pushes, 'label' AS elem, name AS a,
-                  NULL AS b, NULL AS n, line, NULL AS txt, false AS is_word
-           FROM raw_labels""",
+        _LABEL_ROWS_SQL,
         # one reference per target a command names, then the mark the reference leaves in prose
-        """SELECT path, pos, i AS sub, true, 'reference', target, name, NULL, line, NULL, false
-           FROM targets""",
+        _REFERENCE_ROWS_SQL,
         f"""SELECT DISTINCT path, pos, 100000, false, NULL, NULL, NULL, NULL, line, {_DOT}, false
             FROM targets""",
-        """SELECT path, pos, i AS sub, true, 'citation', target, pin, NULL, line, NULL, false
-           FROM sources""",
+        _CITATION_ROWS_SQL,
         f"""SELECT DISTINCT path, pos, 100000, false, NULL, NULL, NULL, NULL, line, {_DOT}, false
             FROM sources""",
     ]

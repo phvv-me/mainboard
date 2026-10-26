@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 
 import duckdb
 
+from .constants import MILLISECONDS_PER_SECOND
 from .core.errors import MissionError
 from .core.project import Project
 from .render.query import Query, is_execution_timeout
@@ -21,6 +22,8 @@ from .state.relations import Relation, Relations, records
 from .state.views import Views
 from .trials.artifacts import Artifact
 from .trials.store.constants import NO_TABLE
+
+_ARTIFACT_LISTING_SQL = "SELECT root, context, reference FROM artifacts"
 
 # The files an export writes, by suffix, and how DuckDB's COPY writes each.
 _FORMATS = {
@@ -76,7 +79,9 @@ class Results:
             _timed(timeout),
             self._connected(sql, project, connection, snapshot=True) as (text, snapshot),
         ):
-            connection.execute(f"SET max_execution_time = {math.ceil(timeout * 1000)}")
+            connection.execute(
+                f"SET max_execution_time = {math.ceil(timeout * MILLISECONDS_PER_SECOND)}"
+            )
             explain = _tokens(text)[0] == "explain"
             yield Query.started(connection, text, snapshot, timeout=timeout, explain=explain)
 
@@ -93,7 +98,9 @@ class Results:
         path.parent.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(dir=path.parent) as staged:
             temporary = Path(staged) / path.name
-            connection.execute(f"SET max_execution_time = {math.ceil(timeout * 1000)}")
+            connection.execute(
+                f"SET max_execution_time = {math.ceil(timeout * MILLISECONDS_PER_SECOND)}"
+            )
             target = temporary.as_posix().replace("'", "''")
             connection.execute(f"COPY ({text}) TO '{target}' ({options})").fetchall()
             with temporary.open("rb+") as completed:
@@ -283,7 +290,7 @@ class Results:
         runs: select run identities before reading their artifacts; None selects all runs.
             An empty collection selects none. Selected artifacts still require valid bytes.
         """
-        listed = self.rows("SELECT root, context, reference FROM artifacts", project=project)
+        listed = self.rows(_ARTIFACT_LISTING_SQL, project=project)
         if runs is not None:
             wanted = set(runs)
             listed = [row for row in listed if json.loads(row["context"]).get("run") in wanted]

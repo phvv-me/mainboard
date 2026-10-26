@@ -79,6 +79,13 @@ class SystemdUser(Settler):
             return f"systemctl --user enable --now {self.timer.name}"
         return "" if lingering else f"loginctl enable-linger {getuser()}"
 
+    def _reported(self) -> tuple[bool, str]:
+        """Whether the user manager reports the timer active, and when its service last ran."""
+        shown = self._shown()
+        triggered = shown.get("LastTriggerUSec", "")
+        last_run = "" if triggered in ("", "n/a") else triggered
+        return shown.get("ActiveState") == "active", last_run
+
     def _service(self) -> str:
         """The unit for one pass, run from this settler's root, what it says kept by the journal.
 
@@ -160,12 +167,9 @@ class SystemdUser(Settler):
         """
         if not self.timer.is_file():
             return self._absent()
-        shown = self._shown()
+        active, last_run = self._reported()
         every = self._setting(self.timer, "OnUnitActiveSec")
         log = f"journalctl --user -u {self.service.name}" if self.service.is_file() else ""
-        active = shown.get("ActiveState") == "active"
-        triggered = shown.get("LastTriggerUSec", "")
-        last_run = "" if triggered in ("", "n/a") else triggered
         lingering = self._lingering()
         state = "active" if active else "installed but not armed"
         linger = "" if lingering else ", and a reboot stops it until this user lingers"

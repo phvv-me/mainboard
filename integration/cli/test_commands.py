@@ -97,7 +97,7 @@ def test_relation_queries_preserve_types_without_pyarrow(workspace, monkeypatch)
         results.query("SELECT 1; SELECT 2")
 
 
-def test_relation_queries_execute_once(workspace, monkeypatch) -> None:
+def test_relation_queries_execute_exactly_once(workspace, monkeypatch) -> None:
     results = Results(workspace)
     original = results.views.load
 
@@ -202,7 +202,7 @@ def test_a_manager_that_never_answers_is_unknown_instead_of_waited_for(monkeypat
         name="stuck", program="sleep", pending=("sleep", "60"), count=len, steps=("true",)
     )
     monkeypatch.setattr(upkeep, "_MANAGERS", (stuck,))
-    monkeypatch.setattr(upkeep, "_ASK_SECONDS", 0.5)
+    monkeypatch.setattr(upkeep, "ASK_SECONDS", 0.5)
     started = time.monotonic()
     rows = {row.section: row for row in upkeep.audit()}
     assert time.monotonic() - started < 30

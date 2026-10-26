@@ -4,13 +4,14 @@ import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from functools import cache
+from functools import cache, cached_property
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from pathspec import GitIgnoreSpec
 from plumbum import local
 
+from ..constants import BYTES_PER_KIBIBYTE
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.provisioner import Provisioner
@@ -62,6 +63,18 @@ class Linter:
     only: the steps to run, `text` naming the hygiene, every declared step when empty.
     """
 
+    @cached_property
+    def _excluded(self) -> GitIgnoreSpec:
+        """The generated trees, never the workspace's own text, and the `[lint] exclude` globs."""
+        return GitIgnoreSpec.from_lines(
+            [*(f"/{name}/" for name in Project().out_dirs), *self.table.exclude]
+        )
+
+    @cached_property
+    def _tools(self) -> dict[str, lint_module.LintTool]:
+        """The declared tools of the selected steps, in declaration order."""
+        return {name: tool for name, tool in self.table.tools.items() if name in self.steps}
+
     def __init__(
         self, root: Path, manifest: Manifest, *, check: bool = False, only: Sequence[str] = ()
     ) -> None:
@@ -69,18 +82,12 @@ class Linter:
         self.table = manifest.lint
         self.check = check
         self.steps = self._selected(only)
-        self._tools = {name: tool for name, tool in self.table.tools.items() if name in self.steps}
         self.inventory = Inventory(root, manifest.git)
         self.owners = Owners(root, self.table.owners, markers=self.table.markers)
         self.sealed = Sealed(root)
         self._configured = cache(self._configures)
         self._provisioner = Provisioner(root, manifest)
         self._environments: dict[str, Mapping[str, str]] = {}
-        # The generated tree is never the workspace's own text, whether or not a `.gitignore`
-        # already says so.
-        self._excluded = GitIgnoreSpec.from_lines(
-            [*(f"/{name}/" for name in Project().out_dirs), *self.table.exclude]
-        )
 
     def _batches(
         self, argv: Sequence[str], owner: Path, matched: Sequence[Path]
@@ -121,18 +128,10 @@ class Linter:
         case-insensitive disk can hold.
         """
         examination = text.examined(path, attributes)
-        problems = list(examination.problems)
-        if examination.repaired is not None:
-            if self.check:
-                problems.insert(0, f"needs repair: {', '.join(examination.untidy)}")
-            else:
-                path.write_bytes(examination.repaired)
+        problems = [*self._repairs(path, examination), *examination.problems]
         if twins := text.twins(path.name, self.inventory.siblings(path)):
             problems.append(f"differs only in case or Unicode form from {', '.join(twins)}")
-        size = path.stat().st_size if path.exists() else 0
-        if size > self.table.max_kb * 1024 and not self.inventory.tracked(path):
-            problems.append(f"is {size // 1024} KB, above the {self.table.max_kb} KB limit")
-        return problems
+        return [*problems, *self._oversize(path)]
 
     def _expanded(self, argv: Sequence[str], *, files: Sequence[str]) -> Iterator[str]:
         for word in argv:
@@ -178,7 +177,7 @@ class Linter:
         for path in files:
             relative = self._relative(path)
             if chosen.match_file(relative) and not skipped.match_file(relative):
-                owner = self.owners.of(path.parent)
+                owner = self.owners.owner_of(path.parent)
                 if not tool.only_configured or self._configured(owner, name):
                     owned.setdefault(owner, []).append(path)
         return [
@@ -223,6 +222,13 @@ class Linter:
         code = outcome.code if kept else 0
         return outcome.model_copy(update={"code": code, "output": "\n".join(kept)})
 
+    def _oversize(self, path: Path) -> list[str]:
+        """Why `path` is past the size limit, empty when it fits or git tracks it."""
+        size = path.stat().st_size if path.exists() else 0
+        if size <= self.table.max_kb * BYTES_PER_KIBIBYTE or self.inventory.tracked(path):
+            return []
+        return [f"is {size // BYTES_PER_KIBIBYTE} KB, above the {self.table.max_kb} KB limit"]
+
     def _parallel(self, invocations: Sequence[Invocation]) -> list[Outcome]:
         """Run `invocations` at once, each environment activated once for the whole pass.
 
@@ -244,6 +250,15 @@ class Linter:
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.root).as_posix()
+
+    def _repairs(self, path: Path, examination: text.Examination) -> list[str]:
+        """Write `path`'s repaired bytes, or name the repair as a problem when checking."""
+        if examination.repaired is None:
+            return []
+        if self.check:
+            return [f"needs repair: {', '.join(examination.untidy)}"]
+        path.write_bytes(examination.repaired)
+        return []
 
     def _scoped(self, name: str, argv: Sequence[str], owner: Path) -> list[str]:
         """`argv` ending in tool `name`'s `path_when_unconfigured`, where an owner needs it.

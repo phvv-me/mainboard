@@ -163,21 +163,24 @@ def imported(root: Path, path: str) -> set[str]:
     package = PurePosixPath(path).parent
     names: set[PurePosixPath] = set()
     for node in ast.walk(tree):
-        match node:
-            case ast.Import(names=aliases):
-                names |= {PurePosixPath(*alias.name.split(".")) for alias in aliases}
-            case ast.ImportFrom(module=module, names=aliases, level=level):
-                base = (
-                    package.parents[level - 2]
-                    if 1 < level <= len(package.parents) + 1
-                    else package
-                )
-                stem = PurePosixPath(*(module or "").split(".")) if module else PurePosixPath()
-                origin = base / stem if level else stem
-                names |= {origin, *(origin / alias.name for alias in aliases)}
-    return {
-        str(candidate)
-        for name in names
-        for prefix in (PurePosixPath("src"), package, *package.parents)
-        for candidate in (prefix / f"{name}.py", prefix / name / "__init__.py")
-    }
+        names |= _names_of(node, package)
+    prefixes = (PurePosixPath("src"), package, *package.parents)
+    found: set[str] = set()
+    for name in names:
+        for prefix in prefixes:
+            found.add(str(prefix / f"{name}.py"))
+            found.add(str(prefix / name / "__init__.py"))
+    return found
+
+
+def _names_of(node: ast.AST, package: PurePosixPath) -> set[PurePosixPath]:
+    """The paths one import statement names, a relative import resolved against `package`."""
+    match node:
+        case ast.Import(names=aliases):
+            return {PurePosixPath(*alias.name.split(".")) for alias in aliases}
+        case ast.ImportFrom(module=module, names=aliases, level=level):
+            base = package.parents[level - 2] if 1 < level <= len(package.parents) + 1 else package
+            stem = PurePosixPath(*(module or "").split(".")) if module else PurePosixPath()
+            origin = base / stem if level else stem
+            return {origin, *(origin / alias.name for alias in aliases)}
+    return set()

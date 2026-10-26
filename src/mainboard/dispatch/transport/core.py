@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, suppress
 from math import ceil, isinf
 from pathlib import Path
-from typing import IO
+from typing import IO, override
 
 import psutil
 from patos import FrozenModel
@@ -414,6 +414,7 @@ class BoundedShellSession(ShellSession):
 class BoundedSshMachine(SshMachine):
     """An SSH machine whose session owns its entire local transport group."""
 
+    @override
     def session(self, isatty: bool = False, new_session: bool = False) -> ShellSession:
         return BoundedShellSession(
             self.popen(["/bin/sh"], (["-tt"] if isatty else ["-T"]), new_session=new_session),

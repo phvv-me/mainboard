@@ -1,12 +1,12 @@
 """Rules over the directory tree (mcmr's ALL-FILE family)."""
 
-import ast
 import os
 
 from .... import edits
 from ....catalog import Example, Rule
 from ....edits import Edit
-from ....findings import Hit, Span
+from ....findings import Hit
+from .relocation import respelled
 
 
 class EmptyDirectories(Rule, id="ALL-FILE0001", applicability="safe"):
@@ -158,12 +158,15 @@ class PrefixedModuleGroup(Rule, id="ALL-FILE0005", applicability="review"):
         ),
     )
 
-    def repair(self, hit: Hit) -> list[Edit] | None:
-        """Move the group into its folder, then respell every import the move touches."""
-        directory, package = str(hit.directory), str(hit.package)
+    @staticmethod
+    def _folder_plan(hit: Hit) -> tuple[str, dict[str, str]]:
+        """The folder the group moves into, and each member's old module mapped to its new one.
+
+        The folder takes every word the members open with, one word left to each of them.
+        """
+        package = str(hit.package)
         members = {str(member["stem"]): str(member["shared"]) for member in hit.records("members")}
         worded = {stem: stem.removeprefix(shared).split("_") for stem, shared in members.items()}
-        # The folder takes every word the members open with, one word left to each of them.
         common = os.path.commonprefix(list(worded.values()))
         common = common[: min(len(words) for words in worded.values()) - 1] or common[:1]
         prefix = "_".join(common)
@@ -172,18 +175,19 @@ class PrefixedModuleGroup(Rule, id="ALL-FILE0005", applicability="review"):
             + ("_".join(words[len(common) :]) or "core")
             for stem, words in worded.items()
         }
+        return prefix, moves
+
+    def repair(self, hit: Hit) -> list[Edit] | None:
+        """Move the group into its folder, then respell every import the move touches."""
+        directory = str(hit.directory)
+        prefix, moves = self._folder_plan(hit)
         names = [new.rsplit(".", 1)[1] for new in moves.values()]
         existing = {str(name) for name in hit.sequence("existing")}
         if len(set(names)) < len(names) or existing & set(names):
             return None
-        made: list[Edit] = []
-        for file in hit.records("files"):
-            rewritten = _Relocation(
-                moves, str(file["module"]), package=bool(file["package"])
-            ).edits(str(file["path"]), content=str(file["content"]))
-            if rewritten is None:
-                return None
-            made += rewritten
+        made = respelled(hit, moves)
+        if made is None:
+            return None
         return made + [
             edits.rename(
                 f"{directory}/{old.rsplit('.', 1)[1]}.py",
@@ -191,80 +195,6 @@ class PrefixedModuleGroup(Rule, id="ALL-FILE0005", applicability="review"):
             )
             for old, new in moves.items()
         ]
-
-
-class _Relocation:
-    """The import statements of one module, respelled after `moves` (old module to new)."""
-
-    def __init__(self, moves: dict[str, str], module: str, *, package: bool) -> None:
-        self.moves, self.package = moves, package
-        self.old = module
-        self.new = moves.get(module, module)
-
-    def _base(self, node: ast.ImportFrom) -> str:
-        """The absolute module `node` imports from, read from where this module stood."""
-        if not node.level:
-            return node.module or ""
-        parts = self.old.split(".") if self.package else self.old.split(".")[:-1]
-        parts = parts[: len(parts) - (node.level - 1)]
-        return ".".join([*parts, *([node.module] if node.module else [])])
-
-    def _respelled(self, node: ast.ImportFrom) -> str | None:
-        """The statement after the moves, None when they leave it as it is. A moved module
-        imported by name keeps the name it was bound to (`base as cuda_base`), and an explicit
-        alias stays, since `NAME as NAME` is a re-export."""
-        base = self._base(node)
-        groups: dict[str, list[str]] = {}
-        for alias in node.names:
-            bound = alias.asname or alias.name
-            if (whole := f"{base}.{alias.name}") in self.moves:
-                target, name = self.moves[whole].rsplit(".", 1)
-            else:
-                target, name = self.moves.get(base, base), alias.name
-            written = name if alias.asname is None and name == bound else f"{name} as {bound}"
-            groups.setdefault(target, []).append(written)
-        spelled = {
-            (self._spelling(target) if node.level else target): names
-            for target, names in groups.items()
-        }
-        kept = [
-            alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names
-        ]
-        if spelled == {"." * node.level + (node.module or ""): kept}:
-            return None
-        return ("\n" + " " * node.col_offset).join(
-            f"from {spelling} import {', '.join(names)}" for spelling, names in spelled.items()
-        )
-
-    def _spelling(self, target: str) -> str:
-        """`target` relative to where this module now stands."""
-        base = self.new.split(".") if self.package else self.new.split(".")[:-1]
-        goal = target.split(".")
-        common = 0
-        while common < min(len(base), len(goal)) and base[common] == goal[common]:
-            common += 1
-        return "." * (len(base) - common + 1) + ".".join(goal[common:])
-
-    def edits(self, path: str, *, content: str) -> list[Edit] | None:
-        """One edit per statement that names a moved module or whose own spelling moved, None
-        when a plain `import` names a moved module (its dotted uses would move too)."""
-        made: list[Edit] = []
-        for node in ast.walk(ast.parse(content)):
-            match node:
-                case ast.Import(names=names) if any(alias.name in self.moves for alias in names):
-                    return None
-                case ast.ImportFrom():
-                    text = self._respelled(node)
-                    if text is not None:
-                        span = Span(
-                            path=path,
-                            start_line=node.lineno,
-                            start_column=node.col_offset,
-                            end_line=node.end_lineno,
-                            end_column=node.end_col_offset,
-                        )
-                        made.append(edits.replace(span, text))
-        return made
 
 
 class DirectoryPathway(Rule, id="ALL-FILE0004"):
