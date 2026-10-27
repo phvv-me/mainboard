@@ -4,6 +4,36 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found moving the dotfiles toolbox into its own mb.toml, 2026-10-27
+
+The dotfiles repository (`personal/dotfiles`) now declares its command-line toolbox in its own
+`mb.toml` and `mb.lock`, and its chezmoi apply runs `mb install --locked` there; the pixi global
+manifest is gone. Verified on macOS and on gold (Ubuntu aarch64) from a cold start.
+
+Fixed, uncommitted:
+
+1. **`PixiEngine.bootstrap` and the uv bootstrap edited the user's startup files.** Both official
+   installers append a PATH line to `~/.zshrc`, `~/.bashrc`, `~/.profile` or `~/.zshenv` unless
+   told not to, which fights the dotfiles that own those files (chezmoi shows drift, and the line
+   puts pixi's bin first, the order the dotfiles avoid on purpose). The tool never needed it: pixi
+   is found by `PIXI_HOME/bin` and every host command already has the per-user install dirs on
+   `PATH`. Both installer commands now carry `PIXI_NO_PATH_UPDATE=1` and `UV_NO_MODIFY_PATH=1`;
+   `appended_shell_file` and its log line are gone. Test: `test_installers.py`.
+2. **`upkeep.machine._pixi_home` returned `~/.pixi` on a host that had pixi only in
+   `~/.pixi/<arch>/bin`**, because it looked for a global `manifests/` directory, which a
+   machine whose toolbox is mb.toml's never has. It is the architecture home whenever that
+   directory exists. Test: `integration/upkeep/test_machine.py`.
+3. Wording: `host setup --dotfiles`, `Workspace.dotfiles` and the upkeep header no longer call the
+   toolbox a pixi one.
+
+Open:
+
+- `upkeep` audits the dotfiles' drift (`chezmoi status`) but not the toolbox: an `mb.lock` that
+  moved upstream is only noticed by the next `chezmoi update`. `audit` should say when
+  `mb install --locked` in the chezmoi source would change the environment.
+- `Onboarding.verify_queue` still falls back to `pixi global install pueue`; the dotfiles toolbox
+  now carries pueue, so only a host set up without `--dotfiles` reaches it.
+
 ## Found drawing the MLSys kernel figure in the plot language, 2026-10-25
 
 The two RTX 4090 panels of the paper's kernel figure (a Range and a Dot layer per series, Dodge,

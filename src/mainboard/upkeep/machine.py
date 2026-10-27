@@ -1,11 +1,11 @@
 # What this machine could and should update, and the one pass that updates it.
 #
 # Every system keeps its software current through its own managers (apt, dnf, brew, snap, fwupd
-# for firmware) plus the tools these workspaces add on top (the pixi global toolbox, uv, the
-# owner's dotfiles, this tool). `audit` asks each manager present what is pending, read-only, and
-# says what to run; `upgrade` runs the lot in order, the way the owner used to type `apt update &&
-# apt full-upgrade && apt autoremove` by hand. A host answers with its own copy of this tool, so
-# the same code judges Linux and macOS.
+# for firmware) plus the tools these workspaces add on top (pixi's global tools, uv, the owner's
+# dotfiles with the toolbox their mb.lock pins, this tool). `audit` asks each manager present what
+# is pending, read-only, and says what to run; `upgrade` runs the lot in order, the way the owner
+# used to type `apt update && apt full-upgrade && apt autoremove` by hand. A host answers with its
+# own copy of this tool, so the same code judges Linux and macOS.
 
 import json
 import os
@@ -120,12 +120,14 @@ _MANAGERS = (
 
 
 def _pixi_home() -> Path:
-    """The pixi home holding the global toolbox.
+    """The pixi home pixi's global tools live in.
 
-    That is the dotfiles' per-architecture one when it exists (Linux and macOS), else pixi's own.
+    That is the per-architecture one the dotfiles and this tool install pixi into when it exists
+    (Linux and macOS), else pixi's own. It exists from the day pixi is there, not from the day a
+    global tool is: the toolbox is mb.toml's, so a host may never have had a global manifest.
     """
     arch = Path.home() / ".pixi" / platform.machine()
-    return arch if (arch / "manifests").is_dir() else Path.home() / ".pixi"
+    return arch if arch.is_dir() else Path.home() / ".pixi"
 
 
 def _ask(argv: Sequence[str]) -> str | None:

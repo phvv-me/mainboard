@@ -21,7 +21,9 @@ class Header(Model):
         `manifest.members`), each `!pattern` leaving out what it matches.
     dotfiles: the owner's chezmoi dotfiles (`user/repo` or any repository `chezmoi init` takes),
         applied on every host `host setup` onboards and refreshed on each `host sync`, so every
-        machine has the same shell, commands and editor. Left out of the compile digest.
+        machine has the same shell, commands and editor. The repository carries its own mb.toml
+        and mb.lock for the command-line toolbox, which its apply installs with `install
+        --locked`. Left out of the compile digest.
     lake: the directory the center's state lake lives in, its catalog `lake.sqlite` beside
         its data `lake/`; `~` expands. Empty keeps it in the workspace's generated directory,
         as every dispatch mirror does (see `lake_home`). Left out of the compile digest, since

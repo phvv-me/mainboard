@@ -45,9 +45,9 @@ class Onboarding(FrozenModel):
     """let the host solve for itself (`install` there) instead of installing the shipped lock
     (`install --locked`)."""
     dotfiles: bool = False
-    """also apply the workspace's dotfiles (zsh, lvim, the pixi toolbox, herdr); every later sync
-    keeps them. Without it a host gets only what jobs need: this tool, pixi, pueue and the
-    environment."""
+    """also apply the workspace's dotfiles (zsh, lvim, herdr and the toolbox their mb.lock pins);
+    every later sync keeps them. Without it a host gets only what jobs need: this tool, pixi,
+    pueue and the environment."""
 
     @property
     def policy(self) -> LockPolicy:

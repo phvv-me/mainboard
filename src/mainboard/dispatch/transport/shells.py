@@ -23,8 +23,10 @@ if TYPE_CHECKING:
     from ...context.plan import ExecutionPlan
     from .core import Machine, SshTransport
 
-# uv's official installer, the one way uv reaches a host that has none.
-_UV_INSTALLER = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+# uv's official installer, the one way uv reaches a host that has none. `UV_NO_MODIFY_PATH`: it
+# would append lines to the user's startup files, which belong to their dotfiles, and `wrapping`
+# already puts uv's directory on the PATH of every host command.
+_UV_INSTALLER = "curl -LsSf https://astral.sh/uv/install.sh | UV_NO_MODIFY_PATH=1 sh"
 
 
 class Dialect:

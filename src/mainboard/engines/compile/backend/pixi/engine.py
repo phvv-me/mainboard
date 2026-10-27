@@ -1,7 +1,7 @@
 import os
 from contextlib import suppress
 from functools import cached_property
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from plumbum import local
@@ -17,15 +17,6 @@ if TYPE_CHECKING:
 
 _TOOL = Project().name
 
-# The startup file pixi's installer appends a PATH line to, by `$SHELL` basename, mirroring the
-# installer's own case statement (an unlisted shell is left alone there too).
-_SHELL_RC = {
-    "bash": "~/.bashrc",
-    "fish": "~/.config/fish/config.fish",
-    "tcsh": "~/.tcshrc",
-    "zsh": "~/.zshrc",
-}
-
 
 class PixiEngine(Tool):
     """The pixi binary, found or installed on first use, and what it does without a workspace."""
@@ -38,7 +29,11 @@ class PixiEngine(Tool):
     # every host up again.
     VERSION: ClassVar[str] = "0.79.0"
     # `pip install mainboard` brings no pixi, so first use runs the official installer at the pin.
-    INSTALLER: ClassVar[str] = f"curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION={VERSION} sh"
+    # `PIXI_NO_PATH_UPDATE`: the installer would append a line to the user's startup file, which
+    # belongs to their dotfiles, and this tool finds pixi by its path.
+    INSTALLER: ClassVar[str] = (
+        f"curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION={VERSION} PIXI_NO_PATH_UPDATE=1 sh"
+    )
 
     name = "pixi"
 
@@ -49,13 +44,6 @@ class PixiEngine(Tool):
             return local["pixi"]
         except CommandNotFound:
             return local[str(self.installed_binary())]
-
-    @staticmethod
-    def appended_shell_file() -> str:
-        """The startup file pixi's installer will append a PATH line to, else empty."""
-        if os.environ.get("PIXI_NO_PATH_UPDATE"):
-            return ""
-        return _SHELL_RC.get(PurePath(os.environ.get("SHELL", "")).name, "")
 
     @staticmethod
     def binary_path() -> Path:
@@ -77,10 +65,8 @@ class PixiEngine(Tool):
         return self.version() == PixiEngine.VERSION
 
     def bootstrap(self) -> None:
-        """Run pixi's installer into `PIXI_HOME/bin`, first naming the rc file it will edit."""
+        """Run pixi's installer into `PIXI_HOME/bin`."""
         logger.info(f"{_TOOL}: installing pixi engine…")
-        if appended := self.appended_shell_file():
-            logger.info(f"{_TOOL}: the pixi installer adds a PATH line to {appended}")
         if not Process.foreground(self.installer()):
             raise MissionError(
                 "the pixi installer failed, install it manually from https://pixi.sh"
