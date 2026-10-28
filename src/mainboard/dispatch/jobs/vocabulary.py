@@ -3,13 +3,17 @@
 # backend and a queue backend speak it without importing each other's family.
 
 from enum import StrEnum, auto
+from typing import TYPE_CHECKING
 
 from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ConfigDict, Field
 
 from ..shared import HandleId
-from .arch import Arch, arch
+from .arch import Arch, arch, capability, card
+
+if TYPE_CHECKING:
+    from ...costs.catalog import Offer
 
 
 class Word(StrEnum):
@@ -134,6 +138,8 @@ class Resources(FrozenModel):
     spot: rent interruptible capacity, cheaper and taken back at the provider's will.
     arch: the compute capabilities a rented card must have (`sm_120`, `hopper`, `sm_90+`), the
         cheapest card of them rented when `gpu_name` is empty.
+    datacenter: rent only from data-center hosts, for a provider that also lists individually run
+        machines (vast); a provider that only sells data-center capacity ignores it.
     """
 
     gpus: int = 0
@@ -148,6 +154,7 @@ class Resources(FrozenModel):
     attempt: int = 1
     spot: bool = False
     arch: str = ""
+    datacenter: bool = False
 
 
 class OfferFilter(FrozenModel):
@@ -192,6 +199,16 @@ class OfferFilter(FrozenModel):
         )
         return " ".join(part for part in parts if part)
 
+    def admits(self, offer: Offer) -> bool:
+        """Whether `offer` is a card, count, pricing and price these filters take."""
+        return (
+            (not self.gpu_name or card(offer.gpu) == card(self.gpu_name))
+            and (not self.gpus or offer.gpu_count == self.gpus)
+            and self.pricing.admits(spot=offer.spot)
+            and (not self.max_usd_hr or offer.rate_usd_hr <= self.max_usd_hr)
+            and (self.arch is None or self.arch.holds(capability(offer.gpu)))
+        )
+
 
 class Request(FrozenModel):
     """One dispatch as it was asked for, enough to ask for it again unchanged.
@@ -205,8 +222,8 @@ class Request(FrozenModel):
     name / node / fetch: the run's label, the ledger slug it serves, and the results path to
         pull back.
     needs: the data paths a job spelled by file was asked to reach on the host.
-    queue / walltime / mem_gb / gpus / gpu_name / max_usd / nodes / spot / arch: unset fields fall
-        back to the host profile's defaults at retry time.
+    queue / walltime / mem_gb / gpus / gpu_name / max_usd / nodes / spot / arch / datacenter:
+        unset fields fall back to the host profile's defaults at retry time.
     attempt: the 1-based try number the profile's expression defaults are evaluated against.
     """
 
@@ -228,6 +245,7 @@ class Request(FrozenModel):
     attempt: int = 1
     spot: bool = False
     arch: str = ""
+    datacenter: bool = False
 
     def resources(self) -> Resources:
         """What this request asks of its host, every unset field left for the profile to fill."""
@@ -242,6 +260,7 @@ class Request(FrozenModel):
             attempt=self.attempt,
             spot=self.spot,
             arch=self.arch,
+            datacenter=self.datacenter,
         )
 
 

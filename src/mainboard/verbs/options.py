@@ -111,6 +111,9 @@ class Asked(FrozenModel):
     spot: bool = False
     """rent interruptible capacity; a job taken back reads `vanished`, and `--resume <name>
     --spot` continues it from its `MB_CHECKPOINT`."""
+    datacenter: bool = False
+    """rent only from data-center hosts, for a provider that also lists individually run
+    machines (vast), whose marketplace hosts drop jobs and download slowly."""
     fetch: str = ""
     """a results path recorded for later collection, the node's evidence directory when unset
     and `--node` names one."""

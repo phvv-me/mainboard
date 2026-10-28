@@ -41,6 +41,8 @@ class Defaults(Declared):
         allocations elsewhere (Miyabi's `interact-g` router).
     spot: rent interruptible capacity on a metered provider; owned hosts ignore it.
     arch: the compute capabilities a metered provider's card must have (`sm_120`, `hopper`).
+    datacenter: rent only from data-center hosts on a provider that also lists individually run
+        machines (vast); other hosts ignore it.
     """
 
     queue: str = ""
@@ -53,6 +55,7 @@ class Defaults(Declared):
     max_usd: float = Field(default=0.0, ge=0.0)
     spot: bool = False
     arch: str = ""
+    datacenter: bool = False
 
 
 def _seconds(walltime: str) -> int:

@@ -29,14 +29,8 @@ from ...core.errors import MissionError
 from ...runtime.job import walltime_seconds
 from ..jobs.evidence import framing, staging
 from ..jobs.vocabulary import JobState
-from .base import (
-    Account,
-    Credentials,
-    Delivery,
-    LogSource,
-    ProviderBackend,
-    Standing,
-)
+from .base import Credentials, ProviderBackend
+from .capabilities import Account, Delivery, LogSource, Standing
 
 if TYPE_CHECKING:
     from types import ModuleType

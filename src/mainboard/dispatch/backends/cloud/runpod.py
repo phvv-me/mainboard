@@ -7,10 +7,10 @@
 
 import json
 from typing import TYPE_CHECKING
-from urllib.error import HTTPError
 from urllib.parse import quote
 
 from ...hosts.rentals import seeded
+from ..base import ProviderBackend
 from .api import CloudApi, Machine
 from .core import CloudBackend
 
@@ -81,6 +81,8 @@ class RunPodApi(CloudApi):
         body: dict[str, JsonValue] = {
             "name": name,
             "imageName": self.image,
+            "cloudType": "SECURE",
+            "minDownloadMbps": int(ProviderBackend.DOWNLOAD_FLOOR_MBPS),
             "gpuTypeIds": [offer.instance_name],
             "gpuCount": max(offer.gpu_count or 1, 1),
             "interruptible": bool(offer.spot),
@@ -93,13 +95,8 @@ class RunPodApi(CloudApi):
         return str(self._launched(url=f"{_API}/pods", body=body)["id"])
 
     def machine(self, handle: str) -> Machine:
-        try:
-            pod = self._call("GET", url=f"{_API}/pods/{quote(handle, safe='')}", answer=dict)
-        except HTTPError as error:
-            if error.code == 404:
-                return Machine(handle=handle, status="gone")
-            raise
-        return self._machine(pod)
+        pod = self._fetched(f"{_API}/pods/{quote(handle, safe='')}")
+        return Machine(handle=handle, status="gone") if pod is None else self._machine(pod)
 
     def machines(self) -> list[Machine]:
         return [
@@ -107,11 +104,7 @@ class RunPodApi(CloudApi):
         ]
 
     def terminate(self, handle: str) -> None:
-        try:
-            self._call("DELETE", url=f"{_API}/pods/{quote(handle, safe='')}", answer=dict)
-        except HTTPError as error:
-            if error.code != 404:
-                raise
+        self._ended("DELETE", url=f"{_API}/pods/{quote(handle, safe='')}")
 
 
 class RunPodBackend(CloudBackend):
@@ -120,3 +113,12 @@ class RunPodBackend(CloudBackend):
     name = "runpod"
     catalog_name = "runpod"
     client = RunPodApi
+
+    def rentable(self, item: CatalogItem) -> bool:
+        """Only Secure Cloud offers, which a pod is created in and the quoted price is for.
+
+        gpuhunt keys a Secure offer by its data center (`US-TX-3`) and a Community one, third-party
+        hosts without an SLA, by country code (`US`). Creating in Secure what the catalog quoted at
+        the cheaper Community rate would have left every lease under-priced.
+        """
+        return "-" in (item.location or "")

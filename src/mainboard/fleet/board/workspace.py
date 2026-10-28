@@ -198,6 +198,7 @@ class Workspace:
                 "max_usd": asked.max_usd or defaults.max_usd,
                 "account": resolved.profile.account,
                 "spot": asked.spot or defaults.spot,
+                "datacenter": asked.datacenter or defaults.datacenter,
                 "arch": asked.arch or ("" if asked.gpu_name else defaults.arch),
             }
         )

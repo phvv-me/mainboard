@@ -306,6 +306,7 @@ class Dispatcher(Shipper):
             nodes=resources.nodes,
             spot=resources.spot,
             arch=resources.arch,
+            datacenter=resources.datacenter,
         )
         record = RunRecord(
             handle=label,

@@ -58,15 +58,12 @@ class LambdaApi(CloudApi):
         return str(launched["data"]["instance_ids"][0])
 
     def machine(self, handle: str) -> Machine:
-        try:
-            found = self._call(
-                "GET", url=f"{_API}/instances/{quote(handle, safe='')}", answer=dict
-            ).get("data", {})
-        except HTTPError as error:
-            if error.code == 404:
-                return Machine(handle=handle, status="gone")
-            raise
-        return self._machine(found)
+        found = self._fetched(f"{_API}/instances/{quote(handle, safe='')}")
+        return (
+            Machine(handle=handle, status="gone")
+            if found is None
+            else self._machine(found.get("data", {}))
+        )
 
     def machines(self) -> list[Machine]:
         return [

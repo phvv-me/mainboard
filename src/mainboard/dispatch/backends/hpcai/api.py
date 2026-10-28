@@ -21,7 +21,8 @@ from urllib.request import Request
 from patos import FrozenModel
 
 from ...jobs.arch import capability, card
-from ..base import Credentials, Rented, http_transport
+from ..base import Credentials, http_transport
+from ..capabilities import Rented
 
 if TYPE_CHECKING:
     from ...jobs.vocabulary import OfferFilter

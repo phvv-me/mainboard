@@ -20,19 +20,8 @@ from ...jobs.arch import card
 from ...jobs.evidence import framing, staging
 from ...jobs.vocabulary import JobState, OfferFilter
 from ...transport.core import Endpoint
-from ..base import (
-    Account,
-    Delivery,
-    Inventory,
-    LogSource,
-    Market,
-    ProviderBackend,
-    Rentable,
-    Standing,
-    forgotten,
-    hourly_cap,
-    http_transport,
-)
+from ..base import ProviderBackend, Rentable, forgotten, hourly_cap, http_transport
+from ..capabilities import Account, Delivery, Inventory, LogSource, Market, Standing
 from ..constants import ADDRESS_ATTEMPTS, ADDRESS_SECONDS
 from .api import HpcAiApi, Instance, InstanceType, api_key
 
@@ -43,7 +32,8 @@ if TYPE_CHECKING:
     from ....manifest.schema.compute.host import HostProfile
     from ...hosts.allocation import Allocation
     from ...jobs.vocabulary import Resources
-    from ..base import Rented, Transport
+    from ..base import Transport
+    from ..capabilities import Rented
 
 # The initScript's output and exit-code sentinels, on the instance's own data disk: a rental with
 # no `remoteStorages` has no mounted volume, and one instance runs one command, so fixed names do.

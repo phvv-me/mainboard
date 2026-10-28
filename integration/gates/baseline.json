@@ -72,87 +72,87 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_a_card_reads_the_same_however_it_is_spelled",
+      "nodeid": "integration/dispatch/backends/cloud/test_offers.py::test_a_card_reads_the_same_however_it_is_spelled",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
+      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
+      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
+      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
+      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_lambda_registers_the_key_once_then_launches_with_it",
+      "nodeid": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_registers_the_key_once_then_launches_with_it",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
+      "nodeid": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_lambda_insufficient_capacity_is_a_retry",
+      "nodeid": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_insufficient_capacity_is_a_retry",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_one_catalog_failing_leaves_every_other_clouds_offers",
+      "nodeid": "integration/dispatch/backends/cloud/test_offers.py::test_one_catalog_failing_leaves_every_other_clouds_offers",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_an_architecture_matches_the_capability_its_kernels_load_on",
+      "nodeid": "integration/dispatch/backends/cloud/test_offers.py::test_an_architecture_matches_the_capability_its_kernels_load_on",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_vast_asks_its_own_capability_field_for_an_architecture",
+      "nodeid": "integration/dispatch/backends/vast/test_core.py::test_vast_asks_its_own_capability_field_for_an_architecture",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture",
+      "nodeid": "integration/dispatch/backends/hpcai/test_core.py::test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
+      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_hpcai_gives_up_on_an_image_that_will_not_pull",
+      "nodeid": "integration/dispatch/backends/hpcai/test_core.py::test_hpcai_gives_up_on_an_image_that_will_not_pull",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_a_rate_limited_vast_create_waits_and_asks_again",
+      "nodeid": "integration/dispatch/backends/vast/test_core.py::test_a_rate_limited_vast_create_waits_and_asks_again",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_reliability_charges_the_machine_not_the_job",
+      "nodeid": "integration/fleet/test_reliability.py::test_reliability_charges_the_machine_not_the_job",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_a_path_under_another_root_is_listed_once",
+      "nodeid": "integration/dispatch/mirroring/test_sync.py::test_a_path_under_another_root_is_listed_once",
       "classification": "passed",
       "reason": ""
     },
@@ -1942,7 +1942,7 @@
       "classification": "excluded"
     },
     {
-      "nodeid": "integration/scenarios/test_clouds.py::test_offers_list_every_cloud_and_mark_what_mb_rents",
+      "nodeid": "integration/dispatch/backends/cloud/test_offers.py::test_offers_list_every_cloud_and_mark_what_mb_rents",
       "reason": "Live external offer-catalog request",
       "classification": "excluded"
     }
@@ -2223,6 +2223,30 @@
         "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[manifest]": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[manifest]",
         "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[center]": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[center]",
         "integration/environments/test_managed_python.py::test_no_remote_path_names_a_system_python[engines]": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[engines]"
+      }
+    },
+    {
+      "date": "2026-10-27",
+      "reason": "ALL-TEST0003: test_clouds.py held 23 members against a limit of 20. Each test is the same under the folder of the source it tests, with its doubles in that folder's fakes, builders and conftest; the Vast and RunPod cases also gained assertions (data-center scope, the shared download floor, Secure Cloud only).",
+      "cases": {
+        "integration/scenarios/test_clouds.py::test_a_card_reads_the_same_however_it_is_spelled": "integration/dispatch/backends/cloud/test_offers.py::test_a_card_reads_the_same_however_it_is_spelled",
+        "integration/scenarios/test_clouds.py::test_offers_list_every_cloud_and_mark_what_mb_rents": "integration/dispatch/backends/cloud/test_offers.py::test_offers_list_every_cloud_and_mark_what_mb_rents",
+        "integration/scenarios/test_clouds.py::test_one_catalog_failing_leaves_every_other_clouds_offers": "integration/dispatch/backends/cloud/test_offers.py::test_one_catalog_failing_leaves_every_other_clouds_offers",
+        "integration/scenarios/test_clouds.py::test_an_architecture_matches_the_capability_its_kernels_load_on": "integration/dispatch/backends/cloud/test_offers.py::test_an_architecture_matches_the_capability_its_kernels_load_on",
+        "integration/scenarios/test_clouds.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
+        "integration/scenarios/test_clouds.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
+        "integration/scenarios/test_clouds.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
+        "integration/scenarios/test_clouds.py::test_a_gone_pod_reads_as_gone_and_ends_quietly": "integration/dispatch/backends/cloud/test_runpod.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
+        "integration/scenarios/test_clouds.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves": "integration/dispatch/backends/cloud/test_runpod.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
+        "integration/scenarios/test_clouds.py::test_lambda_registers_the_key_once_then_launches_with_it": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_registers_the_key_once_then_launches_with_it",
+        "integration/scenarios/test_clouds.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
+        "integration/scenarios/test_clouds.py::test_lambda_insufficient_capacity_is_a_retry": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_insufficient_capacity_is_a_retry",
+        "integration/scenarios/test_clouds.py::test_vast_asks_its_own_capability_field_for_an_architecture": "integration/dispatch/backends/vast/test_core.py::test_vast_asks_its_own_capability_field_for_an_architecture",
+        "integration/scenarios/test_clouds.py::test_a_rate_limited_vast_create_waits_and_asks_again": "integration/dispatch/backends/vast/test_core.py::test_a_rate_limited_vast_create_waits_and_asks_again",
+        "integration/scenarios/test_clouds.py::test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture": "integration/dispatch/backends/hpcai/test_core.py::test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture",
+        "integration/scenarios/test_clouds.py::test_hpcai_gives_up_on_an_image_that_will_not_pull": "integration/dispatch/backends/hpcai/test_core.py::test_hpcai_gives_up_on_an_image_that_will_not_pull",
+        "integration/scenarios/test_clouds.py::test_reliability_charges_the_machine_not_the_job": "integration/fleet/test_reliability.py::test_reliability_charges_the_machine_not_the_job",
+        "integration/scenarios/test_clouds.py::test_a_path_under_another_root_is_listed_once": "integration/dispatch/mirroring/test_sync.py::test_a_path_under_another_root_is_listed_once"
       }
     }
   ]

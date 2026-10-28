@@ -17,7 +17,8 @@ from pydantic import Field
 from ..constants import BYTES_PER_GB
 from ..core.errors import MissionError
 from ..core.section import Verdict
-from ..dispatch.backends.base import Account, Credentials, Inventory, ProviderBackend, route
+from ..dispatch.backends.base import Credentials, ProviderBackend, route
+from ..dispatch.backends.capabilities import Account, Inventory
 from ..dispatch.transport.core import HostUnreachable, SshTransport
 from ..probe.readings.snapshot import HostFacts
 from ..probe.system import System
@@ -27,7 +28,7 @@ from .fitness import Fitness
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from ..dispatch.backends.base import Rented
+    from ..dispatch.backends.capabilities import Rented
     from ..dispatch.hosts.onboard import HostSetup
     from ..manifest.schema.compute.host import HostProfile
     from ..state.storage.holds import Held

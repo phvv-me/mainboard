@@ -1,6 +1,7 @@
 """A cloud's REST API as the four calls a `CloudBackend` rents through, under its bearer key."""
 
 import abc
+import hashlib
 import json
 from typing import TYPE_CHECKING, ClassVar
 from urllib.error import HTTPError
@@ -8,7 +9,8 @@ from urllib.request import Request
 
 from pydantic import TypeAdapter
 
-from ..base import Credentials, Rented, http_transport
+from ..base import Credentials, http_transport
+from ..capabilities import Rented
 from ..exceptions import CapacityGone
 
 if TYPE_CHECKING:
@@ -64,8 +66,22 @@ class CloudApi(abc.ABC):
     def terminate(self, handle: str) -> None:
         """End `handle`, tolerating one already gone."""
 
+    @staticmethod
+    def _named(public_key: str) -> str:
+        """The name this machine's key is registered under, fixed by the key itself."""
+        return "mainboard-" + hashlib.sha256(public_key.strip().encode()).hexdigest()[:12]
+
+    @staticmethod
+    def _same(known: str, *, public_key: str) -> bool:
+        """Whether the registered key text `known` is `public_key`, whatever its comment says."""
+        return known.split()[:2] == public_key.split()[:2]
+
     def __init__(self, *, transport: Transport = http_transport) -> None:
         self.transport = transport
+
+    def _authorized(self) -> dict[str, str]:
+        """The header this cloud authenticates a request by, a bearer token unless it says else."""
+        return {"Authorization": f"Bearer {self.bearer()}"}
 
     def _call[T](
         self,
@@ -75,28 +91,37 @@ class CloudApi(abc.ABC):
         answer: type[T],
         body: Mapping[str, JsonValue] | None = None,
     ) -> T:
-        """One JSON request under this cloud's key, its answer read as `answer` ({} when empty).
+        """One JSON request under this cloud's bearer token, its answer read as `answer`.
 
-        HTTP errors propagate, so a caller reads the refusal (capacity, a gone handle) itself.
+        An empty answer reads as `{}`. HTTP errors propagate, so a caller reads the refusal
+        (capacity, a gone handle) itself.
         """
-        request = Request(
-            url,
-            data=None if body is None else json.dumps(body).encode(),
-            method=method,
-            headers={
-                "Authorization": f"Bearer {self.key()}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "mainboard",
-            },
-        )
-        return TypeAdapter(answer).validate_json(self.transport(request).strip() or b"{}")
+        return TypeAdapter(answer).validate_json(self._send(method, url=url, body=body) or b"{}")
+
+    def _ended(
+        self, method: str, *, url: str, body: Mapping[str, JsonValue] | None = None
+    ) -> None:
+        """A request that ends a machine, tolerating one the cloud no longer has (404)."""
+        try:
+            self._call(method, url=url, answer=dict, body=body)
+        except HTTPError as error:
+            if error.code != 404:
+                raise
 
     def _exhausted(self, refused: HTTPError) -> None:
         """Raise `CapacityGone` when `refused` says the offer has no machine left."""
         said = refused.read().decode(errors="replace")
         if any(word in said.lower() for word in self.exhausted):
             raise CapacityGone(said[:200]) from refused
+
+    def _fetched(self, url: str) -> dict | None:
+        """The JSON object at `url`, None once the cloud says it is no longer there (404)."""
+        try:
+            return self._call("GET", url=url, answer=dict)
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+            return None
 
     def _launched(self, *, url: str, body: Mapping[str, JsonValue]) -> dict:
         """The answer to the create posted to `url`; `CapacityGone` once no machine is left."""
@@ -106,6 +131,34 @@ class CloudApi(abc.ABC):
             self._exhausted(refused)
             raise
 
+    def _send(
+        self, method: str, *, url: str, body: Mapping[str, JsonValue] | None = None
+    ) -> bytes:
+        """One JSON request under this cloud's key, its raw answer.
+
+        A cloud that answers a create with a bare id rather than JSON reads it from here.
+        """
+        request = Request(
+            url,
+            data=None if body is None else json.dumps(body).encode(),
+            method=method,
+            headers={
+                **self._authorized(),
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "mainboard",
+            },
+        )
+        return self.transport(request).strip()
+
+    def bearer(self) -> str:
+        """The token every request sends: the API key itself, unless a cloud exchanges it first."""
+        return self.key()
+
     def key(self) -> str:
         """This cloud's API key from the environment or the workspace `.env`."""
         return Credentials().key(*self.key_variables, hint=self.hint)
+
+    def offers(self) -> list[CatalogItem]:
+        """The offers this cloud lists itself, for a cloud gpuhunt publishes no catalog of."""
+        return []

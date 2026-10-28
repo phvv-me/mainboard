@@ -4,13 +4,120 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found planning rentals on hosts that drop or download slowly, 2026-10-27
+
+The owner's Vast and RunPod jobs ran on slow connections and nodes that dropped, losing the run.
+Fixed locally, uncommitted (suite gate 1255 passed before the final wording change; the cloud and
+dispatch tests pass after it):
+
+1. **RunPod's catalog quoted Community prices that a Secure pod never paid.** gpuhunt lists 17 of
+   432 live RunPod offers as Community (keyed by country code, `CA`, not a data-center id such as
+   `US-TX-3`), often the cheapest for a card (an RTX 5090 in Canada at $0.69/h), while
+   `RunPodApi.create` sends no `cloudType`, which the API defaults to Secure. The lease was priced
+   at the Community rate and the pod billed at the Secure one. `CloudBackend.rentable` now lets a
+   cloud narrow its catalog, and RunPod keeps Secure offers only; `create` sends `cloudType`
+   explicitly.
+2. **No floor on RunPod's network speed.** `create` now sends `minDownloadMbps`, the house
+   `ProviderBackend.DOWNLOAD_FLOOR_MBPS` (500, moved from `VastMarket`). Not tried against the
+   live API, which needs a key.
+3. **Vast could only be searched across its whole marketplace.** `--datacenter` (and
+   `datacenter = true` in a host's defaults) adds `datacenter: {eq: True}`, Vast's data-center
+   scope. A live probe found 361 marketplace rows to 42 data-center ones among the cheapest 403;
+   the scope returned 46 rows, all `hosting_type` 1. The cheapest cost $0.22/h against $0.07/h.
+
+4. **Two more clouds, `digitalocean` and `verda`, on the `CloudBackend` template** (about 130 lines
+   each), written from the providers' official API docs and tried only against recorded answers:
+   `mb host hold digitalocean|verda ...` needs the owner's key for the first live rent.
+   DigitalOcean: a GPU Droplet is created with the plan's AI/ML ready base image (the drivers) and
+   the ssh key registered by its MD5 fingerprint, the scheme Verda's docs show and the unit test
+   reproduces. Verda: a client id and secret are exchanged for a bearer token (`CloudApi.bearer`),
+   the image is the newest Ubuntu CUDA one the instance type supports, and the delete takes the OS
+   volume along so nothing keeps billing. `CloudApi` gained `_fetched` and `_ended`, the 404
+   tolerance that four adapters had copied.
+5. **`dispatch/backends/base.py` held 16 members against a limit of 12.** The optional contracts
+   (`Capability`, `Account`, `Delivery`, `Inventory`, `LogSource`, `Market`) and the two models they
+   return (`Standing`, `Rented`) moved to `capabilities.py`; every importer was respelled.
+6. **`integration/scenarios/test_clouds.py` held 23 members against a limit of 20.** Its tests now
+   sit under `integration/dispatch/backends/{cloud,vast,hpcai}`, `integration/fleet` and
+   `integration/dispatch/mirroring`, with the shared transport double, builders and keys in the
+   backends folder (rebaseline entry of 2026-10-27 in `gates/baseline.json`).
+
+How each provider is best automated, from its official documentation (2026-10-27): REST with a
+bearer or key header, called with urllib, for DigitalOcean (OpenAPI spec, `doctl`, PyDo), Vultr
+(API v2, `vultr-cli`), Verda (OAuth2 client credentials, Python and Go SDKs, Terraform), Hot Aisle
+(`Authorization: Token`, `admin.hotaisle.app/api/docs`, `hotaisle-cli`), Hyperstack (`api_key`
+header, environments and keypairs first), Prime Intellect (Bearer, `prime` CLI and SDK, an
+availability API that carries `internetSpeed`, `security` and `provider`), Shadeform (`x-api-key`,
+one API over 21 clouds, volumes only inside one provider and region, no spot) and the existing
+Lambda, RunPod, Vast and HPC-AI. Nebius is gRPC first with a generated REST gateway, a CLI and
+SDKs, and needs a project, a subnet and a service account, so its CLI (`nebius compute instance
+create ... --format json`) is the practical automation until a service-account token exchange is
+written. Crusoe signs requests with an access key pair, so its CLI is the easier route. Modal needs
+its Python SDK (done). TensorWave publishes no API or price. dstack needs a server and Docker on
+every host, which the no-containers rule rules out; SkyPilot adds a controller or API server and a
+second state store; both stay reference material, and gpuhunt (dstack's catalog) is already used.
+
+Open:
+
+- Vast's `inet_down` and RunPod's floor come from the providers. A landing-time probe (measure the
+  real download once ssh answers, end the rental if it is slow, try the next offer) is not built.
+  The cost it would remove is also local: a rental pulls the mirror from this machine's uplink, which
+  held an RTX 5090 idle for 38 billed minutes at 2.8 Mbps on 2026-09-21 (see `[hosts.vast.sync]`).
+- `fleet/reliability.py` already scores each target from the run registry (ran, unstarted, lost,
+  delivered share); what the owner's scorecard still needs is the tier (data-center or
+  marketplace), ready time and bandwidth on the `costs` ledger's `Observation`, an offer snapshot
+  table, and a ranking by requirement (walltime, region, card).
+- ALL-ARCH0003 stays on `backends/base.py` (root constants and `hosts.rentals`), `manifest/schema/
+  compute/queue.py` (root constants), `fleet/runs.py` and `verbs/options.py`: each edge needs a
+  shared definition moved into a more stable package. Moving the unit constants to `core/` touched
+  36 files and was undone, because every touched file then reports its older findings; it belongs
+  to the design pass listed under "Deferred after milestone M1".
+- Not built: Nebius and Crusoe (CLI route, see above) and Prime Intellect (an aggregator whose
+  availability API carries `internetSpeed`, `security` and `provider`; worth reading for the
+  scorecard before it is worth renting through).
+- None of the REST adapters has made a live rent. Each was written from the provider's official
+  API reference and tried against recorded answers, so the first rent per provider is also the
+  check of its image name, ssh user and the wording of its capacity refusal.
+
+### 2026-10-28: Vultr, Hot Aisle, Hyperstack and Shadeform added
+
+Read through Firecrawl (the plain fetch refused Vultr and Hot Aisle), then built on the same
+template as DigitalOcean and Verda. Vultr, Hot Aisle and Hyperstack are `host hold` providers
+(`vultr`, `hotaisle`, `hyperstack`); Vultr and Hot Aisle list through gpuhunt, whose catalogs need
+`VULTR_API_KEY` and `HOTAISLE_API_KEY` plus `HOTAISLE_TEAM_HANDLE`.
+
+- `CloudApi.offers()` is new: a cloud gpuhunt publishes no catalog of (Hyperstack, Shadeform)
+  lists its own offers, and `CloudBackend._hunted` filters them by the same `OfferFilter` through
+  `offers.kept`. They do not appear in `mb host offers`, which asks gpuhunt only.
+- `CloudApi._authorized()` is new, since Hot Aisle sends `Authorization: Token <key>` and
+  Hyperstack an `api_key` header. `_named` and `_same` hold the ssh-key naming and matching that
+  four adapters had each copied.
+- Vultr: instances (`vcg`, `vdm`) and bare metal (`vbm`, where the GH200 at $1.99/h and the 8-GPU
+  nodes are sold) share no id space, so a handle is looked up as an instance, then as bare metal.
+  The public plan list prices the GPU plans but carries no stock for them, and the preemptible-only
+  plans (MI355X, B200, H100 nodes) are not in gpuhunt's catalog, so only on-demand plans rent.
+- Hot Aisle: a machine is created from the specs object gpuhunt keeps in `provider_data`; ssh is
+  the `hotaisle` user on a NAT port with the keys registered on the API user; a delete before the
+  30 minute minimum needs `force`. Bare metal is a different endpoint and is not rented.
+- Hyperstack: prices come from the pricebook (per GPU model) times the flavor's GPU count, stock
+  from the flavor list. The adapter makes a `mainboard-<region>` environment and registers the key
+  there on the first rent in a region. Its prepaid balance is the spend cap: a drained balance ends
+  every machine.
+- Shadeform: the offers carry the cloud behind them in `location` (`lambda/us-east-1`) and the type's
+  boot time in `provider_data`. Its `auto_delete.spend_threshold` is a server-side kill switch that
+  `create` does not send yet, because `CloudApi.create` receives no budget.
+- `mb host offers --pricing` lists `on-demand` in its help and accepts only `on_demand`.
+- The test double `Recorded` still types its answers as `object`: mypy joins mixed dict literals to
+  `object`, so a precise JSON alias fails on the existing tests.
+
 ## Found moving the dotfiles toolbox into its own mb.toml, 2026-10-27
 
 The dotfiles repository (`personal/dotfiles`) now declares its command-line toolbox in its own
 `mb.toml` and `mb.lock`, and its chezmoi apply runs `mb install --locked` there; the pixi global
 manifest is gone. Verified on macOS and on gold (Ubuntu aarch64) from a cold start.
 
-Fixed, uncommitted:
+Fixed in 0.5.7 (`5f80ec6`), and the dotfiles installed on silo (Fedora 44 KDE, x86_64) from a cold
+start with it:
 
 1. **`PixiEngine.bootstrap` and the uv bootstrap edited the user's startup files.** Both official
    installers append a PATH line to `~/.zshrc`, `~/.bashrc`, `~/.profile` or `~/.zshenv` unless

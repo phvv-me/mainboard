@@ -21,7 +21,8 @@ from patos import FrozenModel
 
 from ...core.errors import MissionError
 from ...costs import Catalog, Ledger, Quote, SetupFit
-from ...dispatch.backends.base import Market, ProviderBackend, route
+from ...dispatch.backends.base import ProviderBackend, route
+from ...dispatch.backends.capabilities import Market
 from ...fleet.compute import summary
 
 if TYPE_CHECKING:

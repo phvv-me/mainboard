@@ -2,10 +2,12 @@ from typing import TYPE_CHECKING
 
 from cyclopts import Parameter
 from patos import FrozenModel
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator
 
 from ...core.errors import MissionError
-from ...dispatch.backends.base import Account, ProviderBackend
+from ...dispatch.backends import HyperstackBackend, ShadeformBackend
+from ...dispatch.backends.base import ProviderBackend
+from ...dispatch.backends.capabilities import Account
 from ...dispatch.backends.cloud.offers import hunt
 from ...dispatch.backends.hpcai import HpcAiBackend
 from ...dispatch.jobs.arch import arch, capability, sm
@@ -24,8 +26,22 @@ if TYPE_CHECKING:
     from ...state.storage.holds import Held
 
 # The catalogs mb rents on, by the `host hold` provider each rents through.
-_RENTABLE = {"vastai": "vast", "runpod": "runpod", "lambdalabs": "lambda", "hpc-ai": "hpc-ai"}
+_RENTABLE = {
+    "vastai": "vast",
+    "runpod": "runpod",
+    "lambdalabs": "lambda",
+    "hpc-ai": "hpc-ai",
+    "digitalocean": "digitalocean",
+    "verda": "verda",
+    "vultr": "vultr",
+    "hotaisle": "hotaisle",
+    "hyperstack": "hyperstack",
+    "shadeform": "shadeform",
+}
 _HPCAI = "hpc-ai"
+# The clouds that list their own offers, gpuhunt publishing no catalog of them.
+_SELF_LISTING = (HyperstackBackend, ShadeformBackend)
+_APART = frozenset({_HPCAI, *(cloud.name for cloud in _SELF_LISTING)})
 
 
 @Parameter(name="*")
@@ -46,6 +62,12 @@ class Shopping(FrozenModel):
     """`any` offer, only `spot` (interruptible) or only `on-demand` ones."""
     provider: tuple[str, ...] = ()
     """only these catalogs (`vastai`, `runpod`, `lambdalabs`, `aws`...)."""
+
+    @field_validator("pricing", mode="before")
+    @classmethod
+    def _spelled(cls, value: str | Pricing) -> str | Pricing:
+        """`on-demand`, the spelling the help prints, for the member `on_demand`."""
+        return value.replace("-", "_") if isinstance(value, str) else value
 
     def wanted(self, gpu: str) -> OfferFilter:
         """The offers these flags and the card `gpu` ask for."""
@@ -115,8 +137,8 @@ class RentalVerbs(Verbs):
 
     @staticmethod
     def _hunted(wanted: OfferFilter, providers: Sequence[str]) -> list[_Listed]:
-        """gpuhunt's offers as rows, unless only HPC-AI, which it does not carry, was asked."""
-        others = [name for name in providers if name != _HPCAI]
+        """gpuhunt's offers as rows, unless only clouds it does not carry were asked."""
+        others = [name for name in providers if name not in _APART]
         if providers and not others:
             return []
         return [
@@ -131,7 +153,7 @@ class RentalVerbs(Verbs):
                 instance=item.instance_name,
             )
             for item in hunt(wanted, providers=others)
-            if item.provider != _HPCAI
+            if item.provider not in _APART
         ]
 
     @staticmethod
@@ -139,6 +161,37 @@ class RentalVerbs(Verbs):
         """Whether the provider backend registered as `kind` has its credentials here."""
         backend = ProviderBackend.find(kind)()
         return isinstance(backend, Account) and backend.standing().keyed
+
+    @staticmethod
+    def _own(wanted: OfferFilter, providers: Sequence[str]) -> list[_Listed]:
+        """The offers of the clouds that list themselves, gpuhunt carrying none: those keyed here.
+
+        A cloud whose listing fails is a row saying why, so one outage hides no other price.
+        """
+        rows: list[_Listed] = []
+        for cloud in _SELF_LISTING:
+            if (providers and cloud.name not in providers) or not RentalVerbs._keyed(cloud.name):
+                continue
+            try:
+                offers = cloud().catalog(gpu_name=wanted.gpu_name, gpus=wanted.gpus)
+            except (MissionError, OSError) as unlisted:
+                rows.append(_Listed(provider=cloud.name, stock=f"unlisted: {unlisted}"))
+                continue
+            rows += [
+                _Listed(
+                    provider=offer.provider,
+                    gpu=offer.gpu,
+                    sm=sm(capability(offer.gpu)),
+                    count=offer.gpu_count,
+                    usd_hr=round(offer.rate_usd_hr, 4),
+                    spot=offer.spot,
+                    region=offer.region,
+                    instance=offer.source.rsplit(":", 1)[-1],
+                )
+                for offer in offers
+                if wanted.admits(offer)
+            ]
+        return rows
 
     @staticmethod
     def _printed(held: Held, output: Output, *, title: str) -> None:
@@ -215,7 +268,8 @@ class RentalVerbs(Verbs):
 
         Read from gpuhunt, the open catalog dstack publishes: public price lists and live
         marketplaces (AWS, GCP, Azure, Lambda, RunPod, Vast, Verda, Nebius and more), most
-        readable without an account, plus HPC-AI's own catalog when its key is here. `rent`
+        readable without an account, plus the own catalogs of HPC-AI, Hyperstack and Shadeform
+        when their keys are here. `rent`
         names the `host hold` provider for a cloud mb can rent on, with `keyed` when its API key
         is present here. `sm` is the card's compute capability: `--arch sm_120` finds the
         cheapest card whose kernels match an RTX 5090's, which is not a B200's (sm_100).
@@ -231,6 +285,7 @@ class RentalVerbs(Verbs):
             found = [
                 *RentalVerbs._hunted(wanted, shopping.provider),
                 *RentalVerbs._hpcai(wanted, shopping.provider),
+                *RentalVerbs._own(wanted, shopping.provider),
             ]
         runs = self.session.board("local").dispatcher.cache.listed(since=window(30))
         delivered = by_kind(reliability(runs))

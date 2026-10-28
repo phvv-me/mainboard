@@ -25,20 +25,10 @@ from ...hosts.lease import Lease
 from ...hosts.rentals import Rental, identity, reachable, waiting
 from ...jobs.vocabulary import JobState, OfferFilter
 from ...transport.core import Endpoint, HostUnreachable, SshTransport
-from ..base import (
-    Account,
-    Delivery,
-    Inventory,
-    LogSource,
-    Market,
-    ProviderBackend,
-    Rentable,
-    Standing,
-    hourly_cap,
-    http_transport,
-)
+from ..base import ProviderBackend, Rentable, hourly_cap, http_transport
+from ..capabilities import Account, Delivery, Inventory, LogSource, Market, Standing
 from ..exceptions import CapacityGone
-from .offers import as_offer, hunt
+from .offers import as_offer, hunt, kept
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,7 +39,8 @@ if TYPE_CHECKING:
     from ....costs.catalog import Offer
     from ...hosts.allocation import Allocation
     from ...jobs.vocabulary import Resources
-    from ..base import Rented, Transport
+    from ..base import Transport
+    from ..capabilities import Rented
     from .api import CloudApi
 
 # How long a created machine may take to publish an address before it is ended unused.
@@ -143,6 +134,19 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
             return handle
         raise MissionError(f"{self.name} had no capacity for the {len(found)} cheapest offers")
 
+    def _hunted(self, wanted: OfferFilter) -> list[CatalogItem]:
+        """The offers for `wanted` that this cloud can create a machine for.
+
+        They come from the gpuhunt catalog `catalog_name` names, or from the cloud's own listing
+        when gpuhunt has none.
+        """
+        found = (
+            hunt(wanted, providers=[self.catalog_name])
+            if self.catalog_name
+            else kept(self.api.offers(), wanted)
+        )
+        return [item for item in found if self.rentable(item)]
+
     def _landed(self, handle: str, *, private: str) -> Endpoint:
         """`handle` answering ssh, with the landing's waiter started on it, detached."""
         endpoint = reachable(self._booted(handle, private=private), sleeper=self.sleeper)
@@ -159,7 +163,7 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
         wanted = OfferFilter.rented(
             rented, ceiling=hourly_cap(resources, landing=Rental.LANDING_SECONDS)
         )
-        if found := hunt(wanted, providers=[self.catalog_name])[:_OFFERS_TRIED]:
+        if found := self._hunted(wanted)[:_OFFERS_TRIED]:
             return found
         raise MissionError(
             f"{self.name} lists no {wanted.spoken} offer right now; `mb host offers` shows every "
@@ -191,7 +195,7 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
         self.api.terminate(handle)
 
     def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
-        found = hunt(OfferFilter(gpu_name=gpu_name, gpus=gpus), providers=[self.catalog_name])
+        found = self._hunted(OfferFilter(gpu_name=gpu_name, gpus=gpus))
         return [as_offer(item) for item in (found[:limit] if limit else found)]
 
     def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
@@ -214,6 +218,10 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
             logger.warning("{} machine {} never became reachable; ending it", self.name, handle)
             self.api.terminate(handle)
             raise
+
+    def rentable(self, item: CatalogItem) -> bool:
+        """Whether this cloud creates machines for `item`; a subclass narrows its catalog here."""
+        return True
 
     def rentals(self) -> list[Rented]:
         return list(self.api.machines())

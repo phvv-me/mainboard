@@ -16,7 +16,7 @@ from ...jobs.arch import capability, card
 from ...jobs.vocabulary import Pricing
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from gpuhunt import CatalogItem
 
@@ -47,13 +47,36 @@ def hunt(wanted: OfferFilter, *, providers: Sequence[str] = ()) -> list[CatalogI
         found = _queried(wanted, providers=list(providers) or None)
     except OSError:
         found = _answering(wanted, providers=providers)
+    return _fitting(found, wanted)
+
+
+def kept(items: Iterable[CatalogItem], wanted: OfferFilter) -> list[CatalogItem]:
+    """A cloud's own `items` that `wanted` accepts, cheapest first."""
+    taken = (item for item in items if wanted.admits(as_offer(item)))
+    return sorted(taken, key=lambda item: item.price)
+
+
+def _asked(wanted: OfferFilter) -> dict:
+    """`wanted` as the arguments gpuhunt filters by."""
+    gpus = wanted.gpus or None
+    return {
+        "gpu_name": [card(wanted.gpu_name)] if wanted.gpu_name else None,
+        "min_gpu_count": gpus,
+        "max_gpu_count": gpus,
+        "max_price": wanted.max_usd_hr or None,
+        "spot": None if wanted.pricing is Pricing.ANY else wanted.pricing is Pricing.SPOT,
+    }
+
+
+def _fitting(found: Iterable[CatalogItem], wanted: OfferFilter) -> list[CatalogItem]:
+    """The offers whose card has the architecture `wanted` asks for, cheapest first."""
     span = wanted.arch
-    kept = (
+    fitting = (
         item
         for item in found
         if span is None or (item.gpu_name and span.holds(capability(item.gpu_name)))
     )
-    return sorted(kept, key=lambda item: item.price)
+    return sorted(fitting, key=lambda item: item.price)
 
 
 def _answering(wanted: OfferFilter, *, providers: Sequence[str]) -> list[CatalogItem]:
@@ -74,12 +97,4 @@ def _answering(wanted: OfferFilter, *, providers: Sequence[str]) -> list[Catalog
 
 def _queried(wanted: OfferFilter, *, providers: list[str] | None) -> list[CatalogItem]:
     """gpuhunt's offers for the filters from `providers`, every catalog's when None."""
-    gpus = wanted.gpus or None
-    return gpuhunt.query(
-        provider=providers,
-        gpu_name=[card(wanted.gpu_name)] if wanted.gpu_name else None,
-        min_gpu_count=gpus,
-        max_gpu_count=gpus,
-        max_price=wanted.max_usd_hr or None,
-        spot=None if wanted.pricing is Pricing.ANY else wanted.pricing is Pricing.SPOT,
-    )
+    return gpuhunt.query(provider=providers, **_asked(wanted))

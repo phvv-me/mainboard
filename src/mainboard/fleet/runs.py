@@ -6,7 +6,8 @@ from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from ..core.errors import MissionError
-from ..dispatch.backends.base import Delivery, LogSource, ProviderBackend, Rentable
+from ..dispatch.backends.base import ProviderBackend, Rentable
+from ..dispatch.backends.capabilities import Delivery, LogSource
 from ..dispatch.constants import POLL_SECONDS
 from ..dispatch.dispatcher import Handle, Verdict
 from ..dispatch.hosts.rentals import identity

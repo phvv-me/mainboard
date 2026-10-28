@@ -103,6 +103,8 @@ class Ask(FrozenModel):
     cuda: the CUDA the image about to be rented names, raising the driver floor above the base
         images'; 0 for the base images'.
     arch: the compute capabilities the card must have, asked of Vast's own `compute_cap`.
+    datacenter: whether only data-center hosts qualify, Vast's `datacenter` scope, instead of its
+        whole marketplace of individually run machines.
     """
 
     gpu_name: str = ""
@@ -110,6 +112,7 @@ class Ask(FrozenModel):
     max_usd_hr: float = 0.0
     cuda: float = 0.0
     arch: Arch | None = None
+    datacenter: bool = False
 
 
 class VastMarket:
@@ -124,11 +127,6 @@ class VastMarket:
     CUDA_FLOOR = max(
         ProviderBackend.CUDA_FLOOR, min(image_cuda(image) or 0 for image in _BASE_IMAGES)
     )
-
-    # A cold rental pulls a multi-gigabyte image before its container exists: hosts below this
-    # spent the whole address wait pulling and ended with no container (three rentals,
-    # 2026-09-12), while hosts at a few Gbps were running inside two minutes.
-    DOWNLOAD_FLOOR_MBPS = 500.0
 
     def __init__(self, api: VastApi, *, spot: bool, disk_gb: float) -> None:
         self.api = api
@@ -153,11 +151,12 @@ class VastMarket:
             **({"gpu_name": {"eq": ask.gpu_name.replace("_", " ")}} if ask.gpu_name else {}),
             **({"num_gpus": {"eq": ask.gpus}} if ask.gpus else {}),
             **({"dph_total": {"lte": ask.max_usd_hr}} if ask.max_usd_hr else {}),
+            **({"datacenter": {"eq": True}} if ask.datacenter else {}),
         }
         low, high = ask.arch.vast() if ask.arch else (0, 0)
         if floored:
             query[_CUDA_FIELD] = {"gte": max(self.CUDA_FLOOR, ask.cuda)}
-            query[_DOWNLOAD_FIELD] = {"gte": self.DOWNLOAD_FLOOR_MBPS}
+            query[_DOWNLOAD_FIELD] = {"gte": ProviderBackend.DOWNLOAD_FLOOR_MBPS}
         if floored or ask.arch:
             floor = ProviderBackend.CAPABILITY_FLOOR if floored else 0
             query[_CAPABILITY_FIELD] = {
@@ -204,9 +203,10 @@ class VastMarket:
         return (
             f"vast has {len(buildable)} rentable {card} offer(s){ceiling} this house could run "
             "on, and not one "
-            f"host downloads at {self.DOWNLOAD_FLOOR_MBPS:.0f} Mbps or more. The best is "
-            f"{_describe(best, ask.gpu_name)} at {_download(best):.0f} Mbps. Renting it would "
-            "spend the whole landing window pulling the image and end with no container, which "
+            f"host downloads at {ProviderBackend.DOWNLOAD_FLOOR_MBPS:.0f} Mbps or more. "
+            f"The best is {_describe(best, ask.gpu_name)} at {_download(best):.0f} Mbps. "
+            "Renting it would spend the whole landing window pulling the image and end with no "
+            "container, which "
             "is how three rentals went on 2026-09-12; raise the ceiling to reach a faster host."
         )
 
@@ -240,7 +240,8 @@ class VastMarket:
         """
         ceiling = f" under ${ask.max_usd_hr:.2f}/hr" if ask.max_usd_hr else ""
         named = ask.gpu_name or (ask.arch.spelled if ask.arch else "any")
-        card = f"{ask.gpus}x {named}{' spot' if self.spot else ''}"
+        where = " data-center" if ask.datacenter else ""
+        card = f"{ask.gpus}x {named}{' spot' if self.spot else ''}{where}"
         raw = self.search(ask, floored=False)
         if not raw:
             raise MissionError(f"vast has no rentable {card} offer{ceiling} right now")

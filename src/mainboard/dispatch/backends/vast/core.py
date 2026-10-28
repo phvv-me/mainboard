@@ -23,20 +23,14 @@ from ...jobs.evidence import framing, staging
 from ...jobs.vocabulary import JobState
 from ...transport.core import Endpoint
 from ..base import (
-    Account,
-    Delivery,
-    Inventory,
-    LogSource,
-    Market,
     ProviderBackend,
     Rentable,
-    Rented,
-    Standing,
     forgotten,
     hourly_cap,
     http_transport,
     image_cuda,
 )
+from ..capabilities import Account, Delivery, Inventory, LogSource, Market, Rented, Standing
 from ..constants import ADDRESS_ATTEMPTS, ADDRESS_SECONDS
 from .api import VastApi, api_key
 from .market import Ask, VastMarket, base_image, bid
@@ -154,6 +148,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             max_usd_hr=hourly_cap(resources, landing=landing),
             cuda=max(self.CUDA_FLOOR, own or 0.0),
             arch=arch(resources.arch) if resources.arch else None,
+            datacenter=resources.datacenter,
         )
 
     def __attach(self, handle: str, *, key: str) -> None:
