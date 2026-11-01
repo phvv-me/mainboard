@@ -2582,7 +2582,20 @@ is why a rename shows up as a fresh list.
   asks the lake once for the batch, and removes the ones it holds whole. `mb code doctor` has a
   `tree evidence` row (`Space.evidence`): the `datasets`/`evidence` folders and Parquet in the tree,
   warning past 5 GiB with the `ingest` and `evict` commands for the biggest. `AGENTS.md` and the
-  `mainboard` skill say evidence goes produce, ingest, evict.
+  `mainboard` skill say evidence goes produce, ingest, evict. The 350,000-file `evidence` folder
+  then left in 2 hours (the datasets tree went from 43.9 to 2.8 GB).
+- FIXED 2026-11-01: `mainboard.state` imported `more_itertools` and `mainboard.guide` imported
+  `markdown_it` without declaring either, which the center's lock hid (other packages brought them
+  in); a host whose environment lacked them could not run the mirrored source. Both are declared
+  in `pyproject.toml` now.
+- OPEN, 2026-11-01: `mb host sync crimson` mirrors the tree and then fails at the install step with
+  `PackageNotFoundError: No package metadata was found for mainboard` (`Board.install` reads
+  `version("mainboard")` in the host's interpreter, and the tool environment the sync rebuilds there
+  ran Python 3.14 for the install and holds Python 3.15 afterwards). `mb host sync purple` refuses
+  at the install step, correctly: the shared server's disk is 100% full (15 GB free, 23.8 GB are
+  ours in `~/.mb-jobs/.mb/envs`), under the 30 GiB floor. Both hosts keep their previous
+  environments and answer as provisioned. The remote commands still spell the old verbs
+  (`mainboard install`), which the regrouped CLI answers through its aliases.
 - OPEN, 2026-11-01: `state/lake/core.py` `append` annotates its rows `Mapping[str, object]` (the
   owner bans `object` annotations) and mypy rejects passing them to `insert` (expects JSON types);
   the annotation is in the committed code.
