@@ -21,8 +21,9 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("CODEX_HOME", raising=False)
-    cache_home().mkdir(parents=True)
-    (cache_home() / Project().name).symlink_to(cached)
+    if (moved := cache_home() / Project().name) != cached:
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.symlink_to(cached)
     return home
 
 
