@@ -59,6 +59,11 @@ dependencies = [
     # Every cloud's GPU offers in one catalog (dstack's, MPL-2.0): `mb host offers` and what
     # `host hold` rents on RunPod and Lambda.
     "gpuhunt>=0.1.30",
+    # The lake batches objects by their size with it, so `mainboard.state` fails to import on a
+    # host whose environment lacks it.
+    "more-itertools>=10.0",
+    # `mb guide` search reads the README's Markdown tables with it, imported by a search only.
+    "markdown-it-py>=3.0",
 ]
 
 [project.optional-dependencies]
