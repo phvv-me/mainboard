@@ -6,7 +6,7 @@ from patos import FrozenModel
 
 from ...core.errors import MissionError
 from ...git.tree import Tree
-from .git import git, printed
+from .git import git
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -60,7 +60,7 @@ class Inventory:
             "--",
             ":(glob)*",
         )
-        return [PurePosixPath(name).name for name in printed(answer.stdout).split("\0") if name]
+        return [PurePosixPath(name).name for name in answer.stdout.split("\0") if name]
 
     @staticmethod
     def _names(repository: Path, *arguments: str, stdin: str = "") -> list[str]:
@@ -68,9 +68,9 @@ class Inventory:
         answer = git(repository, *arguments, stdin=stdin)
         if answer.returncode:
             raise MissionError(
-                f"git {arguments[0]} failed in {repository}: {printed(answer.stderr).strip()}"
+                f"git {arguments[0]} failed in {repository}: {answer.stderr.strip()}"
             )
-        return [field for field in printed(answer.stdout).split("\0") if field]
+        return [field for field in answer.stdout.split("\0") if field]
 
     def __init__(self, root: Path, policy: GitPolicy) -> None:
         self.root = root

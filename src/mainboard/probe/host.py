@@ -10,7 +10,6 @@ from ..core.execution import host
 from .enums import Vendor
 from .facts.memory.cgroup import CgroupMemory
 from .facts.memory.core import Memory
-from .facts.storage.host_disk import HostDisk
 from .facts.storage.scratch import Scratch
 from .shell.sysctl import sysctl
 
@@ -38,7 +37,7 @@ _ARM_PARTS = {
 
 
 class Host:
-    """Host CPU, memory, and disk identity for the current machine."""
+    """Host CPU and memory identity for the current machine."""
 
     @cached_property
     def arch(self) -> str:
@@ -114,11 +113,6 @@ class Host:
         with suppress(OSError):
             return Path("/proc/cpuinfo").read_text(encoding="utf-8")
         return ""
-
-    @cached_property
-    def disk(self) -> HostDisk:
-        """All physical drives with their mounted partitions."""
-        return HostDisk()
 
     @cached_property
     def logical_cpus(self) -> int:

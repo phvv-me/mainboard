@@ -31,10 +31,10 @@ class FrameFile:
                     for offset in range(start, min(start + _PART_BYTES, size), _CHUNK_BYTES)
                 ]
                 first = start // _CHUNK_BYTES
-                written = (target / f"part-{part:05d}.parquet").as_posix().replace("'", "''")
+                written = database.quoted((target / f"part-{part:05d}.parquet").as_posix())
                 connection.execute(
                     "COPY (SELECT unnest(?::UINTEGER[]) AS ordinal, unnest(?::BLOB[]) AS wire) "
-                    f"TO '{written}' (FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 19)",
+                    f"TO {written} (FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 19)",
                     [list(range(first, first + len(chunks))), chunks],
                 )
         if FrameFile(target).read_bytes() != raw:

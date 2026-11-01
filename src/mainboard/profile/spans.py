@@ -148,13 +148,17 @@ class Span:
         zero-length-span bug CPython fixed for its own decorators.
         """
         if inspect.iscoroutinefunction(func):
+            # cast: the check proves `func` returns an Awaitable and the wrapper takes its place,
+            # a ParamSpec decorator's return no checker can follow.
             return cast(
                 "Callable[P, R]",
                 Span._decorate_async(cast("Callable[P, Awaitable[R]]", func), self.name),
             )
         if inspect.isasyncgenfunction(func):
+            # cast: the wrapper takes the async generator function's place under its signature.
             return cast("Callable[P, R]", Span._decorate_async_generator(func, self.name))
         if inspect.isgeneratorfunction(func):
+            # cast: the wrapper takes the generator function's place under its signature.
             return cast("Callable[P, R]", Span._decorate_generator(func, self.name))
         return Span._decorate_sync(func, self.name)
 

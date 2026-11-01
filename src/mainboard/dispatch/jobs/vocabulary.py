@@ -9,6 +9,8 @@ from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ConfigDict, Field
 
+from ...enums import Pricing
+from ...runtime.job import walltime_seconds
 from ..shared import HandleId
 from .arch import Arch, arch, capability, card
 
@@ -86,18 +88,6 @@ _MOVES: dict[Word, frozenset[Word]] = {
 }
 
 
-class Pricing(StrEnum):
-    """Which offers a search takes: either kind, only interruptible ones, or only on-demand."""
-
-    ANY = auto()
-    ON_DEMAND = auto()
-    SPOT = auto()
-
-    def admits(self, *, spot: bool) -> bool:
-        """Whether an offer that is interruptible (`spot`) or not answers this choice."""
-        return self is Pricing.ANY or (self is Pricing.SPOT) == spot
-
-
 @Parameter(name="*")
 class Allocation(FrozenModel):
     """The interactive session a queued host is asked for, the profile's queue and walltime by
@@ -155,6 +145,11 @@ class Resources(FrozenModel):
     spot: bool = False
     arch: str = ""
     datacenter: bool = False
+
+    @property
+    def walltime_s(self) -> int:
+        """The walltime as whole seconds, 0 when uncapped."""
+        return walltime_seconds(self.walltime) if self.walltime else 0
 
 
 class OfferFilter(FrozenModel):

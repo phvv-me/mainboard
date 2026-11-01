@@ -3,7 +3,7 @@
 from ....catalog import Example, Rule
 
 
-class ConcreteIsinstanceCapability(Rule, id="PY-INTE0001"):
+class ConcreteIsinstanceCapability(Rule, id="PY-INTE0001", applicability="review"):
     """Concrete runtime checks that stand in for a capability.
 
     A check is an `isinstance(subject, type)` call of two arguments, but for those in an `elif`
@@ -136,6 +136,70 @@ class ConcreteIsinstanceCapability(Rule, id="PY-INTE0001"):
         "`{subject}` is checked against concrete `{types}` where its block needs only "
         "`{capability}`"
     )
+    change = "checked `{subject}` against `{capability}` in place of `{types}`"
+    # The concrete types of the check become their abstract capability (`list` and `tuple` the
+    # `Sequence` of `collections.abc`, `int` the `Integral` of `numbers`), each imported by name;
+    # a tuple keeps the types it has no capability for (`str`) and names a capability once. The
+    # check then admits every type that registers as the capability (a `str` is a `Sequence`
+    # too), the change to review. Left alone: a type argument that is no plain name or tuple of
+    # names, one holding a comment, and a file where the capability's name is already something
+    # else.
+    fix = r"""
+        WITH checks AS (
+          SELECT f.finding_key, f.path, p.file_id, t.node_id AS argument, t.type AS kind
+          FROM finding f
+          JOIN core_file p ON p.path = f.path
+          JOIN core_node c ON c.file_id = p.file_id AND c.type = 'call' AND c.name = 'isinstance'
+            AND c.start_line = f.start_line AND c.start_column = f.start_column
+          JOIN core_node a ON a.file_id = c.file_id AND a.parent_id = c.node_id
+            AND a.type = 'argument_list'
+          JOIN core_node t ON t.file_id = c.file_id AND t.parent_id = a.node_id
+            AND t.sibling_index = 2
+        ), shown AS (
+          SELECT c.*, e.node_id AS member, e.sibling_index AS place, e.type AS member_kind,
+                 k.abstract, k.home, coalesce(k.abstract, e.name) AS text
+          FROM checks c
+          JOIN core_node e ON e.file_id = c.file_id AND e.type NOT IN ('(', ')', ',')
+            AND (CASE WHEN c.kind = 'tuple' THEN e.parent_id ELSE e.node_id END) = c.argument
+          LEFT JOIN (VALUES ('complex', 'Complex', 'numbers'),
+                            ('dict', 'Mapping', 'collections.abc'),
+                            ('float', 'Real', 'numbers'), ('int', 'Integral', 'numbers'),
+                            ('list', 'Sequence', 'collections.abc'),
+                            ('set', 'Set', 'collections.abc'),
+                            ('tuple', 'Sequence', 'collections.abc')) k(concrete, abstract, home)
+            ON k.concrete = e.name AND e.type = 'identifier'
+        ), settled AS (
+          SELECT finding_key FROM shown s
+          GROUP BY finding_key
+          HAVING bool_and(member_kind IN ('identifier', 'attribute'))
+             AND NOT bool_or(abstract IS NOT NULL AND (
+               EXISTS (SELECT 1 FROM import_binding_facts i
+                       WHERE i.path = s.path AND i.name = s.abstract
+                         AND (i.module <> s.home OR i.imported_name <> s.abstract))
+               OR (NOT EXISTS (SELECT 1 FROM import_binding_facts i
+                               WHERE i.path = s.path AND i.name = s.abstract
+                                 AND i.module = s.home AND i.imported_name = s.abstract)
+                   AND EXISTS (SELECT 1 FROM core_node n
+                               WHERE n.file_id = s.file_id AND n.type = 'identifier'
+                                 AND n.name = s.abstract))))
+        ), spelled AS (
+          SELECT finding_key,
+                 if(count(*) = 1, any_value(text), '(' || string_agg(text, ', ' ORDER BY first)
+                                                   || ')') AS template
+          FROM (SELECT finding_key, text, min(place) AS first FROM shown
+                GROUP BY finding_key, text)
+          GROUP BY finding_key
+        ), members AS (
+          SELECT finding_key, list(member ORDER BY place) AS members,
+                 coalesce(list(DISTINCT 'from ' || home || ' import ' || abstract)
+                          FILTER (abstract IS NOT NULL), []) AS imports
+          FROM shown GROUP BY finding_key
+        )
+        SELECT c.finding_key, 'rewrite-node' AS operation, c.path, c.argument AS node,
+               MAP {'MEMBERS': m.members} AS captures, s.template, m.imports
+        FROM checks c JOIN settled USING (finding_key)
+        JOIN spelled s USING (finding_key) JOIN members m USING (finding_key)
+    """
     examples = (
         Example(
             bad=(
@@ -146,8 +210,124 @@ class ConcreteIsinstanceCapability(Rule, id="PY-INTE0001"):
 """
             ),
             good=(
+                """from collections.abc import Sequence
+
+
+def first(items):
+    if isinstance(items, Sequence):
+        return items[0]
+    return items
+"""
+            ),
+        ),
+        Example(
+            bad=(
+                """def size(data):
+    if isinstance(data, (dict, list, str)):
+        return len(data)
+    return 0
+"""
+            ),
+            good=(
+                """from collections.abc import Mapping, Sequence
+
+
+def size(data):
+    if isinstance(data, (Mapping, Sequence, str)):
+        return len(data)
+    return 0
+"""
+            ),
+        ),
+        Example(
+            bad=(
+                """def bump(count):
+    if isinstance(count, int):
+        return count + 1
+    return count
+"""
+            ),
+            good=(
+                """from numbers import Integral
+
+
+def bump(count):
+    if isinstance(count, Integral):
+        return count + 1
+    return count
+"""
+            ),
+        ),
+        Example(
+            bad=(
+                """from typing import Sequence
+
+
+def first(items: Sequence):
+    if isinstance(items, (list, tuple)):
+        return items[0]
+    return items
+"""
+            ),
+            good=(
+                """from typing import Sequence
+
+
+def first(items: Sequence):
+    if isinstance(items, (list, tuple)):
+        return items[0]
+    return items
+"""
+            ),
+        ),
+        Example(
+            bad=(
                 """def first(items):
-    if isinstance(items, str):
+    if isinstance(items, (list, tuple, Row)):
+        return items[0]
+    return items
+"""
+            ),
+            good=(
+                """from collections.abc import Sequence
+
+
+def first(items):
+    if isinstance(items, (Sequence, Row)):
+        return items[0]
+    return items
+"""
+            ),
+        ),
+        Example(
+            bad=(
+                """def first(items):
+    if isinstance(items, (list, make())):
+        return items[0]
+    return items
+"""
+            ),
+            good=(
+                """def first(items):
+    if isinstance(items, (list, make())):
+        return items[0]
+    return items
+"""
+            ),
+        ),
+        Example(
+            bad=(
+                """def first(items):
+    if isinstance(items, (list,  # rows
+                          tuple)):
+        return items[0]
+    return items
+"""
+            ),
+            good=(
+                """def first(items):
+    if isinstance(items, (list,  # rows
+                          tuple)):
         return items[0]
     return items
 """

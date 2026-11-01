@@ -1,11 +1,12 @@
 from collections.abc import Sequence
+from itertools import pairwise
 
 from patos import FrozenModel
 from rich.console import RenderableType
 from rich.table import Table
 
-from ..constants import NANOSECONDS_PER_MILLISECOND
-from ..trace import KernelTrace, MemcpyTrace
+from ...core.constants.units import NANOSECONDS_PER_MILLISECOND
+from ..trace import KernelTrace, MemcpyTrace, busy_runs
 
 _MIN_GAP_NS = 10_000
 
@@ -59,13 +60,17 @@ class DeviceTimeline(FrozenModel):
         spans += [(m.start_ns, m.end_ns, "memcpy") for m in memcpys if m.end_ns > m.start_ns]
         if not spans:
             return cls()
-        spans.sort()
-        busy, gaps = cls._merge_intervals(spans, min_gap_ns)
+        runs = busy_runs(spans)
+        gaps = [
+            DeviceGap(start_ns=ended, end_ns=started, after=last, before=first)
+            for (_, ended, _, last), (started, _, first, _) in pairwise(runs)
+            if started - ended >= min_gap_ns
+        ]
 
         # Latest end, not the last span's: a long kernel can outlast a later, shorter one.
         return cls(
-            span_ns=max(end for _, end, _ in spans) - spans[0][0],
-            busy_ns=busy,
+            span_ns=runs[-1][1] - runs[0][0],
+            busy_ns=sum(end - start for start, end, _, _ in runs),
             activities=len(spans),
             gaps=tuple(sorted(gaps, key=lambda g: g.end_ns - g.start_ns, reverse=True)[:top_gaps]),
         )
@@ -77,27 +82,6 @@ class DeviceTimeline(FrozenModel):
     @property
     def occupancy_pct(self) -> float:
         return 100.0 * self.busy_ns / self.span_ns if self.span_ns else 0.0
-
-    @staticmethod
-    def _merge_intervals(
-        spans: Sequence[tuple[int, int, str]], min_gap_ns: int
-    ) -> tuple[int, list[DeviceGap]]:
-        """Union start-sorted activity intervals into their busy time and the gaps between them."""
-        busy = 0
-        gaps: list[DeviceGap] = []
-        run_start, run_end, run_name = spans[0]
-        for start, end, name in spans[1:]:
-            if start > run_end:
-                busy += run_end - run_start
-                if start - run_end >= min_gap_ns:
-                    gaps.append(
-                        DeviceGap(start_ns=run_end, end_ns=start, after=run_name, before=name)
-                    )
-                run_start, run_end, run_name = start, end, name
-            elif end > run_end:
-                run_end, run_name = end, name
-        busy += run_end - run_start
-        return busy, gaps
 
     def __rich__(self) -> RenderableType:
         table = Table(title="device timeline", title_style="bold")

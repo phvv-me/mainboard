@@ -1,5 +1,19 @@
 """The selected Xcode, used through xcrun with bounded tool output, never launching the IDE."""
 
+__lazy_modules__ = [
+    "mainboard.apple.bundle.core",
+    "mainboard.apple.bundle.launch",
+    "mainboard.apple.evidence",
+    "mainboard.apple.fonts",
+    "mainboard.apple.xcode",
+    "mainboard.apple.xcrun",
+    "mainboard.core.errors",
+    "mainboard.core.execution.tool",
+    "mainboard.engines.compile.generated",
+    "plumbum",
+    "pydantic",
+]
+
 import json
 import os
 import platform

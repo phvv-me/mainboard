@@ -18,11 +18,9 @@ from patos import FrozenModel
 from pydantic import ConfigDict, Field
 from sqlalchemy import Table
 
-from ...constants import MILLISECONDS_PER_SECOND
+from ...core.constants.units import MILLISECONDS_PER_SECOND
 from ...core.errors import MissionError
-from ...core.project import Project
-from ...manifest.composing import composition
-from ...manifest.schema.project.workspace import Header
+from ...manifest import header
 from ...runtime.tree import FileBudget
 from ..constants import QUACK, RETRIES
 from ..storage.database import connect, first_line, quoted
@@ -75,11 +73,7 @@ class Lake(Maintained):
     def at(cls, root: Path) -> Lake:
         """The lake of the workspace at `root`, where its manifest's `[workspace] lake` says."""
         root = root.absolute()
-        manifest = Project().manifest(root)
-        header = (
-            composition(manifest).manifest.workspace if manifest.is_file() else Header(name="")
-        )
-        return cls(root=root, home=header.lake_home(root))
+        return cls(root=root, home=header(root).lake_home(root))
 
     @contextmanager
     def _endpoint(

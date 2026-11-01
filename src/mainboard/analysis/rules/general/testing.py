@@ -1,6 +1,6 @@
 """Rules over tests and test modules (mcmr's ALL-TEST family)."""
 
-from ...catalog import Rule
+from ...catalog import Part, Rule
 
 
 class FlakyTestQuarantineDebt(Rule, id="ALL-TEST0002"):
@@ -21,7 +21,7 @@ class FlakyTestQuarantineDebt(Rule, id="ALL-TEST0002"):
     message = "flaky test quarantine debt is {value} for `{fact_id}`"
 
 
-class TestModuleMemberCount(Rule, id="ALL-TEST0003"):
+class TestModuleMemberCount(Part):
     """Top-level helpers, classes and tests of a test module as one suite navigation width."""
 
     maximum: int = 20

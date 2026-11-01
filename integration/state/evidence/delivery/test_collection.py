@@ -4,16 +4,18 @@ import json
 import os
 import shutil
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from zipfile import ZIP_ZSTANDARD, ZipFile
 
 import pytest
+from pydantic import Field
 
 from mainboard import MissionError, Project
+from mainboard.dispatch import SshTransport
 from mainboard.dispatch.collection.collector import Collector
-from mainboard.dispatch.collection.pack import HELD, pack
+from mainboard.dispatch.collection.pack import HELD, MORE, Center, pack
 from mainboard.state import Evidence, EvidenceTree
 
 _NO_DIGESTS: Mapping[str, str] = MappingProxyType({})
@@ -84,10 +86,11 @@ def packed(monkeypatch: pytest.MonkeyPatch, node: str) -> Callable[..., ZipFile]
         kept: Mapping[str, str] = _NO_DIGESTS,
         known: Mapping[str, str] = _NO_DIGESTS,
         cache: str = "",
+        allowance: int = sys.maxsize,
     ) -> ZipFile:
         sink = io.BytesIO()
         monkeypatch.setattr(sys, "stdout", SimpleNamespace(buffer=sink))
-        pack(str(root), relative=node, kept=kept, known=known, cache=cache)
+        pack(str(root), relative=node, center=Center(kept, known, allowance), cache=cache)
         return ZipFile(io.BytesIO(sink.getvalue()))
 
     return run
@@ -163,3 +166,106 @@ def test_a_results_path_never_written_packs_nothing(
 ) -> None:
     with packed(tmp_path) as archive:
         assert archive.namelist() == []
+
+
+@pytest.fixture
+def folder(tmp_path: Path, node: str) -> Path:
+    """A host workspace whose node holds three files of ten bytes, a.bin to c.bin."""
+    (tmp_path / node).mkdir(parents=True)
+    for name in "abc":
+        (tmp_path / node / f"{name}.bin").write_bytes(name.encode() * 10)
+    return tmp_path
+
+
+def test_a_pass_stops_before_the_file_that_passes_its_allowance_and_the_next_sends_the_rest(
+    packed: Callable[..., ZipFile],
+    folder: Path,
+    node: str,
+    digest_of: Callable[[bytes], str],
+) -> None:
+    with packed(folder, allowance=25) as archive:
+        assert archive.namelist() == [f"{node}/a.bin", f"{node}/b.bin", MORE]
+    sent = {f"{node}/{name}.bin": digest_of(name.encode() * 10) for name in "ab"}
+    with packed(folder, known=sent, allowance=25) as archive:
+        assert archive.namelist() == [f"{node}/c.bin"]
+
+
+def test_a_file_past_the_whole_allowance_is_refused(
+    packed: Callable[..., ZipFile], folder: Path
+) -> None:
+    with pytest.raises(ValueError, match="more than the 5 the center"):
+        packed(folder, allowance=5)
+
+
+def test_a_transfer_ended_at_the_hosts_allowance_is_kept_then_refused(
+    collector: Collector,
+    keeper: Evidence,
+    transfer: Callable[[Mapping[str, bytes], Mapping[str, str]], Path],
+    node: str,
+    digest_of: Callable[[bytes], str],
+) -> None:
+    new = f"{node}/evidence/new.txt"
+    archive = transfer({new: b"fresh"}, {})
+    with ZipFile(archive, "a", ZIP_ZSTANDARD) as appended:
+        appended.writestr(MORE, "{}")
+    with pytest.raises(MissionError, match="more wait on the host"):
+        collector.merge(archive, path=node)
+    assert _index(keeper, node)[new] == digest_of(b"fresh")
+
+
+class _Host(SshTransport):
+    """An ssh transport whose host answers the transfer in `reply` and keeps the scripts it got."""
+
+    reply: Path
+    scripts: list[str] = Field(default_factory=list)
+
+    def command(self, host: str) -> tuple[str, ...]:
+        return ("ssh", host)
+
+    def run(
+        self,
+        command: Sequence[str],
+        host: str,
+        *,
+        operation: str,
+        input_text: str | None = None,
+        output: Path | None = None,
+    ) -> str:
+        self.scripts.append(input_text or "")
+        shutil.copy(self.reply, output or "")
+        return ""
+
+
+@pytest.fixture
+def ssh(
+    collector: Collector, transfer: Callable[[Mapping[str, bytes], Mapping[str, str]], Path]
+) -> _Host:
+    """The host a pull reaches: it answers an empty transfer."""
+    host = _Host(reply=transfer({}, {}))
+    collector.transport = host
+    return host
+
+
+def test_a_pull_asks_for_a_third_of_the_disk_above_the_floor(
+    collector: Collector, ssh: _Host, monkeypatch: pytest.MonkeyPatch, node: str
+) -> None:
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=33 * 2**30))
+    collector.pull("gold", root="/remote", path=node, python="python")
+    assert "allowance=1073741824)" in ssh.scripts[0]
+
+
+def test_a_pull_never_asks_for_more_than_one_pass_moves_in_its_deadline(
+    collector: Collector, ssh: _Host, monkeypatch: pytest.MonkeyPatch, node: str
+) -> None:
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=2**50))
+    collector.pull("gold", root="/remote", path=node, python="python")
+    assert f"allowance={16 * 2**30})" in ssh.scripts[0]
+
+
+def test_a_pull_below_the_free_disk_floor_asks_the_host_for_nothing(
+    collector: Collector, ssh: _Host, monkeypatch: pytest.MonkeyPatch, node: str
+) -> None:
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=2**30))
+    with pytest.raises(MissionError, match="free disk"):
+        collector.pull("gold", root="/remote", path=node, python="python")
+    assert ssh.scripts == []

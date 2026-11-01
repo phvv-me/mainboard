@@ -1,15 +1,17 @@
 """A test lane submits every job as a single submit would: its target's own tokens, every
 execution and data option, and a wait over every handle whatever one of them ended on."""
 
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from mainboard import Board
-from mainboard.cli import build
 from mainboard.dispatch import Request
+from mainboard.dispatch.shared import Watcher
 from mainboard.jobs.testing.lanes import Cell
+from mainboard.verbs.constants import TREE
 
 
 class _Collector:
@@ -18,13 +20,13 @@ class _Collector:
     def __call__(self) -> str:
         return ""
 
-    def __getitem__(self, _: object) -> _Collector:
+    def __getitem__(self, _: str | list[str]) -> _Collector:
         return self
 
 
-def test_a_lane_keeps_every_option_and_the_targets_tokens(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def submitted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[Request]:
+    """The requests dispatch receives from a workspace whose collection yields two model cells."""
     (tmp_path / "mainboard.toml").write_text('[workspace]\nname = "w"\n', encoding="utf-8")
     cells = tuple(
         Cell(nodeid=f"test_a.py::test_b[{model}]", key=model, params={"model": model})
@@ -32,16 +34,20 @@ def test_a_lane_keeps_every_option_and_the_targets_tokens(
     )
     monkeypatch.setattr("mainboard.verbs.work.submit.localhost", _Collector())
     monkeypatch.setattr("mainboard.verbs.work.submit.lanes_module.parsed", lambda text: cells)
-    submitted: list[Request] = []
+    requests: list[Request] = []
 
-    def dispatch(board: Board, asked: Request, **_: object) -> SimpleNamespace:
-        submitted.append(asked)
-        return SimpleNamespace(handle=SimpleNamespace(id=str(len(submitted))))
+    def dispatch(board: Board, asked: Request, **_: Watcher | None) -> SimpleNamespace:
+        requests.append(asked)
+        return SimpleNamespace(handle=SimpleNamespace(id=str(len(requests))))
 
     monkeypatch.setattr(Board, "dispatch", dispatch)
+    monkeypatch.chdir(tmp_path)
+    return requests
 
+
+def test_a_lane_keeps_every_option_and_the_targets_tokens(submitted: Sequence[Request]) -> None:
     with pytest.raises(SystemExit) as stopped:
-        build(tmp_path)(
+        TREE.cli()(
             [
                 "job", "submit", "--on", "gold", "--split", "model", "--yes",
                 "--fetch", "results", "--needs", "data/table.parquet", "--env", "cutok",

@@ -7,8 +7,9 @@ from patos import FrozenModel
 
 from ..core.errors import MissionError
 from ..core.project import Project
-from ..core.section import Section, Verdict
+from ..core.section import Section
 from ..deps import Edit, Tables
+from ..enums import Verdict
 
 if TYPE_CHECKING:
     from ..fleet.board import Board
@@ -57,7 +58,7 @@ class Raise(Remedy):
     @property
     def command(self) -> str:
         flags = ["--lang", self.ecosystem, *(["--env", self.env] if self.env else [])]
-        return join([_TOOL, "add", self.package, *flags])
+        return join([_TOOL, "dep", "add", self.package, *flags])
 
     def apply(self, board: Board) -> Section:
         """Declare `package` at the newest release its index publishes, then re-lock and install.

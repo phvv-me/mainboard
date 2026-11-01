@@ -3,7 +3,7 @@ and methods an instance answers to, so `batch.tokens` and `stage.queued(...)` fi
 annotation or the return type that says what they hold.
 
 A field is `f:<class key>.<name>`, a method's return `r:<fact>:<function node>`; both are
-keys in the type tables (cuda_types.py).
+keys in the type tables (`types/core.py`).
 """
 
 from ..base import CudaRelation
@@ -133,8 +133,10 @@ class CudaFieldStores(CudaRelation):
 
 class CudaMembers(CudaRelation):
     """What an instance of a class answers to, the class's own members and those it inherits
-    (the nearest definition wins): a `field` or a `property` (read as an attribute) with the
-    key of its type, a `method` with the key of its return type."""
+    (the nearest definition wins, then the smaller ancestor key and member key, so an overload or
+    a name two ancestors define at one distance has the same answer every run): a `field` or a
+    `property` (read as an attribute) with the key of its type, a `method` with the key of its
+    return type."""
 
     stored = True
     query = """
@@ -146,7 +148,7 @@ class CudaMembers(CudaRelation):
         SELECT a.class_key AS receiver, m.name, m.member, m.kind
         FROM cuda_ancestors() a JOIN members m ON m.class_key = a.ancestor_key
         QUALIFY row_number() OVER (PARTITION BY a.class_key, m.name, m.kind
-                                   ORDER BY a.distance) = 1
+                                   ORDER BY a.distance, a.ancestor_key, m.member) = 1
     """
 
 

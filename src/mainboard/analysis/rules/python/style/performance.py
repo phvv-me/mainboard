@@ -54,8 +54,7 @@ import torch
 def lift(array):
     return torch.from_numpy(cp.asnumpy(array))
 """,
-            good="""import cupy as cp
-import torch
+            good="""import torch
 
 
 def lift(array):

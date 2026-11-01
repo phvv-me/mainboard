@@ -1,5 +1,5 @@
 import json
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -10,34 +10,6 @@ from .builders import passing_nodes, succeeded_build
 from .constants import XCRUN
 
 
-def _ignored(command: Sequence[str]) -> None:
-    """Do nothing while a command runs."""
-
-
-class ProcessLog:
-    """Stands in for `Processes.timeout`: records each command, answers the planned exit codes.
-
-    commands: every command asked, in order, with its time limit in `seconds` and its working
-        directory in `directories`.
-    exits: the exit codes of the commands in order; a command past them exits 0.
-    during: called with each command while it "runs", before it is answered.
-    """
-
-    def __init__(self) -> None:
-        self.commands: list[list[str]] = []
-        self.seconds: list[float] = []
-        self.directories: list[Path | None] = []
-        self.exits: Iterator[int] = iter(())
-        self.during: Callable[[Sequence[str]], None] = _ignored
-
-    def timeout(self, seconds: float, command: Sequence[str], *, cwd: Path | None = None) -> int:
-        self.commands.append(list(command))
-        self.seconds.append(seconds)
-        self.directories.append(cwd)
-        self.during(command)
-        return next(self.exits, 0)
-
-
 class ResultTool(Runner):
     """Answers xcrun's xcresulttool from canned evidence, or every call from `reply`.
 
@@ -45,6 +17,7 @@ class ResultTool(Runner):
     nodes: the test tree, replacing the passing run's.
     build: build-summary fields overriding the succeeded build's.
     reply: what every call answers instead of the evidence.
+    built_only: the bundle holds a build and no test results, so a test read fails.
     """
 
     @staticmethod
@@ -69,7 +42,9 @@ class ResultTool(Runner):
         nodes: Sequence[JsonValue] | None = None,
         build: Mapping[str, JsonValue] | None = None,
         reply: ToolOutput | None = None,
+        built_only: bool = False,
     ) -> None:
+        self.built_only = built_only
         self.summary = {**self._passing_summary(), **(summary or {})}
         self.nodes = passing_nodes() if nodes is None else list(nodes)
         self.build_summary = {**succeeded_build(), **(build or {})}
@@ -81,6 +56,8 @@ class ResultTool(Runner):
         self.calls.append(args)
         if self.reply is not None:
             return self.reply
+        if self.built_only and args[2] == "test-results":
+            return ToolOutput(returncode=1, stderr="Error: no test results in the bundle")
         answers: dict[str, JsonValue] = {
             "xcresulttool get build-results --path": self.build_summary,
             "xcresulttool get test-results summary": self.summary,

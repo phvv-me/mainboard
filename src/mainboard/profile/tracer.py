@@ -1,15 +1,15 @@
-# Vendor code-annotation backends: named timeline ranges + instantaneous marks.
+# Vendor code-annotation backends: named timeline ranges.
 
 import importlib
 import time
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
 from patos import Registry
 
 from ..log import logger
 from ..probe.enums.vendor import Vendor
-from .trace import Activity, CallbackSession, TraceCollector
+from .enums import Activity
+from .trace import TraceCollector
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -44,28 +44,11 @@ class Tracer(Registry):
         """Whether this backend's annotation library can be imported here."""
         return False
 
-    def callbacks(self, domains: Sequence[str] = ("runtime", "driver")) -> CallbackSession:
-        """A synchronous API-call callback session over `runtime`/`driver`/`nvtx` domains."""
-        return CallbackSession()
-
-    def collect(self, kinds: Activity = Activity.DEFAULT) -> TraceCollector:
-        """A deep per-op trace collector for `kinds`, as `resolve` reconciles them."""
-        return self.open(self.resolve(kinds))
-
-    def mark(self, name: str) -> None:
-        """Emit an instantaneous named event."""
-
-    def open(self, kinds: Activity) -> TraceCollector:
+    def _open(self, kinds: Activity) -> TraceCollector:
         """Build the collector for already-resolved `kinds`."""
         return TraceCollector()
 
-    def pop(self) -> None:
-        """Close the most recently opened range."""
-
-    def push(self, name: str) -> None:
-        """Open a named range on the native timeline."""
-
-    def resolve(self, kinds: Activity) -> Activity:
+    def _resolve(self, kinds: Activity) -> Activity:
         """Reconcile `kinds` with `supported`, raising ValueError when there is no collector.
 
         `ALL` means everything this device offers, so it adapts down and logs the dropped kinds;
@@ -88,10 +71,13 @@ class Tracer(Registry):
             )
         return kinds
 
+    def collect(self, kinds: Activity = Activity.DEFAULT) -> TraceCollector:
+        """A deep per-op trace collector for `kinds`, as `_resolve` reconciles them."""
+        return self._open(self._resolve(kinds))
+
     def start(self, name: str) -> Marker:
-        """Open a native range and return the exact operation that closes it."""
-        self.push(name)
-        return self.pop
+        """Open a native range and return the exact operation that closes it; none in the base."""
+        return lambda: None
 
     def supported(self) -> Activity:
         """The kinds this backend can collect here; none in the base, so `collect` refuses.

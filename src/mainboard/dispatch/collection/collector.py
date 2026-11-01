@@ -2,28 +2,67 @@
 
 import base64
 import json
-import os
 import shutil
 import zlib
-from collections.abc import Generator, Mapping
-from contextlib import contextmanager, suppress
+from collections.abc import Mapping
 from functools import cached_property
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from zipfile import ZipFile, ZipInfo
 
-import psutil
 from filelock import FileLock
+from patos import FrozenModel
 
+from ...core import Disk
+from ...core.errors import MissionError
 from ...core.project import Project
 from ...log import logger
 from ...state.evidence import Evidence
 from ...state.lake import Lake
 from ...trials.artifacts import relative_path
+from ...upkeep.disk.transient import Transient
 from ..provenance import blob_of
 from ..state.digests import KeptDigests
 from ..transport.core import SshTransport
-from .pack import HELD
+from .pack import HELD, MORE
+
+# How many times a pass's bytes land on the center's disk: staged as the archive, again as its
+# extracted files, and a third time as the lake's copy. A pass fetches that share of the free disk
+# above the floor (`Disk.allowance`), so no pass outgrows the disk however large the collection.
+_COPIES = 3
+
+# The most one pass moves, so its stream ends inside the ten-minute stream deadline: a 69 GB survey
+# folder once timed out every pass at 35 to 54 GB, never finishing, where 16 GiB leaves twice the
+# time at the same speed and the next pass sends the rest.
+_PASS = 16 * 2**30
+
+
+class Eviction(FrozenModel):
+    """What one host's `evict` pass did, as it printed it.
+
+    removed: each file removed, with its bytes.
+    kept: each file left in place, with why.
+    emptied: each directory the removals left empty, removed too.
+    """
+
+    removed: dict[str, int] = {}
+    kept: dict[str, str] = {}
+    emptied: list[str] = []
+
+    @property
+    def rows(self) -> list[dict[str, str | int]]:
+        """One row per path: what became of it, a removed file's bytes, and why one stayed."""
+        rows: list[dict[str, str | int]] = [
+            {"path": path, "outcome": "removed", "bytes": size, "why": ""}
+            for path, size in self.removed.items()
+        ]
+        rows += [
+            {"path": path, "outcome": "kept", "bytes": "", "why": why}
+            for path, why in self.kept.items()
+        ]
+        rows += [
+            {"path": path, "outcome": "emptied", "bytes": "", "why": ""} for path in self.emptied
+        ]
+        return rows
 
 
 class Collector:
@@ -31,30 +70,15 @@ class Collector:
 
     Each transfer is staged before it is kept, so an interrupted download cannot appear as
     complete results and an older node cannot replace newer evidence merely by changing a file's
-    timestamp. Collection never deletes evidence and never writes the tree: the lake is the
-    evidence's home, readers recall from it, and `mb lake materialize` writes a file back for a
-    reader that needs its path.
+    timestamp. Collection never deletes the center's evidence and never writes its tree: the lake
+    is the evidence's home, readers recall from it, and `mb lake materialize` writes a file back
+    for a reader that needs its path. `evict` removes a host's copy of a file only once the lake
+    holds it intact at the same path.
     """
 
     @cached_property
     def evidence(self) -> Evidence:
         return Evidence(Lake.at(self.root))
-
-    @contextmanager
-    def _staging(self) -> Generator[Path]:
-        """Yield a fresh staging directory under the generated `tmp`, named by this process.
-
-        It sits on the tree's filesystem. One a killed or timed-out pass left, its process gone,
-        is cleared first, never one a live pass is using.
-        """
-        parent = Project().out(self.root) / "tmp"
-        parent.mkdir(parents=True, exist_ok=True)
-        for stale in parent.glob("collect-*"):
-            with suppress(ValueError, IndexError):
-                if not psutil.pid_exists(int(stale.name.split("-")[1])):
-                    shutil.rmtree(stale, ignore_errors=True)
-        with TemporaryDirectory(prefix=f"collect-{os.getpid()}-", dir=parent) as temporary:
-            yield Path(temporary)
 
     @property
     def digests(self) -> str:
@@ -66,23 +90,36 @@ class Collector:
         )
 
     @staticmethod
-    def _extract(archive: Path, *, staged: Path, scope: PurePosixPath) -> dict[str, str]:
+    def _extract(
+        archive: Path, *, staged: Path, scope: PurePosixPath
+    ) -> tuple[dict[str, str], bool]:
         """Check every path and ZIP checksum in staging before anything is kept.
 
-        Answers what the host left unsent, by path.
+        Answers what the host left unsent, by path, and whether it stopped short of the rest.
         """
         with ZipFile(archive) as source:
             entries = source.infolist()
             for entry in entries:
-                if entry.filename != HELD:
+                if entry.filename not in {HELD, MORE}:
                     Collector._unpacked(source, entry, staged=staged, scope=scope)
             held: dict[str, str] = next(
                 (json.loads(source.read(e)) for e in reversed(entries) if e.filename == HELD), {}
             )
+            more = any(entry.filename == MORE for entry in entries)
         for name in held:
             if not relative_path(name).is_relative_to(scope):
                 raise ValueError(f"unexpected collection entry: {name}")
-        return held
+        return held, more
+
+    @staticmethod
+    def _shipped(*digests: Mapping[str, str]) -> str:
+        """The Python expression a host script decodes `digests` from, as a list.
+
+        The digests of a whole evidence tree run to tens of megabytes as a literal, so they travel
+        compressed.
+        """
+        packed = base64.b64encode(zlib.compress(json.dumps(digests).encode(), 6)).decode()
+        return f"json.loads(zlib.decompress(base64.b64decode({packed!r})))"
 
     @staticmethod
     def _unpacked(source: ZipFile, entry: ZipInfo, *, staged: Path, scope: PurePosixPath) -> None:
@@ -100,6 +137,7 @@ class Collector:
     def __init__(self, root: Path, transport: SshTransport | None = None) -> None:
         self.root = root.resolve()
         self.transport = transport or SshTransport()
+        self.transient = Transient(self.root)
 
     def _diverging(
         self,
@@ -183,6 +221,45 @@ class Collector:
         digests.save()
         return {key: digest for key, digest in found.items() if kept.get(key) != digest}
 
+    def _remote(self, host: str, *, python: str, call: str, operation: str, output: Path) -> None:
+        """Run `call` on `host` after the text of `pack.py`, what it prints landing in `output`.
+
+        The script imports what `_shipped` expressions decode with. `output` gets the stream
+        deadline, which a pass hashing a whole tree needs.
+        """
+        script = Path(__file__).with_name("pack.py").read_text(encoding="utf-8") + (
+            f"\nimport base64, zlib\n{call}\n"
+        )
+        self.transport.run(
+            (*self.transport.command(host), f"{python} -"),
+            host,
+            operation=operation,
+            input_text=script,
+            output=output,
+        )
+
+    def evict(self, host: str, *, root: str, path: str, python: str) -> Eviction:
+        """Remove the host's copy of each file under `path` the lake holds intact at its path.
+
+        The host hashes through the digest cache collection keeps there, so a file a pass already
+        hashed is not read again. root, path, python: as `pull`'s.
+        """
+        relative = relative_path(path)
+        shipped = self._shipped(self.evidence.intact(relative.as_posix()))
+        with self.transient.staging(doing=f"evicting {relative} from {host}") as staged:
+            report = staged / "eviction.json"
+            self._remote(
+                host,
+                python=python,
+                call=(
+                    f"evict({root!r}, relative={relative.as_posix()!r}, "
+                    f"center=Center(*{shipped}), cache={self.digests!r})"
+                ),
+                operation="evict",
+                output=report,
+            )
+            return Eviction.model_validate_json(report.read_bytes())
+
     def merge(self, archive: Path, *, path: str) -> int:
         """Validate the transfer, then keep it in the lake; how many paths are new to the center.
 
@@ -190,11 +267,12 @@ class Collector:
         paths or timestamps. A file the host left unsent because the lake keeps its bytes (named
         in `HELD`) is indexed at its path from that object. Event snapshots retain their original
         offsets so Results can deduplicate overlapping captures. Keeping is idempotent, so a
-        retry finishes an interrupted import.
+        retry finishes an interrupted import. A transfer the host ended at its allowance is kept
+        whole, then refused, so the job stays unsettled until a later pass has sent the rest.
         """
         scope = relative_path(path)
-        with self._staging() as staged:
-            held = self._extract(archive, staged=staged, scope=scope)
+        with self.transient.staging(doing=f"keeping {scope}") as staged:
+            held, more = self._extract(archive, staged=staged, scope=scope)
             lock = Project().out(self.root) / "collection.lock"
             lock.parent.mkdir(parents=True, exist_ok=True)
             with FileLock(lock, timeout=self.transport.deadline):
@@ -208,7 +286,13 @@ class Collector:
                 )
                 left = any(source.is_file() for source in staged.rglob("*"))
                 kept = self.evidence.ingest([staged], staged=staged).indexed if left else 0
-                return kept + self.evidence.adopt(held)
+                kept += self.evidence.adopt(held)
+        if more:
+            raise MissionError(
+                f"kept {kept} path(s) under {scope}; more wait on the host, past what the center "
+                "can stage in one pass, and the next pass sends them"
+            )
+        return kept
 
     def pull(self, host: str, *, root: str, path: str, python: str) -> int:
         """Collect a remote path and return the number of paths new to the center.
@@ -221,22 +305,19 @@ class Collector:
         """
         relative = relative_path(path)
         kept = self._kept(relative)
-        # The digests of a whole evidence tree run to tens of megabytes as a literal.
-        known = json.dumps([kept, self._local(relative, kept=kept)]).encode()
-        packed = base64.b64encode(zlib.compress(known, 6)).decode()
-        script = Path(__file__).with_name("pack.py").read_text(encoding="utf-8") + (
-            "\nimport base64, zlib\n"
-            f"kept, known = json.loads(zlib.decompress(base64.b64decode({packed!r})))\n"
-            f"pack({root!r}, relative={relative.as_posix()!r}, kept=kept, known=known, "
-            f"cache={self.digests!r})\n"
-        )
-        with self._staging() as staged:
+        shipped = self._shipped(kept, self._local(relative, kept=kept))
+        doing = f"collecting {relative} from {host}"
+        with self.transient.staging(doing=doing) as staged:
             archive = staged / "transfer.zip"
-            self.transport.run(
-                (*self.transport.command(host), f"{python} -"),
+            allowance = min(Disk(path=staged).allowance(_COPIES, doing=doing), _PASS)
+            self._remote(
                 host,
+                python=python,
+                call=(
+                    f"pack({root!r}, relative={relative.as_posix()!r}, center=Center(*{shipped}, "
+                    f"allowance={allowance}), cache={self.digests!r})"
+                ),
                 operation="collect",
-                input_text=script,
                 output=archive,
             )
             return self.merge(archive, path=relative.as_posix())

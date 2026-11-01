@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..state.lake import Session
 
 
-def _card(name: str) -> str:
+def card_key(name: str) -> str:
     """`name` as the one key a card is matched under, whoever wrote it.
 
     Offers carry the market's `RTX 4090` while a request spells the provider's search form
@@ -91,7 +91,7 @@ class Catalog:
         return [
             offer
             for offer in self.roster
-            if (not gpu or _card(offer.gpu) == _card(gpu))
+            if (not gpu or card_key(offer.gpu) == card_key(gpu))
             and (not provider or offer.provider == provider)
         ]
 
@@ -101,7 +101,7 @@ class Catalog:
         gpu: str,
         run_s: float,
         ledger: Ledger | None = None,
-        default_setup_s: float = 300.0,
+        default_setup_s: float = BillingModel.DEFAULT_SETUP_S,
     ) -> list[Quote]:
         """Every offer for `gpu` priced for a job of `run_s` command wall seconds, cheapest first.
 

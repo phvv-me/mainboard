@@ -2,9 +2,9 @@
 
 from typing import TYPE_CHECKING
 
+from ..enums import Activity
 from ..profiler import Profiler
 from ..spans import span
-from ..trace import Activity
 from .annotate import tracer
 from .report import ProfileReport
 
@@ -35,7 +35,7 @@ def profile[T, S](
     supported = tracer().supported()
     granted = kinds & supported if supported else Activity(0)
     session = _run(fn, iters=iters, warmup=warmup, sync=sync, kinds=granted, gpu=gpu)
-    scored = session.gpu
+    scored = session.sampler.gpu
     return ProfileReport.from_profile(
         session.result(),
         iterations=iters,

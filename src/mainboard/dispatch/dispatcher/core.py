@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 from zipfile import BadZipFile
 
-from ...context.admission import admit
+from ...context.admission import admit, admit_disk
 from ...context.plan import environment_prefix
+from ...core.constants.units import BYTES_PER_KIBIBYTE
 from ...core.errors import MissionError
 from ...core.project import Project
 from ...engines.compile.pixi.lockfile import Lockfile
@@ -17,12 +18,12 @@ from ...log import logger
 from ...runtime.job import ToolCall
 from ...state.storage.holds import holding
 from ..agent import program
-from ..collection.collector import Collector
+from ..collection.collector import Collector, Eviction
 from ..hosts.allocation import Allocation
+from ..hosts.locking import SyncLock
 from ..jobs import JobSpec, vocabulary
 from ..jobs.vocabulary import Request
 from ..mirroring.snapshots import Snapshots
-from ..mirroring.sync import SyncLock
 from ..schedulers import Held, Pbs, failure_reason, kind_of, pick
 from ..shared import announce, now, state_dir
 from ..state.cache import RunRecord
@@ -78,60 +79,8 @@ class Dispatcher(Shipper):
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "run"
         return f"{root}/{state_dir()}/checkpoints/{slug}"
 
-    def _handed(
-        self, order: Order, scheduler: Scheduler, remote: Machine, *, pinned: str, script: str
-    ) -> str:
-        """Give the job to `scheduler`, answer its handle, and leave the run recorded.
-
-        A held line's job is recorded before its entry is written, as a creation intent, so work
-        queued for a node is never outside the registry: a refusal closes the intent, while a
-        reply lost in transit leaves it `submitting` for reconciliation by its label instead of
-        resubmitting.
-        """
-        plan, shipment = order.plan, order.shipment
-        record = RunRecord(
-            handle="",
-            target=plan.host,
-            kind=kind_of(plan.profile, order.resources.queue or ""),
-            script=shipment.spelling,
-            args="",
-            submitted_at=now(),
-            fetch_path=shipment.fetch or None,
-            name=order.name,
-            node=order.node,
-            source=pin_key(shipment.source, order.prefix),
-            commit=shipment.source.commit,
-            digest=shipment.source.digest,
-            project=self.project,
-        )
-        if not isinstance(scheduler, Held):
-            handle = scheduler.submit(remote, pinned, script=script, resources=order.resources)
-            self.cache.record(record.model_copy(update={"handle": handle}))
-            return handle
-        label = f"mainboard-{uuid4().hex}"
-        pending = record.model_copy(
-            update={
-                "handle": label,
-                "creation": label,
-                "state": vocabulary.Word.PREPARED,
-                "verdict": vocabulary.Word.PREPARED,
-            }
-        )
-        self.cache.record(pending)
-        intent = Allocation(cache=self.cache, record=pending)
-        intent.begin()
-        try:
-            handle = scheduler.enqueue(
-                remote, pinned, script=script, resources=order.resources, label=label
-            )
-        except MissionError:
-            intent.refused()
-            intent.interrupted()
-            raise
-        return intent.created(handle)
-
     def _pin(self, order: Order, remote: Machine, *, script: str, listing: str) -> str:
-        """Mirror the workspace, prove the host can run the job, and pin the tree it runs from.
+        """Mirror the workspace, prove the host can hold and run the job, and pin its tree.
 
         The mirror stays cheap to sync and is what log reads, results pulls and post-mortems
         address, while the immutable snapshot is what the job runs from, so the next dispatch of
@@ -149,6 +98,7 @@ class Dispatcher(Shipper):
             *shipment.carried(script=script, listing=listing),
         ]
         shipped = self.mirror(plan, order.root, required=required, fetch=shipment.fetch)
+        self._room(remote, order)
         self._verify(remote, order)
         return Snapshots(order.root).pin(
             self.agent(plan),
@@ -181,6 +131,31 @@ class Dispatcher(Shipper):
         told = f"built {plan.env} on {plan.host} for {pinned}"
         logger.info(told)
         (order.watch or announce)(told)
+
+    def _python(self, host: str, *, root: str, ssh: SshTransport | None) -> str:
+        """The command starting mainboard's own Python in `host`'s workspace environment."""
+        profile = holding(Project().manifest(self.root)).profile(host)
+        if not profile.platform:
+            try:
+                facts = self.cache.hosts.recorded(host).capabilities
+            except LookupError:
+                facts = None
+            profile = resolve(profile, facts or probe_capabilities(host, ssh=ssh))
+        return Dialect().python(
+            environment_prefix(root, env=profile.env),
+            host=host,
+            python=Lockfile(self.root).python_request(profile.platform),
+        )
+
+    def _room(self, remote: Machine, order: Order) -> None:
+        """Refuse the job when its host keeps too little free disk at the mirror (`df -Pk`)."""
+        plan, root = order.plan, order.root
+        measure = wrap(plan, root, command="df -Pk .", activate=False)
+        retcode, said, err = remote["bash"][["-lc", measure]].run(retcode=None)
+        if retcode != 0:
+            raise SystemExit(f"free disk on {plan.host!r} unread: {failure_reason(err)}")
+        free = int(said.split()[-3]) * BYTES_PER_KIBIBYTE
+        admit_disk(order.name or order.shipment.spelling, host=plan.host, root=root, free=free)
 
     def _spec(self, order: Order, *, pinned: str, listing: str) -> JobSpec:
         """The job `order` runs from the snapshot `pinned`, wrapped in its container if any."""
@@ -246,7 +221,7 @@ class Dispatcher(Shipper):
             if not isinstance(scheduler, Held):
                 self._prime(remote, order, pinned)
             try:
-                handle = self._handed(
+                handle = self.handed(
                     order, scheduler, remote, pinned=pinned, script=Snapshots.script(script)
                 )
             except SystemExit as error:
@@ -334,6 +309,18 @@ class Dispatcher(Shipper):
             raise MissionError(str(unresolved)) from unresolved
         return Allocation(cache=self.cache, record=record)
 
+    def evict_path(
+        self, host: str, *, root: str, path: str, ssh: SshTransport | None = None
+    ) -> Eviction:
+        """Remove `host`'s copies of the files under `path` the lake holds intact at their path."""
+        python = self._python(host, root=root, ssh=ssh)
+        try:
+            return Collector(self.root, ssh).evict(
+                host, root=root, path=path.rstrip("/"), python=python
+            )
+        except (ValueError, RuntimeError) as fault:
+            raise MissionError(f"eviction of {path} on {host} failed: {fault}") from fault
+
     def fetch_path(
         self, host: str, *, root: str, path: str, ssh: SshTransport | None = None
     ) -> int:
@@ -341,18 +328,7 @@ class Dispatcher(Shipper):
 
         Source synchronization stays separate from this evidence collection.
         """
-        profile = holding(Project().manifest(self.root)).profile(host)
-        if not profile.platform:
-            try:
-                facts = self.cache.hosts.recorded(host).capabilities
-            except LookupError:
-                facts = None
-            profile = resolve(profile, facts or probe_capabilities(host, ssh=ssh))
-        python = Dialect().python(
-            environment_prefix(root, env=profile.env),
-            host=host,
-            python=Lockfile(self.root).python_request(profile.platform),
-        )
+        python = self._python(host, root=root, ssh=ssh)
         try:
             published = Collector(self.root, ssh).pull(
                 host, root=root, path=path.rstrip("/"), python=python
@@ -366,6 +342,58 @@ class Dispatcher(Shipper):
             path,
         )
         return published
+
+    def handed(
+        self, order: Order, scheduler: Scheduler, remote: Machine, *, pinned: str, script: str
+    ) -> str:
+        """Give the job to `scheduler`, answer its handle, and leave the run recorded.
+
+        A held line's job is recorded before its entry is written, as a creation intent, so work
+        queued for a node is never outside the registry: a refusal closes the intent, while a
+        reply lost in transit leaves it `submitting` for reconciliation by its label instead of
+        resubmitting.
+        """
+        plan, shipment = order.plan, order.shipment
+        record = RunRecord(
+            handle="",
+            target=plan.host,
+            kind=kind_of(plan.profile, order.resources.queue or ""),
+            script=shipment.spelling,
+            args="",
+            submitted_at=now(),
+            fetch_path=shipment.fetch or None,
+            name=order.name,
+            node=order.node,
+            source=pin_key(shipment.source, order.prefix),
+            commit=shipment.source.commit,
+            digest=shipment.source.digest,
+            project=self.project,
+        )
+        if not isinstance(scheduler, Held):
+            handle = scheduler.submit(remote, pinned, script=script, resources=order.resources)
+            self.cache.record(record.model_copy(update={"handle": handle}))
+            return handle
+        label = f"mainboard-{uuid4().hex}"
+        pending = record.model_copy(
+            update={
+                "handle": label,
+                "creation": label,
+                "state": vocabulary.Word.PREPARED,
+                "verdict": vocabulary.Word.PREPARED,
+            }
+        )
+        self.cache.record(pending)
+        intent = Allocation(cache=self.cache, record=pending)
+        intent.begin()
+        try:
+            handle = scheduler.enqueue(
+                remote, pinned, script=script, resources=order.resources, label=label
+            )
+        except MissionError:
+            intent.refused()
+            intent.interrupted()
+            raise
+        return intent.created(handle)
 
     def hold(self, asked: Request, *, reason: str) -> RunRecord:
         """Keep a dispatch a target's quota refused, so a later sweep can ask for it again.

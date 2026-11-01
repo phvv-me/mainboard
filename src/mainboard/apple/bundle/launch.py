@@ -58,7 +58,7 @@ class Launch:
         if len(devices) != 1:
             raise MissionError(
                 f"simulator {simulator!r} matched {len(devices)} available devices; "
-                "use apple simulators and specify an exact UDID or --os-version"
+                "use `mb code app simulators` and specify an exact UDID or --os-version"
             )
         return devices[0]
 

@@ -6,14 +6,15 @@ from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ConfigDict
 
+from ...analysis.commands.papers import evidence, prose
 from ...core.errors import MissionError
 from ...log import logger
 from ...probe.reverse.service import DeviceProbe
 from ...probe.reverse.service import compact as device_rows
-from ...render import progress, record, rows
+from ...render import Output, progress, record, rows
 from ...state import Lake
-from ..base import Verbs
-from ..options import Output
+from ..constants import TREE
+from ..session import Verbs
 from ..work.jobs import JobVerbs
 
 if TYPE_CHECKING:
@@ -27,7 +28,7 @@ _PROBLEM_COLUMNS = ("kind", "where", "detail")
 
 @Parameter(name="*")
 class Inspected(FrozenModel):
-    """Which part of a device artifact `probe device` reads."""
+    """Which part of a device artifact `data probe` reads."""
 
     model_config = ConfigDict(use_attribute_docstrings=True)
 
@@ -84,7 +85,7 @@ class PaperVerbs(Verbs):
         *,
         inspected: Inspected = _INSPECTED,
         on: str = "local",
-        json: bool = False,
+        output: Output = _COMPACT,
     ) -> None:
         """Inspect CUDA device code and append its evidence to the workspace lake.
 
@@ -95,19 +96,18 @@ class PaperVerbs(Verbs):
             library: a native library, fatbin, cubin or PTX artifact.
             operation: the finding to collect; compare reports inventory metadata changes.
             on: local only until device analysis is wired into job dispatch.
-            json: print the normalized evidence as JSON instead of compact TSV rows.
         """
         if on != "local":
-            raise MissionError("probe device runs locally; dispatching it as a job is not built")
+            raise MissionError("data probe runs locally; dispatching it as a job is not built")
         evidence = DeviceProbe(Lake.at(self.session.workspace_root())).run(
             library, operation, **inspected.model_dump()
         )
-        if json:
-            record(evidence.model_dump(mode="json"), mode="json", fields=(), title="device")
+        if output.json_:
+            output.print_record(evidence.model_dump(mode="json"), title="device")
             return
         payloads = device_rows(evidence)
         columns = tuple(dict.fromkeys(key for row in payloads for key in row))
-        _COMPACT.print_rows(payloads, title="device", columns=columns)
+        output.print_rows(payloads, title="device", columns=columns)
 
     def paper_build(
         self,
@@ -137,3 +137,8 @@ class PaperVerbs(Verbs):
         for phrase in show:
             logger.result(manuscript.show(phrase, dpi=dpi).as_posix())
         return 1 if report.problems else 0
+
+
+_PAPERS = PaperVerbs(jobs=JobVerbs())
+paper = TREE.node("data paper").app(evidence.evidence, prose.prose, build=_PAPERS.paper_build)
+probe = TREE.node("data").bind(probe=_PAPERS.device)["probe"]

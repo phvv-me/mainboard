@@ -12,7 +12,12 @@ the way (deleting dead code strands what only it used, for the next pass to dele
 for later passes. When the passes stop short of proving it (nothing is left to fix, or a pass fixed
 nothing), the component returns to its proven state and its files' fixes are withheld from then
 on, which bounds the run. A new type error in a file outside the pending components holds back
-the components of the files it imports until it is gone. The project itself is written once, from
+the components of the files it imports until it is gone. The kept Python files then have the
+imports the fixes left unused or out of order settled and are formatted, by the project's own Ruff
+configuration, before the type audit and the proof judge them. A kept component that changed test
+files must leave the test ids its fixes' change lines account for (a merge keeps each test as a
+case, a deletion removes the tests it names), found by one listing of pytest's ids in the project
+and one in the mirror, before the project's proof runs. The project itself is written once, from
 the kept changes. Each kept fix is told in a line of its own (`path:line RULE change`) that an
 agent can read to pick up from it.
 """
@@ -21,6 +26,7 @@ import time
 from collections import Counter
 from collections.abc import Iterator, Sequence, Set
 from contextlib import closing
+from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,7 +35,7 @@ from ..checks import Types, imported
 from ..mirror import Mirror, is_under
 from .components import Applied, Components
 from .planning import Planner
-from .proof import Proof
+from .proof import Collection, Proof
 from .tallies import by_file, cleared, grown, holding, progressed, split, typed_growth
 
 if TYPE_CHECKING:
@@ -80,7 +86,7 @@ class Fixpoint:
     ) -> None:
         """proof: the project's proof command (`ProjectConfig.proof`), none for no proof run."""
         self.lint, self.root, self.applicability, self.limit = lint, root, applicability, limit
-        self.proof = Proof(root, proof)
+        self.collection, self.proof = Collection(root), Proof(root, proof)
         self.types = Types()
 
     def _abandon(self, files: set[str]) -> str:
@@ -121,11 +127,8 @@ class Fixpoint:
             if not culprits:
                 yield f"audit: {len(growth)} files hold new type errors no kept fix explains"
                 return
-            self.kept = [files for files in self.kept if not files & culprits]
-            self.proven_fixes = [fix for fix in self.proven_fixes if not fix.files & culprits]
-            self.proven.adopt(self.root, culprits)
+            self._undo(culprits)
             self.work.adopt(self.root, culprits)
-            self.held |= culprits
             self._extract()
             yield (
                 f"audit: undid the fixes of {len(culprits)} files behind new type errors in "
@@ -164,6 +167,18 @@ class Fixpoint:
             self.proven.publish(self.root, changed)
             yield f"wrote {len(changed)} files"
 
+    def _collected(self) -> Iterator[str]:
+        """Undo each kept component whose test ids are not the ones its fixes account for.
+
+        A fix that changes a test file says in its change line which ids it merged or deleted
+        (`Remap`); the others leave every id.
+        """
+        broken = self.collection.broken(
+            self.kept, fixes=self.proven_fixes, proven=self.proven.path
+        )
+        self._undo(set().union(*(files for files, _ in broken)))
+        yield from self.collection.told(broken)
+
     def _extract(self) -> None:
         """The work mirror's facts, findings and type diagnostics."""
         self.facts = self.lint.facts(self.work.path)
@@ -199,6 +214,7 @@ class Fixpoint:
                 line=repair.line,
                 change=repair.change,
                 files=frozenset(files),
+                moves=tuple(plan.renamed.items()),
             )
         )
 
@@ -243,10 +259,7 @@ class Fixpoint:
             return
         while self.kept and not proof.passes(self.kept, proven=proven):
             culprit = proof.culprit(self.kept, proven=proven)
-            self.kept.remove(culprit)
-            self.proven_fixes = [fix for fix in self.proven_fixes if not fix.files & culprit]
-            self.proven.adopt(self.root, culprit)
-            self.held |= culprit
+            self._undo(culprit)
             yield (
                 f"proof: undid the fixes of {len(culprit)} files that fail it "
                 f"({', '.join(sorted(culprit)[:3])}): {proof.said}"
@@ -278,6 +291,20 @@ class Fixpoint:
         self._restart(proven)
         return fixed
 
+    def _tidied(self) -> Iterator[str]:
+        """Settle the kept files' imports and format them (`Mirror.tidied`), kept as proven."""
+        if tidied := self.work.tidied(set().union(*self.kept), found=self.root):
+            self.proven.adopt(self.work.path, tidied)
+            self._extract()
+            yield f"settled the imports and format of {len(tidied)} files"
+
+    def _undo(self, culprits: set[str]) -> None:
+        """Return the kept components holding `culprits` to the project's files, fixes withheld."""
+        self.kept = [files for files in self.kept if not files & culprits]
+        self.proven_fixes = [fix for fix in self.proven_fixes if not fix.files & culprits]
+        self.proven.adopt(self.root, culprits)
+        self.held |= culprits
+
     def run(self, *, write: bool) -> Iterator[str]:
         """Fix pass after pass, describing each; with `write`, write the kept changes."""
         with (
@@ -291,7 +318,6 @@ class Fixpoint:
             self.carried = self.start = self.current
             first = split(self.current)
             yield from self._fixed()
-            yield from self._audit()
-            yield from self._prove()
+            yield from chain(self._tidied(), self._audit(), self._collected(), self._prove())
             yield from (f"refused: {reason}" for reason in self.planner.refusals)
             yield from self._closing(first, write=write)

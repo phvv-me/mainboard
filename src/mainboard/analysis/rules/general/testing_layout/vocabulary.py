@@ -1,10 +1,9 @@
 """ALL-TEST0005: helper modules of a test folder named outside its closed vocabulary."""
 
-from .... import edits
 from ....catalog import Example, Rule
-from ....edits import Edit
+from ....edits import Edit, Rename
 from ....findings import Hit
-from ..project.relocation import respelled
+from ....operations import ModuleRelocation
 from .constants import ANCHOR
 
 _IMPORTER = """\
@@ -15,7 +14,14 @@ from .processes import ProcessLog
 def test_a_footer_is_read_from_what_a_fake_process_printed():
     assert Footer and ProcessLog
 """
-_IMPORTER_FIXED = _IMPORTER.replace(".footer", ".readers").replace(".processes", ".fakes")
+_IMPORTER_FIXED = """\
+from .fakes import ProcessLog
+from .readers import Footer
+
+
+def test_a_footer_is_read_from_what_a_fake_process_printed():
+    assert Footer and ProcessLog
+"""
 _FIXTURE = """\
 import pytest
 
@@ -300,7 +306,10 @@ class TestHelperVocabulary(Rule, id="ALL-TEST0005", applicability="review"):
             return None
         module = str(hit.module)
         sibling = ".".join([*module.split(".")[:-1], str(hit.target)])
-        made = respelled(hit, {module: sibling})
+        made = ModuleRelocation.respelled(hit.records("files"), {module: sibling})
         if made is None:
             return None
-        return [*made, edits.rename(str(hit.path), target=f"{hit.folder}{hit.target}{hit.suffix}")]
+        return [
+            *made,
+            Rename(path=str(hit.path), target=f"{hit.folder}{hit.target}{hit.suffix}"),
+        ]

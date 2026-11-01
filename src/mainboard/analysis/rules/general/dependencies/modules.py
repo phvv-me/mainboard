@@ -1,9 +1,15 @@
 """Rules over source modules (mcmr's ALL-MODU family)."""
 
-from ....catalog import Rule
+from ....catalog import Example, Part, Rule
+from ....constants import VOCABULARY_PATH
+
+_PROJECT = {
+    "pyproject.toml": '[project]\nname = "pkg"\nversion = "0"\n',
+    "src/pkg/__init__.py": "",
+}
 
 
-class ModuleLineCount(Rule, id="ALL-MODU0001"):
+class ModuleLineCount(Part):
     """Modules longer than the physical-line ceiling."""
 
     maximum: int = 500
@@ -20,20 +26,26 @@ class ModuleLineCount(Rule, id="ALL-MODU0001"):
     """
 
 
-class ModuleMemberCount(Rule, id="ALL-MODU0002"):
-    """Top-level classes and functions of a non-test module, as a focus proxy."""
+class ModuleMemberCount(Part):
+    """Top-level classes and functions of a non-test module, as a focus proxy. A shared
+    `constants.py`, `enums.py` or `exceptions.py` has no focus to protect: it holds the
+    definitions its folder shares."""
 
     maximum: int = 12
 
-    query = """
-        SELECT *, CASE WHEN is_test THEN 0 ELSE (class_count + function_count)::DOUBLE END AS value
+    query = f"""
+        SELECT *, CASE WHEN is_test OR regexp_matches(path, '{VOCABULARY_PATH}') THEN 0
+                       ELSE (class_count + function_count)::DOUBLE END AS value
         FROM module_facts WHERE value > $maximum
     """
     message = "module member count is {value} for `{fact_id}`"
 
 
-class ModuleInception(Rule, id="ALL-MODU0003"):
-    """A module named after the package directory that already contains it."""
+class ModuleInception(Rule, id="ALL-MODU0003", applicability="review"):
+    """A module named after the package directory that already contains it.
+
+    The fix renames a Python module to `core.py`, its stub with it, every import of it following,
+    and leaves the module as it is when `core.py` exists or a file that is no Python names it."""
 
     query = r"""
         SELECT * FROM (SELECT *, regexp_replace(path, '^.*/', '', 'g') AS name FROM module_facts)
@@ -42,7 +54,76 @@ class ModuleInception(Rule, id="ALL-MODU0003"):
                    ELSE regexp_replace(name, '\.[^.]*$', '', 'g') END
               = regexp_replace(regexp_replace(path, '/[^/]*$', '', 'g'), '^.*/', '', 'g')
     """
-    message = "`{fact_id}` satisfies module inception"
+    message = "`{fact_id}` is named after the directory that holds it"
+    change = "renamed `{path}` to `core.py`, every import of it following"
+    fix = r"""
+        SELECT f.finding_key, 'move-modules' AS operation,
+               [{'path': f.path, 'target': regexp_replace(f.path, '[^/]+\.py$', 'core.py')}]
+                 || coalesce((SELECT list({'path': s.path,
+                                           'target': regexp_replace(s.path, '[^/]+\.pyi$', 'core.pyi')})
+                              FROM core_file s WHERE s.path = f.path || 'i'), []) AS moves,
+               r.files,
+               coalesce((SELECT list(h.path) FROM core_file h
+                         WHERE h.language = 'python'
+                           AND regexp_replace(h.path, '/[^/]+$', '')
+                               = regexp_replace(f.path, '/[^/]+$', '')), []) AS held,
+               coalesce((SELECT list(s.path) FROM source_files s
+                         WHERE NOT regexp_matches(s.path, '\.pyi?$')
+                           AND (contains(s.content, c.module) OR contains(s.content, f.path))),
+                        []) AS mentions
+        FROM finding f
+        JOIN core_file c ON c.path = f.path AND c.language = 'python',
+             module_readers([c.module]) r
+        WHERE ends_with(f.path, '.py')
+    """
+    examples = (
+        Example(
+            bad="from .rules import X\n",
+            good="from .core import X\n",
+            path="src/pkg/rules/__init__.py",
+            context={**_PROJECT, "src/pkg/rules/rules.py": "X = 1\n"},
+        ),
+        Example(
+            bad="import pkg.rules.rules\n\nY = pkg.rules.rules.X\n",
+            good="import pkg.rules.core\n\nY = pkg.rules.core.X\n",
+            path="src/pkg/consumer.py",
+            context={
+                **_PROJECT,
+                "src/pkg/rules/__init__.py": "",
+                "src/pkg/rules/rules.py": "X = 1\n",
+            },
+        ),
+        Example(
+            bad="from .rules import X\n",
+            good="from .core import X\n",
+            path="src/pkg/rules/__init__.py",
+            context={
+                **_PROJECT,
+                "src/pkg/rules/rules.py": "X = 1\n",
+                "src/pkg/rules/rules.pyi": "X: int\n",
+            },
+        ),
+        Example(
+            bad="from .rules import X\n",
+            good="from .rules import X\n",
+            path="src/pkg/rules/__init__.py",
+            context={
+                **_PROJECT,
+                "src/pkg/rules/core.py": "Y = 2\n",
+                "src/pkg/rules/rules.py": "X = 1\n",
+            },
+        ),
+        Example(
+            bad="from .rules import X\n",
+            good="from .rules import X\n",
+            path="src/pkg/rules/__init__.py",
+            context={
+                **_PROJECT,
+                "pyproject.toml": '[project]\nname = "pkg"\nversion = "0"\n# pkg.rules.rules\n',
+                "src/pkg/rules/rules.py": "X = 1\n",
+            },
+        ),
+    )
 
 
 class NonAsciiSourcePath(Rule, id="ALL-MODU0004", applicability="review"):
@@ -91,7 +172,7 @@ class ModuleClassCount(Rule, id="ALL-MODU0005"):
     message = "module class count is {value} for `{fact_id}`"
 
 
-class ModuleStatementCount(Rule, id="ALL-MODU0006"):
+class ModuleStatementCount(Part):
     """Statements throughout one module, nested ones included."""
 
     maximum: int = 200

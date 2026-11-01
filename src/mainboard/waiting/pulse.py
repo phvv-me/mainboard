@@ -17,7 +17,7 @@ from patos import FrozenModel
 from plumbum import ProcessExecutionError
 from sqlalchemy import select
 
-from ..constants import SSH_FAMILY
+from ..core.constants.names import SSH_FAMILY
 from ..core.errors import MissionError
 from ..dispatch.backends.base import route
 from ..dispatch.schedulers import HostUnreachable, registry

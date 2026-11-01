@@ -1,11 +1,15 @@
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
-from patos import value_dispatch
+from cyclopts import Parameter
+from patos import FrozenModel, value_dispatch
+from pydantic import ConfigDict
 
 from ..core.errors import MissionError
 from ..log import logger
 from . import human
+from .enums import Audience
+from .terminal import Terminal
 from .values import encode, pairs_of, to_row
 
 if TYPE_CHECKING:
@@ -14,11 +18,14 @@ if TYPE_CHECKING:
     from .values import Node
 
 
-def mode_of(*, json_mode: bool, human: bool) -> str | None:
-    """The dispatch key `--json`/`--human` select, `None` for the compact default; not both."""
-    if json_mode and human:
-        raise MissionError("pass only one of --json or --human")
-    return "json" if json_mode else ("human" if human else None)
+def mode_of(*, json_mode: bool) -> str | None:
+    """The dispatch key: `--json`, else rich tables for a person, else `None` for an agent.
+
+    `None` names the compact rows.
+    """
+    if json_mode:
+        return "json"
+    return "human" if Terminal.current().audience is Audience.HUMAN else None
 
 
 def _record(
@@ -86,3 +93,65 @@ def _rows_human(
 def _project(payload: Mapping[str, Node], fields: Sequence[str]) -> dict[str, Node]:
     """`payload` narrowed to `fields`, unchanged when `fields` is empty."""
     return dict(payload) if not fields else {key: payload[key] for key in fields if key in payload}
+
+
+# The values a compact record leaves out: they say nothing an absent field does not.
+_EMPTY: tuple[object, ...] = (None, "", [], {}, ())
+
+
+@Parameter(name="*")
+class Output(FrozenModel):
+    """How a verb prints its document: rich tables for a person, compact rows for an agent, JSON.
+
+    An agent's default is what it reads cheapest: a header line of field names, then one
+    tab-separated line per row, no colour, no box drawing.
+    """
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    json_: Annotated[bool, Parameter(name="--json")] = False
+    """print canonical JSON instead of the compact rows."""
+    fields: str = ""
+    """a comma-separated projection over the printed fields."""
+
+    @property
+    def mode(self) -> str | None:
+        """The render key, `None` for an agent's compact rows."""
+        return mode_of(json_mode=self.json_)
+
+    def print_document(self, text: str, payload: Mapping[str, Node], *, title: str) -> None:
+        """Print `text` as written, or `payload` as JSON, the only thing `--fields` projects."""
+        if self.json_:
+            self.print_record(payload, title=title)
+        elif self.fields:
+            raise MissionError("--fields projects the JSON document; add --json")
+        else:
+            logger.result(text)
+
+    def print_record(self, payload: Mapping[str, Node], *, title: str) -> None:
+        """Print one entity; the compact rows leave out its empty fields."""
+        if self.mode is None and not self.fields:
+            payload = {key: value for key, value in payload.items() if value not in _EMPTY}
+        record(payload, mode=self.mode, fields=self.projection(), title=title)
+
+    def print_rows(
+        self, payloads: Sequence[Mapping[str, Node]], *, title: str, columns: Sequence[str] = ()
+    ) -> None:
+        """Print many entities, `columns` keeping an empty table's heading unless projected.
+
+        The compact rows leave out a column empty in every row: it tells an agent nothing
+        and costs a tab per row. `--fields` keeps exactly the columns it names.
+        """
+        fields = self.projection(columns)
+        if self.mode is None and not self.fields and payloads:
+            flat = [to_row(payload) for payload in payloads]
+            fields = [
+                name
+                for name in fields or flat[0]
+                if any(row.get(name) not in (None, "") for row in flat)
+            ]
+        rows(payloads, mode=self.mode, fields=fields, title=title)
+
+    def projection(self, default: Sequence[str] = ()) -> Sequence[str]:
+        """The `--fields` names, trimmed and blanks dropped, `default` when none were given."""
+        return tuple(part.strip() for part in self.fields.split(",") if part.strip()) or default

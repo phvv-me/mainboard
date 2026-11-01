@@ -1,6 +1,6 @@
 """Rules over the control flow inside one callable (mcmr's ALL-FUNC flow rules)."""
 
-from ....catalog import Relation, Rule
+from ....catalog import Part, Relation
 
 
 class FlowControls(Relation):
@@ -56,7 +56,7 @@ class FlowMeasured(Relation):
 """
 
 
-class CognitiveComplexity(Rule, id="ALL-FUNC0008"):
+class CognitiveComplexity(Part):
     """Control structures in one callable, each nesting level counted against it."""
 
     maximum: int = 8

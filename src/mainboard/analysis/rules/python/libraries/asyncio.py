@@ -43,7 +43,10 @@ class TaskGroupCandidate(Rule, id="PY-ASYN0002"):
             WHERE is_async AND created_task_count > 0 AND gather_consumes_created_tasks
               AND NOT gather_returns_exceptions AND NOT has_task_group
         """
-    message = "`{fact_id}` satisfies task group candidate"
+    message = (
+        "`{fact_id}` awaits the tasks it creates through a gather that raises on the first "
+        "error, outside a task group"
+    )
 
 
 class DeprecatedEventLoopPolicyUsage(Rule, id="PY-ASYN0003"):

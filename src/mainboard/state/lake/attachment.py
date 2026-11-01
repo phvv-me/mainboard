@@ -2,7 +2,6 @@
 
 from collections.abc import Generator, Iterable
 from contextlib import closing, contextmanager, suppress
-from enum import StrEnum, auto
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
@@ -12,10 +11,12 @@ from patos import FrozenModel
 from pydantic import Field
 from sqlalchemy import ClauseElement
 
+from ...constants import ALIAS
 from ...core.errors import MissionError
 from ...core.project import Project
 from ...runtime.tree import FileBudget
-from ..constants import ALIAS, QUACK, RETRIES
+from ..constants import QUACK, RETRIES
+from ..enums import Access
 from ..storage.database import connect, extension_home, first_line, load, quoted
 from .staging import compiled, inlined
 
@@ -28,15 +29,6 @@ _BUSY_MS = 30000
 # The homes a read was seen to answer from, once per process, and how long one may take.
 _ANSWERED: set[Path] = set()
 _ANSWER_SECONDS = 10.0
-
-
-class Access(StrEnum):
-    """What an attach may do: read, write, create a lake that is not there, or migrate one."""
-
-    READ = auto()
-    WRITE = auto()
-    CREATE = auto()
-    MIGRATE = auto()
 
 
 # The attach options each access adds: a write journals the catalog in WAL mode, creation and
@@ -151,7 +143,7 @@ class Attachment(FrozenModel):
             return fault
         said = first_line(fault).split(": ", 1)[-1].split(" To automatically", 1)[0]
         return MissionError(
-            f"{said} Run `mb lake upgrade` on the machine holding the lake, after which "
+            f"{said} Run `mb data lake upgrade` on the machine holding the lake, after which "
             "older DuckDB releases cannot open it."
         )
 
@@ -165,7 +157,7 @@ class Attachment(FrozenModel):
                 "both ends must run the same DuckDB release"
             )
         if "connect" in said.lower():
-            return "nothing answers there; start `mb lake serve` and the ssh tunnel to it"
+            return "nothing answers there; start `mb data lake serve` and the ssh tunnel to it"
         return said
 
     def _answering(self) -> None:
@@ -222,7 +214,7 @@ class Attachment(FrozenModel):
             need = (
                 "reading needs MB_LAKE_READ and MB_LAKE_READ_TOKEN"
                 if reading
-                else "writing needs MB_LAKE and MB_LAKE_TOKEN (`mb lake serve` names them)"
+                else "writing needs MB_LAKE and MB_LAKE_TOKEN (`mb data lake serve` names them)"
             )
             raise MissionError(f"the lake is served from {self.served} {only}; {need}")
         self._load(connection, QUACK)

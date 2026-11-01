@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING
 
 from plumbum import local as localhost
 
-from ...constants import SSH_FAMILY
+from ...core.constants.names import SSH_FAMILY
 from ...core.errors import MissionError
 from ...core.execution.shell import foreground
+from ...costs.ledger import Ledger
 from ...dispatch.backends.base import ProviderBackend, route
 from ...dispatch.dispatcher import Handle, Order
 from ...dispatch.hosts.landing import Landing, renter
@@ -14,10 +15,11 @@ from ...dispatch.jobs import vocabulary
 from ...dispatch.jobs.commandline import joined
 from ...dispatch.mirroring.shipment import Shipment
 from ...dispatch.wrapping import connection
-from ...engines.compile.pixi.policy import LockPolicy
 from ...engines.compile.provisioner import Provisioner
+from ...enums import LockPolicy
 from ...jobs.targets.target import Target
 from ...manifest.render.scaffold import Scaffold
+from ...policy.warden import Warden
 from ..runs import Job, ProviderJob, Run
 from .tracking import Tracking
 
@@ -78,6 +80,10 @@ class Dispatching(Tracking):
         metered box.
         """
         plan, shipment = order.plan, order.shipment
+        ledger = Ledger(self.dispatcher.cache.session)
+        cap = Warden(self.root, self.manifest.policy).rent(
+            plan.profile, max_usd=order.resources.max_usd, ledger=ledger
+        )
         renting = renter(backend, plan)
         if renting is None:
             if shipment.sealed:
@@ -89,7 +95,7 @@ class Dispatching(Tracking):
             allocation = self.dispatcher.allocating(order, evidence="pending")
             try:
                 handle = backend.submit(
-                    plan, shipment.command, order.resources, allocation=allocation
+                    plan, shipment.command, order.resources, allocation=allocation, cap=cap
                 )
             finally:
                 allocation.interrupted()
@@ -101,14 +107,14 @@ class Dispatching(Tracking):
                 fetch_path=shipment.fetch or None,
             )
         provisioner = Provisioner(self.root, self.manifest)
-        provisioner.compiler_for(plan.env).vouch()
+        provisioner.shard(plan.env).compiler.vouch()
         artifact = tuple(provisioner.artifact_for(plan.env))
         return Landing(
             self.dispatcher,
             renting,
             order.model_copy(update={"artifact": artifact}),
             floor=self.floor,
-        ).land()
+        ).land(cap)
 
     def run(
         self,

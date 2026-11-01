@@ -11,11 +11,13 @@ from tempfile import NamedTemporaryFile
 from patos import FrozenModel
 from pydantic import Field
 
+from ..constants import NO_TABLE
+from ..core.constants.names import SHA256
 from ..state.evidence import EvidenceTree
 from .store.archive import ParquetArtifacts
 
-# Research imports this from here, where it lived before `constants`.
-from .store.constants import NO_TABLE as NO_TABLE
+# Research imports `NO_TABLE` from here, where it lived before `constants`.
+__all__ = ["NO_TABLE"]
 
 # A file in the Hugging Face hub cache, `<kind>s--<repo, "/" spelled "--">/snapshots/<revision>/`;
 # a repository name may not hold `--`, so the spelling reads back exactly.
@@ -32,7 +34,7 @@ class Artifact(FrozenModel):
     """
 
     path: str
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sha256: str = Field(pattern=SHA256)
     size: int = Field(ge=0)
     media_type: str = "application/octet-stream"
     schema_name: str = ""

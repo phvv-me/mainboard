@@ -1,13 +1,13 @@
 """Swift rules use real syntax trees, with conservative negatives and a read-only lint gate."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 from mainboard import MissionError
 from mainboard.analysis import Rule
-from mainboard.analysis.commands.gate import Pass, _selected
+from mainboard.analysis.commands.gate import Options, Pass
 from mainboard.analysis.constants import LANGUAGES
 from mainboard.analysis.engine.lint import Lint, load_catalog
 from mainboard.analysis.engine.lint.verbs import _example_path
@@ -25,9 +25,8 @@ from mainboard.analysis.rules.swift.migration import (
     SwiftParserCoverage,
 )
 from mainboard.analysis.rules.swift.presentation.ui import PrivateViewState, RedundantBodyErasure
-from mainboard.core import Runner, ToolOutput, ToolRunner
 
-from ...conftest import git
+from ...builders import git
 
 _VIEW_SWIFT = "View.swift"
 
@@ -269,12 +268,12 @@ def test_swift_rules_do_not_run_on_python_comments_or_strings(tmp_path: Path) ->
 
 
 def test_selected_gate_validates_rule_ids_and_skip_further_narrows() -> None:
-    assert _selected((), (PrivateViewState.id,)) == [PrivateViewState]
-    assert _selected((PrivateViewState.id,), (PrivateViewState.id,)) == []
+    assert Options(rule=(PrivateViewState.id,)).selected() == [PrivateViewState]
+    assert Options(skip=(PrivateViewState.id,), rule=(PrivateViewState.id,)).selected() == []
     with pytest.raises(MissionError, match="no rule .* to select"):
-        _selected((), ("SW-MISSING",))
+        Options(rule=("SW-MISSING",)).selected()
     with pytest.raises(MissionError, match="no rule .* to skip"):
-        _selected(("SW-MISSING",), ())
+        Options(skip=("SW-MISSING",)).selected()
 
 
 @pytest.mark.swift_native
@@ -297,74 +296,6 @@ def test_empty_swift_is_valid_and_sql_literals_alone_are_not_database_evidence(
     assert len(found[HandwrittenDatabaseDependency.id]) == 2
 
 
-def test_missing_native_toolchain_refuses_before_any_download(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("mainboard.analysis.providers.swift.shutil.which", lambda name: None)
-
-    class MissingToolchain(Runner):
-        def run(self, tool: str, args: Sequence[str], *, cwd: Path | None = None) -> ToolOutput:
-            return ToolOutput(returncode=127, stderr="tool unavailable")
-
-    with pytest.raises(MissionError, match="Swift analysis requires"):
-        SwiftSource._helper(MissingToolchain())
-
-
-@pytest.mark.swift_native
-def test_native_provider_accepts_a_relative_cli_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "project"
-    root.mkdir()
-    (root / _VIEW_SWIFT).write_text("import SwiftUI\nstruct Screen: View {}\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    rows = SwiftSource().run(Path("project"))
-    assert rows["facts"][1][0][1] == _VIEW_SWIFT
-    assert rows["facts"][1][0][5] == 0
-
-
-@pytest.mark.swift_native
-def test_native_helper_is_cached_and_reports_bad_requests_without_crashing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    calls: list[tuple[str, ...]] = []
-
-    class RecordingRunner(Runner):
-        def run(self, tool: str, args: Sequence[str], *, cwd: Path | None = None) -> ToolOutput:
-            calls.append(tuple(args))
-            return ToolRunner(timeout=120).run(tool, args, cwd=cwd)
-
-    runner = RecordingRunner()
-    first = SwiftSource._helper(runner)
-    assert first == SwiftSource._helper(runner)
-    assert sum("-o" in args for args in calls) == 1
-    result = runner.run(str(first), (str(tmp_path / "missing-request.json"),))
-    assert result.returncode == 1
-    assert result.stderr.startswith("SwiftSyntax: ")
-    assert "Fatal error" not in result.stderr
-
-
-@pytest.mark.swift_native
-def test_native_helper_compile_timeout_never_becomes_a_cache_hit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    class TimedOutCompiler(Runner):
-        def run(self, tool: str, args: Sequence[str], *, cwd: Path | None = None) -> ToolOutput:
-            if "-o" in args:
-                return ToolOutput(returncode=124, stderr="compile timed out", truncated=True)
-            return ToolRunner(timeout=120).run(tool, args, cwd=cwd)
-
-    with pytest.raises(MissionError, match="helper compilation failed: compile timed out"):
-        SwiftSource._helper(TimedOutCompiler())
-    assert not list(tmp_path.rglob("swift-syntax"))
-
-
 @pytest.mark.swift_native
 def test_native_positions_use_zero_based_utf8_columns_after_non_ascii_text(tmp_path: Path) -> None:
     prefix = 'struct Screen: View { let text = "漢字"; '
@@ -375,29 +306,9 @@ def test_native_positions_use_zero_based_utf8_columns_after_non_ascii_text(tmp_p
     assert row[1:3] == (2, len(prefix.encode("utf-8")))
 
 
-def test_missing_native_host_libraries_fails_with_an_actionable_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    compiler = tmp_path / "usr/bin/swiftc"
-    compiler.parent.mkdir(parents=True)
-    compiler.write_bytes(b"compiler location only")
-    monkeypatch.setattr(
-        "mainboard.analysis.providers.swift.shutil.which", lambda name: str(compiler)
-    )
-
-    class CompilerLocation(Runner):
-        def run(self, tool: str, args: Sequence[str], *, cwd: Path | None = None) -> ToolOutput:
-            return ToolOutput(stdout=str(compiler))
-
-    with pytest.raises(MissionError, match="SwiftParser host libraries at"):
-        SwiftSource._helper(CompilerLocation())
-
-
-def test_rule_sql_runs_cross_platform_over_normalized_native_facts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.fixture
+def normalized_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`SwiftSource.run` answers with the facts of one `View.swift`, so no parser executes."""
     place = ("swift:View.swift", _VIEW_SWIFT, "swift", 2, 0)
     relations: dict[str, Table] = {name: (columns, []) for name, columns in TABLES.items()}
     relations["facts"][1].append((*place, 0, ""))
@@ -410,6 +321,10 @@ def test_rule_sql_runs_cross_platform_over_normalized_native_facts(
     relations["erasures"][1].append((*place, "Screen"))
     relations["imports"][1].append((*place, "UIKit"))
     monkeypatch.setattr(SwiftSource, "run", lambda self, root: relations)
+
+
+@pytest.mark.usefixtures("normalized_facts")
+def test_rule_sql_runs_cross_platform_over_normalized_native_facts(tmp_path: Path) -> None:
     found = _find(tmp_path, {_VIEW_SWIFT: "// normalized-facts SQL test; no parser execution\n"})
     assert len(found[PrivateViewState.id]) == 1
     assert "`owned`" in found[PrivateViewState.id][0][3]

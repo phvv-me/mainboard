@@ -28,180 +28,13 @@ it sits in), `kept` (the nodes that survive), `owners`, `decorators`, `owned`, `
 (each member's nearest kept ancestor), `swaps` and `depths` (depth and operand order),
 `numbered`/`spanned`/`parented` (ordinals, subtree ends, parents), `targets`/`dotted` (the names
 of assignments and calls) and `frames` (each fact's byte offset). Each stage reads the earlier
-ones by view name.
+ones by view name; `kinds.py` holds the vocabulary the templates are filled from and `shapes.py`
+the stages `ranks`, `places` and `kept`.
 """
 
 from ....catalog import Family
-
-_EXPRESSION = "expression"
-_OPERATION = "operation"
-_STATEMENT = "statement"
-_COLLECTION = "collection"
-_COMPREHENSION = "comprehension"
-
-_STATEMENTS = {
-    "function_definition": "callable",
-    "class_definition": "type",
-    "return_statement": "return",
-    "raise_statement": "raise",
-    "if_statement": "branch",
-    "for_statement": "loop",
-    "while_statement": "loop",
-    "try_statement": "guard",
-    "with_statement": "scope",
-    "import_statement": "import",
-    "import_from_statement": "import",
-    "future_import_statement": "import",
-    "assignment": "binding",
-    "augmented_assignment": "binding",
-    "expression_statement": "effect",
-    "pass_statement": _STATEMENT,
-    "break_statement": _STATEMENT,
-    "continue_statement": _STATEMENT,
-    "global_statement": _STATEMENT,
-    "nonlocal_statement": _STATEMENT,
-    "assert_statement": _STATEMENT,
-    "delete_statement": _STATEMENT,
-    "match_statement": _STATEMENT,
-    "type_alias_statement": _STATEMENT,
-    "print_statement": _STATEMENT,
-    "exec_statement": _STATEMENT,
-}
-
-_EXPRESSIONS = {
-    "identifier": "name",
-    "attribute": "member",
-    "call": "call",
-    "string": "text",
-    "concatenated_string": "text",
-    "integer": "literal",
-    "float": "literal",
-    "true": "literal",
-    "false": "literal",
-    "none": "literal",
-    "ellipsis": _EXPRESSION,
-    "list": _COLLECTION,
-    "set": _COLLECTION,
-    "tuple": _COLLECTION,
-    "dictionary": _COLLECTION,
-    "expression_list": _COLLECTION,
-    "pattern_list": _COLLECTION,
-    "tuple_pattern": _COLLECTION,
-    "list_pattern": _COLLECTION,
-    "list_comprehension": _COMPREHENSION,
-    "set_comprehension": _COMPREHENSION,
-    "dictionary_comprehension": _COMPREHENSION,
-    "generator_expression": _COMPREHENSION,
-    "lambda": "callable",
-    "binary_operator": _OPERATION,
-    "boolean_operator": _OPERATION,
-    "comparison_operator": _OPERATION,
-    "unary_operator": _OPERATION,
-    "not_operator": _OPERATION,
-    "union_type": _OPERATION,
-    "subscript": "index",
-    "generic_type": "index",
-    "await": "await",
-    "conditional_expression": _EXPRESSION,
-    "yield": _EXPRESSION,
-    "list_splat": _EXPRESSION,
-    "list_splat_pattern": _EXPRESSION,
-    "named_expression": _EXPRESSION,
-    "slice": _EXPRESSION,
-}
-
-# Nodes that carry no meaning of their own: their children belong to the nearest kept ancestor.
-_TRANSPARENT = (
-    "module",
-    "block",
-    "parenthesized_expression",
-    "argument_list",
-    "pair",
-    "dictionary_splat",
-    "keyword_argument",
-    "as_pattern",
-    "with_item",
-    "with_clause",
-    "decorated_definition",
-    "decorator",
-    "elif_clause",
-    "else_clause",
-    "except_clause",
-    "except_group_clause",
-    "finally_clause",
-    "case_clause",
-    "for_in_clause",
-    "if_clause",
-    "interpolation",
-    "type",
-    "type_parameter",
-    "constrained_type",
-    "parameters",
-    "default_parameter",
-    "typed_parameter",
-    "typed_default_parameter",
-)
-
-# What can stand as an operand, to number the operands of a node: `a.b` has the object first.
-_OPERANDS = (
-    *_EXPRESSIONS,
-    "parenthesized_expression",
-    "pair",
-    "dictionary_splat",
-    "keyword_argument",
-    "as_pattern",
-    "with_item",
-    "assignment",
-)
-
-# What tree-sitter nests around a star it misreads: `[*a.b()]` is `call(attribute(list_splat(a)))`.
-_CHAINED = (
-    "attribute",
-    "call",
-    "subscript",
-    "binary_operator",
-    "boolean_operator",
-    "comparison_operator",
-    "conditional_expression",
-)
-
-# Statements that end where their last simple statement ends: tree-sitter lets a trailing comment
-# at the end of a block stretch every compound statement around it.
-_SIMPLE = (
-    "expression_statement",
-    "return_statement",
-    "raise_statement",
-    "pass_statement",
-    "break_statement",
-    "continue_statement",
-    "global_statement",
-    "nonlocal_statement",
-    "assert_statement",
-    "delete_statement",
-    "import_statement",
-    "import_from_statement",
-    "future_import_statement",
-    "print_statement",
-    "exec_statement",
-    "type_alias_statement",
-)
-
-_COMPOUND = (
-    "function_definition",
-    "class_definition",
-    "if_statement",
-    "for_statement",
-    "while_statement",
-    "try_statement",
-    "with_statement",
-    "match_statement",
-)
-
-
-def _list(names: tuple[str, ...] | list[str]) -> str:
-    """A SQL list of string literals."""
-    return "(" + ", ".join(f"'{name}'" for name in names) + ")"
-
+from .kinds import fill
+from .shapes import shapes
 
 _LINES = """
     SELECT path, line, text, sum(strlen(text) + 1) OVER (PARTITION BY path ORDER BY line)
@@ -210,25 +43,6 @@ _LINES = """
           FROM (SELECT path, string_split(content, chr(10)) AS parts FROM source_files
                 WHERE path IN (SELECT DISTINCT path FROM ast_files WHERE language = 'python')))
 """
-
-
-def _fill(sql: str) -> str:
-    """The placeholders of a SQL template, replaced by the vocabulary they name."""
-    return (
-        sql.replace(
-            "@VOCABULARY@",
-            ", ".join(
-                f"('{type}', '{kind}')" for type, kind in {**_STATEMENTS, **_EXPRESSIONS}.items()
-            ),
-        )
-        .replace("@ALIVE@", _list([*_STATEMENTS, *_EXPRESSIONS, *_TRANSPARENT]))
-        .replace("@OPERANDS@", _list(_OPERANDS))
-        .replace("@CHAINED@", _list(_CHAINED))
-        .replace("@FACT_TYPES@", _list(["decorated_definition", *_COMPOUND[:2], *_SIMPLE]))
-        .replace("@SIMPLE@", _list(_SIMPLE))
-        .replace("@COMPOUND@", _list(_COMPOUND))
-    )
-
 
 _FACTS = r"""
     WITH python AS (
@@ -304,91 +118,6 @@ _TREE = r"""
     LEFT JOIN tops t ON t.file = a.fact_id AND t.id = a.node_id
     WHERE f.language = 'python'
       AND a.fact_id NOT IN (SELECT fact_id FROM ast_nodes WHERE type = 'ERROR')
-"""
-
-_RANKS = r"""
-    SELECT file, id, rk, nxt FROM (
-      SELECT file, id,
-             count(*) FILTER (WHERE opnd) OVER (PARTITION BY file, pid ORDER BY id) AS rk,
-             lead(type) OVER (PARTITION BY file ORDER BY id) AS nxt
-      FROM syntax_tree)
-"""
-
-_PLACES = r"""
-    WITH placed AS (
-      SELECT n.*, p.type AS ptype, g.type AS gtype, r.rk, r.nxt
-      FROM syntax_tree n
-      JOIN syntax_ranks r ON r.file = n.file AND r.id = n.id
-      LEFT JOIN syntax_tree p ON p.file = n.file AND p.id = n.pid
-      LEFT JOIN syntax_tree g ON g.file = p.file AND g.id = p.pid
-      WHERE n.type IN @ALIVE@ OR n.dc > 0 OR n.type IN ('and', 'or')
-    ), delegations AS (
-      SELECT file, pid FROM syntax_tree WHERE type = 'from' AND sib = 1
-    )
-    SELECT placed.* EXCLUDE (gtype), CASE
-        WHEN type NOT IN @ALIVE@ THEN false
-        WHEN ptype IS NULL THEN true
-        WHEN ptype = 'yield' THEN yf.pid IS NULL
-        WHEN ptype = 'attribute' THEN rk = 1
-        WHEN ptype IN ('for_in_clause', 'keyword_argument', 'named_expression',
-                       'default_parameter') THEN rk = 2
-        WHEN ptype = 'typed_default_parameter' THEN type = 'type' OR rk = 2
-        WHEN ptype = 'typed_parameter' THEN type = 'type'
-        WHEN ptype IN ('assignment', 'augmented_assignment') THEN type = 'type' OR rk >= 2
-        WHEN ptype IN ('raise_statement', 'assert_statement', 'interpolation', 'lambda',
-                       'decorator', 'as_pattern', 'with_item') THEN rk = 1
-        WHEN ptype IN ('except_clause', 'except_group_clause', 'case_clause', 'match_statement',
-                       'elif_clause') THEN type = 'block'
-        WHEN ptype = 'function_definition'
-          THEN type IN ('type_parameter', 'parameters', 'type', 'block')
-        WHEN ptype = 'class_definition' THEN type IN ('type_parameter', 'argument_list', 'block')
-        WHEN ptype = 'constrained_type' THEN sib = 1
-        WHEN ptype = 'type_parameter'
-          THEN gtype NOT IN ('function_definition', 'class_definition') OR nxt = 'constrained_type'
-        WHEN ptype = 'argument_list' AND gtype = 'class_definition'
-          THEN type NOT IN ('keyword_argument', 'dictionary_splat')
-        WHEN ptype = 'parameters'
-          THEN type IN ('default_parameter', 'typed_parameter', 'typed_default_parameter')
-        WHEN ptype IN ('slice', 'global_statement', 'nonlocal_statement', 'import_statement',
-                       'import_from_statement', 'future_import_statement', 'print_statement',
-                       'exec_statement', 'type_alias_statement') THEN false
-        WHEN ptype IN ('string', 'concatenated_string')
-          THEN type = 'interpolation' OR (ptype = 'concatenated_string' AND type = 'string')
-        ELSE true END AS ok
-    FROM placed LEFT JOIN delegations yf ON yf.file = placed.file AND yf.pid = placed.pid
-                                        AND placed.ptype = 'yield'
-"""
-
-_KEPT = r"""
-    WITH live AS (
-      SELECT * EXCLUDE (blocked, ok) FROM (
-        SELECT *, max(CASE WHEN ok THEN -1 ELSE id + dc END)
-                    OVER (PARTITION BY file ORDER BY id) AS blocked
-        FROM syntax_places) WHERE ok AND blocked < id
-    ), operators AS (
-      SELECT file, pid AS id, type AS op FROM syntax_places
-      WHERE ptype = 'boolean_operator' AND type IN ('and', 'or')
-    )
-    SELECT l.file, l.path, l.id, l.pid, l.type, l.dc, l.cc, l.sl, l.sc, l.el, l.ec, l.name, l.up,
-           l.ptype, v.kind AS vkind,
-           l.type IN ('function_definition', 'class_definition') AS is_def,
-           CASE
-             WHEN v.kind IS NULL THEN false
-             WHEN l.type = 'expression_statement'
-               THEN l.nxt NOT IN ('assignment', 'augmented_assignment')
-             WHEN l.type IN ('assignment', 'augmented_assignment')
-               THEN l.ptype = 'expression_statement'
-             WHEN l.type = 'string' THEN l.ptype <> 'concatenated_string'
-             WHEN l.type = 'boolean_operator'
-               THEN NOT (l.ptype = 'boolean_operator' AND l.sib = 0 AND o.op = po.op)
-             WHEN l.type IN ('lambda', 'await', 'yield') THEN l.dc > 0
-             WHEN l.type IN ('expression_list', 'pattern_list')
-               THEN l.ptype <> 'delete_statement'
-             ELSE true END AS kept
-    FROM live l
-    LEFT JOIN (VALUES @VOCABULARY@) v(type, kind) ON v.type = l.type
-    LEFT JOIN operators o ON o.file = l.file AND o.id = l.id
-    LEFT JOIN operators po ON po.file = l.file AND po.id = l.pid
 """
 
 _OWNERS = r"""
@@ -651,18 +380,16 @@ _CHILDREN = r"""
 class Syntax(Family):
     family = "SyntaxFact"
     relations = {
-        "facts": _fill(_FACTS),
+        "facts": fill(_FACTS),
         "lines": _LINES,
-        "tree": _fill(_TREE),
-        "ranks": _RANKS,
-        "places": _fill(_PLACES),
-        "kept": _fill(_KEPT),
+        "tree": fill(_TREE),
+        **shapes(),
         "owners": _OWNERS,
         "decorators": _DECORATORS,
         "owned": _OWNED,
         "bare": _BARE,
         "tuples": _TUPLES,
-        "ends": _fill(_ENDS),
+        "ends": fill(_ENDS),
         "members": _MEMBERS,
         "links": _LINKS,
         "climb": _CLIMB,

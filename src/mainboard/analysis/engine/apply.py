@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...lint.sealed import Sealed
+from ..claims import Claim
 from ..edits import Append, Create, Delete, Edit, Import, Insert, Move, Remove, Rename, Replace
 from .sources import Source, TextEdit
 
@@ -43,6 +44,11 @@ class Plan:
         parted = source.data and not source.data.endswith(b"\n")
         data = (source.newline if parted else b"") + source.encode(edit.text)
         return [TextEdit(path=edit.path, start=end, end=end, text=data, stacks=True)]
+
+    @_anchored.register
+    def _claimed(self, edit: Claim) -> list[TextEdit]:
+        start, end = self.source(edit.span.path).covers(edit.span)
+        return [TextEdit(path=edit.span.path, start=start, end=end, text=b"", claims=True)]
 
     @_anchored.register
     def _created(self, edit: Create) -> list[TextEdit]:
@@ -80,9 +86,10 @@ class Plan:
     def _collide(one: TextEdit, *, other: TextEdit) -> bool:
         """Two edits of one file overlap, or insert at one point (their order would be a guess).
 
-        Appends stack in the order they were taken, so two of them never collide.
+        Appends stack in the order they were taken, so two of them never collide. A claim meets
+        only claims: it holds a range against other groups' claims and rewrites nothing.
         """
-        if one.path != other.path or (one.stacks and other.stacks):
+        if one.path != other.path or one.claims != other.claims or (one.stacks and other.stacks):
             return False
         return (one.start < other.end and other.start < one.end) or (one.start == other.start)
 
@@ -147,7 +154,7 @@ class Plan:
         """Whether one finding's edits clash with what the plan already holds.
 
         A path it removes or renames is one the plan already moves, a rename lands on a path that
-        exists, or a byte edit overlaps one already taken.
+        exists, or a byte edit or claim overlaps one already taken.
         """
         moving = {edit.path for edit in edits if isinstance(edit, Remove | Rename)}
         targets = {edit.target for edit in edits if isinstance(edit, Rename)}
@@ -160,10 +167,10 @@ class Plan:
         )
 
     def _edits(self) -> dict[str, list[TextEdit]]:
-        """Each edited file's edits, its imports included, in file order."""
+        """Each edited file's edits (claims aside), its imports included, in file order."""
         if self._by_path is None:
             by_path = defaultdict(list)
-            for edit in [*self.text, *self._imported()]:
+            for edit in (e for e in [*self.text, *self._imported()] if not e.claims):
                 by_path[edit.path].append(edit)
             self._by_path = {
                 path: sorted(edits, key=lambda e: (e.start, e.end))
@@ -175,8 +182,7 @@ class Plan:
         match edit:
             case Replace(span=span, text=text):
                 source = self.source(span.path)
-                start = source.offset(span.start_line, column=span.start_column)
-                end = source.offset(span.end_line or span.start_line, column=span.end_column or 0)
+                start, end = source.covers(span)
                 return [TextEdit(path=span.path, start=start, end=end, text=source.encode(text))]
             case Delete(span=span):
                 start, end = self.source(span.path).lines(span)

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 from rich.table import Table
 
-from ...constants import BYTES_PER_GB, MILLISECONDS_PER_SECOND
+from ...core.constants.units import BYTES_PER_GB, MILLISECONDS_PER_SECOND
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

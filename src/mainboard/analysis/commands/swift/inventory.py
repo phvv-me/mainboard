@@ -6,12 +6,9 @@ from contextlib import closing
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path, PurePosixPath
-from typing import Annotated
-
-from cyclopts import Parameter
 
 from ....core.errors import MissionError
-from ....log import logger
+from ....render import Output
 from ...engine.facts import Budget, Facts, lint_excludes, marked, project_files, vendored
 from ...findings import Finding, Span
 from ...providers.swift import SwiftSource, SwiftToolchain
@@ -34,7 +31,10 @@ from ...rules.swift.presentation.ui import PrivateViewState, RedundantBodyErasur
 from ..catalog import RuleEntry
 from ..graphs.scope import Scope
 from .constants import LANGUAGES
-from .models import AppleSourceFile, Condition, SourceKind, SwiftInventory, SyntaxStatus
+from .enums import SourceKind, SyntaxStatus
+from .models import AppleSourceFile, Condition, SwiftInventory
+
+_COMPACT = Output()
 
 _SOURCE_CONDITIONS_SQL = (
     "SELECT path, start_line, start_column, condition FROM swift_source_conditions "
@@ -102,7 +102,7 @@ class SwiftSourceInventory:
         """
         context: list[Finding] = []
         for rule in (specification() for specification in _RULES):
-            statement = facts.db.execute(rule.statement(), rule.rows().parameters)
+            statement = facts.connection.execute(rule.statement(), rule.rows().parameters)
             for name, line, column, message in statement.fetchall():
                 span = Span(path=name, start_line=line, start_column=column)
                 hit = Finding(rule=rule.id, span=span, message=message)
@@ -115,7 +115,9 @@ class SwiftSourceInventory:
     @staticmethod
     def _conditions(facts: Facts, files: dict[str, AppleSourceFile]) -> None:
         """Note every `#if`/`#elseif` each file holds, in source order."""
-        for name, line, column, expression in facts.db.execute(_SOURCE_CONDITIONS_SQL).fetchall():
+        for name, line, column, expression in facts.connection.execute(
+            _SOURCE_CONDITIONS_SQL
+        ).fetchall():
             condition = Condition(
                 path=name, start_line=line, start_column=column, expression=expression
             )
@@ -124,7 +126,7 @@ class SwiftSourceInventory:
     @staticmethod
     def _coverage(facts: Facts, files: dict[str, AppleSourceFile]) -> None:
         """Note how far the parser read each file."""
-        for name, gaps, message in facts.db.execute(_PARSER_PROGRESS_SQL).fetchall():
+        for name, gaps, message in facts.connection.execute(_PARSER_PROGRESS_SQL).fetchall():
             if name in files:
                 files[name] = files[name].model_copy(
                     update={
@@ -143,7 +145,7 @@ class SwiftSourceInventory:
     @staticmethod
     def _imports(facts: Facts, files: dict[str, AppleSourceFile]) -> None:
         """Note the modules each file imports, each once, by name."""
-        for name, module in facts.db.execute(_SOURCE_IMPORTS_SQL).fetchall():
+        for name, module in facts.connection.execute(_SOURCE_IMPORTS_SQL).fetchall():
             _appended(files, name, field="imports", value=module)
 
     @staticmethod
@@ -245,7 +247,7 @@ class SwiftSourceInventory:
     @staticmethod
     def _toolchain(facts: Facts) -> SwiftToolchain:
         """The compiler and SDK the parser ran under, refusing missing or ambiguous provenance."""
-        metadata = facts.db.execute("SELECT * FROM swift_source_toolchain")
+        metadata = facts.connection.execute("SELECT * FROM swift_source_toolchain")
         columns = [column[0] for column in metadata.description]
         rows = metadata.fetchall()
         if len(rows) != 1:
@@ -321,14 +323,16 @@ class SwiftSourceInventory:
 def swift_inventory(
     path: Path = Path(),
     *,
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
     memory: str = "2GB",
 ) -> None:
     """Per-file Swift/Objective-C size, imports and migration boundaries in the lint source scope.
 
+    `--json` adds the typed files and totals, placed evidence, classification limits and rule
+    guidance.
+
     path: a directory to report; parsing retains the owning project's declaration context.
-    as_json: include typed files/totals, placed evidence, classification limits and rule guidance.
     memory: the existing analysis engine's DuckDB memory budget.
     """
     report = SwiftSourceInventory(Scope.of(path)).read(memory=memory)
-    logger.result(report.render(as_json=as_json))
+    report.show(output)

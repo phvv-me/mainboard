@@ -1,17 +1,7 @@
-# A command and everything it started, ended together.
-#
-# Signalling only the process a job spawned leaves its workers (a dataloader, a compile pool, a
-# serving engine) running and holding the card. The tree is read from the process table rather
-# than a process group, so the same code ends a job on Linux and macOS, and the command stays in
-# the runner's group so a scheduler signalling the group (PBS, pueue) still reaches it.
-
 import resource
-import subprocess
 from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from threading import RLock
-
-import psutil
 
 # Soft limits asked for, largest first, where the hard limit is unbounded: macOS refuses an
 # infinite soft limit and grants up to its per-process ceiling (`kern.maxfilesperproc`, 92160 on
@@ -58,59 +48,3 @@ class FileBudget:
             with suppress(ValueError, OSError):
                 resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
                 return
-
-
-class ProcessTree:
-    """One started command and its descendants, stopped as a unit.
-
-    grace: seconds a terminated tree is given before it is killed outright.
-    """
-
-    def __init__(self, process: subprocess.Popen[bytes], *, grace: float = 30.0) -> None:
-        self.process = process
-        self.grace = grace
-
-    def _members(self) -> list[psutil.Process]:
-        """The command and every living descendant, read before any is signalled.
-
-        Ending a parent reparents its children out of reach.
-        """
-        with suppress(psutil.NoSuchProcess):
-            root = psutil.Process(self.process.pid)
-            return [*root.children(recursive=True), root]
-        return []
-
-    def kill(self) -> None:
-        for member in self._members():
-            with suppress(psutil.NoSuchProcess):
-                member.kill()
-
-    def stop(self) -> bool:
-        """Terminate the tree, kill it when it outlives the grace, and say whether it had to be.
-
-        The two-step end `timeout --kill-after` gave a job: SIGTERM first, a chance to flush.
-        """
-        self.terminate()
-        if self.wait(self.grace) is not None:
-            return False
-        self.kill()
-        self.wait()
-        return True
-
-    def terminate(self) -> None:
-        """Ask the whole tree to stop with SIGTERM."""
-        for member in self._members():
-            with suppress(psutil.NoSuchProcess):
-                member.terminate()
-
-    def wait(self, timeout: float | None = None) -> int | None:
-        """The command's exit status, None when `timeout` seconds (None for no limit) pass first.
-
-        A signal N reports `128 + N`, as a shell would, so an exit code reads the same whether a
-        shell or this runner started the command.
-        """
-        try:
-            returned = self.process.wait(timeout)
-        except subprocess.TimeoutExpired:
-            return None
-        return 128 - returned if returned < 0 else returned

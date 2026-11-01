@@ -5,7 +5,6 @@ import re
 import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs git, ruff and the interpreter with fixed argv since=2026-10-25
 import sys
-import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,9 +12,9 @@ from types import TracebackType
 
 from ....log import logger
 from ...constants import FIXABLE
-from ...engine.facts import listed
 from ...engine.fixing import Fixpoint
 from ...engine.lint.verbs import Selection
+from ...engine.mirror import Mirror
 
 # What a module import is given before it counts as hung, and how many run at once.
 _IMPORT_SECONDS = 120
@@ -27,7 +26,11 @@ _CONCISE = re.compile(r"(?P<path>[^:]+):\d+:\d+: (?P<finding>.+)")
 
 
 class Trial:
-    """A git copy of one project the fixes run on, and the checks before and after them."""
+    """A git copy of one project the fixes run on, and the checks before and after them.
+
+    The copy is a mirror (mirror.py), so the Ruff configuration the project extends stands where
+    the project's own configuration finds it, and every check reads what it reads in place.
+    """
 
     @staticmethod
     def _imported(copy: Path, name: str) -> str:
@@ -56,16 +59,12 @@ class Trial:
         return self
 
     def __exit__(self, *_: type[BaseException] | BaseException | TracebackType | None) -> None:
-        shutil.rmtree(self.copy.parent, ignore_errors=True)
+        self.mirror.close()
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
-        self.copy = Path(tempfile.mkdtemp(prefix="mb-trial-")) / self.root.name
-        for name in listed(self.root):
-            source, target = self.root / name, self.copy / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if source.is_file() and not source.is_symlink():
-                shutil.copy2(source, target)
+        self.mirror = Mirror(self.root)
+        self.copy = self.mirror.path
         self._git("init", "-q")
         self._git("add", "-A")
         self._git("-c", "user.name=trial", "-c", "user.email=trial@mb", "commit", "-qm", "base")
@@ -88,7 +87,7 @@ class Trial:
 
         The state before is a checkout of the copy's first commit beside it.
         """
-        base = self.copy.parent / "base"
+        base = self.mirror.top / ".mb-trial-base"
         self._git("worktree", "add", "-q", "--detach", str(base), "HEAD")
         with ThreadPoolExecutor(_IMPORTERS) as pool:
             after = list(pool.map(lambda name: Trial._imported(self.copy, name), names))
@@ -105,10 +104,13 @@ class Trial:
         return self._git("diff", "--cached")
 
     def pyflakes(self) -> Counter[str]:
-        """Ruff's pyflakes and syntax findings in the copy, by file, code and message."""
+        """Ruff's pyflakes and syntax findings in the copy, by file, code and message.
+
+        The project's configuration applies (its exclusions, per-file ignores, target version).
+        """
         ruff = shutil.which("ruff") or "ruff"
         ran = subprocess.run(
-            [ruff, "check", "--isolated", "--select", "F,E9", "--output-format", "concise", "."],
+            [ruff, "check", "--select", "F,E9", "--output-format", "concise", "."],
             cwd=self.copy,
             capture_output=True,
             text=True,
@@ -123,16 +125,12 @@ class Trial:
     def run(self, *, selection: Selection, unsafe: bool, passes: int) -> list[str]:
         """The fixer's report over the copy, its fixes written there.
 
-        The imports a fix leaves unused or out of order are then settled as `mainboard lint`
-        settles them, so only what the fixes break counts against them.
+        The fixer settles the imports a fix leaves unused or out of order and formats what it
+        wrote, so only what the fixes break counts against them.
         """
         applicability = FIXABLE["review" if unsafe else "safe"]
         with selection.lint(self.copy) as lint:
-            report = list(Fixpoint(lint, self.copy, applicability, limit=passes).run(write=True))
-        ruff = [shutil.which("ruff") or "ruff", "check", "--isolated", "--fix", "--quiet"]
-        if changed := self.changed():
-            subprocess.run([*ruff, "--select", "F401,I001", *changed], cwd=self.copy, check=False)
-        return report
+            return list(Fixpoint(lint, self.copy, applicability, limit=passes).run(write=True))
 
 
 def trial(

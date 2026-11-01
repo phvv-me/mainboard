@@ -21,7 +21,7 @@ def test_the_collection_script_packs_with_the_standard_library_alone(tmp_path: P
     (tmp_path / "out").mkdir()
     (tmp_path / "out" / "result.txt").write_text("kept", encoding="utf-8")
     script = Path(pack.__file__).read_text(encoding="utf-8")
-    script += f"\npack({str(tmp_path)!r}, relative='out')\n"
+    script += f"\npack({str(tmp_path)!r}, relative='out', center=Center())\n"
     ran = subprocess.run(
         [*_ISOLATED, "-"], input=script.encode(), capture_output=True, check=False
     )

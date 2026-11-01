@@ -1,5 +1,6 @@
 from .definition import Definition, Family, Package, Step, family_of
-from .legs import Leg, LocalLeg, RemoteLeg, Result, Verdict
+from .enums import Verdict
+from .legs import Leg, LocalLeg, RemoteLeg, Result
 from .matrix import Matrix, PackageMirror
 
 __all__ = [

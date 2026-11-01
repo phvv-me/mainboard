@@ -7,6 +7,8 @@ cuts source text for the spans a family asks for."""
 
 from ....catalog import Function
 
+# Regular packages hold an `__init__.py` here as in `MODULE_NAMES`, whose comment says why a stub's
+# `__init__.pyi` does not make one.
 _PYTHON_FILES_SQL = r"""
             WITH py AS (
               SELECT row_number() OVER (ORDER BY path)::INT AS file, fact_id, path
@@ -48,7 +50,7 @@ _PYTHON_FILES_SQL = r"""
                    replace(regexp_replace(regexp_replace(
                      CASE WHEN r.root IS NULL THEN py.path ELSE substr(py.path, length(r.root) + 2)
                      END, '\.pyi?$', ''), '/__init__$', ''), '/', '.') AS module,
-                   regexp_matches(py.path, '(^|/)__init__\.py$') AS is_package
+                   is_initializer_path(py.path) AS is_package
             FROM py LEFT JOIN LATERAL (
               SELECT max_by(root, length(root)) AS root FROM roots
               WHERE starts_with(py.path, root || '/')) r ON true

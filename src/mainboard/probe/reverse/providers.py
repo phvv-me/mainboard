@@ -5,7 +5,7 @@ from typing import ClassVar
 from patos import FrozenModel, Registry
 
 from ...core.errors import MissionError
-from .models import Artifact, ArtifactKind, DeviceResult, Evidence, JsonValue
+from .evidence import Artifact, ArtifactKind, DeviceResult, Evidence, JsonValue
 
 
 class Availability(FrozenModel):

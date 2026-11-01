@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 
 from mainboard.apple import Apple
-from mainboard.cli import build
 from mainboard.proc import Processes
+from mainboard.verbs.constants import TREE
 
-from .fakes import ProcessLog
+from .builders import ProcessLog
 
 
 @pytest.fixture
@@ -48,12 +48,12 @@ def processes(monkeypatch: pytest.MonkeyPatch) -> ProcessLog:
 def cli(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> Callable[..., tuple[int, str]]:
-    """Run `mb apple ARGV` against the given `Apple`; answers the exit code and what it printed."""
+    """Run `mb code app ARGV` against the given `Apple`, answering its exit code and its output."""
 
     def invoke(apple: Apple, *argv: str) -> tuple[int, str]:
         monkeypatch.setattr("mainboard.verbs.apps.apple.Apple", lambda: apple)
         with pytest.raises(SystemExit) as stopped:
-            build()(["apple", *argv])
+            TREE.cli()(["code", "app", *argv])
         return int(stopped.value.code or 0), capsys.readouterr().out
 
     return invoke

@@ -11,20 +11,22 @@ from typing import TYPE_CHECKING
 
 from plumbum.commands.processes import ProcessTimedOut
 
+from ..core import services
 from ..core.errors import MissionError
 from ..core.execution import host as host_module
 from ..core.execution.host import current_platform
 from ..core.project import Project
-from ..core.section import Section, Verdict
+from ..core.section import Section
 from ..engines.compile import backend
-from ..engines.compile.backend import EnvironmentAudit
+from ..engines.compile.generated import SyncState
 from ..engines.compile.pixi.lockfile import Lockfile
 from ..engines.compile.provisioner import Provisioner
-from ..engines.compile.state import SyncState
-from ..fleet.compute import Access, Survey
+from ..enums import Access, Verdict
+from ..fleet.compute import Survey
 from ..libs import LibraryAudit, Raise, Relink
-from ..settling import durable
 from . import staleness
+from .disk.space import Space
+from .serving import Serving
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -84,7 +86,7 @@ class Doctor:
                 (
                     f"{lockfile.path.name} holds no lock for {environment}, only the untracked "
                     f"{pixi.lock} does",
-                    install if adoptable else f"{_TOOL} lock {environment}",
+                    install if adoptable else f"{_TOOL} dep lock {environment}",
                 )
             ]
         if (
@@ -110,7 +112,7 @@ class Doctor:
     def _digest(provisioner: Provisioner, env: str) -> str:
         """`env`'s current manifest digest, empty when the manifest no longer declares it."""
         try:
-            return provisioner.compiler_for(env).digest()
+            return provisioner.shard(env).compiler.digest()
         except MissionError:
             return ""
 
@@ -119,17 +121,20 @@ class Doctor:
         self.board = board
         self.env = env
         self.survey = Survey(board)
+        self.serving = Serving(board, env=env)
+        self.space = Space(board)
 
     def _audit(self, env: str = "") -> LibraryAudit | None:
         """The library audit of one installed environment here, None where none applies."""
         if not host_module.is_linux():
             return None
         environment = self.board.plan(env=env or self.env, container="none").env
-        pixi = Provisioner(self.board.root, self.board.manifest).pixi_for(environment)
-        if not pixi.ready(environment):
+        pixi = Provisioner(self.board.root, self.board.manifest).shard(environment).pixi
+        prefix = pixi.prefix(environment)
+        if not prefix.ready:
             return None
         return LibraryAudit.entered(
-            pixi.env_prefix(environment), env="" if environment == "default" else environment
+            prefix.path, env="" if environment == "default" else environment
         )
 
     def _drift(
@@ -143,8 +148,8 @@ class Doctor:
         finding (a stale lock needs `lock`, the others the install the lock describes), since
         one command for the row left the reader guessing which findings it covered.
         """
-        pixi = provisioner.pixi_for(environment)
-        compiler = provisioner.compiler_for(environment)
+        pixi = provisioner.shard(environment).pixi
+        compiler = provisioner.shard(environment).compiler
         state = SyncState.load(provisioner.environment_dir(environment))
         lockfile = Lockfile(self.board.root)
         solved = lockfile.get(environment)
@@ -157,9 +162,7 @@ class Doctor:
             or state.environment != environment
             or state.solved_from != compiler.resolution_digest()
         )
-        damaged = (
-            sorted(EnvironmentAudit(pixi.env_prefix(environment)).suspect()) if installed else []
-        )
+        damaged = sorted(pixi.prefix(environment).audit.suspect()) if installed else []
         # Each pixi version writes some of the lock differently, so a machine off the fleet's pixi
         # rewrites the lock it is handed and builds at an address nothing dispatched against: a
         # whole dead wave and no message (2026-09-05, 0.77 against a host on 0.79).
@@ -173,7 +176,7 @@ class Doctor:
                 solver != backend.PixiEngine.VERSION,
             ),
             (
-                ("pixi.lock was not solved from this manifest", f"{_TOOL} lock {environment}"),
+                ("pixi.lock was not solved from this manifest", f"{_TOOL} dep lock {environment}"),
                 stale,
             ),
             *(
@@ -197,16 +200,16 @@ class Doctor:
         """
         provisioner = Provisioner(self.board.root, self.board.manifest)
         environment = self.board.plan(env=env or self.env, container="none").env
-        pixi = provisioner.pixi_for(environment)
+        pixi = provisioner.shard(environment).pixi
         row = partial(Section, section="environment")
         if not pixi.manifest.exists():
             return row(
                 verdict=Verdict.WARN,
                 detail=f"{environment}: nothing compiled yet",
-                fix=f"{_TOOL} lock {environment}",
+                fix=f"{_TOOL} dep lock {environment}",
             )
-        installed = pixi.ready(environment)
-        solver = provisioner.solver_version()
+        installed = pixi.prefix(environment).ready
+        solver = pixi.engine.version()
         if found := self._drift(provisioner, environment, installed=installed, solver=solver):
             return row(
                 verdict=Verdict.FAIL,
@@ -347,7 +350,7 @@ class Doctor:
         workspace's timer) whether its pass is installed, armed, and when it last ran. Nothing
         fails: a machine with no periodic pass is one to configure, not a broken workspace.
         """
-        found = durable.settler(self.board.root).state()
+        found = services.settler(self.board.root).state()
         return Section(
             section="settling",
             verdict=Verdict.PASS if found.active else Verdict.WARN,
@@ -457,8 +460,17 @@ class Doctor:
         asked: list[Callable[[], Section | None]] = [
             *(partial(self._environment, name) for name in self._examined()),
             *(partial(self._libraries, name) for name in self._examined()),
+            self.serving.binaries,
             self._snapshot,
             self._settling,
+            self.serving.serve,
+            self.serving.telemetry,
+            self.serving.policy,
+            self.serving.memory,
+            self.space.disk,
+            self.space.evidence,
+            self.space.git,
+            self.space.gates,
             partial(self._fleet, setups),
             partial(self.hosts, setups),
             *(partial(self._gate, name) for name in self.board.manifest.gates),

@@ -3,15 +3,17 @@
 # 255 with a stderr phrase).
 
 import os
+import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp options), not untrusted input since=2026-08-17
-from collections.abc import Iterable
+import threading
+from collections.abc import Generator, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from math import ceil, isinf
 from pathlib import Path
+from types import FrameType
 from typing import IO, override
 
-import psutil
 from patos import FrozenModel
 from plumbum import local
 from plumbum.machines.local import LocalMachine
@@ -19,6 +21,7 @@ from plumbum.machines.session import ShellSession
 from plumbum.machines.ssh_machine import SshMachine
 from pydantic import Field, field_validator
 
+from ...core import ProcessTree
 from .ssh import client
 
 # ssh's own exit status when the transport fails, with the stderr phrases naming the fault. A
@@ -53,17 +56,6 @@ _TRANSPORT_MARKERS = (
 # A dead scheduler daemon (pueue's `pueued`) refuses its own control socket, distinct from an
 # ssh transport fault, so it surfaces as `daemon down` and a revive restarts it.
 _DAEMON_DOWN_MARKERS = ("connecting to the daemon", "connection refused", ".socket")
-
-
-def terminate_process_tree(pid: int, *, force: bool = False) -> None:
-    """Terminate one process tree, children first, ProxyJump children included.
-
-    With `force` it is killed instead.
-    """
-    root = psutil.Process(pid)
-    for process in [*reversed(root.children(recursive=True)), root]:
-        with suppress(psutil.Error):
-            (process.kill if force else process.terminate)()
 
 
 class HostUnreachable(Exception):
@@ -203,21 +195,6 @@ class SshTransport(FrozenModel):
                 f"ssh {operation} to {host!r} could not start: {error}"
             ) from error
 
-    @staticmethod
-    def terminate(process: subprocess.Popen[bytes]) -> None:
-        """Terminate the whole SSH process group so no ProxyJump child remains.
-
-        A group that has not exited two seconds later is killed.
-        """
-        with suppress(ProcessLookupError, PermissionError, psutil.Error):
-            terminate_process_tree(process.pid)
-        try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            with suppress(ProcessLookupError, PermissionError, psutil.Error):
-                terminate_process_tree(process.pid, force=True)
-            process.wait()
-
     def __answer(
         self, returncode: int, stdout: str, *, stderr: str, host: str, operation: str
     ) -> str:
@@ -242,13 +219,20 @@ class SshTransport(FrozenModel):
         process = self.__spawn(command, host, operation=operation, stdin=stdin, stdout=sink)
         # Bytes both ways, so the host's bash reads the input exactly as it was written.
         sent = None if input_text is None else input_text.encode("utf-8")
-        try:
-            stdout, stderr = process.communicate(input=sent, timeout=timeout)
-        except subprocess.TimeoutExpired as error:
-            self.terminate(process)
-            raise HostUnreachable(
-                f"ssh {operation} to {host!r} timed out after {error.timeout:g}s"
-            ) from error
+        with _unwound_by_signals():
+            try:
+                stdout, stderr = process.communicate(input=sent, timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                raise HostUnreachable(
+                    f"ssh {operation} to {host!r} timed out after {error.timeout:g}s"
+                ) from error
+            finally:
+                # The link runs in a session of its own, so nothing else ends it when the caller
+                # leaves early (a timeout, an interrupt, a terminate request): left alone it
+                # streams on into the caller's staging file. The whole tree goes, ProxyJump
+                # children too; what lives two seconds on is killed.
+                if process.poll() is None:
+                    ProcessTree(process, grace=2.0).stop()
         return process.returncode, _decoded(stdout), _decoded(stderr)
 
     def command(self, host: str) -> tuple[str, ...]:
@@ -371,6 +355,34 @@ class SshTransport(FrozenModel):
             raise RuntimeError(f"ssh connect to {host!r} returned without the expected marker")
 
 
+def _leave(number: int, frame: FrameType | None) -> None:
+    """Leave by `SystemExit`, as a shell reports a death by signal `number` (`128 + number`)."""
+    del frame
+    raise SystemExit(128 + number)
+
+
+@contextmanager
+def _unwound_by_signals() -> Generator[None]:
+    """Let a hangup or terminate request unwind the caller while a link is open.
+
+    Python's default for both is to die on the spot, running no `finally`, so the link and the
+    staging folder it writes into outlive the caller. A handler someone installed is theirs and
+    is kept, and only the main thread may install one.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    numbers = (signal.SIGHUP, signal.SIGTERM)
+    unset = [number for number in numbers if signal.getsignal(number) == signal.SIG_DFL]
+    for number in unset:
+        signal.signal(number, _leave)
+    try:
+        yield
+    finally:
+        for number in unset:
+            signal.signal(number, signal.SIG_DFL)
+
+
 def _decoded(output: bytes | None) -> str:
     """Captured bytes as a text-mode pipe reads them: UTF-8, with universal newlines."""
     text = (output or b"").decode("utf-8", errors="replace")
@@ -406,8 +418,7 @@ class BoundedShellSession(ShellSession):
     def close(self) -> None:
         process = self.proc
         if process is not None and process.pid is not None and process.poll() is None:
-            with suppress(ProcessLookupError, PermissionError, psutil.Error):
-                terminate_process_tree(process.pid)
+            ProcessTree.end(process.pid)
         super().close()
 
 

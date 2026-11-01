@@ -10,7 +10,7 @@ from pydantic import Field
 
 from ...profile.profiler import Collection
 from ..artifacts import Artifact
-from ..store.constants import MARKERS
+from ..constants import MARKERS
 from ..store.universe import Universe
 from .flags import Flag
 from .vocabulary import Vocabulary

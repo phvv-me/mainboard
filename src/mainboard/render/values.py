@@ -10,6 +10,21 @@ type Cell = str | int | float | bool | None
 type Row = Mapping[str, Cell]
 type Node = Cell | Mapping[str, Node] | list[Node] | tuple[Node, ...]
 
+# The C0 and C1 controls, which would drive the reader's terminal, each shown as U+FFFD; tab and
+# newline stay, since `encode` quotes them and a table lays them out.
+_CONTROLS = dict.fromkeys(
+    (code for code in (*range(0x20), *range(0x7F, 0xA0)) if chr(code) not in "\t\n"),
+    "\N{REPLACEMENT CHARACTER}",
+)
+
+
+def visible(text: str) -> str:
+    """`text` with each C0 and C1 control but tab and newline shown as U+FFFD.
+
+    Every printed cell passes through here, since a cell may carry text anyone could write.
+    """
+    return text.translate(_CONTROLS)
+
 
 def to_row(record: Mapping[str, Node]) -> dict[str, Cell]:
     """One flat row from `record`, a nested value folded into a compact JSON text cell."""
@@ -89,5 +104,5 @@ def encode(rows: Sequence[Row], *, fields: Sequence[str] | None = None) -> str:
 
 
 def _cell(value: Cell) -> str:
-    text = "" if value is None else str(value)
+    text = "" if value is None else visible(str(value))
     return json.dumps(text) if text.startswith('"') or "\t" in text or "\n" in text else text

@@ -14,7 +14,7 @@ LOAD_FILTER += STORES
 _MODULES = f"""
     WITH {PARSED}, {MODULE_NAMES}
     SELECT p.fact_id, p.path, m.module,
-           regexp_matches(p.path, '(^|/)__init__\\.pyi?$') AS is_package
+           is_initializer_path(p.path) AS is_package
     FROM parsed p JOIN module_names m USING (fact_id)
 """
 

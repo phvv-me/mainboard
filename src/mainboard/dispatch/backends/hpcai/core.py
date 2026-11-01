@@ -14,7 +14,9 @@ from urllib.error import HTTPError
 
 from ....core.errors import MissionError
 from ....costs.catalog import Offer
+from ....enums import Bound
 from ....log import logger
+from ...hosts.lease import Cap
 from ...hosts.rentals import Identity, Rental, identity, reachable, waiting
 from ...jobs.arch import card
 from ...jobs.evidence import framing, staging
@@ -76,6 +78,8 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Market, Rentable):
     sleeper: waits between instance polls, injected so a test drives it without real time.
     """
 
+    # HPC-AI spends a balance topped up in advance, vouchers and monthly credits first.
+    bound = Bound.PREPAID
     name = "hpc-ai"
 
     lacks = {
@@ -250,9 +254,11 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Market, Rentable):
             "it up in the console and terminate it if it is still billing"
         )
 
-    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
+    def rent(
+        self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation, cap: Cap
+    ) -> Rental:
         """Rent an instance whose initScript waits for a landing; end it if it cannot be opened."""
-        self.admit(plan, resources)
+        self.admit(plan, resources, cap=cap)
         key = identity(plan.profile.vars.get("ssh-key", ""))
         handle = self._created(plan, resources, script=f"{waiting()}\n", allocation=allocation)
         try:
@@ -286,10 +292,16 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Market, Rentable):
         return JobState(handle=handle, state=found.status, verdict=verdict)
 
     def submit(
-        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+        self,
+        plan: ExecutionPlan,
+        command: str,
+        resources: Resources,
+        *,
+        allocation: Allocation,
+        cap: Cap,
     ) -> str:
         """Run `command` as the initScript, for a prebuilt image that needs nothing landed."""
-        self.admit(plan, resources)
+        self.admit(plan, resources, cap=cap)
         # `status=$?` comes first, else the framing's own status is what `$?` reports. The
         # receipts are framed into the same captured log, so a reader of that file gets both.
         return self._created(

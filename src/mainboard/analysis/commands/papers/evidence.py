@@ -9,15 +9,15 @@ experiment folder (a renamed or removed experiment), and settled experiments no 
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
 
-from cyclopts import Parameter
 from patos import FrozenModel
 
-from ....log import logger
+from ....render import Output
 from ..report import Report
 from ..workspace import Workspace
 from .experiments import node_status, read_papers
+
+_COMPACT = Output()
 
 _SHOWN = 12
 
@@ -147,14 +147,13 @@ class Audit:
 def evidence(
     *,
     root: Path = Path(),
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
     memory: str = "2GB",
 ) -> None:
     """What each paper cites and where the evidence is weak: unsettled, missing, uncited.
 
     root: the project to analyze.
-    as_json: print JSON for a program.
     memory: a DuckDB memory limit such as `4GB`.
     """
     report = Audit(Workspace(root.resolve(), memory=memory)).report()
-    logger.result(report.render(as_json=as_json))
+    report.show(output)

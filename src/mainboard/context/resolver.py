@@ -1,9 +1,13 @@
+from typing import TYPE_CHECKING
+
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.inputs.vendor import path_deps, relocated
-from ..manifest.schema.compute.container import Container
-from ..manifest.schema.root import Manifest
 from .plan import ExecutionPlan
+
+if TYPE_CHECKING:
+    from ..manifest.root import Manifest
+    from ..manifest.schema.compute.container import Container
 
 # The forms a Python path dependency takes when it names a built distribution, not a project.
 _ARCHIVES = (".whl", ".tar.gz", ".zip")

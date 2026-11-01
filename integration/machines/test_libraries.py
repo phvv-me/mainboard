@@ -7,20 +7,40 @@ ELF headers, no CUDA.
 """
 
 import json
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 from struct import pack
+
+import pytest
 
 from mainboard import Board, Project
 from mainboard.core import Verdict
 from mainboard.libs import Kind, LibraryAudit, Raise, Relink
 from mainboard.libs.elf import Elf
-from mainboard.libs.loader import Loader
+from mainboard.libs.loader import Found, Loader
 
 _NEEDED, _RPATH, _RUNPATH = 1, 15, 29
 _SITE = Path("lib/python3.14/site-packages")
 _CUDNN = _SITE / "nvidia/cudnn/lib"
 _ENGINES = ("libcudnn_engines_precompiled", "libcudnn_engines_tensor_ir")
+
+
+def _dynamic(needed: Iterable[str], *, runpath: str, rpath: str) -> tuple[bytes, bytes]:
+    """The string table and the dynamic section that name `needed`, `runpath` and `rpath`."""
+    strings, entries = bytearray(b"\0"), []
+    for tag, value in [
+        *((_NEEDED, name) for name in needed),
+        (_RUNPATH, runpath),
+        (_RPATH, rpath),
+    ]:
+        if value:
+            entries.append((tag, len(strings)))
+            strings += value.encode() + b"\0"
+    return bytes(strings), b"".join(pack("<qQ", tag, value) for tag, value in [*entries, (0, 0)])
+
+
+def _section(kind: int, *, offset: int, size: int, link: int) -> bytes:
+    return pack("<IIQQQQIIQQ", 0, kind, 0, 0, offset, size, link, 0, 0, 0)
 
 
 def library(
@@ -32,25 +52,12 @@ def library(
     opens: Iterable[str] = (),
 ) -> Path:
     """Write a 64-bit ELF holding only a dynamic section, whose bytes also spell `opens`."""
-    strings, entries = bytearray(b"\0"), []
-    for tag, value in [
-        *((_NEEDED, name) for name in needed),
-        (_RUNPATH, runpath),
-        (_RPATH, rpath),
-    ]:
-        if value:
-            entries.append((tag, len(strings)))
-            strings += value.encode() + b"\0"
-    dynamic = b"".join(pack("<qQ", tag, value) for tag, value in [*entries, (0, 0)])
-    body = bytes(strings) + dynamic + b"".join(name.encode() + b"\0" for name in opens)
-
-    def section(kind: int, *, offset: int, size: int, link: int) -> bytes:
-        return pack("<IIQQQQIIQQ", 0, kind, 0, 0, offset, size, link, 0, 0, 0)
-
+    strings, dynamic = _dynamic(needed, runpath=runpath, rpath=rpath)
+    body = strings + dynamic + b"".join(name.encode() + b"\0" for name in opens)
     headers = (
-        section(0, offset=0, size=0, link=0)
-        + section(3, offset=64, size=len(strings), link=0)
-        + section(6, offset=64 + len(strings), size=len(dynamic), link=1)
+        _section(0, offset=0, size=0, link=0)
+        + _section(3, offset=64, size=len(strings), link=0)
+        + _section(6, offset=64 + len(strings), size=len(dynamic), link=1)
     )
     header = bytearray(64)
     header[:7] = b"\x7fELF\x02\x01\x01"
@@ -104,16 +111,21 @@ def audit(prefix: Path, *, host: Path) -> LibraryAudit:
     return LibraryAudit(prefix, library_path=[prefix / _CUDNN], cache=cache, trusted=())
 
 
-def test_a_family_the_wheel_leaves_incomplete_is_found_in_the_host_in_a_mixed_release(
-    tmp_path: Path,
-) -> None:
+@pytest.fixture
+def mixed(tmp_path: Path) -> LibraryAudit:
+    """The wheel's cuDNN 9.20 without the engine that only the host's 9.27 has."""
     prefix, host = tmp_path / "env", tmp_path / "usr-lib"
     cudnn(prefix, "9.20.0.48", omit=("libcudnn_engines_tensor_ir",))
     library(host / "libcudnn_engines_tensor_ir.so.9.27.0")
     (host / "libcudnn_engines_tensor_ir.so.9").symlink_to("libcudnn_engines_tensor_ir.so.9.27.0")
+    return audit(prefix, host=host)
 
-    found = {finding.kind: finding for finding in audit(prefix, host=host).findings()}
-    section = audit(prefix, host=host).section()
+
+def test_a_family_the_wheel_leaves_incomplete_is_found_in_the_host_in_a_mixed_release(
+    mixed: LibraryAudit,
+) -> None:
+    found = {finding.kind: finding for finding in mixed.findings()}
+    section = mixed.section()
 
     outside, split = found[Kind.OUTSIDE], found[Kind.SPLIT]
     assert outside.remedy == Raise(package="nvidia-cudnn-cu13", ecosystem="python")
@@ -122,46 +134,56 @@ def test_a_family_the_wheel_leaves_incomplete_is_found_in_the_host_in_a_mixed_re
     assert split.verdict is Verdict.FAIL
     assert split.detail == "releases mixed in one process: nvidia-cudnn-cu13 9.20.0.48, the host"
     assert section.verdict is Verdict.FAIL
-    assert section.fix == f"{Project().name} add nvidia-cudnn-cu13 --lang python"
+    assert section.fix == f"{Project().name} dep add nvidia-cudnn-cu13 --lang python"
+
+
+@pytest.fixture
+def opened(workspace: Path) -> LibraryAudit:
+    """The wheel's cuDNN 9.27 beside a host that holds its graph library and engines."""
+    prefix, host = workspace / "env", workspace / "usr-lib"
+    cudnn(prefix, "9.27.0.42")
+    for name in ("libcudnn_graph", *_ENGINES):
+        library(host / f"{name}.so.9.27.0")
+    return audit(prefix, host=host)
 
 
 def test_siblings_opened_by_their_full_version_are_linked_inside_the_environment(
-    workspace: Path,
+    opened: LibraryAudit, workspace: Path
 ) -> None:
-    prefix, host = workspace / "env", workspace / "usr-lib"
-    directory = cudnn(prefix, "9.27.0.42")
-    for name in ("libcudnn_graph", *_ENGINES):
-        library(host / f"{name}.so.9.27.0")
-
-    findings = audit(prefix, host=host).findings()
+    findings = opened.findings()
 
     assert {(finding.kind, finding.verdict) for finding in findings} == {
         (Kind.OUTSIDE, Verdict.WARN)
     }
-    links = audit(prefix, host=host).remedies(Relink)
+    links = opened.remedies(Relink)
     assert sorted(link.name for link in links) == [
         "libcudnn_engines_precompiled.so.9.27.0",
         "libcudnn_engines_tensor_ir.so.9.27.0",
         "libcudnn_graph.so.9.27.0",
     ]
-    assert all(link.directory == directory for link in links)
+    assert all(link.directory == opened.prefix / _CUDNN for link in links)
     said = [link.apply(Board(workspace)) for link in links]
     assert all(row.detail.startswith("linked ") for row in said)
     assert links[0].apply(Board(workspace)).detail.endswith("already exists")
-    assert audit(prefix, host=host).section().verdict is Verdict.PASS
+    assert audit(opened.prefix, host=workspace / "usr-lib").section().verdict is Verdict.PASS
 
 
-def test_two_packages_holding_one_family_in_two_releases_are_a_split(tmp_path: Path) -> None:
+@pytest.fixture
+def two_releases(tmp_path: Path) -> LibraryAudit:
+    """NCCL from two wheels and CUDA from two majors, beside a conda NCCL of another release."""
     prefix = tmp_path / "env"
     nccl = library(prefix / _SITE / "nvidia/nccl/lib/libnccl.so.2")
     cublas = library(prefix / _SITE / "nvidia/cublas/lib/libcublas.so.12")
     wheel(prefix, "nvidia-nccl-cu13", version="2.29.7", files=[nccl])
     wheel(prefix, "nvidia-cublas-cu12", version="12.9.1.4", files=[cublas])
     conda(prefix, "nccl", version="2.32.3", files=[library(prefix / "lib/libnccl.so.2.32.3")])
+    return audit(prefix, host=tmp_path / "none")
 
-    found = {
-        finding.family: finding for finding in audit(prefix, host=tmp_path / "none").findings()
-    }
+
+def test_two_packages_holding_one_family_in_two_releases_are_a_split(
+    two_releases: LibraryAudit,
+) -> None:
+    found = {finding.family: finding for finding in two_releases.findings()}
 
     assert found["NCCL"].verdict is Verdict.WARN
     assert found["NCCL"].remedy is None
@@ -170,28 +192,54 @@ def test_two_packages_holding_one_family_in_two_releases_are_a_split(tmp_path: P
     assert "nvidia-cublas-cu12, nvidia-nccl-cu13" in found["CUDA"].detail
 
 
-def test_the_loader_takes_a_name_from_the_first_rule_that_has_it(tmp_path: Path) -> None:
+@pytest.fixture
+def lookups(tmp_path: Path) -> dict[tuple[str, str], Found | None]:
+    """What each loader finds for `libx.so.1`, each rule holding a copy, by `(searched, asker)`.
+
+    `searched` names the rules the loader has left (`path` is `LD_LIBRARY_PATH`) and `asker` the
+    requester: `modern` names an RPATH and a RUNPATH, `legacy` an RPATH alone, `nothing` neither.
+    """
     places = {rule: tmp_path / rule for rule in ("rpath", "path", "runpath", "cache", "trusted")}
     for place in places.values():
         library(place / "libx.so.1")
     cached = {"libx.so.1": places["cache"] / "libx.so.1"}
-    modern = Elf.read(
-        library(tmp_path / "a.so", rpath=str(places["rpath"]), runpath=str(places["runpath"]))
-    )
-    legacy = Elf.read(library(tmp_path / "b.so", rpath=str(places["rpath"])))
-    nothing = Elf(path=tmp_path)
-    trusted = [places["trusted"]]
+    path, trusted = [places["path"]], [places["trusted"]]
+    loaders = {
+        "path cache trusted": Loader(path, cached, trusted),
+        "cache trusted": Loader([], cached, trusted),
+        "trusted": Loader([], {}, trusted),
+        "none": Loader([], {}, []),
+    }
+    rpath, runpath = str(places["rpath"]), str(places["runpath"])
+    askers = {
+        "modern": Elf.read(library(tmp_path / "a.so", rpath=rpath, runpath=runpath)),
+        "legacy": Elf.read(library(tmp_path / "b.so", rpath=rpath)),
+        "nothing": Elf(path=tmp_path),
+    }
+    return {
+        (searched, asker): loader.find("libx.so.1", elf)
+        for searched, loader in loaders.items()
+        for asker, elf in askers.items()
+    }
 
-    def via(loader: Loader, asker: Elf) -> str | None:
-        found = loader.find("libx.so.1", asker)
-        return found.via if found else None
 
-    assert via(Loader([places["path"]], cached, trusted), modern) == "LD_LIBRARY_PATH"
-    assert via(Loader([places["path"]], cached, trusted), legacy) == "RPATH"
-    assert via(Loader([], cached, trusted), modern) == "RUNPATH"
-    assert via(Loader([], cached, trusted), nothing) == "ld.so.cache"
-    assert via(Loader([], {}, trusted), nothing) == "default directories"
-    assert via(Loader([], {}, []), nothing) is None
+@pytest.mark.parametrize(
+    ("searched", "asker", "rule"),
+    [
+        pytest.param("path cache trusted", "modern", "LD_LIBRARY_PATH", id="library-path-first"),
+        pytest.param("path cache trusted", "legacy", "RPATH", id="rpath-before-library-path"),
+        pytest.param("cache trusted", "modern", "RUNPATH", id="runpath-before-cache"),
+        pytest.param("cache trusted", "nothing", "ld.so.cache", id="cache-before-defaults"),
+        pytest.param("trusted", "nothing", "default directories", id="default-directories"),
+        pytest.param("none", "nothing", None, id="nothing-answers"),
+    ],
+)
+def test_the_loader_takes_a_name_from_the_first_rule_that_has_it(
+    lookups: Mapping[tuple[str, str], Found | None], searched: str, asker: str, rule: str | None
+) -> None:
+    found = lookups[searched, asker]
+
+    assert (found.via if found else None) == rule
 
 
 def test_an_elf_reads_its_dynamic_section_and_anything_else_reads_as_empty(tmp_path: Path) -> None:

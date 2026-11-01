@@ -6,19 +6,21 @@ import json
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
-from typing import Any
 
 import duckdb
 from sqlalchemy import JSON, ClauseElement, Column, DateTime, LargeBinary, Table
 
+from ...constants import ALIAS
 from .. import schema
-from ..constants import ALIAS
 from ..schema import kind
 from ..storage.database import quoted
-from ..storage.records import ndjson
+from ..storage.sql import ndjson
+
+type Json = str | int | float | bool | None | list[Json] | dict[str, Json]
+type Cell = Json | bytes | date
 
 
-def compiled(statement: ClauseElement) -> tuple[str, list[Any]]:
+def compiled(statement: ClauseElement) -> tuple[str, list[Cell]]:
     """`statement` as DuckDB SQL, and the values its `?` placeholders bind in order."""
     done = schema.dialect.statement_compiler(
         schema.dialect, statement, compile_kwargs={"render_postcompile": True}
@@ -27,7 +29,7 @@ def compiled(statement: ClauseElement) -> tuple[str, list[Any]]:
     return done.string, [bound[name] for name in done.positiontup or ()]
 
 
-def inlined(sql: str, parameters: Sequence[object]) -> str:
+def inlined(sql: str, parameters: Sequence[Cell]) -> str:
     """`sql` with each `?` outside a string literal replaced by its parameter as a literal.
 
     What a served lake is sent, since a Quack attach drops bound parameters. Splitting on quotes
@@ -46,7 +48,7 @@ def inlined(sql: str, parameters: Sequence[object]) -> str:
 
 
 def insert(
-    connection: duckdb.DuckDBPyConnection, table: Table, rows: Iterable[Mapping[str, object]]
+    connection: duckdb.DuckDBPyConnection, table: Table, rows: Iterable[Mapping[str, Cell]]
 ) -> int:
     """Append `rows` to the attached lake's `table` in one statement, returning how many.
 
@@ -63,7 +65,7 @@ def insert(
 
 
 @contextmanager
-def staged(table: Table, rows: Iterable[Mapping[str, object]]) -> Generator[str]:
+def staged(table: Table, rows: Iterable[Mapping[str, Cell]]) -> Generator[str]:
     """Stage `rows` for one statement as a SELECT typed like `table`'s columns (see `insert`).
 
     The rows wait in a temporary NDJSON file while the block runs, which the SELECT reads.
@@ -77,7 +79,7 @@ def staged(table: Table, rows: Iterable[Mapping[str, object]]) -> Generator[str]
         yield f"SELECT {columns} FROM {source}"
 
 
-def _cell(column: Column, value: object) -> object:
+def _cell(column: Column, value: Cell | None) -> Cell | None:
     """`value` as one NDJSON field of `column`, None kept as SQL NULL.
 
     A JSON column takes a string as already JSON and embeds anything else as it is; bytes travel
@@ -106,7 +108,7 @@ def _decoded(column: Column) -> str:
     return f"CAST(json->>'{name}' AS {kind(column)}) AS {name}"
 
 
-def _literal(value: object) -> str:
+def _literal(value: Cell) -> str:
     """`value` as a SQL literal."""
     if value is None:
         return "NULL"

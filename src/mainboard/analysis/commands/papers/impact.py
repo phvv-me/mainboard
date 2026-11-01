@@ -12,18 +12,18 @@ numbers cannot change.
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
 
-from cyclopts import Parameter
 from patos import FrozenModel
 
 from ....core.errors import MissionError
 from ....core.project import Project
 from ....git.process import Git
-from ....log import logger
+from ....render import Output
 from ..report import Report
 from ..workspace import Workspace
 from .experiments import node_status, read_papers
+
+_COMPACT = Output()
 
 _EXPERIMENT_NODES_BY_NAME_SQL = (
     "SELECT name, dir, settled FROM experiment_nodes() WHERE name IN (SELECT unnest($names))"
@@ -379,7 +379,7 @@ def impact(
     *files: Path,
     since: str | None = None,
     root: Path = Path(),
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
     memory: str = "2GB",
 ) -> None:
     """The files, experiments, trials and paper sections a source change reaches.
@@ -387,7 +387,6 @@ def impact(
     files: the changed files; without them, git's changes under `root`.
     since: a git ref to compare the working tree with instead of HEAD.
     root: the project to analyze.
-    as_json: print JSON for a program.
     memory: a DuckDB memory limit such as `4GB`.
     """
     root = root.resolve()
@@ -397,4 +396,4 @@ def impact(
         else _changed_files(root, since)
     )
     report = ImpactAnalysis(Workspace(root, memory=memory), changed).report()
-    logger.result(report.render(as_json=as_json))
+    report.show(output)

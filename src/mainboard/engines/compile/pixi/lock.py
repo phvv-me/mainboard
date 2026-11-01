@@ -6,155 +6,114 @@
 # built environment`. So the digest reads a canonical lock: a platform is the subdirectory it
 # solves for plus the virtual packages it vouches, never its label or the order labels impose.
 # Everything else is left as is, so a moved package, version or hash still moves the address.
+#
+# The address hashes the lock's text as pixi writes it (block style, no blank lines), so the text
+# is edited line by line and the YAML parse only says which lines spell a label and where each
+# run of labelled blocks ends.
 
-import re
-from itertools import groupby
+from functools import lru_cache
+from itertools import groupby, pairwise
 from operator import itemgetter
 from typing import TYPE_CHECKING
+
+import yaml
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-# The platform roster and one entry in it. Pixi writes `subdir` only when the label is not
-# already the platform string.
-_PLATFORMS = "platforms:"
-_ENTRY = re.compile(r"- name: (\S+)")
-_SUBDIR = re.compile(r"  subdir: (\S+)")
-
-# The per-environment mapping from a platform label to its packages, the only other place a lock
-# spells a label, and one of its keys.
-_MAPPING = "    packages:"
-_ENVIRONMENT = re.compile(r"  (\S+):")
-_INDENT = "      "
-_KEY = re.compile(rf"{_INDENT}(\S+):")
-
-# One package a platform key lists (`- conda: <url>`, `- pypi: <url>`); deeper lines continue it.
-_LOCATION = re.compile(rf"{_INDENT}- [a-z]+: (\S+)")
-
-# A left-margin key closing the platform roster, unlike a flush `- name:` entry or a comment.
-_TOP_LEVEL = re.compile(r"[A-Za-z_]")
-
-# Separates a subdirectory from the rank of entries sharing it; only a digest reads this text.
-_RANKED = "#"
+# The nodes spelling a run of labels, and the line the run ends at.
+type _Run = tuple[list[yaml.Node], int]
 
 
+@lru_cache(maxsize=4)
 def canonical(lock: str) -> str:
     """`lock` with every platform label content-derived and every labelled block in that order."""
     lines = lock.splitlines()
-    naming = _naming(lines)
-    if not naming:
+    tree = _tree(lock)
+    if not (platforms := _platforms(tree)):
         return lock
-    return "\n".join(_relabelled(lines, naming)) + "\n"
+    roster: _Run = ([label for label, _ in platforms], tree["platforms"].end_mark.line)
+    naming = _naming(platforms, _blocks(roster, lines))
+    out: list[str] = []
+    index = 0
+    for run in sorted([roster, *_mappings(tree, naming)], key=itemgetter(1)):
+        out += lines[index : run[0][0].start_mark.line] + _ordered(run, lines, naming)
+        index = run[1]
+    return "\n".join(out + lines[index:]) + "\n"
 
 
-def _naming(lines: Sequence[str]) -> dict[str, str]:
-    """Every platform label in `lines` against its content-derived replacement.
+def _tree(lock: str) -> dict[str, yaml.Node]:
+    """The lock's top-level nodes by key, each knowing its lines; none unless it is YAML."""
+    try:
+        return _fields(yaml.compose(lock, Loader=yaml.CSafeLoader))
+    except yaml.YAMLError:
+        return {}
 
-    An entry is named after its subdirectory, ranked by its body (the virtual packages it
+
+def _fields(node: yaml.Node | None) -> dict[str, yaml.Node]:
+    """A mapping node's values by key, none for any other node."""
+    pairs = node.value if isinstance(node, yaml.MappingNode) else []
+    return {key.value: value for key, value in pairs}
+
+
+def _items(node: yaml.Node | None) -> list[yaml.Node]:
+    """A sequence node's items, none for any other node."""
+    return node.value if isinstance(node, yaml.SequenceNode) else []
+
+
+def _platforms(tree: Mapping[str, yaml.Node]) -> list[tuple[yaml.Node, str]]:
+    """Each platform the roster declares: the node spelling its label, its subdirectory.
+
+    Pixi writes `subdir` only when the label is not already the platform string.
+    """
+    entries = [_fields(entry) for entry in _items(tree.get("platforms"))]
+    return [(e["name"], e.get("subdir", e["name"]).value) for e in entries if "name" in e]
+
+
+def _mappings(tree: Mapping[str, yaml.Node], naming: Mapping[str, str]) -> list[_Run]:
+    """Each environment's packages mapping, as its keys naming a platform and where it ends."""
+    runs: list[_Run] = []
+    for environment in _fields(tree.get("environments")).values():
+        if mapping := _fields(environment).get("packages"):
+            keys = [key for key, _ in mapping.value if key.value in naming]
+            runs += [(keys, mapping.end_mark.line)] if keys else []
+    return runs
+
+
+def _blocks(run: _Run, lines: Sequence[str]) -> list[Sequence[str]]:
+    """The lines of each label's block: from the line spelling it to the line spelling the next."""
+    labels, stop = run
+    starts = [label.start_mark.line for label in labels] + [stop]
+    return [lines[start:end] for start, end in pairwise(starts)]
+
+
+def _naming(
+    platforms: Sequence[tuple[yaml.Node, str]], blocks: Sequence[Sequence[str]]
+) -> dict[str, str]:
+    """Every platform label against its content-derived replacement `subdir` or `subdir#rank`.
+
+    A platform is named after its subdirectory, ranked by its body (the virtual packages it
     vouches) when several share one.
     """
     naming: dict[str, str] = {}
-    entries = sorted(_entries(lines), key=itemgetter(1))
-    for subdir, sharing in groupby(entries, key=itemgetter(1)):
+    bodies = (
+        (label.value, subdir, "\n".join(block[1:]))
+        for (label, subdir), block in zip(platforms, blocks, strict=True)
+    )
+    for subdir, sharing in groupby(sorted(bodies, key=itemgetter(1)), key=itemgetter(1)):
         ranked = sorted(sharing, key=itemgetter(2))
         for rank, (label, _, _) in enumerate(ranked):
-            naming[label] = subdir if len(ranked) == 1 else f"{subdir}{_RANKED}{rank}"
+            naming[label] = subdir if len(ranked) == 1 else f"{subdir}#{rank}"
     return naming
 
 
-def _entries(lines: Sequence[str]) -> list[tuple[str, str, str]]:
-    """Every platform the lock declares, as its label, the subdirectory it solves for, its body."""
-    start, stop = _roster(lines)
-    declared: list[tuple[str, list[str]]] = []
-    for line in lines[start:stop]:
-        if named := _ENTRY.fullmatch(line):
-            declared.append((named[1], []))
-        elif declared:
-            declared[-1][1].append(line)
-    return [
-        (
-            label,
-            next((named[1] for line in body if (named := _SUBDIR.fullmatch(line))), label),
-            "\n".join(body),
-        )
-        for label, body in declared
-    ]
-
-
-def _roster(lines: Sequence[str]) -> tuple[int, int]:
-    """Where the platform roster's entries begin and end, an empty span when there is none."""
-    try:
-        start = lines.index(_PLATFORMS) + 1
-    except ValueError:
-        return (0, 0)
-    stop = start
-    while stop < len(lines) and not _TOP_LEVEL.match(lines[stop]):
-        stop += 1
-    return (start, stop)
-
-
-def _mappings(lines: Sequence[str], *, environment: str = "") -> list[tuple[int, int]]:
-    """Where each environment's platform-keyed packages mapping begins and ends."""
-    spans: list[tuple[int, int]] = []
-    selected = not environment
-    for index, line in enumerate(lines):
-        if environment and (named := _ENVIRONMENT.fullmatch(line)):
-            selected = named[1] == environment
-        if line != _MAPPING or not selected:
-            continue
-        stop = index + 1
-        while stop < len(lines) and lines[stop].startswith(_INDENT):
-            stop += 1
-        spans.append((index + 1, stop))
-    return spans
-
-
-def _relabelled(lines: Sequence[str], naming: Mapping[str, str]) -> list[str]:
-    """`lines` with every span a platform label introduces relabelled and put in that order."""
-    headers = {_roster(lines): _ENTRY} | {span: _KEY for span in _mappings(lines)}
-    rewritten = {
-        start: (stop, _ordered(lines[start:stop], header, naming))
-        for (start, stop), header in headers.items()
-    }
-    out: list[str] = []
-    index = 0
-    while index < len(lines):
-        if index in rewritten:
-            stop, body = rewritten[index]
-            out += body
-            index = stop
-            continue
-        out.append(lines[index])
-        index += 1
-    return out
-
-
-def _ordered(body: Sequence[str], header: re.Pattern[str], naming: Mapping[str, str]) -> list[str]:
-    """`body`'s labelled blocks, each renamed through `naming`, in canonical label order.
-
-    A line naming no label continues the block above it; lines before the first label stay on top.
-    """
-    blocks: list[tuple[str, list[str]]] = [("", [])]
-    for line in body:
-        named = header.fullmatch(line)
-        label = naming.get(named[1], "") if named else ""
-        if named and label:
-            blocks.append((label, [f"{line[: named.start(1)]}{label}{line[named.end(1) :]}"]))
-        else:
-            blocks[-1][1].append(line)
-    blocks.sort(key=itemgetter(0))
-    return [line for _, block in blocks for line in block]
-
-
-def _platforms(body: Sequence[str]) -> list[tuple[str, list[str]]]:
-    """Each platform label a packages mapping's `body` opens, with the locations under it."""
-    platforms: list[tuple[str, list[str]]] = []
-    for line in body:
-        if named := _KEY.fullmatch(line):
-            platforms.append((named[1], []))
-        elif platforms and (location := _LOCATION.fullmatch(line)):
-            platforms[-1][1].append(location[1])
-    return platforms
+def _ordered(run: _Run, lines: Sequence[str], naming: Mapping[str, str]) -> list[str]:
+    """The run's blocks, each label renamed through `naming`, in canonical label order."""
+    ordered: list[tuple[str, list[str]]] = []
+    for label, block in zip(run[0], _blocks(run, lines), strict=True):
+        name, start, end = naming[label.value], label.start_mark.column, label.end_mark.column
+        ordered.append((name, [block[0][:start] + name + block[0][end:], *block[1:]]))
+    return [line for _, block in sorted(ordered, key=itemgetter(0)) for line in block]
 
 
 def packages(lock: str, *, environment: str = "") -> dict[str, list[str]]:
@@ -163,10 +122,15 @@ def packages(lock: str, *, environment: str = "") -> dict[str, list[str]]:
     `linux-64-system` counts as `linux-64`, and only `environment`'s locations count when it is
     named.
     """
-    lines = lock.splitlines()
-    subdirs = {label: subdir for label, subdir, _ in _entries(lines)}
+    tree = _tree(lock)
+    subdirs = {label.value: subdir for label, subdir in _platforms(tree)}
     found: dict[str, list[str]] = {}
-    for start, stop in _mappings(lines, environment=environment):
-        for label, locations in _platforms(lines[start:stop]):
-            found.setdefault(subdirs.get(label, label), []).extend(locations)
+    for name, body in _fields(tree.get("environments")).items():
+        if environment in ("", name):
+            for label, entries in _fields(_fields(body).get("packages")).items():
+                found.setdefault(subdirs.get(label, label), []).extend(
+                    location.value
+                    for entry in _items(entries)
+                    for location in _fields(entry).values()
+                )
     return found

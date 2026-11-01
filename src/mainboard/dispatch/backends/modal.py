@@ -25,8 +25,11 @@ from datetime import UTC, datetime
 from importlib import import_module
 from typing import TYPE_CHECKING
 
+from ...core.constants.units import SECONDS_PER_HOUR
 from ...core.errors import MissionError
-from ...runtime.job import walltime_seconds
+from ...costs.catalog import Offer
+from ...enums import Bound
+from ..hosts.lease import Cap, Lease
 from ..jobs.evidence import framing, staging
 from ..jobs.vocabulary import JobState
 from .base import Credentials, ProviderBackend
@@ -43,6 +46,13 @@ if TYPE_CHECKING:
 _APP_NAME = "mainboard"
 # Where the workspace declares the prepaid credit Modal will not report.
 _CREDIT_VAR = "MODAL_CREDIT_USD"
+# Modal quotes no price for a sandbox before it runs, so every one is priced at the dearest GPU
+# rate its page lists, per card, a B300 at $0.001972 a second (modal.com/pricing, read
+# 2026-10-29). The timeout the budget buys is then never longer than the budget lasts on any
+# card, at the price of a shorter one than a cheap card needs. CPU and memory are not priced.
+_DEAREST_USD_HR = 0.001972 * SECONDS_PER_HOUR
+# The longest timeout Modal accepts of a sandbox (modal.com/docs/guide/sandboxes, 2026-10-29).
+_LONGEST_TIMEOUT_S = 24 * SECONDS_PER_HOUR
 
 
 def _modal() -> ModuleType:
@@ -69,6 +79,9 @@ class ModalBackend(ProviderBackend, Account, LogSource):
     time, hence `Delivery` in `lacks`.
     """
 
+    # Modal ends a sandbox itself at its timeout, which `submit` sets to the walltime or, without
+    # one, to what the budget buys (modal.com/docs/guide/sandboxes, read 2026-10-29).
+    bound = Bound.THRESHOLD
     name = "modal"
 
     lacks = {
@@ -113,6 +126,28 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         return (
             resources.gpu_name if resources.gpus == 1 else f"{resources.gpu_name}:{resources.gpus}"
         )
+
+    @staticmethod
+    def _leased(resources: Resources, *, cap: Cap) -> Lease:
+        """The sandbox's lease at the dearest card's rate, refused when `max-usd` buys no time."""
+        cards = max(resources.gpus, 1)
+        offer = Offer(
+            provider="modal",
+            gpu=resources.gpu_name,
+            gpu_count=cards,
+            rate_usd_hr=_DEAREST_USD_HR * cards,
+            source="published:modal:pricing",
+        )
+        return Lease.priced(offer, resources, cap=cap)
+
+    @staticmethod
+    def _timeout(lease: Lease, resources: Resources) -> int:
+        """Seconds the sandbox may live: the walltime when set, else what the budget buys.
+
+        Modal ends the sandbox itself then, so `max-usd` bounds it with no monitor left running.
+        """
+        lifetime = int((lease.release_by - datetime.now(UTC)).total_seconds())
+        return min(lifetime, resources.walltime_s or lifetime, _LONGEST_TIMEOUT_S)
 
     @staticmethod
     def budgeted(modal: ModuleType) -> Standing | None:
@@ -198,9 +233,16 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         return JobState(handle=handle, exit_code=exit_code, verdict=verdict)
 
     def submit(
-        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+        self,
+        plan: ExecutionPlan,
+        command: str,
+        resources: Resources,
+        *,
+        allocation: Allocation,
+        cap: Cap,
     ) -> str:
-        self.admit(plan, resources)
+        self.admit(plan, resources, cap=cap)
+        lease = self._leased(resources, cap=cap)
         modal = _modal()
         container = plan.container
         image = (
@@ -213,13 +255,12 @@ class ModalBackend(ProviderBackend, Account, LogSource):
             "name": allocation.label,
             "image": image,
             "gpu": self._gpu_spec(resources),
+            "timeout": self._timeout(lease, resources),
         }
-        if resources.walltime:
-            kwargs["timeout"] = walltime_seconds(resources.walltime)
         # The command IS the sandbox entrypoint, so its lifetime, exit code and stdout are the
         # job's; a detached exec left the sandbox running forever with empty logs (the first live
         # submit). Its status is re-raised after the receipts are framed back.
         script = f"{staging()}\n{command}\nstatus=$?\n{framing()}\nexit $status"
-        allocation.begin()
+        allocation.begin(lease=lease)
         sandbox = modal.Sandbox.create("bash", "-c", script, **kwargs)
         return allocation.created(str(sandbox.object_id))

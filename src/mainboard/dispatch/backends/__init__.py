@@ -5,16 +5,25 @@
 # from its module by name.
 
 from .base import Credentials, ProviderBackend, Rentable, http_transport, route
-from .capabilities import Account, Capability, Delivery, LogSource, Market, Standing
+from .capabilities import (
+    Account,
+    Capability,
+    Delivery,
+    Inventory,
+    LogSource,
+    Market,
+    Rented,
+    Standing,
+)
 from .cloud.core import CloudBackend
-from .cloud.digitalocean import DigitalOceanBackend
-from .cloud.hotaisle import HotAisleBackend
-from .cloud.hyperstack import HyperstackBackend
-from .cloud.lambdacloud import LambdaBackend
-from .cloud.runpod import RunPodBackend
-from .cloud.shadeform import ShadeformBackend
-from .cloud.verda import VerdaBackend
-from .cloud.vultr import VultrBackend
+from .cloud.curated.hotaisle import HotAisleBackend
+from .cloud.curated.hyperstack import HyperstackBackend
+from .cloud.curated.runpod import RunPodBackend
+from .cloud.curated.shadeform import ShadeformBackend
+from .cloud.listed.digitalocean import DigitalOceanBackend
+from .cloud.listed.lambdacloud import LambdaBackend
+from .cloud.listed.verda import VerdaBackend
+from .cloud.listed.vultr import VultrBackend
 from .hpcai import HpcAiBackend, api_key
 from .modal import ModalBackend
 from .vast import VastBackend
@@ -29,6 +38,7 @@ __all__ = [
     "HotAisleBackend",
     "HpcAiBackend",
     "HyperstackBackend",
+    "Inventory",
     "LambdaBackend",
     "LogSource",
     "Market",
@@ -36,6 +46,7 @@ __all__ = [
     "ProviderBackend",
     "RunPodBackend",
     "Rentable",
+    "Rented",
     "ShadeformBackend",
     "Standing",
     "VastBackend",

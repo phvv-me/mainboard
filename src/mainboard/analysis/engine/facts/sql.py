@@ -13,7 +13,7 @@ from typing import ClassVar
 import duckdb
 from patos import FrozenModel
 
-from ....state.storage.parsed import names
+from ....state.storage.sql import names
 
 _CAMEL_CASE_BOUNDARY_PATTERN = r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])"
 

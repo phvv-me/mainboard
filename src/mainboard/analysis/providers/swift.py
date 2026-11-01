@@ -165,18 +165,6 @@ class SwiftSource(Tool):
         return gaps
 
     @staticmethod
-    def _helper(runner: Runner) -> Path:
-        """The helper for the selected toolchain, built once per identity."""
-        build = _Build.found(runner)
-        folder = build.folder
-        folder.mkdir(parents=True, exist_ok=True)
-        build.recorded(folder)
-        helper = folder / "swift-syntax"
-        if not helper.is_file():
-            build.compiled(runner, helper)
-        return helper
-
-    @staticmethod
     def _placed(row: Row, gaps: Mapping[str, int]) -> bool:
         """Whether a syntax row sits at a real place in a file parsed without gaps."""
         fact_id, path, language, line, column, *_ = row
@@ -216,11 +204,23 @@ class SwiftSource(Tool):
             if not all(SwiftSource._placed(row, gaps) for row in rows[table]):
                 raise MissionError(f"SwiftSyntax emitted uncovered/partial syntax in {table}")
 
+    @staticmethod
+    def native_helper(runner: Runner) -> Path:
+        """The helper for the selected toolchain, built once per identity."""
+        build = _Build.found(runner)
+        folder = build.folder
+        folder.mkdir(parents=True, exist_ok=True)
+        build.recorded(folder)
+        helper = folder / "swift-syntax"
+        if not helper.is_file():
+            build.compiled(runner, helper)
+        return helper
+
     def _analyzed(
         self, runner: Runner, root: Path, files: list[str]
     ) -> tuple[dict[str, list[Row]], Path]:
         """The helper's tables for `files` under `root`, validated, and the helper that ran."""
-        helper = self._helper(runner)
+        helper = self.native_helper(runner)
         with tempfile.TemporaryDirectory(prefix="mb-swift-") as scratch:
             request = Path(scratch) / "request.json"
             request.write_text(json.dumps({"root": str(root), "files": files}), encoding="utf-8")

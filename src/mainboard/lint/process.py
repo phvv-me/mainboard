@@ -1,14 +1,13 @@
 import shutil
 import subprocess
 import time
-from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import psutil
 from patos import FrozenModel
 
-from ..proc import Exit
+from ..core import ProcessTree
+from ..enums import Exit
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -52,14 +51,6 @@ class Invocation(FrozenModel):
     env: str
     timeout: float
 
-    @staticmethod
-    def _kill(process: subprocess.Popen[bytes]) -> None:
-        """Kill `process` and every descendant, which keep its output pipe open until they die."""
-        for child in psutil.Process(process.pid).children(recursive=True):
-            with suppress(psutil.NoSuchProcess):
-                child.kill()
-        process.kill()
-
     def _outcome(self, code: int, started: float, output: str) -> Outcome:
         return Outcome(
             step=self.step,
@@ -70,8 +61,11 @@ class Invocation(FrozenModel):
         )
 
     def _timed_out(self, process: subprocess.Popen[bytes], started: float) -> Outcome:
-        """The outcome of a command killed at its deadline, with what it printed before."""
-        self._kill(process)
+        """The outcome of a command killed at its deadline, with what it printed before.
+
+        Its descendants die with it, since they keep the output pipe open.
+        """
+        ProcessTree(process).kill()
         output, _ = process.communicate()
         said = output.decode(errors="replace")
         return self._outcome(

@@ -9,20 +9,24 @@ from pydantic import ConfigDict
 from ...center.migration.migrate import Migration
 from ...context.resolver import Resolver
 from ...core.errors import MissionError
+from ...costs.ledger import Ledger
+from ...costs.score import Scorecard
 from ...dispatch.mirroring.spool import Spool
-from ...engines.compile.pixi.policy import LockPolicy
-from ...fleet.board.environments import Onboard
+from ...enums import LockPolicy, Onboard
 from ...fleet.reliability import reliability, window
 from ...holding.holds import Holds
 from ...holding.serve import Server
 from ...log import logger
 from ...probe.readings.occupancy import rows as occupancy_rows
 from ...probe.system import System
-from ...render import progress
+from ...render import Output, progress
 from ...state.storage.holds import holding
 from ...upkeep import machine as upkeep
-from ..base import Verbs
-from ..options import Output, judged, sectioned, titled
+from ...upkeep import staleness
+from ..constants import TREE
+from ..options import judged, sectioned, titled
+from ..session import Verbs
+from .rentals import RentalVerbs
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -89,7 +93,10 @@ class Detail(FrozenModel):
     """how often each host or provider ran what was dispatched to it, from the run registry:
     `ran` (the command reached an exit, its own failures included), `unstarted` (a landing or
     setup that never started the job), `lost` (the machine vanished, or no exit code),
-    `delivered` = ran / judged. Least reliable first."""
+    `delivered` = ran / judged. Least reliable first. A target the lake holds landings for adds
+    `landings`, `landed`, `refused` (a create the provider declined), the median and p90 seconds
+    to ssh answering (`ready_p50_s`, `ready_p90_s`) and the slowest tenth of the download probes
+    (`mbps_p10`)."""
     days: int = 30
     """with `--reliability`, how far back the registry is read."""
 
@@ -182,9 +189,10 @@ class HostVerbs(Verbs):
             return self.session.board(name).occupancy()
 
     def _paths(self, workspace: Board, hosts: Sequence[str], output: Output) -> int:
-        """Print every compute path, or those `hosts` name."""
+        """Print every compute path, or those `hosts` name, a provider's with its bill's cap."""
         with progress("probing every compute path"):
             paths = workspace.compute().paths()
+        grants = RentalVerbs.granted(self.session.workspace_root())
         # A provider host's rows are named by its kind (`hpcai` is kind `hpc-ai`), its rentals
         # `<kind>:<handle>`, so naming the host names them too.
         declared = workspace.manifest.hosts
@@ -194,7 +202,14 @@ class HostVerbs(Verbs):
             for path in paths
             if not hosts or path.name in wanted or path.name.split(":")[0] in wanted
         ]
-        output.print_rows([path.model_dump() for path in chosen], title="compute")
+        rows = [
+            {
+                **path.model_dump(),
+                "cap": RentalVerbs.capped(path.name, grants=grants, balance_usd=path.credit_usd),
+            }
+            for path in chosen
+        ]
+        output.print_rows(rows, title="compute")
         return 0
 
     def _plans(self, names: Sequence[str], env: str, output: Output) -> None:
@@ -222,7 +237,9 @@ class HostVerbs(Verbs):
         """List every compute path this workspace can reach; flags add detail per host.
 
         One row per path: this machine, each declared host (answering? set up?), each provider
-        (credentials here? credit left? a live rate where cheap). Held machines past their
+        (credentials here? credit left? a live rate where cheap, and `cap`, what bounds its bill:
+        the card's declared limit, the prepaid balance or the threshold each rental carries).
+        Held machines past their
         deadline are released first. Probes run in parallel, so the fleet answers in the time
         the slowest host takes; a host that is down is a row, not a failure. No credential is
         ever printed. Each flag prints one more table keyed by host, for the hosts named or,
@@ -237,7 +254,16 @@ class HostVerbs(Verbs):
         if detail.reliability:
             scored = reliability(workspace.dispatcher.cache.listed(since=window(detail.days)))
             asked = [row for row in scored if not hosts or {row.target, row.kind} & set(hosts)]
-            output.print_rows([row.model_dump() for row in asked], title="reliability")
+            scorecard = Scorecard.of(Ledger(workspace.dispatcher.cache.session))
+            # A rental's landings are filed under its provider's kind, a queue's under its alias.
+            rows = [
+                {
+                    **row.model_dump(),
+                    **(scorecard.report(row.kind) or scorecard.report(row.target)),
+                }
+                for row in asked
+            ]
+            output.print_rows(rows, title="reliability")
             return 0
         if not detail.asked:
             return self._paths(workspace, hosts, output)
@@ -290,6 +316,10 @@ class HostVerbs(Verbs):
         findings `host list --facts` shows, judged from the census read back through the new
         activation.
 
+        A root another workspace holds is refused before anything is mirrored into it: the
+        manifest mirrored there names its workspace, and two share `~/.mb-jobs` unless one
+        declares a `root` of its own in `[hosts.<name>]`.
+
         `--center` instead moves the center there (macOS or Linux): probes it, signs gh
         in, carries ssh config and keys, clones the monorepo at this HEAD with every owned
         submodule, carries what git does not hold (`.env`, the lake, agent configuration and
@@ -318,6 +348,7 @@ class HostVerbs(Verbs):
         The fast path back after source moved: the tool is not reinstalled and the hardware is
         not probed again, so a Python edit reaches the host in the time the mirror takes. A
         host never set up needs `setup` first, which is where the probe and the tool come from.
+        A root another workspace holds is refused, as `setup` refuses it.
 
         Args:
             env: an environment name overriding the host profile's own.
@@ -328,3 +359,29 @@ class HostVerbs(Verbs):
                 env, policy=LockPolicy.LOCKED, watch=stage, onboard=Onboard.SYNC
             )
         _onboarded(workspace, report, output, title="sync")
+
+    def update(self) -> None:
+        """Reinstall this tool from its source when the source moved, as `uv self update` does.
+
+        Nothing checks or updates on its own: every other verb runs the code installed.
+        """
+        found = staleness.check()
+        if found.source is None or not found.stale:
+            logger.result(f"{self.session.project.name}: {found.detail}")
+            return
+        logger.result(f"{self.session.project.name}: {found.detail}; {staleness.update(found)}")
+
+
+_HOSTS = HostVerbs()
+_RENTALS = RentalVerbs()
+host = TREE.node("host").app(
+    _HOSTS.setup,
+    _HOSTS.sync,
+    _HOSTS.update,
+    _RENTALS.hold,
+    _RENTALS.offers,
+    _RENTALS.release,
+    list=_HOSTS.compute,
+    serve=_HOSTS.serving,
+    upgrade=_HOSTS.host_upgrade,
+)

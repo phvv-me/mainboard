@@ -3,8 +3,8 @@
 An artifact is something one language declares for another to reach: a `[[bin]]` of a Cargo
 manifest (binary), an entry of `[project.scripts]` (console script), a `#[pymodule]` function
 (native module, Rust) or `PYBIND11_MODULE` (native module, C++), a `__global__` function (kernel,
-CUDA), a library a Python file loads with `CDLL(` or `cdll.LoadLibrary(` (shared library, named by
-the argument's text up to the first `)`). One fact per name and mechanism, declared in the first
+CUDA), a library a Python file loads through CDLL or cdll.LoadLibrary (shared library, named by
+the argument's text up to the first closing parenthesis). One fact per name and mechanism, declared in the first
 file (in path order) that states it, with every other interesting file that names it between
 quotes as a reference (its first such line). Differences kept on purpose:
 

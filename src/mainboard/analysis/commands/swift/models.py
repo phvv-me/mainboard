@@ -1,7 +1,6 @@
 """What a Swift inventory records: each Apple source file, its totals, and the report."""
 
 from datetime import datetime
-from enum import StrEnum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,25 +10,10 @@ from ...findings import Finding, Span
 from ...providers.swift import SwiftToolchain
 from ..catalog import RuleEntry
 from ..report import Report
+from .enums import SourceKind, SyntaxStatus
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-
-class SourceKind(StrEnum):
-    production = auto()
-    test = auto()
-    tooling = auto()
-    generated = auto()
-    vendored = auto()
-
-
-class SyntaxStatus(StrEnum):
-    pending = auto()
-    parsed = auto()
-    parse_error = auto()
-    excluded = auto()
-    not_swift = auto()
 
 
 class Condition(Span):

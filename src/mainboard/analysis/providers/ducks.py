@@ -124,23 +124,6 @@ class Ducks(FrozenModel):
                 [(f"ast:{s.path}", s.path, s.language, s.blob) for s in sources],
             )
 
-    def _attach(self, db: duckdb.DuckDBPyConnection) -> bool:
-        """Name the cache file `astcache` in `db`, answering whether the file is attached.
-
-        When another process holds the file, the tables stay in `db` itself under the same name.
-        """
-        self.cache.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            db.execute(f"ATTACH {quoted(str(self.cache))} AS astcache")
-        except duckdb.Error as error:
-            logger.info("{} is in use, parsing into this run's own tables: {}", self.cache, error)
-            db.execute("CREATE SCHEMA astcache")
-            attached = False
-        else:
-            attached = True
-        db.execute(_CREATE_ASTCACHE_KEYS_TABLE_SQL)
-        return attached
-
     def _nodes(self, db: duckdb.DuckDBPyConnection, scratch: str) -> str:
         """A `SELECT` of the nodes of the files linked in `scratch`.
 
@@ -165,23 +148,27 @@ class Ducks(FrozenModel):
             if folder.is_dir()
         )
 
-    def _report_gaps(self, facts: Facts, root: Path) -> None:
-        """Warn about Python files Python accepts but whose syntax tree has errors.
-
-        That is syntax the grammar lacks (PEP 646 `x[*idx]`), which the derived families skip.
-        """
-        broken = facts.db.execute(_PYTHON_ERROR_FILES_SQL).fetchall()
-        if gaps := [path for (path,) in broken if Ducks._parses(root / path)]:
-            logger.warning(
-                "the Python grammar misreads {} valid files, so derived facts skip them: {}",
-                len(gaps),
-                ", ".join(gaps[:5]),
-            )
-
     def _rows(self, select: str) -> list[tuple[str, int]]:
         """The (file, count) rows of `select`, parsed under the budget."""
         with closing(self.budget.connect()) as db:
             return db.execute(select).fetchall()
+
+    def attach(self, db: duckdb.DuckDBPyConnection) -> bool:
+        """Name the cache file `astcache` in `db`, answering whether the file is attached.
+
+        When another process holds the file, the tables stay in `db` itself under the same name.
+        """
+        self.cache.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            db.execute(f"ATTACH {quoted(str(self.cache))} AS astcache")
+        except duckdb.Error as error:
+            logger.info("{} is in use, parsing into this run's own tables: {}", self.cache, error)
+            db.execute("CREATE SCHEMA astcache")
+            attached = False
+        else:
+            attached = True
+        db.execute(_CREATE_ASTCACHE_KEYS_TABLE_SQL)
+        return attached
 
     def close(self) -> None:
         """Remove this run's cache and spill."""
@@ -255,14 +242,27 @@ class Ducks(FrozenModel):
             db.execute("RESET preserve_insertion_order")
         return len(files)
 
+    def publish_gaps(self, facts: Facts, root: Path) -> None:
+        """Warn about Python files Python accepts but whose syntax tree has errors.
+
+        That is syntax the grammar lacks (PEP 646 `x[*idx]`), which the derived families skip.
+        """
+        broken = facts.connection.execute(_PYTHON_ERROR_FILES_SQL).fetchall()
+        if gaps := [path for (path,) in broken if Ducks._parses(root / path)]:
+            logger.warning(
+                "the Python grammar misreads {} valid files, so derived facts skip them: {}",
+                len(gaps),
+                ", ".join(gaps[:5]),
+            )
+
     def register(self, facts: Facts, root: Path) -> None:
         """Parse what `astcache` lacks, then name the project's files and nodes as views.
 
         The views are `ast_files` (path, language, blob) and `ast_nodes`, their columns zero-based
         like mcmr's.
         """
-        database = facts.db
-        attached = self._attach(database)
+        database = facts.connection
+        attached = self.attach(database)
         sources = self.sources(root)
         self.parse(database, root, sources)
         self._write_sources(database, sources)
@@ -278,7 +278,7 @@ class Ducks(FrozenModel):
         if attached:
             database.execute("DETACH astcache")
         if self.report_gaps:
-            self._report_gaps(facts, root)
+            self.publish_gaps(facts, root)
 
     def sources(self, root: Path) -> list[Source]:
         """The project's files git does not ignore, with their blobs.

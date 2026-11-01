@@ -43,20 +43,27 @@ _UNCAPPED = ["--max-rows", "0", "--max-bytes", "0"]
             id="json-row-cap",
         ),
         pytest.param(_NULLS, [], {}, id="null-empty-and-literal-null"),
-        pytest.param(_NULLS, ["--human"], {"mode": "human"}, id="human"),
+        pytest.param(_NULLS, [], {"mode": "human"}, id="human"),
         pytest.param(
             "SELECT * FROM range(33)",
-            ["--human", *_UNCAPPED],
+            _UNCAPPED,
             {"mode": "human", "max_rows": 0, "max_bytes": 0},
             id="human-streaming-every-batch",
         ),
     ],
 )
 def test_the_cli_prints_what_the_renderer_renders(
-    mb, render: Callable[..., Rendering], sql: str, flags: list[str], options: dict[str, str | int]
+    mb,
+    render: Callable[..., Rendering],
+    monkeypatch: pytest.MonkeyPatch,
+    sql: str,
+    flags: list[str],
+    options: dict[str, str | int],
 ) -> None:
+    if options.get("mode") == "human":
+        monkeypatch.setenv("MB_AGENT", "0")
     rendered = render(sql, **options)
-    ran = mb("query", sql, *flags)
+    ran = mb("data", "query", sql, *flags)
     assert ran.code == 0, ran.said
     assert (ran.out, ran.err) == (rendered.out, rendered.err)
 
@@ -83,24 +90,27 @@ def test_the_cli_prints_what_the_renderer_renders(
 def test_a_timed_out_query_fails_after_printing_a_labelled_partial_result(
     mb, workspace: Path, flags: list[str], printed: str
 ) -> None:
-    ran = mb("query", _SUMMED, "--timeout", "0.02", *flags, timeout=15)
+    ran = mb("data", "query", _SUMMED, "--timeout", "0.02", *flags, timeout=15)
     assert ran.code != 0 and "timed out" in ran.err, ran.said
     assert ran.out == printed
     assert list(workspace.iterdir()) == [workspace / "mb.toml"]
 
 
 @pytest.mark.parametrize(
-    "flags",
+    ("flags", "agent"),
     [
-        pytest.param([], id="tsv"),
-        pytest.param(["--json"], id="json"),
-        pytest.param(["--human"], id="human"),
-        pytest.param(["--out", "duplicates.json"], id="export"),
+        pytest.param([], "1", id="tsv"),
+        pytest.param(["--json"], "1", id="json"),
+        pytest.param([], "0", id="human"),
+        pytest.param(["--out", "duplicates.json"], "1", id="export"),
     ],
 )
-def test_duplicate_column_names_are_rejected(mb, workspace: Path, flags: list[str]) -> None:
+def test_duplicate_column_names_are_rejected(
+    mb, workspace: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], agent: str
+) -> None:
+    monkeypatch.setenv("MB_AGENT", agent)
     sql = "SELECT 1 AS id, 2 AS id"
-    ran = mb("query", sql, *flags)
+    ran = mb("data", "query", sql, *flags)
     assert ran.code != 0 and "unique AS alias" in ran.err and not ran.out
     assert not (workspace / "duplicates.json").exists()
     with pytest.raises(MissionError, match="duplicate column names"):
@@ -111,13 +121,12 @@ def test_duplicate_column_names_are_rejected(mb, workspace: Path, flags: list[st
     "option",
     [
         pytest.param(["--json"], id="json"),
-        pytest.param(["--human"], id="human"),
         pytest.param(["--max-rows", "1"], id="max-rows"),
         pytest.param(["--max-bytes", "1"], id="max-bytes"),
     ],
 )
 def test_export_rejects_every_display_option(mb, workspace: Path, option: list[str]) -> None:
-    ran = mb("query", "SELECT 1", "--out", "out.csv", *option)
+    ran = mb("data", "query", "SELECT 1", "--out", "out.csv", *option)
     assert ran.code != 0 and "--out exports all rows" in ran.err
     assert not (workspace / "out.csv").exists()
 
@@ -125,13 +134,13 @@ def test_export_rejects_every_display_option(mb, workspace: Path, option: list[s
 def test_multiple_statements_keep_the_programmatic_contract_and_cli_error(mb, workspace) -> None:
     with pytest.raises(ValueError, match="one statement"):
         Results(workspace).query("SELECT 1; SELECT 2")
-    ran = mb("query", "SELECT 1; SELECT 2")
+    ran = mb("data", "query", "SELECT 1; SELECT 2")
     assert ran.code == 1 and "one statement" in ran.err
     assert not (workspace / ".mb").exists()
 
 
 def test_query_help_documents_snapshot_and_remote_timeout_scope(mb) -> None:
-    help_text = " ".join(mb("query", "--help").out.split())
+    help_text = " ".join(mb("data", "query", "--help").out.split())
     assert all(
         text in help_text
         for text in (
@@ -167,9 +176,9 @@ def test_a_consumer_closing_the_pipe_stops_query_without_a_traceback(workspace: 
 
 
 def test_plot_records_the_same_result_identity(mb, workspace: Path) -> None:
-    expected = Footer.of(mb("query", _PLOTTED).out)
+    expected = Footer.of(mb("data", "query", _PLOTTED).out)
     target = workspace / "figure.png"
-    plotted = mb("paper", "plot", _PLOTTED, "--x", "x", "--y", "y", "--out", str(target))
+    plotted = mb("data", "paper", "plot", _PLOTTED, "--x", "x", "--y", "y", "--out", str(target))
     assert plotted.code == 0 and Footer.of(plotted.out) == expected, plotted.said
     metadata = json.loads(target.with_name("figure.png.metadata.json").read_text(encoding="utf-8"))
     assert metadata["results"] == [IsPartialDict(**expected.model_dump(), complete=True)]

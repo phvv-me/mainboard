@@ -1,21 +1,13 @@
 import abc
 import os
 from collections.abc import Callable, Collection
-from enum import StrEnum, auto
 
 from patos import FrozenModel, Registry
 
 from ...experiments.data import HfDataset, HfModel, Needs, RepoFile
 from ...probe.readings.gating import wait_for_idle
+from ..enums import GateStatus
 from ..run import Run
-
-
-class GateStatus(StrEnum):
-    """A gate's judgement on a trial precondition."""
-
-    PASSED = auto()
-    BLOCKED = auto()
-    FAILED = auto()
 
 
 class GateVerdict(FrozenModel):

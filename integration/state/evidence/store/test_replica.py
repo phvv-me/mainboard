@@ -7,6 +7,7 @@ import pytest
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
+from mainboard import MissionError
 from mainboard.state import DirectoryReplica, Evidence
 from mainboard.state.evidence import core as evidence_core
 from mainboard.state.evidence.keeping import windows
@@ -49,4 +50,13 @@ def test_a_replica_holds_each_object_once_whatever_the_window_that_reads_it(
             for digest in sizes
         )
         index = (Path(root) / "index.jsonl").read_text("utf-8").splitlines()
-        assert len(index) == len(ingested.indexed()) and not list(Path(root).rglob("*.partial"))
+        assert len(index) == len(ingested.indexed()) and not list(Path(root).rglob("*.tmp"))
+
+
+def test_an_object_that_misses_its_digest_is_refused_and_leaves_no_file(tmp_path: Path) -> None:
+    replica = DirectoryReplica(tmp_path)
+
+    with pytest.raises(MissionError, match="not replicated"):
+        replica.put(hashlib.sha256(b"wanted").hexdigest(), iter([b"other"]))
+
+    assert [path for path in tmp_path.rglob("*") if path.is_file()] == []

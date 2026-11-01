@@ -6,12 +6,11 @@ machines, has those spellings resolved or made uniform here.
 """
 
 import re
+import tomllib
 from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
-import tomlkit
-
-from ..constants import GENERATED_DIR
+from ....core.constants.names import GENERATED_DIR
 from ..inputs.vendor import relocated
 
 if TYPE_CHECKING:
@@ -129,7 +128,7 @@ def self_installed(manifest: str, *, generated_dir: PurePath = GENERATED_DIR) ->
     parents = rerooted("", generated_dir=generated_dir)
     declared = [
         path
-        for spec in _source_specs(tomlkit.parse(manifest).unwrap())
+        for spec in _source_specs(tomllib.loads(manifest))
         if spec.get("editable")
         if isinstance(path := spec.get("path"), str)
     ]
@@ -140,7 +139,7 @@ def self_installed(manifest: str, *, generated_dir: PurePath = GENERATED_DIR) ->
 def local_sources(manifest: str, *, generated_dir: PurePath = GENERATED_DIR) -> list[str]:
     """Workspace-relative dependency sources, including local wheel files."""
     parents = rerooted("", generated_dir=generated_dir)
-    declared = [spec["path"] for spec in _source_specs(tomlkit.parse(manifest).unwrap())]
+    declared = [spec["path"] for spec in _source_specs(tomllib.loads(manifest))]
     inside = [
         path
         for path in declared

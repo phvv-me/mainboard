@@ -11,44 +11,18 @@ from pathlib import Path
 from shlex import join
 from typing import TYPE_CHECKING
 
-from ...core.section import Section, Verdict
-from ...settling.durable import Shell, locally
+from ...core.section import Section, install_command
+from ...core.services import Shell, locally
+from ...enums import Verdict
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-# Installs keyed by package, then by `platform.system()`. A system not named is read as a Linux
-# distribution, the one family with no single installer.
-_INSTALLS = {
-    "git": {"Darwin": "xcode-select --install"},
-    "git-lfs": {"Darwin": "brew install git-lfs"},
-    "gh": {"Darwin": "brew install gh"},
-    "ssh": {"Darwin": "ssh ships with macOS; restore it with xcode-select --install"},
-}
-_DISTRIBUTION = "sudo apt install {package} (or the {package} package of this distribution)"
 
 # The credential helper macOS ships with its git, as git names it after `credential-`, and how
 # it arrives when missing. Linux ships none.
 _KEYCHAIN = "osxkeychain"
 _KEYCHAIN_INSTALL = "brew install git"
 _PLAINTEXT_HELPER = "git config --global credential.helper store"
-
-# How many names a detail line lists before it only counts the rest.
-_NAMED = 3
-
-
-def install_command(system: str, *, package: str) -> str:
-    """The command that installs `package` on a `system` machine, a distribution's when unknown.
-
-    system: the platform as `platform.system()` spells it.
-    """
-    return _INSTALLS.get(package, {}).get(system, _DISTRIBUTION.format(package=package))
-
-
-def abbreviated(names: Sequence[str], named: int = _NAMED) -> str:
-    """The first `named` of `names`, then only a count of the rest."""
-    rest = len(names) - named
-    return ", ".join(names[:named]) + (f" and {rest} more" if rest > 0 else "")
 
 
 class Workstation:

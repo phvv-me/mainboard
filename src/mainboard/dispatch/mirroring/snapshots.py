@@ -34,12 +34,12 @@ from typing import TYPE_CHECKING, Self
 
 from patos import FrozenModel, FrozenOpenModel
 
-from ...constants import SECONDS_PER_DAY
+from ...core.constants.units import SECONDS_PER_DAY
+from ...core.errors import AgentRefused
 from ...core.execution.retention import Retention, RetentionPins
 from ...core.project import Project
 from ...jobs.targets.pins import staging
-from ..agent import AgentRefused, program
-from ..agent.program import ScopeSpec, reserved
+from ..agent.program import ScopeSpec, reserved, wrapper_path
 from .spool import Spool, Submission, spool_path
 
 if TYPE_CHECKING:
@@ -207,7 +207,7 @@ class Snapshots:
             or not _is_hex_sha256(digest)
         ):
             raise ValueError("a staged wrapper requires a canonical path and full SHA-256 name")
-        return program.wrapper_path(name)
+        return wrapper_path(name)
 
     def __init__(self, root: str, *, out: str = "") -> None:
         self.root = root.rstrip("/")

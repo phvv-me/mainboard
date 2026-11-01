@@ -1,7 +1,7 @@
 from pydantic import Field
 
-from ....constants import SECONDS_PER_HOUR
 from ....core.base import Declared
+from ....runtime.job import walltime_seconds
 
 
 class QueuePolicy(Declared):
@@ -26,7 +26,7 @@ class QueuePolicy(Declared):
         """Whether `walltime` (HH:MM:SS) fits under this queue's ceiling."""
         if not self.max_walltime:
             return True
-        return _seconds(walltime) <= _seconds(self.max_walltime)
+        return walltime_seconds(walltime) <= walltime_seconds(self.max_walltime)
 
 
 class Defaults(Declared):
@@ -56,8 +56,3 @@ class Defaults(Declared):
     spot: bool = False
     arch: str = ""
     datacenter: bool = False
-
-
-def _seconds(walltime: str) -> int:
-    hours, minutes, seconds = (int(part) for part in walltime.split(":"))
-    return hours * SECONDS_PER_HOUR + minutes * 60 + seconds

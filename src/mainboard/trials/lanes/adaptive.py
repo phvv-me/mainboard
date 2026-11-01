@@ -16,7 +16,7 @@ from types import ModuleType
 
 from patos import FrozenModel
 
-from ..store.constants import DRIVERS
+from ..constants import DRIVERS
 
 
 class Absent(ImportError):

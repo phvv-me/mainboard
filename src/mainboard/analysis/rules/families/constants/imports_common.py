@@ -10,6 +10,9 @@ PARSED = """
 
 LINES = "lines AS (SELECT path, string_split(content, chr(10)) AS lines FROM source_files)"
 
+# Only an `__init__.py` makes a regular package here. Counting a stub's `__init__.pyi` would name
+# `stubs/cuda/core/system.pyi` `cuda.core.system` and PY-IMPO0001 would flag its absolute import of
+# `cuda.bindings`, which mirrors the wheel the stub describes.
 MODULE_NAMES = r"""
   regular_packages AS (
     SELECT DISTINCT regexp_replace(path, '(^|/)[^/]*$', '') AS directory

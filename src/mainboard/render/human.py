@@ -8,7 +8,8 @@ from rich.console import Console
 from rich.table import Table
 
 from ..log import logger
-from .values import columns_of
+from .terminal import Terminal
+from .values import columns_of, visible
 
 _UNBOUNDED = 1 << 16
 # A block shorter than this prints no closing total.
@@ -27,8 +28,9 @@ def render_table(
 ) -> None:
     """Print `rows` as a rich table, one line per record.
 
-    Markup is off because a cell like `[dev.python.deps]` is data that rich would read as a
-    style tag and render empty; highlighting stays on, since it never hides a value.
+    A cell's controls are shown as U+FFFD (`visible`). Markup is off because a cell like
+    `[dev.python.deps]` is data that rich would read as a style tag and render empty; highlighting
+    stays on, since it never hides a value.
 
     fields: the column names to keep, every key from the first row when None.
     """
@@ -39,13 +41,14 @@ def render_table(
         table.add_column(column, overflow="fold")
     for row in rows:
         cells = (row.get(column) for column in columns)
-        table.add_row(*("" if cell is None else str(cell) for cell in cells))
-    console = Console(markup=False)
-    if not console.is_terminal:
+        table.add_row(*("" if cell is None else visible(str(cell)) for cell in cells))
+    terminal = Terminal.current()
+    console = terminal.console()
+    if not terminal.tty:
         # Off a terminal rich assumes eighty columns and shreds a wide table; a pipe has no
         # width, so the table takes its own, measured on a console too wide to clip it.
         natural = Console(markup=False, width=_UNBOUNDED).measure(table).maximum
-        console = Console(markup=False, width=natural)
+        console = terminal.console(width=natural)
     with console.capture() as captured:
         console.print(table)
     logger.result(captured.get(), end="")

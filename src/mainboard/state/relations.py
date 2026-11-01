@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import duckdb
 
 from ..runtime.tree import FileBudget
-from .storage.database import connect, scratch
-from .storage.records import ndjson
+from .storage.database import connect, quoted, scratch
+from .storage.sql import ndjson
 
 if TYPE_CHECKING:
     from pydantic import JsonValue
@@ -124,11 +124,10 @@ class Relations:
 
 def write_parquet(relation: Relation, target: Path, *, level: int = LEVEL) -> None:
     """`relation`, from any database, as one zstd Parquet file at `target`."""
-    quoted = str(target).replace("'", "''")
     with FileBudget.permitted():
         relation.query(
             "source",
-            f"COPY source TO '{quoted}' (FORMAT parquet, COMPRESSION {_CODEC}, "
+            f"COPY source TO {quoted(str(target))} (FORMAT parquet, COMPRESSION {_CODEC}, "
             f"COMPRESSION_LEVEL {level})",
         )
 

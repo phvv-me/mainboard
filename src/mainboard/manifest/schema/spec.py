@@ -4,7 +4,7 @@ from typing import Self
 from patos import FlexModel
 from pydantic import ConfigDict, model_validator
 
-type Json = str | int | float | bool | None | list["Json"] | dict[str, "Json"]
+from ...core.base import Json
 
 _SOURCES = {"path", "git", "url"}
 _SOURCE_FIELDS = _SOURCES | {"branch", "tag", "rev", "subdirectory", "index"}
@@ -24,10 +24,6 @@ class Spec(FlexModel):
         if isinstance(value, str):
             return {"version": value}
         return value
-
-    @property
-    def is_editable(self) -> bool:
-        return bool((self.model_extra or {}).get("editable"))
 
     @property
     def is_path(self) -> bool:

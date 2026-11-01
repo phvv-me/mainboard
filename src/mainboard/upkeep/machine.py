@@ -7,25 +7,22 @@
 # used to type `apt update && apt full-upgrade && apt autoremove` by hand. A host answers with its
 # own copy of this tool, so the same code judges Linux and macOS.
 
-import json
-import os
 import platform
 import re
 import shlex
 import shutil
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=asks the machine's own package managers, fixed argv only since=2026-09-29
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from patos import FrozenModel
-
-from ..constants import ASK_SECONDS, BYTES_PER_GB, SECONDS_PER_DAY
+from ..core.constants.units import BYTES_PER_GB, SECONDS_PER_DAY
 from ..core.execution import host
 from ..core.project import Project
-from ..core.section import Section, Verdict
+from ..core.section import Section
+from ..enums import Verdict
 from ..log import logger
 from . import staleness
+from .managers import Manager, ask, attached, lines, present, unknown
 
 # Below this share of the home filesystem free, the audit warns.
 _FREE_FLOOR = 0.10
@@ -34,146 +31,20 @@ _FREE_FLOOR = 0.10
 _LISTS_DAYS = 7
 
 
-def _lines(out: str) -> int:
-    """How many non-blank lines a manager printed."""
-    return sum(1 for line in out.splitlines() if line.strip())
-
-
-def _apt(out: str) -> int:
-    return sum("upgradable from" in line for line in out.splitlines())
-
-
-def _snap(out: str) -> int:
-    return 0 if "up to date" in out else max(_lines(out) - 1, 0)
-
-
-def _fwupd(out: str) -> int:
-    try:
-        devices = json.loads(out).get("Devices", [])
-    except json.JSONDecodeError, AttributeError:
-        return 0
-    return sum(1 for device in devices if device.get("Releases"))
-
-
-class Manager(FrozenModel):
-    """One system package manager: how to ask what is pending, and how to apply it.
-
-    name: what the row calls it.
-    program: the executable whose presence means the manager is here.
-    pending: the read-only command listing what would change.
-    count: how many updates `pending`'s output names.
-    steps: the commands that apply them, in order; `sudo` where the manager needs root.
-    audit_only: pending updates are reported but `upgrade` leaves them to the owner (firmware).
-    """
-
-    name: str
-    program: str
-    pending: tuple[str, ...]
-    count: Callable[[str], int]
-    steps: tuple[str, ...]
-    audit_only: bool = False
-
-
-_MANAGERS = (
-    Manager(
-        name="apt",
-        program="apt-get",
-        pending=("apt", "list", "--upgradable"),
-        count=_apt,
-        steps=(
-            "sudo apt-get update",
-            "sudo apt-get -y full-upgrade",
-            "sudo apt-get -y autoremove --purge",
-            "sudo apt-get -y autoclean",
-        ),
-    ),
-    Manager(
-        name="dnf",
-        program="dnf",
-        pending=("dnf", "-q", "check-update"),
-        count=_lines,
-        steps=("sudo dnf -y upgrade --refresh", "sudo dnf -y autoremove"),
-    ),
-    Manager(
-        name="brew",
-        program="brew",
-        pending=("brew", "outdated", "--quiet"),
-        count=_lines,
-        steps=("brew update", "brew upgrade", "brew cleanup"),
-    ),
-    Manager(
-        name="snap",
-        program="snap",
-        pending=("snap", "refresh", "--list"),
-        count=_snap,
-        steps=("sudo snap refresh",),
-    ),
-    Manager(
-        name="firmware",
-        program="fwupdmgr",
-        pending=("fwupdmgr", "get-updates", "--json"),
-        count=_fwupd,
-        steps=("sudo fwupdmgr refresh --force", "sudo fwupdmgr update"),
-        audit_only=True,
-    ),
-)
-
-
-def _pixi_home() -> Path:
-    """The pixi home pixi's global tools live in.
-
-    That is the per-architecture one the dotfiles and this tool install pixi into when it exists
-    (Linux and macOS), else pixi's own. It exists from the day pixi is there, not from the day a
-    global tool is: the toolbox is mb.toml's, so a host may never have had a global manifest.
-    """
-    arch = Path.home() / ".pixi" / platform.machine()
-    return arch if arch.is_dir() else Path.home() / ".pixi"
-
-
-def _ask(argv: Sequence[str]) -> str | None:
-    """What a read-only command printed, None when it could not answer in time."""
-    try:
-        done = subprocess.run(
-            list(argv),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=ASK_SECONDS,
-            check=False,
-            env={**os.environ, "PIXI_HOME": str(_pixi_home())},
-        )
-    except OSError, subprocess.TimeoutExpired:
-        return None
-    return done.stdout + done.stderr
-
-
-def _unknown(name: str, argv: Sequence[str]) -> Section:
-    """The row for a command that gave no answer in time; its fix is to run it and see why."""
-    return Section(
-        section=name,
-        verdict=Verdict.WARN,
-        detail=f"unknown, no answer in {ASK_SECONDS} s",
-        fix=shlex.join(argv),
-    )
-
-
-def _present() -> list[Manager]:
-    return [manager for manager in _MANAGERS if shutil.which(manager.program)]
-
-
-def audit() -> list[Section]:
+def audit(managers: Sequence[Manager] | None = None) -> list[Section]:
     """What this machine could and should update, one row each, read-only.
 
     A row that warns names the command that fixes it; `host upgrade` runs every such command
-    except firmware, which is the owner's to schedule. A manager that does not answer within
-    `ASK_SECONDS` warns as unknown instead, naming the command to run by hand.
+    except firmware, which is the owner's to schedule. A manager that does not answer within its
+    `timeout` warns as unknown instead, naming the command to run by hand.
+
+    managers: the package managers to ask when their program is here; the known ones by default.
     """
     rows: list[Section | None] = [_system()]
-    for manager in _present():
-        said = _ask(manager.pending)
+    for manager in present(managers):
+        said = ask(manager.pending, timeout=manager.timeout)
         if said is None:
-            rows.append(_unknown(manager.name, manager.pending))
+            rows.append(unknown(manager.name, manager.pending, timeout=manager.timeout))
         else:
             pending = manager.count(said)
             fix = " && ".join(manager.steps)
@@ -196,7 +67,7 @@ def _upgrade_steps() -> list[str]:
 
     The system's managers come first, then the toolbox, the dotfiles and this tool.
     """
-    steps = [step for manager in _present() if not manager.audit_only for step in manager.steps]
+    steps = [step for manager in present() if not manager.audit_only for step in manager.steps]
     if shutil.which("pixi"):
         steps.append("pixi global update")
     # chezmoi's own clone is pulled; a source the owner works in (the center's checkout) is only
@@ -205,7 +76,7 @@ def _upgrade_steps() -> list[str]:
         steps.append(f"pixi exec chezmoi --source {shlex.quote(source.as_posix())} update --force")
     elif shutil.which("chezmoi"):
         steps.append("chezmoi apply --force")
-    steps.append(f"{Project().name} self update")
+    steps.append(f"{Project().name} host update")
     return steps
 
 
@@ -215,7 +86,7 @@ def upgrade(*, dry_run: bool = False, run: Callable[[Sequence[str]], int] | None
     dry_run: only print the steps.
     run: runs one argv with the terminal attached, answering its exit status.
     """
-    run = run or _attached
+    run = run or attached
     for step in _upgrade_steps():
         logger.result(f"$ {step}")
         if dry_run:
@@ -225,10 +96,6 @@ def upgrade(*, dry_run: bool = False, run: Callable[[Sequence[str]], int] | None
             logger.result(f"stopped: `{step}` exited {status}")
             return status
     return 0
-
-
-def _attached(argv: Sequence[str]) -> int:
-    return subprocess.call(list(argv), env={**os.environ, "PIXI_HOME": str(_pixi_home())})
 
 
 def _system() -> Section:
@@ -292,7 +159,7 @@ def _snapshot() -> Section:
         section=Project().name,
         verdict=Verdict.WARN if found.stale else Verdict.PASS,
         detail=found.detail,
-        fix=f"{Project().name} self update" if found.stale else "",
+        fix=f"{Project().name} host update" if found.stale else "",
     )
 
 
@@ -305,10 +172,10 @@ def _dotfiles() -> Section | None:
         argv = ["chezmoi", "status"]
     else:
         return None
-    said = _ask(argv)
+    said = ask(argv)
     if said is None:
-        return _unknown("dotfiles", argv)
-    drift = _lines(said)
+        return unknown("dotfiles", argv)
+    drift = lines(said)
     return Section(
         section="dotfiles",
         verdict=Verdict.WARN if drift else Verdict.PASS,

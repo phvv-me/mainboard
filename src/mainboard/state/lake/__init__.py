@@ -41,8 +41,8 @@
 # both ends must run the same DuckDB release. Maintenance stays with the machine holding the
 # files.
 
+from ..enums import Access
 from ..storage.database import quoted as quoted
-from .attachment import Access
 from .core import Lake, Serving
 from .maintenance import Finding, Health
 from .session import Session

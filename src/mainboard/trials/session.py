@@ -25,18 +25,18 @@ from uuid import uuid7
 
 from pydantic import JsonValue
 
-from ..constants import NANOSECONDS_PER_SECOND
+from ..core.constants.units import NANOSECONDS_PER_SECOND
 from ..dispatch.provenance import registered
 from ..state.evidence import EvidenceTree
 from .artifacts import Artifact, Artifacts
+from .constants import ADMISSIBILITY, OPENED, PROBED, WORD
 from .contract.flags import moved, reading
-from .contract.vocabulary import Outcome
-from .lanes.coverage import Cell, LaneStatus, Probed
-from .provenance import Admissibility, Preflight, digested, parsed
+from .enums import Admissibility, Outcome, Probed
+from .lanes.coverage import Cell, LaneStatus
+from .provenance import Preflight, digested, parsed
 from .running.lease import CardLease
 from .running.stage import Stage
 from .store import dataset
-from .store.constants import ADMISSIBILITY, OPENED, PROBED, WORD
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -182,8 +182,8 @@ class Session:
         written: list[Path] = []
         for node, writer in self.writers.items():
             store = self.declared.universe.dataset(node)
-            if store.full(self.run):
-                store.as_jsonl(store.root / dataset.LEDGER)
+            if store.coverage.full(self.run):
+                store.as_jsonl(store.root / dataset.Dataset.LEDGER)
             else:
                 store.as_jsonl(store.root / dataset.Dataset.PARTIAL.format(self.run), self.run)
             artifacts = store.root.parent / "artifacts" / self.run
@@ -226,7 +226,7 @@ class Session:
         twelve hidden `ZeroDivisionError`s). The lease releases before anything else can raise.
 
         A store's `latest.jsonl` is reminted only when this run covers every lane the store has
-        known (`Dataset.full`); a partial run lands beside it as `partial-<run>.jsonl`. Receipt
+        known (`Coverage.full`); a partial run lands beside it as `partial-<run>.jsonl`. Receipt
         fragments stay immutable, so a concurrent fetch never sees a rewritten part. The run's
         receipt partitions, event streams and the store objects it referenced are then kept in
         the workspace lake.

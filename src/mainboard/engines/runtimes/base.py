@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING, ClassVar
 from patos import Registry
 
 from ...core.errors import MissionError
-from ...manifest.schema.compute.container import Container, Guardrail
+from ...enums import Guardrail
+from ...manifest.schema.compute.container import Container
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

@@ -5,8 +5,6 @@ from tempfile import gettempdir
 
 from patos import FrozenModel
 
-from ....constants import BYTES_PER_KIBIBYTE
-
 _SCRATCH_ENV = ("LOCALDIR", "PBS_LOCALDIR", "SLURM_TMPDIR", "TMPDIR", "TEMP", "TMP")
 _SCRATCH_DIRS = ("/local", "/scratch/local", "/tmp")  # noqa: S108  reason=fixed cluster-convention scratch roots, not attacker input since=2026-08-16
 
@@ -45,8 +43,3 @@ class Scratch(FrozenModel):
     def available(self) -> bool:
         """Whether a writable node-local scratch tier was found."""
         return self.path is not None
-
-    @property
-    def free_gb(self) -> float:
-        """Free space on the scratch tier in gibibytes."""
-        return self.free_bytes / BYTES_PER_KIBIBYTE**3

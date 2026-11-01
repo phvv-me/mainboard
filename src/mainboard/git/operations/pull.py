@@ -1,7 +1,8 @@
 from typing import TYPE_CHECKING
 
+from ..enums import Outcome
 from ..process import said
-from ..report import Outcome, Step
+from ..report import Step
 
 if TYPE_CHECKING:
     from ..repo import Repo
@@ -27,42 +28,44 @@ class Pull:
         Where the trunk already has commits HEAD lacks, and HEAD is one of the trunk's ancestors,
         switching to the trunk is itself the fast-forward a pull is for. Empty when neither fits.
         """
-        if trunk := repo.attach():
+        if trunk := repo.tracking.attach():
             return trunk
-        trunk = repo.trunk()
+        trunk = repo.tracking.trunk()
         local = f"refs/heads/{trunk}"
-        forward = repo.exists(local) and repo.ancestor("HEAD", newer=local)
+        forward = repo.commits.exists(local) and repo.commits.ancestor("HEAD", newer=local)
         return trunk if forward and repo.git.ok("checkout", "-q", trunk) else ""
 
     @staticmethod
     def _caught_up(repo: Repo, notes: list[str]) -> Step:
         """Level the checked-out branch with its upstream: fast-forward, or merge a divergence."""
-        upstream = repo.upstream()
+        upstream = repo.tracking.upstream()
         levelled = Pull._levelled(repo, upstream)
         if isinstance(levelled, Step):
             return levelled
         if notes := [*notes, levelled] if levelled else notes:
             return Step(repo=repo.name, outcome=Outcome.DONE, detail="; ".join(notes))
         where = f"level with {upstream}" if upstream else "tracking no upstream"
-        return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=f"{repo.branch()} {where}")
+        return Step(
+            repo=repo.name, outcome=Outcome.CURRENT, detail=f"{repo.tracking.branch()} {where}"
+        )
 
     @staticmethod
     def _following(repo: Repo, follow: str) -> Step | str:
         """Move onto the parent's new pointer, saying so; a held step when it cannot."""
-        if not follow or follow == repo.head():
+        if not follow or follow == repo.commits.head():
             return ""
-        verb = ("merge", "--ff-only") if repo.branch() else ("checkout", "--detach")
+        verb = ("merge", "--ff-only") if repo.tracking.branch() else ("checkout", "--detach")
         moved = repo.git.run(*verb, "-q", follow)
-        if not moved.succeeded:
+        if moved.returncode:
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=said(moved))
-        return f"followed the parent to {repo.short(follow)}"
+        return f"followed the parent to {repo.commits.short(follow)}"
 
     @staticmethod
     def _levelled(repo: Repo, upstream: str) -> Step | str:
         """Fast-forward onto `upstream` or merge it in, saying so; a held step if it stops."""
-        ahead, behind = repo.counts(upstream)
+        ahead, behind = repo.commits.counts(upstream)
         if ahead and behind:
-            if stopped := repo.merge(upstream):
+            if stopped := repo.tracking.merge(upstream):
                 detail = (
                     f"diverged from {upstream}: {stopped}; resolve with `git merge {upstream}`"
                 )
@@ -71,18 +74,20 @@ class Pull:
         if not behind:
             return ""
         merged = repo.git.run("merge", "--ff-only", "-q", upstream)
-        if not merged.succeeded:
+        if merged.returncode:
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=said(merged))
         return f"fast-forwarded {behind} from {upstream}"
 
     @staticmethod
     def _reattached(repo: Repo) -> Step | str:
         """Put a detached HEAD back on its trunk, saying so; a held step when off its line."""
-        if repo.branch():
+        if repo.tracking.branch():
             return ""
         if trunk := Pull._attached(repo):
             return f"attached to {trunk}"
-        detail = f"detached at {repo.short('HEAD')}, off the line of {repo.trunk()}"
+        detail = (
+            f"detached at {repo.commits.short('HEAD')}, off the line of {repo.tracking.trunk()}"
+        )
         return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
 
     @staticmethod
@@ -91,9 +96,11 @@ class Pull:
         updated = parent.git.run(
             "submodule", "update", *flags, "--", parent.relative(child), network=True
         )
-        if not updated.succeeded:
+        if updated.returncode:
             return Step(repo=child.name, outcome=Outcome.FAILED, detail=said(updated))
-        return Step(repo=child.name, outcome=Outcome.DONE, detail=f"{done} {child.short('HEAD')}")
+        return Step(
+            repo=child.name, outcome=Outcome.DONE, detail=f"{done} {child.commits.short('HEAD')}"
+        )
 
     def __init__(self, tree: Tree) -> None:
         self.tree = tree
@@ -102,8 +109,8 @@ class Pull:
 
     def _followed(self, parent: Repo, *, child: Repo, old: str) -> Step:
         """Move a foreign checkout to its parent's new pointer, if it sat on the old one."""
-        if child.head() != old:
-            detail = f"left at {child.short('HEAD')}, not the old pointer {old[:7]}"
+        if child.commits.head() != old:
+            detail = f"left at {child.commits.short('HEAD')}, not the old pointer {old[:7]}"
             return Step(repo=child.name, outcome=Outcome.HELD, detail=detail)
         return self._submodule(parent, child=child, done="moved to")
 
@@ -138,7 +145,7 @@ class Pull:
             elif not child.owned and moved:
                 self.steps.append(self._followed(repo, child=child, old=old))
             if child.initialized and child.owned:
-                self._visit(child, follow=new if moved and child.head() == old else "")
+                self._visit(child, follow=new if moved and child.commits.head() == old else "")
 
     def run(self) -> list[Step]:
         """Fetch every owned repository at once, then walk the tree from the root down."""

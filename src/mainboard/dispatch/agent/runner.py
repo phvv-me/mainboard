@@ -13,15 +13,8 @@ from time import monotonic
 from types import ModuleType
 from typing import IO, TYPE_CHECKING, ClassVar
 
-import psutil
-
-from ...core.errors import MissionError
-from ..transport.core import (
-    HostUnreachable,
-    SshTransport,
-    is_transport_failure,
-    terminate_process_tree,
-)
+from ...core import AgentRefused, ProcessTree
+from ..transport.core import HostUnreachable, SshTransport, is_transport_failure
 from .program import constants, exceptions, snapshot, transfer, walking
 
 _AGENT_PACKAGE_BOOTSTRAP_CODE = (
@@ -67,10 +60,6 @@ _SOURCE = _bundled(constants, exceptions, walking, snapshot, transfer)
 _TAIL = 8192
 
 
-class AgentRefused(MissionError):
-    """The agent ran and declined, or failed, and said why on its last line."""
-
-
 class SshLink:
     """A target reached by OpenSSH under one bounded policy.
 
@@ -84,8 +73,7 @@ class SshLink:
 
     def end(self, process: subprocess.Popen[bytes]) -> None:
         """Kill the ssh process tree, ProxyJump children included."""
-        with suppress(psutil.Error):
-            terminate_process_tree(process.pid, force=True)
+        ProcessTree(process).kill()
         process.wait()
 
     def spawn(self, command: str) -> subprocess.Popen[bytes]:

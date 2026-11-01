@@ -24,22 +24,22 @@ def board(python_only: Path) -> Board:
 
 
 def test_install_solves_a_stale_lock_and_locked_refuses_it(mb, python_only: Path) -> None:
-    assert mb("install").code == 0
+    assert mb("dep", "install").code == 0
     assert (python_only / "mb.lock").is_file()
-    assert mb("lock", "--check").code == 0
+    assert mb("dep", "lock", "--check").code == 0
 
-    assert mb("add", "--frozen", "--lang", "python", "six>=1.15").code == 0
-    refused = mb("install", "--locked")
+    assert mb("dep", "add", "--frozen", "--lang", "python", "six>=1.15").code == 0
+    refused = mb("dep", "install", "--locked")
     assert refused.code == 1 and "was not solved from the manifest" in refused.said
 
-    assert mb("lock", "--check").code == 1
+    assert mb("dep", "lock", "--check").code == 1
     assert "six" in (python_only / "mb.lock").read_text(encoding="utf-8")
-    assert mb("lock", "--check").code == 0
-    assert mb("install", "--frozen").code == 0
+    assert mb("dep", "lock", "--check").code == 0
+    assert mb("dep", "install", "--frozen").code == 0
 
 
 def test_as_is_runs_what_is_installed_without_solving(mb, python_only: Path) -> None:
-    assert mb("install").code == 0
+    assert mb("dep", "install").code == 0
     lock = (python_only / "mb.lock").read_bytes()
     (python_only / "mb.toml").write_text(_MANIFEST + '\n[python.deps]\nsix = ">=1.15"\n')
 
@@ -50,14 +50,14 @@ def test_as_is_runs_what_is_installed_without_solving(mb, python_only: Path) -> 
 
 
 def test_a_failed_solve_leaves_the_manifest_and_lock_as_they_were(mb, python_only: Path) -> None:
-    assert mb("install").code == 0
+    assert mb("dep", "install").code == 0
     kept = {name: (python_only / name).read_bytes() for name in ("mb.toml", "mb.lock")}
 
-    refused = mb("add", "--no-install", "--lang", "python", "six>=999")
+    refused = mb("dep", "add", "--no-install", "--lang", "python", "six>=999")
 
     assert refused.code == 1
     assert {name: (python_only / name).read_bytes() for name in kept} == kept
-    assert mb("lock", "--check").code == 0
+    assert mb("dep", "lock", "--check").code == 0
 
 
 def test_upgrade_leaves_a_member_named_by_version(mb, python_only: Path) -> None:
@@ -69,7 +69,7 @@ def test_upgrade_leaves_a_member_named_by_version(mb, python_only: Path) -> None
     manifest = _MANIFEST.replace("\n\n", '\nmembers = ["member"]\n\n') + member
     (python_only / "mb.toml").write_text(manifest, encoding="utf-8")
 
-    assert mb("upgrade", "member", "--no-install").code == 0
+    assert mb("dep", "upgrade", "member", "--no-install").code == 0
     assert (python_only / "mb.toml").read_text(encoding="utf-8") == manifest
 
 

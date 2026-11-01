@@ -14,9 +14,11 @@ import duckdb
 from patos import FrozenModel
 from sqlalchemy import Select, func, or_, select
 
+from ...constants import ALIAS
+from ...core import Disk
 from ...core.errors import MissionError
 from .. import schema
-from ..constants import ALIAS, READERS, WINDOW_BYTES
+from ..constants import READERS, WINDOW_BYTES
 from ..lake import Lake, Session, insert
 from ..storage import blobs
 from ..storage.blobs import Audit, Blobs
@@ -354,11 +356,16 @@ class Keeping:
         staged: a directory standing in for the workspace root, its files indexed where they
             will stand in the tree; a collected transfer is kept from there, never entering it.
 
-        Raises MissionError for a path that is missing or outside this workspace.
+        Raises MissionError for a path that is missing or outside this workspace, and when the
+        files would leave the lake's disk below its floor (`Disk.require`).
         """
         given = [Path(os.path.abspath(path)) for path in paths]
         base = staged or self.root
         sources = self._files(given, root=base)
+        Disk(path=self.lake.home).require(
+            sum(source.stat().st_size for source in sources),
+            doing=f"keeping {len(sources)} file(s) in the lake",
+        )
         self.lake.ready()
         current = dict(self.session.rows(select(schema.evidence.c.path, schema.evidence.c.sha256)))
         indexed = objects = size = 0
@@ -372,7 +379,6 @@ class Keeping:
                 indexed += len(entries)
                 objects += sum(entry.new for entry in entries)
                 size += sum(entry.size for entry in entries if entry.new)
-        kept = Kept(files=len(sources), indexed=indexed, objects=objects, size=size)
         self.lake.append(
             schema.imports,
             [
@@ -380,8 +386,8 @@ class Keeping:
                     "ts": datetime.now(UTC),
                     "source": " ".join(posix(path.relative_to(base)) for path in given),
                     "destination": "evidence_log",
-                    "rows": kept.indexed,
+                    "rows": indexed,
                 }
             ],
         )
-        return kept
+        return Kept(files=len(sources), indexed=indexed, objects=objects, size=size)

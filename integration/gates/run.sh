@@ -1,7 +1,6 @@
 #!/bin/sh
 # usage: run.sh MODE [--report DIR] [--budget SECONDS] [NODEID...]
-# MODE is suite, target (NODEIDs), inspect, seed, ruff, pyrefly, ty, mypy or mcmr. Results go to DIR
-# or else a new temporary folder; SECONDS bounds the whole run and defaults to the mode's limit.
+# integration/gates/README.md lists the modes, the report and the budgets.
 set -eu
 projects=${MB_GATE_PROJECTS:-/Users/pedro/Developer/projects}
 # `uv run` leaves VIRTUAL_ENV on the project environment it ran from, so CI and `mainboard ci`
@@ -23,10 +22,12 @@ done
 case "$mode" in
     suite) limit=900 ;;
     target|inspect) limit=120 ;;
-    seed|ruff|pyrefly|ty|mypy|mcmr) limit=300 ;;
+    seed|ruff|pyrefly|ty|mypy) limit=300 ;;
     *) echo "unknown gate mode: $mode" >&2; exit 64 ;;
 esac
-root=$(mktemp -d /tmp/mb-gate.XXXXXXXX)
+# The root names this launcher, so `mb code doctor` finds the roots of dead runs. It stays short
+# under /tmp: a PostgreSQL socket below it must fit macOS's 104 bytes.
+root=$(mktemp -d "/tmp/mb-gate.$$.XXXXXXXX")
 report=${report:-$(mktemp -d /tmp/mb-gate-report.XXXXXXXX)}
 mkdir -p "$report" "$root/tmp" "$root/cache"
 export MB_GATE_PROJECTS=$projects MB_GATE_ROOT=$root MB_GATE_BUDGET=${budget:-$limit}

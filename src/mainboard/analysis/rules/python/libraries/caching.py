@@ -37,4 +37,4 @@ class InstanceIndependentCachedProperty(Rule, id="PY-CACH0001"):
                       AND i.node_id BETWEEN l.node_id AND l.node_id + l.descendant_count)),
                 false)
         """
-    message = "`{fact_id}` satisfies instance independent cached property"
+    message = "`{fact_id}` is a cached property computing something independent of its instance"

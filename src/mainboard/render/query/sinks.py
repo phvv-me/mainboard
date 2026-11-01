@@ -3,12 +3,14 @@
 import json
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 from patos import FrozenModel
+from pydantic import AfterValidator
 
 from ...log import logger
 from ..human import render_table
+from ..values import visible
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -18,10 +20,14 @@ if TYPE_CHECKING:
 
 _EXTRA_ROWS = 10000
 
+type Shown = Annotated[str, AfterValidator(visible)]
+
 
 class Rendered(FrozenModel):
-    cells: tuple[str, ...]
-    text: str
+    """One row as printed, its controls shown as U+FFFD whichever way it is printed."""
+
+    cells: tuple[Shown, ...]
+    text: Shown
 
     @property
     def size(self) -> int:

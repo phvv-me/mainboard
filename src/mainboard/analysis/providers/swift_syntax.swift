@@ -158,6 +158,37 @@ final class FactsVisitor: SyntaxVisitor {
         [syntax.positionAfterSkippingLeadingTrivia.utf8Offset, name, kind, type, shadowed(type)])
     }
   }
+  func describe(_ declaration: Syntax?) -> (name: String, isStatic: Int) {
+    if let node = declaration?.as(VariableDeclSyntax.self) {
+      return (
+        node.bindings.first?.pattern.trimmedDescription ?? "property",
+        node.modifiers.contains { ["static", "class"].contains($0.name.text) } ? 1 : 0
+      )
+    }
+    if let node = declaration?.as(FunctionDeclSyntax.self) { return (node.name.text, 0) }
+    return (owner(declaration)?.name ?? "declaration", 0)
+  }
+  func appendOptions(_ arguments: LabeledExprListSyntax, _ declared: [Any]) {
+    for argument in arguments where argument.label == nil {
+      let member: MemberAccessExprSyntax?
+      if let call = argument.expression.as(FunctionCallExprSyntax.self) {
+        member = call.calledExpression.as(MemberAccessExprSyntax.self)
+        guard member?.declName.baseName.text == "transformable",
+          call.arguments.count == 1, call.arguments.first?.label?.text == "by"
+        else { continue }
+      } else {
+        member = argument.expression.as(MemberAccessExprSyntax.self)
+        guard member?.declName.baseName.text == "codable" else { continue }
+      }
+      guard let member else { continue }
+      let receiver = member.base?.trimmedDescription ?? ""
+      append(
+        "attribute_options", member,
+        declared + [
+          member.declName.baseName.text, receiver, receiver.isEmpty ? 0 : shadowed(receiver),
+        ])
+    }
+  }
   override func visit(_ node: ImportDeclSyntax) -> SyntaxVisitorContinueKind {
     append("imports", node, [node.path.map { $0.name.text }.joined(separator: ".")])
     return .skipChildren
@@ -240,16 +271,7 @@ final class FactsVisitor: SyntaxVisitor {
     var declaration = node.parent
     while let current = declaration, !current.is(DeclSyntax.self) { declaration = current.parent }
     let ownerID = declaration?.positionAfterSkippingLeadingTrivia.utf8Offset ?? 0
-    var ownerName = "declaration"
-    var isStatic = 0
-    if let node = declaration?.as(VariableDeclSyntax.self) {
-      ownerName = node.bindings.first?.pattern.trimmedDescription ?? "property"
-      isStatic = node.modifiers.contains { ["static", "class"].contains($0.name.text) } ? 1 : 0
-    } else if let node = declaration?.as(FunctionDeclSyntax.self) {
-      ownerName = node.name.text
-    } else if let own = owner(declaration) {
-      ownerName = own.name
-    }
+    let (ownerName, isStatic) = describe(declaration)
     append(
       "attributes", node,
       [
@@ -259,27 +281,12 @@ final class FactsVisitor: SyntaxVisitor {
     if declaration?.is(VariableDeclSyntax.self) == true,
       case .argumentList(let arguments) = node.arguments
     {
-      for argument in arguments where argument.label == nil {
-        let member: MemberAccessExprSyntax?
-        if let call = argument.expression.as(FunctionCallExprSyntax.self) {
-          member = call.calledExpression.as(MemberAccessExprSyntax.self)
-          guard member?.declName.baseName.text == "transformable",
-            call.arguments.count == 1, call.arguments.first?.label?.text == "by"
-          else { continue }
-        } else {
-          member = argument.expression.as(MemberAccessExprSyntax.self)
-          guard member?.declName.baseName.text == "codable" else { continue }
-        }
-        guard let member else { continue }
-        let receiver = member.base?.trimmedDescription ?? ""
-        append(
-          "attribute_options", member,
-          [
-            ownerID, ownerName, enclosing?.id ?? -1, enclosing?.name ?? "",
-            enclosing?.kind ?? "", isStatic, name, shadowed(name),
-            member.declName.baseName.text, receiver, receiver.isEmpty ? 0 : shadowed(receiver),
-          ])
-      }
+      appendOptions(
+        arguments,
+        [
+          ownerID, ownerName, enclosing?.id ?? -1, enclosing?.name ?? "", enclosing?.kind ?? "",
+          isStatic, name, shadowed(name),
+        ])
     }
     return .visitChildren
   }

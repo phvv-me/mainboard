@@ -13,27 +13,32 @@
 # card and per model and asked the card question only on a host with a card, letting a cardless
 # machine read another's rows. Here every declared axis filters, including at the empty coordinate.
 #
-# Evidence is the admissible subset; the store is everything. `passing` and `status` answer claims
-# and read only rows whose producing tree is identified; `scan`, `rows` and `as_jsonl` read every
-# row, because a person opening a ledger wants what was written. Recency is the coordinate a run
-# writes down (`opened_at_ns`), never its name, whose random hex tail used to pick `newest` inside
-# one second; two runs claiming the same instant are refused rather than picked between.
+# Evidence is the admissible subset; the store is everything. `passing` and `Coverage.status`
+# answer claims and read only rows whose producing tree is identified; `scan`, `rows` and
+# `as_jsonl` read every row, because a person opening a ledger wants what was written. Recency is
+# the coordinate a run writes down (`opened_at_ns`), never its name, whose random hex tail used to
+# pick `newest` inside one second; two runs claiming the same instant are refused rather than
+# picked between.
 
 import json
 from datetime import UTC, datetime
+from functools import cached_property
 from itertools import chain
 from typing import TYPE_CHECKING, ClassVar
 
-from ...constants import NANOSECONDS_PER_SECOND
+from patos import FrozenModel, Runtime
+
+from ...constants import NO_TABLE
+from ...core.constants.units import NANOSECONDS_PER_SECOND
 from ...core.errors import MissionError
 from ...state.evidence import EvidenceTree
 from ...state.lake import quoted
-from ...state.relations import Relations, records
+from ...state.relations import Relation, Relations, records
+from ...state.schema import dialect
 from ..artifacts import Artifact
-from ..contract.vocabulary import Outcome
+from ..constants import ADMISSIBILITY, NESTED, OPENED, PROBED
+from ..enums import Admissibility, Outcome
 from ..lanes.coverage import Cell, LaneStatus
-from ..provenance import Admissibility
-from .constants import ADMISSIBILITY, NESTED, NO_TABLE, OPENED, PROBED
 from .ledger import TrialReceipts, wire
 
 if TYPE_CHECKING:
@@ -42,13 +47,14 @@ if TYPE_CHECKING:
 
     from pydantic import JsonValue
 
-    from ...state.relations import Relation
-
 # The two columns every receipt carries, which a coverage read and a current view both group on.
 _LANE, _KEY = "lane", "key"
 
 # Where each run's committed fragments sit under a store.
 _PARTS = "run=*/part-*.parquet"
+
+# A column's name as a SQL identifier, whatever it is spelled with.
+_named = dialect.identifier_preparer.quote_identifier
 
 
 # How a run name spells the second it opened, `20260829T094024Z`, all a run written before the
@@ -58,10 +64,6 @@ STAMP, DATED = "%Y%m%dT%H%M%SZ", 16
 # Where each receipt was written, the fragment's place in `parts` and the row's in its fragment,
 # carried by a read so one ordering covers rows a run wrote within one instant, then dropped.
 _WRITTEN = ("_part", "_row")
-
-# Where a retired generation lands beside a store, and the store's one human-readable file, named
-# once so `retire` moves exactly the ledger `as_jsonl` mints.
-RETIRED, GENERATION, LEDGER = "retired", "generation", "latest.jsonl"
 
 
 class Ambiguous(RuntimeError):
@@ -74,11 +76,6 @@ class Ambiguous(RuntimeError):
             "instant, so any answer here would be arbitrary. Name the run explicitly, or retire "
             "the generation that should not be in the current view."
         )
-
-
-def _named(column: str) -> str:
-    """`column` as a SQL identifier, whatever it is spelled with."""
-    return '"' + column.replace('"', '""') + '"'
 
 
 def _listed(values: Sequence[str]) -> str:
@@ -96,9 +93,17 @@ class Dataset:
     samples: how many passing receipts one cell owes before it is complete.
     """
 
+    # The store's one human-readable file, which `as_jsonl` mints.
+    LEDGER: ClassVar[str] = "latest.jsonl"
+
     # Where a run that did not cover every lane is still written readably, as it may not be
     # `LEDGER`.
     PARTIAL: ClassVar[str] = "partial-{}.jsonl"
+
+    @cached_property
+    def coverage(self) -> Coverage:
+        """What this store's admissible rows say about its lanes."""
+        return Coverage(dataset=self)
 
     @classmethod
     def holding(
@@ -288,22 +293,6 @@ class Dataset:
             for key, value in row.items()
         }
 
-    def full(self, run: str) -> bool:
-        """Whether `run` alone shows every lane this store has ever recorded.
-
-        Only such a run may become `latest.jsonl`: a partial run (one file, a `-k` selection) is
-        still evidence, but reminting from it would drop every lane it did not touch from the one
-        file a person reads.
-        """
-        return self.lanes(run) >= self.lanes()
-
-    def lanes(self, run: str = "") -> frozenset[str]:
-        """Every lane recorded in `run`, or in the whole store when empty."""
-        read = self._read()
-        if run:
-            read = read.filter(f"run = {quoted(run)}")
-        return frozenset(str(lane) for (lane,) in read.project(_LANE).distinct().fetchall())
-
     def passing(self, *, every: bool = False) -> Relation:
         """The store's admissible passing rows, one per cell by default and all of them when asked.
 
@@ -330,82 +319,23 @@ class Dataset:
             raise MissionError("DuckDB ran the receipts' SELECT as a statement that writes")
         return passed
 
-    def retire(self, generation: str, runs: Sequence[str]) -> Path:
-        """Move `runs` into `retired/generation=<name>/` beside this store, the ledger with them.
-
-        Returns the generation directory. A run not in this store is refused by name, since
-        retiring a run that was never here is a typo. The ledger travels into the generation and
-        is reminted from whatever is newest afterwards, or removed when the store is emptied:
-        hand-rolled retirements that moved only the fragments left `latest.jsonl` describing the
-        retired generation in four universes on 2026-08-29 (`recovery_cost` 7a,
-        `contiguous_reduction` 4c, `corrected_law_transfer` 5b, `accuracy_selection` 6d).
-        """
-        held = self.stored
-        missing = [run for run in runs if run not in held]
-        if missing:
-            raise ValueError(
-                f"{self.root} holds no run {', '.join(missing)}, so there is nothing to retire "
-                f"under {generation!r}; it holds {', '.join(sorted(held)) or 'no runs at all'}"
-            )
-        target = self.root.parent / RETIRED / f"{GENERATION}={generation}"
-        target.mkdir(parents=True, exist_ok=True)
-        ledger = self.root / LEDGER
-        if ledger.exists():
-            ledger.replace(target / LEDGER)
-        for run in runs:
-            (self.root / f"run={run}").replace(target / f"run={run}")
-        if self.stored:
-            self.as_jsonl(ledger)
-        return target
-
     def rows(self, run: str = "") -> list[dict[str, JsonValue]]:
         """One run's receipts, the newest run when empty, as plain records with JSON decoded."""
-        chosen = run or self.newest
-        held = records(self.scan().filter(f"run = {quoted(chosen)}"))
-        return [self.decoded(row) for row in held]
+        return [self.decoded(row) for row in records(self.scan(run or self.newest))]
 
-    def scan(self) -> Relation:
+    def scan(self, run: str = "") -> Relation:
         """Every receipt this store has ever held, across every run, in the order written.
 
         An axis a run predates reads empty, the same fact as a lane naming no subject.
         Admissibility a run predates reads `unrecorded`, never admissible. A creation coordinate a
         run predates stays null, since a run that never said when it opened has not claimed to be
         the oldest.
+
+        run: only this run's receipts when given.
         """
         written = ", ".join(_WRITTEN)
-        return self._read().order(written).project(f"* EXCLUDE ({written})")
-
-    def status(self, lane: str, expected: Collection[str], cell: Cell) -> LaneStatus:
-        """One lane's completeness at one cell, against its grid and the samples each key owes.
-
-        expected: the keys the lane's own grid would run, declared by being collected.
-        cell: the coordinate asked at; every declared axis filters, its probe outcome included,
-            since a receipt taken on other silicon or subject does not answer for here.
-
-        Rows from an unidentified tree never count, so a dirty session measures and writes and the
-        next clean one still finds the lane owed: scratch work costs the claim nothing.
-        """
-        names = self.runs
-        pinned = (f"{_named(name)} = {quoted(value)}" for name, value in cell.filters.items())
-        wanted = " AND ".join([f"{_LANE} = {quoted(lane)}", self.admissible, *pinned])
-        found = (
-            self._read()
-            .filter(wanted)
-            .aggregate(f"{_KEY}, count(*), max(list_position({_listed(names)}, run)) - 1", _KEY)
-            .fetchall()
-        )
-        taken = {str(key): (int(count), int(order)) for key, count, order in found}
-        counts = {key: taken.get(key, (0, -1))[0] for key in expected}
-        latest = max((taken[key][1] for key in counts if key in taken), default=-1)
-        return LaneStatus(
-            lane=lane,
-            want=len(counts) * self.samples,
-            have=sum(min(count, self.samples) for count in counts.values()),
-            missing=tuple(sorted(key for key, count in counts.items() if count < self.samples)),
-            run=names[latest] if latest >= 0 else "",
-            cell=cell,
-            node=self.node,
-        )
+        scanned = self._read().order(written).project(f"* EXCLUDE ({written})")
+        return scanned.filter(f"run = {quoted(run)}") if run else scanned
 
     def tables(self, root: Path, *, schema_name: str, run: str = "") -> Relation:
         """Read verified table artifacts across hardware without selecting a winning run.
@@ -415,15 +345,11 @@ class Dataset:
         run: one explicit run, or every run when empty. `_trial` carries JSON provenance;
             ordinary columns retain the experiment's data and units unchanged.
         """
-        receipts = self.scan()
-        if run:
-            receipts = receipts.filter(f"run = {quoted(run)}")
         relations = Relations()
         tables: list[Relation] = []
-        for raw in records(receipts):
+        for raw in records(self.scan(run)):
             receipt = self.decoded(raw)
-            references = receipt.get("artifacts")
-            if not isinstance(references, dict):
+            if not isinstance(references := receipt.get("artifacts"), dict):
                 continue
             metadata = {
                 key: value
@@ -446,3 +372,59 @@ class Dataset:
     def writer(self, run: str, common: Mapping[str, JsonValue]) -> TrialReceipts:
         """This run's writer, into the partition named after it, with the run on every row."""
         return TrialReceipts(self.root / f"run={run}", {"run": run, **common}, nested=self.nested)
+
+
+class Coverage(FrozenModel):
+    """Which lanes a dataset's runs have covered, read through its public `scan` and run order.
+
+    dataset: the store asked.
+    """
+
+    dataset: Runtime[Dataset]
+
+    def full(self, run: str) -> bool:
+        """Whether `run` alone shows every lane this store has ever recorded.
+
+        Only such a run may become `latest.jsonl`: a partial run (one file, a `-k` selection) is
+        still evidence, but reminting from it would drop every lane it did not touch from the one
+        file a person reads.
+        """
+        return self.lanes(run) >= self.lanes()
+
+    def lanes(self, run: str = "") -> frozenset[str]:
+        """Every lane recorded in `run`, or in the whole store when empty."""
+        found = self.dataset.scan(run).project(_LANE).distinct().fetchall()
+        return frozenset(str(lane) for (lane,) in found)
+
+    def status(self, lane: str, expected: Collection[str], cell: Cell) -> LaneStatus:
+        """One lane's completeness at one cell, against its grid and the samples each key owes.
+
+        expected: the keys the lane's own grid would run, declared by being collected.
+        cell: the coordinate asked at; every declared axis filters, its probe outcome included,
+            since a receipt taken on other silicon or subject does not answer for here.
+
+        Rows from an unidentified tree never count, so a dirty session measures and writes and the
+        next clean one still finds the lane owed: scratch work costs the claim nothing.
+        """
+        names = self.dataset.runs
+        pinned = (f"{_named(name)} = {quoted(value)}" for name, value in cell.filters.items())
+        wanted = " AND ".join([f"{_LANE} = {quoted(lane)}", self.dataset.admissible, *pinned])
+        found = (
+            self.dataset.scan()
+            .filter(wanted)
+            .aggregate(f"{_KEY}, count(*), max(list_position({_listed(names)}, run)) - 1", _KEY)
+            .fetchall()
+        )
+        taken = {str(key): (int(count), int(order)) for key, count, order in found}
+        counts = {key: taken.get(key, (0, -1))[0] for key in expected}
+        latest = max((taken[key][1] for key in counts if key in taken), default=-1)
+        samples = self.dataset.samples
+        return LaneStatus(
+            lane=lane,
+            want=len(counts) * samples,
+            have=sum(min(count, samples) for count in counts.values()),
+            missing=tuple(sorted(key for key, count in counts.items() if count < samples)),
+            run=names[latest] if latest >= 0 else "",
+            cell=cell,
+            node=self.dataset.node,
+        )

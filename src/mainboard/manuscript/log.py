@@ -7,10 +7,11 @@
 # entry so the stack stays balanced.
 
 import re
-from enum import StrEnum, auto
 from pathlib import Path, PurePosixPath
 
 from patos import FrozenModel
+
+from .enums import Kind
 
 # TeX breaks every log line at this many characters, so a line exactly this long continues on
 # the next one.
@@ -39,17 +40,6 @@ _LABEL = re.compile(r"LaTeX Warning: Label [`'](?P<name>[^']+)' multiply defined
 _OVERFULL = re.compile(
     r"^Overfull \\[hv]box \((?P<amount>[^)]+)\).*?at lines? (?P<line>\d+)(?:--(?P<last>\d+))?"
 )
-
-
-class Kind(StrEnum):
-    """What a build problem is, the column a reader sorts the report by."""
-
-    ERROR = auto()
-    REFERENCE = auto()
-    CITATION = auto()
-    LABEL = auto()
-    OVERFULL = auto()
-    LIMIT = auto()
 
 
 class Problem(FrozenModel):

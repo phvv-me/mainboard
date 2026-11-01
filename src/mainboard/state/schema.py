@@ -38,7 +38,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.schema import CreateTable
 
-from .constants import ALIAS
+from ..constants import ALIAS
 
 # The SQL every statement is compiled to: DuckDB's, binding `?` placeholders in order.
 dialect = Dialect(paramstyle="qmark")
@@ -99,6 +99,11 @@ receipts = _stamped(
     Column("host", String),
     Column("line", String),
 )
+# One observation per dispatched job. The cloud columns score a rental by what it delivered: `tier`
+# is how the provider sells the machine (Vast datacenter or marketplace, RunPod secure or
+# community), `datacenter` the host or site id, `ready_s` the seconds from create to ssh, and
+# `probe_mbps` the landing download probe. `verdict` is how the landing ended: landed, slow,
+# wrong-card, unreachable, refused or failed. A row from before them reads them as NULL.
 costs = _table(
     "costs",
     Column("provider", String),
@@ -108,6 +113,11 @@ costs = _table(
     Column("t_running", Double),
     Column("t_ended", Double),
     Column("billed_usd", Double),
+    Column("tier", String),
+    Column("datacenter", String),
+    Column("verdict", String),
+    Column("ready_s", Double),
+    Column("probe_mbps", Double),
 )
 quotes = _stamped(
     "quotes",

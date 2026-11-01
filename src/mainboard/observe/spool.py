@@ -9,7 +9,8 @@ from datetime import UTC, datetime
 from time import sleep
 from typing import TYPE_CHECKING
 
-from .frames import Frame, Kind, encode, next_offset, parse_tail
+from ..enums import Kind
+from .frames import Frame, encode, next_offset, parse_tail
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

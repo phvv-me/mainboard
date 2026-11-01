@@ -11,13 +11,16 @@ from pathlib import Path
 # The model asked, and how long one question may take before it counts as unanswered.
 _MODEL = "claude-haiku-5-5"
 _SECONDS = 180
-# Every answer by the digest of the model and its question, so a fix pass asks each once, and
-# the names given so far to each literal, so a value means the same name across a project.
-_CACHE = Path.home() / ".cache/mainboard/analysis/names.json"
 
 
 class Namer:
-    """Identifiers asked of a small model, one question answering a list of them in order."""
+    """Identifiers asked of a small model, one question answering a list of them in order.
+
+    cache: every answer by the digest of the model and its question, so a fix pass asks each
+        once, and the names given so far to each literal, so a value means one name in a project.
+    """
+
+    cache = Path.home() / ".cache/mainboard/analysis/names.json"
 
     @staticmethod
     def _asked(question: str, count: int) -> list[str] | None:
@@ -46,18 +49,18 @@ class Namer:
 
     def __init__(self) -> None:
         try:
-            stored = json.loads(_CACHE.read_text(encoding="utf-8"))
+            stored = json.loads(self.cache.read_text(encoding="utf-8"))
         except FileNotFoundError, json.JSONDecodeError:
             stored = {}
         self.answers: dict[str, list[str]] = stored.get("answers", {})
         self.given: dict[str, list[str]] = stored.get("given", {})
 
     def _save(self) -> None:
-        _CACHE.parent.mkdir(parents=True, exist_ok=True)
+        self.cache.parent.mkdir(parents=True, exist_ok=True)
         stored = {"answers": self.answers, "given": self.given}
-        staged = _CACHE.with_suffix(f".{os.getpid()}.tmp")
+        staged = self.cache.with_suffix(f".{os.getpid()}.tmp")
         staged.write_text(json.dumps(stored, indent=1, sort_keys=True), encoding="utf-8")
-        os.replace(staged, _CACHE)
+        os.replace(staged, self.cache)
 
     def names(self, question: str, count: int) -> list[str] | None:
         """`count` names for `question`, from the cache or else the model."""

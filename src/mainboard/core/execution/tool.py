@@ -1,6 +1,6 @@
 import subprocess
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryFile
 from time import monotonic
@@ -8,6 +8,27 @@ from typing import BinaryIO
 
 from patos import FrozenModel
 from pydantic import Field
+
+
+def captured(
+    argv: Sequence[str], *, timeout: float | None = None, env: Mapping[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """`argv` run without a shell, answering its text output whatever it exits with.
+
+    Raises what `subprocess.run` raises, OSError for a program that cannot start and
+    TimeoutExpired past `timeout` seconds (None for no limit); `ToolRunner.run` answers both.
+
+    env: the child's whole environment, this process's when None.
+    """
+    return subprocess.run(
+        argv,
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+    )
 
 
 class ToolOutput(FrozenModel):

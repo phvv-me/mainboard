@@ -36,7 +36,7 @@ class Workspace:
         self.facts = Facts(self.root, budget)
         atexit.register(budget.close)
         atexit.register(self.facts.close)
-        self.connection = self.facts.db.cursor()
+        self.connection = self.facts.connection.cursor()
         Ducks(cache=folder / "ast.duckdb", budget=budget, exclusive=True).register(
             self.facts, self.root
         )

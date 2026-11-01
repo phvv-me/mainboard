@@ -283,3 +283,12 @@ def test_inspection_statements_render_their_plans_over_real_lines_and_can_be_mat
     assert marker in shown.out and "\\n" not in shown.out
     assert len(shown.out.splitlines()) >= lines and shown.footer.rows > 0
     assert Results(workspace).query(sql).fetchall()
+
+
+@pytest.mark.parametrize("mode", [None, "human", "json"])
+def test_a_cell_holding_controls_prints_them_as_replacement_characters_in_every_mode(
+    render: Callable[..., Rendering], mode: str | None
+) -> None:
+    shown = render("SELECT chr(27) || '[2J' || chr(155) || chr(127) AS cell", mode=mode)
+    assert shown.body.count("\x1b") == shown.body.count("\x9b") == shown.body.count("\x7f") == 0
+    assert "[2J" in shown.body

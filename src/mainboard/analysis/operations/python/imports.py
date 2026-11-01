@@ -1,8 +1,11 @@
-# One import statement a fix row quotes, and what becomes of it once constants leave a module.
+# One import statement a fix row quotes, and what becomes of it once constants leave a module or a
+# name it imports is renamed.
 
 import ast
+import re
 from typing import TYPE_CHECKING, NamedTuple
 
+from ...constants import INITIALIZER_PATH
 from ...edits import Edit, Import, Replace
 from ...findings import Span
 from .source import Module
@@ -19,9 +22,9 @@ class Place(NamedTuple):
 
     @property
     def package(self) -> list[str]:
-        """The package a relative import here starts from: the module itself for `__init__.py`."""
+        """The package a relative import here starts from: the module itself for an initializer."""
         here = self.module.split(".")
-        return here if self.path.endswith("__init__.py") else here[:-1]
+        return here if re.search(INITIALIZER_PATH, self.path) else here[:-1]
 
     def resolved(self, node: ast.ImportFrom) -> str:
         """The dotted module `node` imports from, its leading dots read from here."""
@@ -49,7 +52,8 @@ class Place(NamedTuple):
 class Statement:
     """One import statement a fix row quotes, and its edits once names move to `destination`.
 
-    destination: the dotted module the moved names now live in.
+    destination: the dotted module the moved names now live in, or the module itself when the
+    names are only renamed.
     """
 
     @staticmethod
@@ -98,6 +102,19 @@ class Statement:
             return [Replace(span=self.span, text=self._without(self.node, [alias])), *added]
         return [Replace(span=self.span, text="" if held else statement)]
 
+    def _named(self, alias: ast.alias) -> Span:
+        """Where `alias` spells the name it imports, which no `as` precedes."""
+        first = alias.lineno == 1
+        line = self.span.start_line + alias.lineno - 1
+        column = alias.col_offset + (self.span.start_column if first else 0)
+        return Span(
+            path=self.span.path,
+            start_line=line,
+            start_column=column,
+            end_line=line,
+            end_column=column + len(alias.name.encode()),
+        )
+
     def _reaching(self) -> tuple[str, str]:
         """The import that reaches the destination where this statement reached the old module.
 
@@ -113,6 +130,22 @@ class Statement:
         """The statement as written without the names `dropped`."""
         node.names = [alias for alias in node.names if alias not in dropped]
         return ast.unparse(node)
+
+    def binds(self, name: str) -> bool:
+        """Whether this `from ... import` binds `name` itself, no `as` giving it another name."""
+        return isinstance(self.node, ast.ImportFrom) and any(
+            alias.name == name and alias.asname is None for alias in self.node.names
+        )
+
+    def renamed(self, old: str, *, new: str) -> list[Replace] | None:
+        """The edits importing `old` as `new` where this `from ... import` takes it.
+
+        Each replaces the imported name alone, so an `as` alias keeps the name bound. None for a
+        statement that does not import `old`.
+        """
+        names = self.node.names if isinstance(self.node, ast.ImportFrom) else []
+        taken = [alias for alias in names if alias.name == old]
+        return [Replace(span=self._named(alias), text=new) for alias in taken] or None
 
     def rerouted(self, reaches: Sequence[Mapping], *, moved: Collection[str]) -> list[Edit] | None:
         """The moved `module.NAME` uses of `reaches` read through the constants module.

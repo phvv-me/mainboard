@@ -7,7 +7,7 @@ superscript. One regular expression cuts a span into tokens and SQL names each t
 
 from .....catalog import Function
 from ...constants.manuscripts.reader import GROUP, INSIDE
-from ..reader import quoted
+from ...constants.manuscripts.sql import quoted
 
 _VALUE = (
     "CASE WHEN len(r[2]) = 1 AND contains(substr(u, 3, length(u) - 3), chr(92)) "

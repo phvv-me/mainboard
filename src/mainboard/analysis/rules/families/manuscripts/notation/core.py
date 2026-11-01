@@ -9,10 +9,10 @@ of the row says.
 
 from .....catalog import Family, Function
 from ...constants.manuscripts.core import SPACE_CHARS
-from ..reader import quoted
-from ..sites import caption_heads, heads, marks, occurrences, readings, sites
+from ...constants.manuscripts.sql import quoted
+from ..sites.core import caption_heads, heads, marks, occurrences, readings, sites
 
-_TOKEN = r"\\[A-Za-z]+|\\|[^\\]+"
+_PIECE = r"\\[A-Za-z]+|\\|[^\\]+"
 _LAST = 9223372036854775807
 # The words a notation entry splits a symbol's senses with.
 _SENSES = ("also", "elsewhere", "instead", "sense", "senses")
@@ -29,9 +29,9 @@ class ManuscriptExpanded(Function):
         "array_to_string(list_transform(regexp_extract_all("
         "array_to_string(list_transform(regexp_extract_all("
         "array_to_string(list_transform(regexp_extract_all(text, "
-        f"{quoted(_TOKEN)}), lambda t: coalesce(map_extract_value(aliases, t), t)), ''), "
-        f"{quoted(_TOKEN)}), lambda t: coalesce(map_extract_value(aliases, t), t)), ''), "
-        f"{quoted(_TOKEN)}), lambda t: coalesce(map_extract_value(aliases, t), t)), '')"
+        f"{quoted(_PIECE)}), lambda t: coalesce(map_extract_value(aliases, t), t)), ''), "
+        f"{quoted(_PIECE)}), lambda t: coalesce(map_extract_value(aliases, t), t)), ''), "
+        f"{quoted(_PIECE)}), lambda t: coalesce(map_extract_value(aliases, t), t)), '')"
     )
 
 

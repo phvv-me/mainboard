@@ -286,7 +286,7 @@ class Module(Family):
                      AS executable_statement_count,
                    coalesce(s.function_count, 0)::BIGINT AS function_count,
                    coalesce(s.has_only_imports_and_all, true) AS has_only_imports_and_all,
-                   ends_with(f.path, '__init__.py') AS is_package_initializer,
+                   is_initializer_path(f.path) AS is_package_initializer,
                    {is_test_path("f.path")} AS is_test,
                    (coalesce(s.class_count, 0) + coalesce(s.function_count, 0))::BIGINT
                      AS members_length,

@@ -76,7 +76,7 @@ class Interpolator:
         self.globals: Scope = {
             "config_root": str(root),
             "env": _env,
-            "num_cpus": os.cpu_count,
+            "num_cpus": os.process_cpu_count,
             "arch": platform.machine,
             "os_name": _os_name,
             "exec": _exec,

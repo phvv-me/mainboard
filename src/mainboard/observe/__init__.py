@@ -1,7 +1,8 @@
 # Live observability: a node spools a job's frames to disk and a reader follows them, one frame
 # format byte-offset resumable end to end.
 
-from .frames import Frame, Kind, decode, encode, encoded_length, next_offset, parse_tail
+from ..enums import Kind
+from .frames import Frame, decode, encode, encoded_length, next_offset, parse_tail
 from .spool import Spool, follow
 
 __all__ = [

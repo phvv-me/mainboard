@@ -1,33 +1,37 @@
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated
 
-from cyclopts import App, Parameter
-from patos import FrozenModel, Runtime
-from pydantic import ConfigDict, Field, model_validator
+from cyclopts import Parameter
+from patos import FrozenModel
+from pydantic import ConfigDict, Field
 
 from ...center.readiness.verify import Verification
 from ...center.standalone import Standalone
+from ...ci import LocalLeg, Matrix, Package
 from ...core.errors import MissionError
 from ...lint import Inventory, Linter
 from ...lint.files.git import topmost
 from ...log import logger
 from ...manifest.composing import composition
 from ...manifest.loading import load
-from ...render import mode_of, progress, record
+from ...render import Output, mode_of, progress
 from ...results import Results
-from ..base import Verbs
-from ..help import Help
-from ..options import Output, answers, query_source, sectioned
+from ..constants import TREE
+from ..options import answers, query_source, said, sectioned
+from ..session import Verbs
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from ...ci import Result as CiResult
     from ...lint import Report
 
 # What `query` shows unless asked otherwise.
 _ROWS = 1000
 _BYTES = 10000
+# The columns `code ci` prints.
+_CI_COLUMNS = ("leg", "os", "step", "verdict", "seconds")
 
 
 @Parameter(name="*")
@@ -44,7 +48,7 @@ class Caps(FrozenModel):
     omitted whole; the marker reports displayed rows."""
     timeout: float = 10
     """DuckDB execution limit in seconds, 10 by default; 0 disables it. Timeouts fail the
-    command. A client limit cannot interrupt a blocking Quack operator: `mb lake serve
+    command. A client limit cannot interrupt a blocking Quack operator: `mb data lake serve
     --timeout` sets the server limit (default 10s)."""
 
     @property
@@ -55,29 +59,24 @@ class Caps(FrozenModel):
 
 @Parameter(name="*")
 class Shown(FrozenModel):
-    """Where a query's answer goes: compact rows, JSON, a rich table, or a file."""
+    """Where a query's answer goes: a rich table or compact rows by audience, JSON, or a file."""
 
     model_config = ConfigDict(use_attribute_docstrings=True)
 
     json_: Annotated[bool, Parameter(name="--json")] = False
     """print JSON when no output file is requested. Its row-count/hash/snapshot footer goes to
     stderr to keep the array parseable."""
-    human: bool = False
-    """print a rich table instead of TSV. TSV NULL is bare NULL; text NULL is quoted."""
     out: Path | None = None
     """export a complete new .csv, .parquet, or .json file; display caps and output modes do not
     apply. The execution timeout still applies."""
 
-    @model_validator(mode="after")
-    def _one_mode(self) -> Self:
-        """Refuse both modes at once before the query runs."""
-        mode_of(json_mode=self.json_, human=self.human)
-        return self
-
     @property
     def mode(self) -> str | None:
-        """The render key, `None` for the compact default."""
-        return mode_of(json_mode=self.json_, human=self.human)
+        """The render key: JSON, else a rich table for a person, else TSV for an agent.
+
+        The TSV prints a bare NULL for NULL and quotes a text NULL.
+        """
+        return mode_of(json_mode=self.json_)
 
 
 @Parameter(name="*")
@@ -106,8 +105,6 @@ _SHOWN = Shown()
 class WorkspaceVerbs(Verbs):
     """The `workspace` verbs."""
 
-    app: Runtime[App]
-
     @staticmethod
     def _answered(
         results: Results, source: str | Path, *, project: str, caps: Caps, shown: Shown
@@ -118,10 +115,8 @@ class WorkspaceVerbs(Verbs):
                 query.render(mode=shown.mode, max_rows=caps.max_rows, max_bytes=caps.max_bytes)
                 sys.stdout.flush()
             return
-        if shown.json_ or shown.human or caps.capped:
-            raise MissionError(
-                "--out exports all rows; display caps, --json and --human do not apply"
-            )
+        if shown.json_ or caps.capped:
+            raise MissionError("--out exports all rows; display caps and --json do not apply")
         exported = results.export(source, shown.out, project=project, timeout=caps.timeout)
         logger.result(exported.as_posix())
 
@@ -135,27 +130,61 @@ class WorkspaceVerbs(Verbs):
         return inventory.changed()
 
     @staticmethod
-    def _reported(report: Report, *, json: bool) -> None:
+    def _local(found: Package) -> list[CiResult]:
+        """The gate's steps run here, each step's transcript said as it settles."""
+        leg = LocalLeg(found.root)
+        results = []
+        for result in leg.run(found.definition.on(leg.family)):
+            WorkspaceVerbs._told(result)
+            results.append(result)
+        return results
+
+    @staticmethod
+    def _reported(report: Report, output: Output) -> None:
         """Print a lint report: canonical JSON, or the findings and a summary line."""
-        if json:
-            record(report.model_dump(mode="json"), mode="json", fields=(), title="lint")
-            return
-        if report.failures:
-            logger.result(report.findings())
-        logger.result(report.summary())
+        lines = [report.findings()] if report.failures else []
+        output.print_document(
+            "\n".join([*lines, report.summary()]), report.model_dump(mode="json"), title="lint"
+        )
 
-    def completion(self, shell: Literal["bash", "zsh", "fish"]) -> None:
-        """Print the script that completes this tool's commands and options in a shell.
+    @staticmethod
+    def _told(result: CiResult) -> None:
+        """One settled step's transcript, on stderr and at once, nothing for a step never run."""
+        if transcript := result.transcript:
+            said(transcript)
 
-        Keep it in the shell's startup: `eval "$(mb completion zsh)"` (zsh, bash), or
-        `mb completion fish | source` in fish.
+    def _matrix(self, found: Package) -> list[CiResult]:
+        """The gate run here and on one declared host per other platform, failures said."""
+        planned = Matrix.planned(found, self.session.board("local"))
+        with progress(f"running the gate on {len(planned.legs)} legs"):
+            results = planned.run()
+        for result in results:
+            if result.failed:
+                WorkspaceVerbs._told(result)
+        for family in planned.uncovered:
+            said(f"no leg ran on {family}; declare a host of it in [ci] hosts")
+        return results
+
+    def ci_run(
+        self, package: Path | None = None, *, matrix: bool = False, output: Output = _COMPACT
+    ) -> int:
+        """Run the gate `[tool.mainboard.ci]` declares, exactly as the package's CI job runs it.
+
+        The package is the nearest directory at or above PACKAGE whose pyproject.toml declares a
+        gate, and needs no workspace. Its steps run in order from the package directory and stop
+        at the first failure; each step's output goes to stderr as it settles, the table to
+        stdout. With `--matrix` the gate also runs, at the same time, on every `[ci] hosts` entry
+        of a supported platform this machine is not, the working tree shipped there as it
+        stands, and only failing steps print their output. Exits 1 when any step failed.
 
         Args:
-            shell: the shell the script is for.
+            package: a directory inside the package, the working directory when omitted.
+            matrix: also run on one declared host per other platform, the check before a push.
         """
-        logger.result(
-            self.app.generate_completion(prog_name=self.session.project.name, shell=shell)
-        )
+        found = Package.found((package or Path.cwd()).resolve())
+        results = self._matrix(found) if matrix else WorkspaceVerbs._local(found)
+        output.print_rows([result.row() for result in results], title="ci", columns=_CI_COLUMNS)
+        return 1 if any(result.failed for result in results) else 0
 
     def doctor(
         self,
@@ -204,21 +233,13 @@ class WorkspaceVerbs(Verbs):
             code |= sectioned(alone, output, title="members", heading=True)
         return code
 
-    def help_(self, *query: str) -> None:
-        """Show command help or search shipped docs and Python docstrings without a workspace.
-
-        Args:
-            query: an exact command path such as `batch run`, or words such as `Log.read_table`.
-        """
-        Help(self.app).show(" ".join(query))
-
     def lint(
         self,
         *paths: Path,
         check: bool = False,
         only: str = "",
         staged: bool = False,
-        json: bool = False,
+        output: Output = _COMPACT,
     ) -> int:
         """Fix what can be fixed, then check, over the changed files or everything under PATHS.
 
@@ -238,7 +259,6 @@ class WorkspaceVerbs(Verbs):
                 commit would hold, the file set of the pre-commit hook. It answers to the
                 topmost superproject's workspace, wherever it runs. A fixer rewrites the
                 working file, so the commit stops once and the files are staged again.
-            json: print the report as canonical JSON instead of the findings and a summary line.
         """
         if staged and paths:
             raise MissionError("--staged reads the index; name no paths with it")
@@ -247,7 +267,7 @@ class WorkspaceVerbs(Verbs):
         files = WorkspaceVerbs._files(Inventory(root, manifest.git), paths, staged=staged)
         steps = [step.strip() for step in only.split(",") if step.strip()]
         report = Linter(root, manifest, check=check, only=steps).lint(files)
-        WorkspaceVerbs._reported(report, json=json)
+        WorkspaceVerbs._reported(report, output)
         return 0 if report.clean else 1
 
     def new(
@@ -303,8 +323,8 @@ class WorkspaceVerbs(Verbs):
         """Explore collected results across servers; each query sees newly arrived files.
 
         The lake is attached read-only (writes go to session scratch tables), and DuckLake
-        time travel (`AT (VERSION => n)`) recovers snapshots `lake compact` has not yet expired
-        (older than 30 days).
+        time travel (`AT (VERSION => n)`) recovers snapshots `data lake compact` has not yet
+        expired (older than 30 days).
 
         Views: runs, trials, events, metrics, artifacts, jobs, and every table of the
         workspace's state lake as `lake.<table>` (lake.events, lake.log_lines, lake.costs...).
@@ -328,3 +348,10 @@ class WorkspaceVerbs(Verbs):
             WorkspaceVerbs._answered(results, source, project=project, caps=caps, shown=shown)
         except ValueError as fault:
             raise MissionError(str(fault)) from None
+
+
+_WORKSPACE = WorkspaceVerbs()
+code = TREE.node("code").app(
+    _WORKSPACE.doctor, _WORKSPACE.lint, _WORKSPACE.new, ci=_WORKSPACE.ci_run
+)
+data = TREE.node("data").app(_WORKSPACE.query)

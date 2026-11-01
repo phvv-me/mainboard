@@ -2,9 +2,10 @@
 # it, dispatch it, and watch every target in one view. `receipts` holds the event contract the
 # whole flow publishes through and is the one place those shapes are written down.
 
+from ..enums import Topic
 from .estimate.core import BatchEstimate, Estimator, JobEstimate, platform
 from .estimate.transfer import Transfer, TransferSet
-from .receipts import Event, Journal, Topic, publish
+from .receipts import Event, Journal, publish
 from .runner import Batch
 from .spec import BatchSpec, Selection
 from .watch import BatchStatus, Watch

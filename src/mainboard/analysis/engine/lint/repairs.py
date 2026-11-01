@@ -1,20 +1,23 @@
 """A fix's edit rows as edits, grouped by the finding each one repairs and placed where it is."""
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from ...edits import Append, Create, Edit, Import, Remove, Rename, Replace
 from ...findings import Hit, Span
 from ...operations import Operation
-from ..facts import snake
-
-_FINDING_ROWS_SQL = "SELECT * FROM finding_rows ORDER BY finding_key"
+from ...operations.nodes import NodeOperation, Site
+from ..facts import Query, snake
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
     from ...catalog import Rule
+
+# A finding's key, or the place of an edit row that states none.
+type Key = int | tuple[str, str, int]
+type Groups = defaultdict[Key, list[Edit]]
 
 # The operations a fix row states on whole files.
 _FILED = frozenset({"append", "create", "remove", "rename"})
@@ -30,27 +33,26 @@ _KINDS = {
     "remove": ("removed", "file"),
     "rename": ("renamed", "path"),
     "import": ("added", "import"),
+    "claim": ("claimed", "block"),
 }
 
 
-def grouped(cursor: DuckDBPyConnection, rule: Rule) -> defaultdict[object, list[Edit]]:
+def gathering() -> Query:
+    """The query gathering the sites of a node operation's rows, whose tables a fix must find."""
+    return Query(sql=Site.SQL)
+
+
+def grouped(cursor: DuckDBPyConnection, rule: Rule) -> Groups:
     """`rule`'s fix as edits grouped by the finding they repair.
 
     A rule fixing in Python repairs each finding row; a SQL fix states its edit rows, a row with
     no `finding_key` grouped alone. A row naming a structural operation that refuses withholds
-    its whole group.
+    its whole group. A bundle's parts fix over the findings of their own, whose keys differ.
     """
-    query = rule.edits("finding_rows")
-    result = (
-        cursor.execute(_FINDING_ROWS_SQL)
-        if query is None
-        else cursor.execute(query.sql, query.parameters)
-    )
-    columns = [column for column, *_ in result.description]
-    records = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
-    if query is None:
-        return _repaired_rows(rule, records)
-    return _stated_rows(records)
+    found: Groups = defaultdict(list)
+    for table, fixer in rule.fixers.items():
+        found.update(_fixed_rows(cursor, table, fixer))
+    return found
 
 
 def placed(rule: Rule, group: list[Edit], place: tuple[str, int, str | None] | None) -> dict:
@@ -100,6 +102,21 @@ def _edits(row: Mapping) -> list[Edit] | None:
     return made
 
 
+def _fixed_rows(cursor: DuckDBPyConnection, table: str, fixer: Rule) -> Groups:
+    """`fixer`'s fix over the findings `table` holds, grouped by finding."""
+    query = fixer.edits(table)
+    result = (
+        cursor.execute(f"SELECT * FROM {table} ORDER BY finding_key")
+        if query is None
+        else cursor.execute(query.sql, query.parameters)
+    )
+    columns = [column for column, *_ in result.description]
+    records = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+    if query is None:
+        return _repaired_rows(fixer, records)
+    return _stated_rows(cursor, records, table)
+
+
 def _operated(operation: str, row: Mapping) -> Edit:
     """The file edit an `operation` row states: a new file, text appended, a removal, a rename."""
     match operation:
@@ -114,20 +131,38 @@ def _operated(operation: str, row: Mapping) -> Edit:
     raise ValueError(f"a fix row states an unknown operation {operation!r}")
 
 
-def _repaired_rows(rule: Rule, records: Iterable[dict]) -> defaultdict[object, list[Edit]]:
+def _repaired_rows(rule: Rule, records: Iterable[dict]) -> Groups:
     """Each finding row's repair by `rule`'s Python fix, grouped by its finding."""
-    grouped: defaultdict[object, list[Edit]] = defaultdict(list)
+    grouped: Groups = defaultdict(list)
     for record in records:
         grouped[record.pop("finding_key")].extend(rule.repair(Hit(**record)) or [])
     return grouped
 
 
-def _stated_rows(records: Iterable[dict]) -> defaultdict[object, list[Edit]]:
-    """The edits each row states, grouped by finding, minus the groups a refused row withholds."""
-    grouped: defaultdict[object, list[Edit]] = defaultdict(list)
-    refused: set[object] = set()
+def _sited(cursor: DuckDBPyConnection, records: Iterable[dict]) -> None:
+    """Set the `site` of every row naming a node operation, all gathered by one query.
+
+    A row whose node the facts no longer hold gets none, and its operation refuses.
+    """
+    names = NodeOperation.names()
+    nodal = [record for record in records if record.get("operation") in names]
+    sites = Site.gathered(cursor, {(record["path"], record["node"]) for record in nodal})
+    for record in nodal:
+        if (site := sites.get((record["path"], record["node"]))) is not None:
+            record["site"] = site
+
+
+def _stated_rows(cursor: DuckDBPyConnection, records: Sequence[dict], table: str) -> Groups:
+    """The edits each row states, grouped by finding, minus the groups a refused row withholds.
+
+    A row with no `finding_key` is a group of its own, named by its place in `table`. A row
+    naming a node operation carries the site of its node (`_sited`).
+    """
+    _sited(cursor, records)
+    grouped: Groups = defaultdict(list)
+    refused: set[Key] = set()
     for number, record in enumerate(records):
-        key = record.get("finding_key", ("row", number))
+        key = record.get("finding_key", (table, "row", number))
         if (made := _edits(record)) is None:
             refused.add(key)
         else:

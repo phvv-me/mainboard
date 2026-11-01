@@ -17,19 +17,19 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 from pydantic import TypeAdapter
 
-from ...constants import NANOSECONDS_PER_SECOND
+from ...core.constants.units import NANOSECONDS_PER_SECOND
 from ...core.errors import MissionError
 from ...log import logger
-from ..agent import Digests, Entry, program, walk
-from ..agent.program import native
+from ..agent.program import Digests, Entry, native, walk
+from ..agent.program.constants import DIRECTORY, FILE, LINK
 from ..shared import state_dir
 from ..state.digests import KeptDigests
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
-    from ..agent import Agent, Rules, Scope
-    from ..agent.program import ReceiveSpec
+    from ..agent import Agent
+    from ..agent.program import ReceiveSpec, Rules, Scope
     from ..agent.runner import Sink
 
 # The compression the stream is packed at: the fastest gzip level, since source text still
@@ -102,7 +102,7 @@ class Mirror:
             logger.warning("skipping {}, gone before the stream reached it", entry.path)
 
     def __hashed(self, entry: Entry, digests: Digests) -> Entry:
-        if entry.kind != program.FILE:
+        if entry.kind != FILE:
             return entry
         path = native(str(self.workspace), relative=entry.path)
         return entry._replace(detail=digests.of(path, key=entry.path))
@@ -209,7 +209,7 @@ class Mirror:
                 "mirror deleted {} path(s): {}", len(received.deleted), ", ".join(received.deleted)
             )
         return Pushed(
-            files=sum(entry.kind == program.FILE for entry in local.values()),
+            files=sum(entry.kind == FILE for entry in local.values()),
             sent=received.written,
             bytes=received.bytes,
             deleted=received.deleted,
@@ -253,13 +253,13 @@ class Delta(FrozenModel):
         files = tuple(
             entry
             for path, entry in sorted(local.items())
-            if entry.kind == program.FILE and Delta._is_differs(entry, held.get(path))
+            if entry.kind == FILE and Delta._is_differs(entry, held.get(path))
         )
         stale = tuple(
             path
             for path, theirs in held.items()
             if Delta._stale(local.get(path), theirs)
-            and not protected.matches(path, directory=theirs.kind == program.DIRECTORY)
+            and not protected.matches(path, directory=theirs.kind == DIRECTORY)
         )
         remade = set(stale)
         placed = [
@@ -269,17 +269,15 @@ class Delta(FrozenModel):
         ]
         return cls(
             files=files,
-            directories=tuple(path for path, entry in placed if entry.kind == program.DIRECTORY),
-            links=tuple(
-                (path, entry.detail) for path, entry in placed if entry.kind == program.LINK
-            ),
+            directories=tuple(path for path, entry in placed if entry.kind == DIRECTORY),
+            links=tuple((path, entry.detail) for path, entry in placed if entry.kind == LINK),
             delete=stale,
         )
 
     @staticmethod
     def _is_differs(mine: Entry, theirs: Entry | None) -> bool:
         """Whether the target's copy of a file is missing or holds other bytes or another mode."""
-        if theirs is None or theirs.kind != program.FILE:
+        if theirs is None or theirs.kind != FILE:
             return True
         return (mine.size, mine.detail, mine.executable) != (
             theirs.size,
@@ -292,7 +290,7 @@ class Delta(FrozenModel):
         """Whether the target's entry must go: gone here, of another kind, or linked elsewhere."""
         if mine is None or mine.kind != theirs.kind:
             return True
-        return mine.kind == program.LINK and mine.detail != theirs.detail
+        return mine.kind == LINK and mine.detail != theirs.detail
 
     def request(self, root: str) -> ReceiveSpec:
         """This delta as the receive request the target applies under `root`."""

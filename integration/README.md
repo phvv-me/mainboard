@@ -2,7 +2,7 @@
 
 Every test of mainboard lives here. A stranger should find the tests of a piece of source by its
 path, read any test module in the same order, and add a test without choosing a style. The rules
-below are enforced by `mb refactor` (the id after each rule) and fixed where a fix is mechanical.
+below are enforced by `mb code rules` (the id after each rule) and fixed where a fix is mechanical.
 
 The convention is not Python's alone. Where it is about layout and naming (rules 1 to 3 and 5) it
 is enforced by language-independent `ALL-` rules, with one layout adapter per ecosystem (a
@@ -18,12 +18,14 @@ facts allow.
 1. **The first folder is the source package under test.** `integration/<package>/...` holds the
    tests of `src/mainboard/<package>/` (a top-level module such as `cli.py` counts as one).
    Below it, folders name the subject (`state/lake/`, `state/evidence/`), mirroring the
-   subpackage where there is one. Two folders are not packages: `scenarios/` (several packages
+   subpackage where there is one, except that a folder holding only one folder is collapsed
+   into it (`ALL-FILE0004`: `engines/ecosystems/`, not `engines/compile/ecosystems/`). Two folders are not packages: `scenarios/` (several packages
    through the real `mb`, end to end) and `gates/` (the harness itself). No test module sits
    directly in `integration/`. `ALL-TEST0004`
 2. **One module per subject, `test_<subject>.py`.** A subject is a public class, verb or
    behavior family. A module holds at most 20 members, a folder at most 5 modules; a subject
-   past that becomes a folder named for it. `ALL-TEST0003`, `ALL-FILE0003`, `ALL-FILE0005`
+   past that becomes a folder named for it. `ALL-CEIL0001` (`test_module_members`),
+   `ALL-FILE0003`, `ALL-FILE0005`
 3. **Non-test modules come from a closed vocabulary, one of each per folder:** `conftest.py`
    (fixtures), `constants.py` (named literals the folder's tests share), `fakes.py` (test doubles),
    `builders.py` (factories of inputs), `readers.py` (parsers and parsed-result models for what
@@ -34,7 +36,7 @@ facts allow.
 ## What a test looks like
 
 4. **A test is arrange, one act, assert.** At most 10 statements, no conditionals, no loops over
-   cases. `PY-TEST0011`, `PY-TEST0012`, `PY-TEST0013`
+   cases. `PY-TEST0011`, `PY-CEIL0001` (`test_statements`), `PY-TEST0013`
 5. **The name states the behavior** in at least five words
    (`test_a_lake_verb_refuses_a_path_outside_the_workspace`). Parametrize ids are kebab-case
    descriptions of the situation (`a-symlink-leaving-the-bundle`). `ALL-TEST0006`, `PY-TEST0023`

@@ -225,7 +225,7 @@ def test_query_snapshot_stays_pinned_beside_an_append(workspace: Path, lake: Lak
 
 
 def test_a_plain_query_never_attaches_prepares_or_hashes_a_lake(plain_results: Results) -> None:
-    answers = {
+    answers: dict[str, list[tuple[int | str]]] = {
         "SELECT 1": [(1,)],
         "SELECT 'lake.fake' AS text": [("lake.fake",)],
         "SELECT run, data FROM metrics": [],

@@ -11,9 +11,10 @@ from ..dispatch.jobs import vocabulary
 from ..dispatch.schedulers import is_quota_refusal
 from ..dispatch.shared import Watcher
 from ..dispatch.transport.core import HostUnreachable
+from ..enums import Topic
 from .estimate.core import Estimator
 from .estimate.transfer import Transfer
-from .receipts import Journal, Topic, payload, publish
+from .receipts import Journal, payload, publish
 from .spec import Selection
 
 if TYPE_CHECKING:

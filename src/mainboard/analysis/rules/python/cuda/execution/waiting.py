@@ -1,7 +1,7 @@
 """PY-CUDA rules about the host waiting on the device: reads of device values and timers."""
 
 from .....catalog import Example, Rule
-from ...constants import cuda_paths
+from ...constants import cuda_examples, cuda_paths
 
 
 class HostWaitOnDevice(Rule, id="PY-CUDA0001", applicability="review"):
@@ -23,7 +23,7 @@ class HostWaitOnDevice(Rule, id="PY-CUDA0001", applicability="review"):
           FROM cuda_host_reads() r
           WHERE NOT EXISTS (SELECT 1 FROM cuda_device_code() d
                             WHERE d.fact_id = r.fact_id AND d.function_id = r.scope_id)
-            AND NOT coalesce(list_bool_or(list_transform($exempt, lambda p: regexp_matches(r.path, p))), false)
+            AND NOT coalesce(len($exempt) > 0 AND regexp_matches(r.path, '(?:' || array_to_string($exempt, ')|(?:') || ')'), false)
         ), placed AS (
           SELECT r.*, h.origin_path, h.origin_line,
                  CASE WHEN r.loop_id IS NOT NULL THEN 'loop'
@@ -32,7 +32,7 @@ class HostWaitOnDevice(Rule, id="PY-CUDA0001", applicability="review"):
                       THEN 'serial' ELSE 'once' END AS context
           FROM reads r
           LEFT JOIN (SELECT * FROM cuda_hot()
-                     WHERE NOT coalesce(list_bool_or(list_transform($exempt, lambda p: regexp_matches(origin_path, p))), false)
+                     WHERE NOT coalesce(len($exempt) > 0 AND regexp_matches(origin_path, '(?:' || array_to_string($exempt, ')|(?:') || ')'), false)
                      QUALIFY row_number() OVER (PARTITION BY fact_id, function_id
                                                 ORDER BY hops, origin_path, origin_line) = 1) h
             ON h.fact_id = r.fact_id AND h.function_id = r.scope_id
@@ -136,11 +136,8 @@ def search(values: Vector, key: int) -> int:
             ),
             path="patos/cuda/primitives/search.py",
             context={
-                "pyproject.toml": '[project]\nname = "patos"\nversion = "0"\n',
-                "patos/__init__.py": "",
-                "patos/cuda/__init__.py": "",
+                **cuda_examples.PATOS_PACKAGE,
                 "patos/cuda/backend/__init__.py": "",
-                "patos/cuda/primitives/__init__.py": "",
                 "patos/cuda/backend/decorators.py": "def device(function):\n    return function\n",
                 "patos/cuda/typed.py": (
                     'from .backend.decorators import device\n\n__all__ = ["device"]\n'

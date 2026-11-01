@@ -1,4 +1,4 @@
-from ...trace import Activity
+from ...enums import Activity
 
 # The ActivityKind members kept as typed records, as integers: `int(cupti.ActivityKind.X)`.
 CONCURRENT_KERNEL = 10

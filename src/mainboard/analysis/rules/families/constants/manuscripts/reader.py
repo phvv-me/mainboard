@@ -66,26 +66,6 @@ DISCARDED = DISCARDED_ONE + DISCARDED_TWO + DISCARDED_THREE
 
 MARK = "chr(183)"
 
-_ESCAPE = r"\\(?s:.)"
-
-_DEPTH = 8
-
-
-def _balanced(levels: int) -> str:
-    """A run of text with balanced brace groups nested up to `levels` deep."""
-    inside = rf"(?:[^{{}}\\]|{_ESCAPE})*"
-    for _ in range(levels):
-        inside = rf"(?:[^{{}}\\]|{_ESCAPE}|\{{{inside}\}})*"
-    return inside
-
-
-# The inside of a brace group (nested to _DEPTH levels) and of a bracket group.
-INSIDE = _balanced(_DEPTH - 1)
-
-GROUP = rf"\{{{INSIDE}\}}"
-
-BRACKET = rf"\[(?:[^\[\]\\]|{_ESCAPE}|\[[^\[\]]*\])*\]"
-
 BREAKS = (
     "par",
     "State",
@@ -111,3 +91,23 @@ BREAKS = (
 ARGUED_ONE = ("adjustbox", "array", "longtable", "minipage", "tabular")
 
 ARGUED_TWO = ("tabularx", "tabulary")
+
+_ESCAPE = r"\\(?s:.)"
+
+BRACKET = rf"\[(?:[^\[\]\\]|{_ESCAPE}|\[[^\[\]]*\])*\]"
+
+_DEPTH = 8
+
+
+def _balanced(levels: int) -> str:
+    """A run of text with balanced brace groups nested up to `levels` deep."""
+    inside = rf"(?:[^{{}}\\]|{_ESCAPE})*"
+    for _ in range(levels):
+        inside = rf"(?:[^{{}}\\]|{_ESCAPE}|\{{{inside}\}})*"
+    return inside
+
+
+# The inside of a brace group (nested to _DEPTH levels) and of a bracket group.
+INSIDE = _balanced(_DEPTH - 1)
+
+GROUP = rf"\{{{INSIDE}\}}"

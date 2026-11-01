@@ -1,6 +1,7 @@
 """Rules over `typing.cast` and conversions the types already prove (mcmr's PY-TYPE casts)."""
 
 from ....catalog import Example, Rule
+from ....operations.nodes import Rewrite
 
 _ARGUMENTS = """
     SELECT call_id, count(*) AS argument_count,
@@ -116,10 +117,22 @@ class RedundantBooleanConversion(Rule, id="PY-TYPE0008", applicability="review")
     )
 
 
-class CastCalls(Rule, id="PY-TYPE0009"):
+class CastCalls(Rule, id="PY-TYPE0009", applicability="review"):
     """Every `typing.cast`, an assertion in place of a checked annotation."""
 
-    query = """
+    # Review: the cast may be what keeps a checker quiet, so the proof (ty and pyrefly may not
+    # report more) decides whether the call goes. The call is replaced by its second argument. The
+    # query names the callee, so the pattern need not, whatever the cast is imported as, and
+    # names a node only for a cast written with positional arguments. One with a comment inside is
+    # left alone by the rewrite, since the comment would go with the call. One under a conditional
+    # is left alone too: the dialect's binding parents do not yet include `conditional_expression`,
+    # so a second argument that is itself a conditional would lose its parentheses. So is a cast
+    # with a comment on its statement's line, on the line above it (alone there) or on a line of
+    # the call: the house rule wants a cast's reason stated at the site, and a reasoned cast
+    # (`types.new_class` builds a type no checker can see) is sanctioned, so it stays a finding
+    # for a person to judge and no fix deletes it with its reason left behind.
+    rewrites = (Rewrite(match="$_($T, $X)", to="$X"),)
+    query = r"""
         WITH chosen AS (
           SELECT * FROM core_call
           WHERE qualified_name IN ('typing.cast', 'typing_extensions.cast')
@@ -141,17 +154,86 @@ class CastCalls(Rule, id="PY-TYPE0009"):
         ), written AS (
           SELECT a.file_id, a.call_id,
                  string_agg(syntax_slice(s.content, a.start_line, a.start_column, a.end_line,
-                                         a.end_column), ', ' ORDER BY a.node_id) AS text
+                                         a.end_column), ', ' ORDER BY a.node_id) AS text,
+                 bool_and(NOT a.is_keyword AND a.type NOT IN ('list_splat', 'dictionary_splat'))
+                   AS positional
           FROM core_call_arg a JOIN chosen c USING (file_id, call_id)
           JOIN source_files s ON s.path = c.path
           GROUP BY a.file_id, a.call_id
+        ), nested AS (
+          SELECT c.file_id, c.call_id, k.path AS home, k.start_line AS opens, k.end_line AS closes,
+                 p.type AS parent_type
+          FROM chosen c JOIN ast_nodes k ON k.path = c.path AND k.node_id = c.call_id
+          JOIN ast_nodes p ON p.path = k.path AND p.node_id = k.parent_id
+        ), stated AS (
+          SELECT n.file_id, n.call_id, max_by(s.start_line, s.node_id) AS first_line
+          FROM nested n
+          JOIN ast_nodes s ON s.path = n.home AND s.node_id <= n.call_id
+            AND n.call_id <= s.node_id + s.descendant_count
+          JOIN ast_nodes b ON b.path = s.path AND b.node_id = s.parent_id
+            AND b.type IN ('block', 'module')
+          GROUP BY n.file_id, n.call_id
+        ), reasoned AS (
+          SELECT DISTINCT n.file_id, n.call_id
+          FROM nested n JOIN stated t USING (file_id, call_id)
+          JOIN ast_nodes m ON m.path = n.home AND m.type = 'comment'
+          LEFT JOIN source_lines() l ON l.path = m.path AND l.line = m.start_line
+          WHERE m.start_line BETWEEN n.opens AND n.closes OR m.start_line = t.first_line
+             OR (m.start_line = t.first_line - 1 AND regexp_matches(l.text, '^\s*#'))
         )
         SELECT path, start_line, start_column,
           CASE WHEN second_text IS NOT NULL
                THEN '`cast` to `' || first_text || '` asserts about `' || second_text
                     || '` in place of a checked annotation'
                ELSE '`cast(' || coalesce(w.text, '')
-                    || ')` asserts a type in place of a checked annotation' END AS message
+                    || ')` asserts a type in place of a checked annotation' END AS message,
+          CASE WHEN w.positional AND coalesce(n.parent_type, '') <> 'conditional_expression'
+                    AND r.call_id IS NULL
+               THEN call_id END AS node
         FROM chosen LEFT JOIN arguments USING (file_id, call_id)
         LEFT JOIN written w USING (file_id, call_id)
+        LEFT JOIN nested n USING (file_id, call_id)
+        LEFT JOIN reasoned r USING (file_id, call_id)
     """
+    examples = (
+        Example(
+            bad='from typing import cast\n\n\ndef first(row):\n    return cast(int, row["a"])\n',
+            good='def first(row):\n    return row["a"]\n',
+        ),
+        Example(
+            bad="import typing\n\n\ndef scaled(a, b):\n    return typing.cast(int, a + b) * 2\n",
+            good="def scaled(a, b):\n    return (a + b) * 2\n",
+        ),
+        Example(
+            bad="import typing as t\n\n\ndef wrapped(x):\n    return t.cast(int, t.cast(str, x))\n",
+            good="def wrapped(x):\n    return x\n",
+        ),
+        Example(
+            bad="from typing import cast\n\n\ndef raw(x):\n    return cast(\n        int,\n        x,  # the raw value\n    )\n",
+            good="from typing import cast\n\n\ndef raw(x):\n    return cast(\n        int,\n        x,  # the raw value\n    )\n",
+        ),
+        Example(
+            bad="from typing import cast\n\n\ndef named(x):\n    return cast(typ=int, val=x)\n",
+            good="from typing import cast\n\n\ndef named(x):\n    return cast(typ=int, val=x)\n",
+        ),
+        Example(
+            bad="from typing import cast\n\n\ndef pick(a, b, c, d):\n    return cast(int, a if b else c) if d else 0\n",
+            good="from typing import cast\n\n\ndef pick(a, b, c, d):\n    return cast(int, a if b else c) if d else 0\n",
+        ),
+        Example(
+            bad='from typing import cast\n\n\ndef show(x):\n    return f"{cast(dict, {x: 1})}"\n',
+            good='def show(x):\n    return f"{ ({x: 1}) }"\n',
+        ),
+        Example(
+            bad='import types\nfrom typing import cast\n\n\ndef build(name):\n    # cast: new_class makes a type no checker can see\n    return cast("type[Experiment]", types.new_class(name))\n',
+            good='import types\nfrom typing import cast\n\n\ndef build(name):\n    # cast: new_class makes a type no checker can see\n    return cast("type[Experiment]", types.new_class(name))\n',
+        ),
+        Example(
+            bad="from typing import cast\n\n\ndef first(row):\n    return cast(int, row[0])  # cast: the schema says int\n",
+            good="from typing import cast\n\n\ndef first(row):\n    return cast(int, row[0])  # cast: the schema says int\n",
+        ),
+        Example(
+            bad="from typing import cast\n\n\ndef first(row, n):\n    n += 1  # counted\n    return cast(int, row[n])\n",
+            good="def first(row, n):\n    n += 1  # counted\n    return row[n]\n",
+        ),
+    )

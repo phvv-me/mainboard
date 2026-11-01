@@ -13,14 +13,14 @@ false positive.
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Annotated
 
-from cyclopts import Parameter
 from patos import FrozenModel
 
-from ....log import logger
+from ....render import Output
 from ..report import Report
 from ..workspace import Workspace
+
+_COMPACT = Output()
 
 _SHOWN = 40
 _KINDS = ("import", "call", "reference")
@@ -227,14 +227,13 @@ def uses(
     symbol: str,
     *,
     root: Path = Path(),
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
     memory: str = "2GB",
 ) -> None:
     """Where a function, class, method or constant is defined and who imports or calls it.
 
     symbol: its name or the tail of its dotted name (`Board`, `board.Board`, `Board.verdicts`).
     root: the project to analyze.
-    as_json: print JSON for a program.
     memory: a DuckDB memory limit such as `4GB`.
     """
-    logger.result(Symbol(Workspace(root, memory=memory)).report(symbol).render(as_json=as_json))
+    Symbol(Workspace(root, memory=memory)).report(symbol).show(output)

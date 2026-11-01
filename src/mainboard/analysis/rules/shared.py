@@ -1,6 +1,7 @@
 """SQL expressions every rule may call, installed as scalar macros."""
 
 from ..catalog import Function, Relation
+from ..constants import INITIALIZER_PATH
 
 
 class Trimmed(Function):
@@ -28,6 +29,14 @@ class NodeText(Function):
     byte_length: int
 
     expression = "decode(array_slice(encode(source), byte_start + 1, byte_start + byte_length))"
+
+
+class IsInitializerPath(Function):
+    """Whether a path is a package's initializer, `__init__.py` or its stub `__init__.pyi`."""
+
+    path: str
+
+    expression = f"regexp_matches(path, '{INITIALIZER_PATH}')"
 
 
 class SourceLines(Relation):

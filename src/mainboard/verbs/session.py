@@ -38,8 +38,8 @@ class Session(FrozenModel):
     def installed(self, env: str) -> Pixi:
         """The pixi holding `env` here, refused when `env` was never installed on this machine."""
         root = self.workspace_root()
-        pixi = Provisioner(root, load(self.project.manifest(root))).pixi_for(env)
-        if not pixi.ready(env):
+        pixi = Provisioner(root, load(self.project.manifest(root))).shard(env).pixi
+        if not pixi.prefix(env).ready:
             raise MissionError(
                 f"environment {env!r} is not installed here; run `mb install {env}`"
             )
@@ -49,7 +49,7 @@ class Session(FrozenModel):
         """Hand this process to pixi's `verb` over the installed `env`, frozen to its lock."""
         pixi = self.installed(env)
         argv = [str(pixi.executable), verb, "--frozen", "-e", env, *pixi.scope(), *arguments]
-        become(argv[0], argv, env={**os.environ, **pixi.overrides})
+        become(argv[0], argv, env={**os.environ, **pixi.declared.overrides})
 
     def ssh_hosts(self) -> list[str]:
         manifest = holding(self.project.manifest(self.workspace_root()))
@@ -57,3 +57,9 @@ class Session(FrozenModel):
 
     def workspace_root(self) -> Path:
         return self.root or self.project.find_root(Path.cwd())
+
+
+class Verbs(FrozenModel):
+    """A noun's verbs, bound to the session every verb of a CLI run reads alike."""
+
+    session: Session = Field(default_factory=Session)

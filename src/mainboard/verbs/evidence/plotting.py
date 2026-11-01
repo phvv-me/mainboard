@@ -1,4 +1,4 @@
-"""`paper plot`: a chart drawn from a local SELECT with Seaborn and Matplotlib.
+"""`data paper plot`: a chart drawn from a local SELECT with Seaborn and Matplotlib.
 
 The CLI loads this module by name only when the verb is typed: importing the plotting stack takes
 over a second, which no other verb should pay.
@@ -19,14 +19,15 @@ from ...log import logger
 from ...manifest.loading import load_plot_config
 from ...manifest.schema.figures.plot import Chart, PlotStyle
 from ...results import Results
+from ..constants import TREE
 from ..options import query_source
 from ..session import Session
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+    from ...manifest.root import Manifest
     from ...manifest.schema.figures import figure as figure_schema
-    from ...manifest.schema.root import Manifest
 
 # The modules a plot draws with, which the plot extra brings; another missing one is a real fault.
 _PLOT_EXTRA = frozenset({"seaborn", "matplotlib", "pandas"})
@@ -162,3 +163,8 @@ def plot(
         logger.result(path.as_posix())
     for stamp in results.provenance:
         logger.result(stamp.footer)
+
+
+# `data paper plot` loads this module by name itself, as `plot`; the frozen cutok artifact's
+# README runs it as `mb plot`, the alias TREE keeps.
+TREE.node("data paper").bind(plot)

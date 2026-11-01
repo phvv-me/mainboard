@@ -24,6 +24,7 @@ Guard = pytest.importorskip(
 
 _WRITE = os.O_WRONLY | os.O_CREAT
 _PROOF = Path(os.environ.get("MB_GATE_ROOT", "/nonexistent")) / "os-isolation-proved"
+_CACHE = "home/Library/Caches/mb/duckdb" if sys.platform == "darwin" else "cache/mb/duckdb"
 
 
 @pytest.mark.parametrize("live", ["MB_GATE_PROJECTS", "MB_GATE_WORKTREE"])
@@ -124,11 +125,9 @@ def test_postgres_is_a_temporary_catalog(postgres: str) -> None:
     assert done.stdout.endswith("\n\n")  # listen_addresses is empty: no TCP listener.
 
 
-def test_seeded_extensions_copy_without_user_duckdb_or_source_mutation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-
+@pytest.fixture
+def extension(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The extension a seed folder holds, beside a user home with a private DuckDB config."""
     home = tmp_path / "source-home"
     (home / ".duckdb").mkdir(parents=True)
     (home / ".duckdb/config").write_text("private user settings", encoding="utf-8")
@@ -138,12 +137,33 @@ def test_seeded_extensions_copy_without_user_duckdb_or_source_mutation(
     parser.write_bytes(b"installed extension")
     monkeypatch.setattr(runner, "_SEED", seed)
     monkeypatch.setattr(Path, "home", lambda: home)
+    return parser
+
+
+@pytest.fixture
+def worker(tmp_path: Path) -> runner.Gate:
+    """A gate worker rooted in `tmp_path`, which has seeded nothing yet."""
     worker = runner.Gate.__new__(runner.Gate)
     worker.root = tmp_path / "worker"
-    worker._seed_extensions()
-    cache = "home/Library/Caches/mb/duckdb" if sys.platform == "darwin" else "cache/mb/duckdb"
-    copied = worker.root / cache / "sitting_duck.duckdb_extension"
+    return worker
+
+
+@pytest.mark.usefixtures("extension")
+def test_seeded_extensions_are_copied_into_the_workers_cache(worker: runner.Gate) -> None:
+    worker.seed_extensions()
+    copied = worker.root / _CACHE / "sitting_duck.duckdb_extension"
     assert copied.read_bytes() == b"installed extension"
+
+
+@pytest.mark.usefixtures("extension")
+def test_seeding_extensions_copies_nothing_of_the_users_duckdb_home(worker: runner.Gate) -> None:
+    worker.seed_extensions()
     assert not (worker.root / "home/.duckdb").exists()
-    copied.write_bytes(b"worker modification")
-    assert parser.read_bytes() == b"installed extension"
+
+
+def test_a_worker_modifying_its_extension_leaves_the_seed_untouched(
+    worker: runner.Gate, extension: Path
+) -> None:
+    worker.seed_extensions()
+    (worker.root / _CACHE / "sitting_duck.duckdb_extension").write_bytes(b"worker modification")
+    assert extension.read_bytes() == b"installed extension"

@@ -17,7 +17,7 @@ from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ConfigDict
 
-from ..dispatch import constants
+from ..constants import POLL_SECONDS
 from .pulse import Pulse
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ class Patience(FrozenModel):
     stall: float = _STALL_SECONDS
     """with `--wait`, seconds a running job may print nothing on an idle card before the wait
     stops and exits 4; 0 never calls a job stalled."""
-    interval: Annotated[float, Parameter(parse=False)] = constants.POLL_SECONDS
+    interval: Annotated[float, Parameter(parse=False)] = POLL_SECONDS
     """seconds between sweeps."""
 
 

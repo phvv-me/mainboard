@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 from patos import FrozenModel
 
 from ...trace import KernelTrace, MemcpyTrace
-from .bindings import loaded
+from . import bindings
 from .constants import CONCURRENT_KERNEL, MEMCPY
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ class Delivery:
         """Subscribe the buffer callbacks, once for the process."""
         if cls.registered:
             return
-        api = loaded()
+        api = bindings.cupti
         api.activity_register_callbacks(cls.requested, cls.completed)
         cls.domains[api.ActivityKind.RUNTIME] = api.CallbackDomain.RUNTIME_API
         cls.domains[api.ActivityKind.DRIVER] = api.CallbackDomain.DRIVER_API

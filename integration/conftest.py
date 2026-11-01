@@ -5,20 +5,27 @@ import importlib.util
 import io
 import json
 import os
+import pty
+import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Iterator, Sequence
+import threading
+import time
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 
+import psutil
 import pytest
 from hypothesis import settings
 from patos import FrozenModel
 
 import mainboard
-from mainboard import MissionError, logger
-from mainboard.cli import build
+from mainboard import MissionError, cli, logger
+from mainboard.analysis.operations.model import Namer
 
-from .constants import MB, SCRIPTS
+from .builders import git
+from .constants import MB, ROOMY, SCRIPTS
+from .fakes import disks
 from .legacy import LegacyRuntime
 
 # Every property runs without Hypothesis's example database (a sandbox cannot write one) and
@@ -108,7 +115,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     others = [path for path in os.environ.get("PYTHONPATH", "").split(os.pathsep) if path]
     os.environ["PYTHONPATH"] = os.pathsep.join([source, *(p for p in others if p != source)])
     root = Path(os.environ.get("MB_GATE_ROOT", "/nonexistent-M00-root"))
-    if os.environ.get("MB_GATE_INSPECT") != "1" and not (root / "os-isolation-proved").is_file():
+    isolated = os.environ.get("MB_GATE_INSPECT") == "1" or (root / "os-isolation-proved").is_file()
+    if not (isolated or session.config.option.collectonly):
         raise pytest.UsageError(
             "M00-OS: use sh integration/gates/run.sh suite; fallback forbidden"
         )
@@ -136,6 +144,18 @@ def pytest_collection_modifyitems(items: Sequence[pytest.Item]) -> None:
 def _own_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Start each test in its own empty directory: the checkout that ran it names no workspace."""
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _own_machine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep each test off the state of the machine running it.
+
+    Its names stay out of the model-answer cache under the user's home, and every disk it asks
+    about has room far above the floor large writers keep (`Disk`), so no test passes or fails by
+    the machine's free space; a test of the floor sets its own.
+    """
+    monkeypatch.setattr(Namer, "cache", tmp_path / "names.json")
+    monkeypatch.setattr(shutil, "disk_usage", disks(ROOMY))
 
 
 def _pg(name: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -178,6 +198,43 @@ def postgres(tmp_path: Path, request: pytest.FixtureRequest) -> str:
     return f"host={sockets} dbname=postgres user=gate"
 
 
+@pytest.fixture
+def running() -> Iterator[Callable[..., tuple[subprocess.Popen[bytes], list[psutil.Process]]]]:
+    """Start `sh -c script` once `workers` processes it started are up, answering both.
+
+    A script ending in `wait` keeps those processes alive. Every shell and every process it
+    started is killed when the test ends.
+    """
+    started: list[tuple[subprocess.Popen[bytes], list[psutil.Process]]] = []
+
+    def start(
+        script: str, *, workers: int = 2
+    ) -> tuple[subprocess.Popen[bytes], list[psutil.Process]]:
+        shell = subprocess.Popen(
+            ["sh", "-c", script],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        members: list[psutil.Process] = []
+        deadline = time.monotonic() + 10
+        while len(members) < workers and time.monotonic() < deadline:
+            time.sleep(0.02)
+            members = psutil.Process(shell.pid).children(recursive=True)
+        started.append((shell, members))
+        assert len(members) >= workers
+        return shell, members
+
+    yield start
+
+    for shell, members in started:
+        shell.kill()
+        for member in members:
+            with contextlib.suppress(psutil.Error):
+                member.kill()
+        shell.wait()
+
+
 class Ran(FrozenModel):
     """One finished `mb` process."""
 
@@ -188,6 +245,33 @@ class Ran(FrozenModel):
     @property
     def said(self) -> str:
         return self.out + self.err
+
+
+@pytest.fixture
+def at_a_terminal(workspace: Path) -> Callable[..., Ran]:
+    """A process in `workspace` with its three standard streams on one terminal, as a person's.
+
+    What it prints is read while it runs, since a terminal holds about a kilobyte and a person's
+    table would block its writer for good; a process still running after 120 s is killed.
+    """
+
+    def run(argv: Sequence[str], env: Mapping[str, str] | None = None) -> Ran:
+        primary, secondary = pty.openpty()
+        said = bytearray()
+        with subprocess.Popen(
+            argv, cwd=workspace, env=env, stdin=secondary, stdout=secondary, stderr=secondary
+        ) as child:
+            os.close(secondary)
+            watchdog = threading.Timer(120, child.kill)
+            watchdog.start()
+            with contextlib.suppress(OSError):
+                while chunk := os.read(primary, 65536):
+                    said += chunk
+            watchdog.cancel()
+        os.close(primary)
+        return Ran(code=child.returncode, out=said.decode(errors="replace"), err="")
+
+    return run
 
 
 @pytest.fixture
@@ -247,7 +331,7 @@ def in_process(workspace: Path) -> Callable[..., Ran]:
             contextlib.redirect_stderr(err),
         ):
             try:
-                code = build()(args, exit_on_error=False)
+                code = cli.Root.cli(cli.TREE).meta(cli.TREE.rewritten(args), exit_on_error=False)
             except SystemExit as status:
                 code = status.code
             except MissionError as fault:
@@ -275,29 +359,6 @@ def mb(workspace: Path, request: pytest.FixtureRequest) -> Iterator[Callable[...
         assert [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()] == [
             {"gpu_name": ["RTX4090"], "min_gpu_count": 1, "max_gpu_count": 1}
         ]
-
-
-def git(where: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    """Run git in `where`, local-path submodules allowed and an author named."""
-    settings = ["protocol.file.allow=always", "user.name=it", "user.email=it@example.invalid"]
-    flags = [word for setting in settings for word in ("-c", setting)]
-    return subprocess.run(
-        ["git", "-C", str(where), *flags, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-
-
-def committed(where: Path) -> Path:
-    """A repository at `where` holding one commit."""
-    where.mkdir(parents=True)
-    git(where, "init", "--quiet", "--initial-branch=main")
-    (where / "README").write_text("one\n", encoding="utf-8", newline="\n")
-    git(where, "add", "README")
-    git(where, "commit", "--quiet", "-m", "one")
-    return where
 
 
 @pytest.fixture

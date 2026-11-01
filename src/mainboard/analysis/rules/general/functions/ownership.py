@@ -256,7 +256,7 @@ class SingleUseTrivialHelper(Rule, id="ALL-FUNC0002", applicability="review"):
           AND NOT is_pass_body AND NOT is_raise_body
           AND NOT list_contains($ignore_names::VARCHAR[], name)
     """
-    message = "`{fact_id}` satisfies single use trivial helper"
+    message = "`{fact_id}` is a private one-line helper referenced from one place only"
     examples = (
         Example(
             bad=(
@@ -305,7 +305,7 @@ class ClassOwnedModuleHelper(Rule, id="ALL-FUNC0003", applicability="review"):
           AND sole_reference_owner_definition_start_line IS NOT NULL
           AND NOT list_contains($ignore_names::VARCHAR[], name)
     """
-    message = "`{fact_id}` satisfies class owned module helper"
+    message = "`{fact_id}` is a private module function that only one method of a class uses"
     examples = (
         Example(
             bad=(
@@ -407,7 +407,7 @@ class UnnecessaryOneLineConcreteFunction(Rule, id="ALL-FUNC0004", applicability=
                             AND functions_decorator_name(x.decorator)
                                 NOT IN ('staticmethod', 'classmethod'))
     """
-    message = "`{fact_id}` satisfies unnecessary one line concrete function"
+    message = "`{fact_id}` is a one-line nested function referenced too few times to earn its name"
     examples = (
         Example(
             bad=(

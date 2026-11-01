@@ -16,8 +16,8 @@ from pathspec import GitIgnoreSpec
 from patos import FrozenModel
 
 from ...core.project import Project
-from ...core.section import Section, Verdict
-from .workstation import abbreviated
+from ...core.section import Section, abbreviated
+from ...enums import Verdict
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -154,9 +154,8 @@ class Portability:
             prefix = "" if repo.name == "." else f"{repo.name}/"
             found += [
                 (prefix + relative, path)
-                for relative in repo.git.run("ls-files", "-z").stdout.split("\0")
-                if relative
-                and not self.excluded.match_file(prefix + relative)
+                for relative in repo.worktree.tracked()
+                if not self.excluded.match_file(prefix + relative)
                 and any(
                     fnmatch(relative, pattern) or fnmatch(relative.rsplit("/", 1)[-1], pattern)
                     for pattern in _SCRIPTS

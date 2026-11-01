@@ -7,19 +7,18 @@
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from enum import StrEnum, auto
 from functools import cached_property, partial
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 from pydantic import Field
 
-from ..constants import BYTES_PER_GB
+from ..core.constants.units import BYTES_PER_GB
 from ..core.errors import MissionError
-from ..core.section import Verdict
 from ..dispatch.backends.base import Credentials, ProviderBackend, route
 from ..dispatch.backends.capabilities import Account, Inventory
 from ..dispatch.transport.core import HostUnreachable, SshTransport
+from ..enums import Access, Verdict
 from ..probe.readings.snapshot import HostFacts
 from ..probe.system import System
 from ..state.storage.holds import Holdings
@@ -51,18 +50,6 @@ _RENTAL = "rental"
 # fault (an `HTTPError` 4xx included), `MissionError` a backend refusing before the network, and
 # `ValueError` a provider answering something unreadable.
 _PROBE_FAULTS = (HostUnreachable, MissionError, OSError, ValueError)
-
-
-class Access(StrEnum):
-    """How usable one compute path is right now."""
-
-    HERE = auto()
-    PROVISIONED = auto()
-    REACHABLE = auto()
-    UNREACHABLE = auto()
-    KEYED = auto()
-    UNKEYED = auto()
-    RENTED = auto()
 
 
 class ComputePath(FrozenModel):

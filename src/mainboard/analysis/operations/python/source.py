@@ -42,18 +42,27 @@ _LITERAL = (
 
 
 class Block(NamedTuple):
-    """One top-level definition with the comment lines right above it.
+    """One top-level definition with the comment lines right above it and those ending its body.
 
     first: the first line, its leading comments included.
-    last: the definition's last line.
+    last: the definition's last line, the comments ending its body included.
     text: those lines as written.
     shape: the definition's syntax tree, dumped, which two spellings of one value share.
+    heads: the paragraphs of the module's header comment that describe the definition, which go
+    with it when it moves.
     """
 
     first: int
     last: int
     text: str
     shape: str
+    heads: tuple[Block, ...] = ()
+
+    @property
+    def whole(self) -> str:
+        """The text that moves: the header paragraphs of the definition, parted by a bare `#`."""
+        comments = "#\n".join(head.text for head in self.heads)
+        return comments + ("#\n" if comments and self.text.startswith("#") else "") + self.text
 
 
 class Module:
@@ -68,6 +77,26 @@ class Module:
             return False
         kept = not literal or (value is not node and Module._is_literal(value))
         return kept and (not tail or tail.startswith("#"))
+
+    @staticmethod
+    def _ending(node: ast.stmt, lines: Sequence[str]) -> int:
+        """The last line of `node`, the comments ending the body of a class or function included.
+
+        Those are the comment lines after its last statement that are indented past `node`, which
+        the syntax tree leaves out; blank lines between them do not part them.
+        """
+        last = node.end_lineno or node.lineno
+        if not isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            return last
+        indent = node.col_offset
+        inside = takewhile(
+            lambda line: (
+                not line.strip()
+                or (line.lstrip().startswith("#") and len(line) - len(line.lstrip()) > indent)
+            ),
+            lines[last:],
+        )
+        return last + max((n for n, line in enumerate(inside, 1) if line.strip()), default=0)
 
     @staticmethod
     def _is_literal(node: ast.AST) -> bool:
@@ -131,7 +160,7 @@ class Module:
         lines = self.content.splitlines(keepends=True)
         if len(assigned) != 1 or not Module._alone(node := assigned[0], lines, literal=literal):
             return None
-        last = node.end_lineno or node.lineno
+        last = Module._ending(node, lines)
         start = min([node.lineno, *(each.lineno for each in getattr(node, "decorator_list", []))])
         above = takewhile(lambda line: line.lstrip().startswith("#"), reversed(lines[: start - 1]))
         first = start - len(list(above))

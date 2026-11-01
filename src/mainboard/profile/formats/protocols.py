@@ -1,5 +1,5 @@
 # The trace-event shapes profiling writes, and the CUPTI activity records it reads, typed by
-# shape since CUPTI's own Python bindings carry no types.
+# shape since CUPTI's buffer callback hands over records its bindings leave untyped.
 
 from typing import Protocol
 

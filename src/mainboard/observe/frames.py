@@ -4,10 +4,10 @@
 from datetime import (
     datetime,  # ruff:ignore[typing-only-standard-library-import]  reason=pydantic validates Frame.at with this class at runtime since=2026-08-17
 )
-from enum import StrEnum, auto
 from typing import TYPE_CHECKING
 
 from ..core.base import Declared
+from ..enums import Kind
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -15,15 +15,6 @@ if TYPE_CHECKING:
 _SCHEMA_VERSION = 1
 
 type JSONValue = str | int | float | bool | dict[str, JSONValue] | list[JSONValue] | None
-
-
-class Kind(StrEnum):
-    """The four events a job's observability stream can carry."""
-
-    started = auto()
-    line = auto()
-    sample = auto()
-    ended = auto()
 
 
 class Frame(Declared):

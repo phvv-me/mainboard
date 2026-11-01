@@ -11,7 +11,7 @@ from patos import FrozenModel
 from ....core.errors import MissionError
 from ....core.execution.tool import Runner, ToolOutput, ToolRunner
 from ..constants import STANDARD_FLAGS
-from ..models import (
+from ..evidence import (
     AnalysisProfile,
     ArchCoverage,
     ArtifactKind,

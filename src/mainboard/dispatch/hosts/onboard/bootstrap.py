@@ -17,7 +17,7 @@ from patos import Resolution, Strategy, StrategyError
 from ....core.errors import MissionError
 from ....core.project import Project
 from ....engines.compile.pixi.lockfile import Lockfile
-from ....engines.compile.pixi.policy import LockPolicy
+from ....enums import LockPolicy
 from ....state.lake import Lake
 from .constants import SOURCE, TOOL
 
@@ -189,7 +189,7 @@ class Bootstrap:
         """
         catalog = Lake(root=Path(self.shell.root), home=self.out).catalog
         if self.shell.ok(self.shell.dialect.is_file(catalog.as_posix())):
-            self.shell.run(f"{TOOL} lake upgrade")
+            self.shell.run(f"{TOOL} data lake upgrade")
 
     def python(self) -> None:
         """Put uv and the uv-managed CPython the tool runs on onto the machine, first of all.

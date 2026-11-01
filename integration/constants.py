@@ -38,10 +38,8 @@ compile_size = 64bit
         /*0020*/                   EXIT ;                /* 0x000000000000794d */
 """
 
-# A real `cuobjdump --dump-sass` fatbin dump: an empty compressed section, then a populated one,
-# carrying the per-image headers a live toolkit prints (`compressed`, a `ptxasOptions` line, the
-# tab-indented `code for`/`.target` directives) and the trailing progress dots. None is an
-# instruction; a regression that stops treating them as metadata resurfaces them as false unknowns.
+# A real `cuobjdump --dump-sass` fatbin dump. Its per-image headers and progress dots are metadata,
+# and parsing one as an instruction resurfaces it as a false unknown.
 SASS_REAL = "\n".join(
     [
         "",
@@ -98,3 +96,6 @@ SCRIPTS = Path(sysconfig.get_path("scripts"))
 
 # The console script installed beside the interpreter running the tests.
 MB = str(SCRIPTS / "mb")
+
+# The bytes free on every disk a test asks about, unless it sets its own: a petabyte.
+ROOMY = 2**50

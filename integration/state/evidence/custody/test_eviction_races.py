@@ -1,13 +1,13 @@
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from pathlib import Path
-from typing import IO
 
 import duckdb
 import pytest
 
 from mainboard import MissionError
 from mainboard.state import Evidence
+from mainboard.state.evidence import core
 from mainboard.state.storage.blobs import Audit
 from mainboard.state.storage.owned import OwnedFile
 
@@ -43,16 +43,16 @@ def test_a_successor_written_while_the_lake_is_checked_is_never_unlinked(
     monkeypatch: pytest.MonkeyPatch,
     digest_of: Callable[[bytes], str],
 ) -> None:
-    inspect = kept.blobs.inspect
+    audit, asked = kept.blobs.audit, []
 
-    def check(
-        connection: duckdb.DuckDBPyConnection, digest: str, sink: IO[bytes] | None = None
-    ) -> Audit:
-        audit = inspect(connection, digest, sink)
-        source.write_bytes(_SUCCESSOR)
-        return audit
+    def check(connection: duckdb.DuckDBPyConnection, digests: Collection[str]) -> dict[str, Audit]:
+        audits = audit(connection, digests)
+        if asked:
+            source.write_bytes(_SUCCESSOR)
+        asked.append(digests)
+        return audits
 
-    monkeypatch.setattr(kept.blobs, "inspect", check)
+    monkeypatch.setattr(kept.blobs, "audit", check)
     assert kept.evict(kept.finalize([source])) == [source]
     assert source.read_bytes() == _SUCCESSOR
     assert kept.recall(digest_of(_CLOSED)) == _CLOSED
@@ -64,13 +64,16 @@ def test_a_failure_with_a_successor_in_place_keeps_both_versions(
     monkeypatch: pytest.MonkeyPatch,
     digest_of: Callable[[bytes], str],
 ) -> None:
-    def fail(
-        connection: duckdb.DuckDBPyConnection, digest: str, sink: IO[bytes] | None = None
-    ) -> Audit:
+    audit, asked = kept.blobs.audit, []
+
+    def fail(connection: duckdb.DuckDBPyConnection, digests: Collection[str]) -> dict[str, Audit]:
+        if not asked:
+            asked.append(digests)
+            return audit(connection, digests)
         source.write_bytes(_SUCCESSOR)
         raise RuntimeError("custody interrupted")
 
-    monkeypatch.setattr(kept.blobs, "inspect", fail)
+    monkeypatch.setattr(kept.blobs, "audit", fail)
     with pytest.raises(MissionError) as refused:
         kept.evict(kept.finalize([source]))
     [candidate] = kept.root.glob(".mb-custody-*/result.bin")
@@ -94,3 +97,21 @@ def test_a_failure_before_the_unlink_puts_the_copy_back(
     with pytest.raises(RuntimeError, match="unlink interrupted"):
         kept.evict(kept.finalize([source]))
     assert source.read_bytes() == _CLOSED and not list(kept.root.rglob(".mb-custody-*"))
+
+
+def test_an_eviction_asks_the_lake_once_for_each_batch_it_moves_aside(
+    kept: Evidence, stored: Callable[[str, bytes], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sources = [stored(f"part-{n}.bin", f"part {n}".encode()) for n in range(5)]
+    audit, asked = kept.blobs.audit, []
+
+    def counted(
+        connection: duckdb.DuckDBPyConnection, digests: Collection[str]
+    ) -> dict[str, Audit]:
+        asked.append(len(digests))
+        return audit(connection, digests)
+
+    monkeypatch.setattr(kept.blobs, "audit", counted)
+    monkeypatch.setattr(core, "EVICTED_TOGETHER", 2)
+    assert sorted(kept.evict(kept.finalize(sources))) == sorted(sources)
+    assert asked == [5, 2, 2, 1] and not list(kept.root.rglob(".mb-custody-*"))

@@ -13,7 +13,7 @@ class UnreferencedPrivateFunction(Rule, id="PY-DEAD0001", applicability="review"
               AND NOT EXISTS (SELECT 1 FROM function_decorators d
                               WHERE d.function_id = f.entity_id)
         """
-    message = "`{fact_id}` satisfies unreferenced private function"
+    message = "`{fact_id}` is a private module function that nothing in its module calls"
     # The definition's lines go with the blank lines that follow it (at the end of a file, the
     # ones before it), unless another module imports or reaches the name.
     fix = """

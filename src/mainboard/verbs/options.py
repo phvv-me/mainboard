@@ -1,11 +1,10 @@
-import sys
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Self
+from typing import TYPE_CHECKING, Annotated
 
 from cyclopts import Parameter
 from patos import FrozenModel
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict
 
 from ..batch.spec import BatchSpec, Selection
 from ..core.errors import MissionError
@@ -13,78 +12,13 @@ from ..core.section import Section, failed
 from ..dispatch.jobs.vocabulary import Request
 from ..fleet.board import Board
 from ..log import logger
-from ..render import mode_of, record, rows
-from ..render.values import to_row
+from ..render import Output, Terminal, rows
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from ..batch.runner import Batch
     from ..manifest.render.interpolate import Json
-    from ..render.values import Node
-
-
-# The values a compact record leaves out: they say nothing an absent field does not.
-
-# The values a compact record leaves out: they say nothing an absent field does not.
-_EMPTY: tuple[object, ...] = (None, "", [], {}, ())
-
-
-@Parameter(name="*")
-class Output(FrozenModel):
-    """How a verb prints its document: compact rows for agents by default, JSON, or rich tables.
-
-    The default is what an agent reads cheapest: a header line of field names, then one
-    tab-separated line per row, no colour, no box drawing.
-    """
-
-    model_config = ConfigDict(use_attribute_docstrings=True)
-
-    json_: Annotated[bool, Parameter(name="--json")] = False
-    """print canonical JSON instead of the compact rows."""
-    human: bool = False
-    """print rich tables for a person at a terminal instead of the compact rows."""
-    fields: str = ""
-    """a comma-separated projection over the printed fields."""
-
-    @model_validator(mode="after")
-    def _one_mode(self) -> Self:
-        """Refuse both modes at once before the verb does any work."""
-        mode_of(json_mode=self.json_, human=self.human)
-        return self
-
-    @property
-    def mode(self) -> str | None:
-        """The render key, `None` for the compact default."""
-        return mode_of(json_mode=self.json_, human=self.human)
-
-    def print_record(self, payload: Mapping[str, Node], *, title: str) -> None:
-        """Print one entity; the compact default leaves out its empty fields."""
-        if self.mode is None and not self.fields:
-            payload = {key: value for key, value in payload.items() if value not in _EMPTY}
-        record(payload, mode=self.mode, fields=self.projection(), title=title)
-
-    def print_rows(
-        self, payloads: Sequence[Mapping[str, Node]], *, title: str, columns: Sequence[str] = ()
-    ) -> None:
-        """Print many entities, `columns` keeping an empty table's heading unless projected.
-
-        The compact default leaves out a column empty in every row: it tells an agent nothing
-        and costs a tab per row. `--fields` keeps exactly the columns it names.
-        """
-        fields = self.projection(columns)
-        if self.mode is None and not self.fields and payloads:
-            flat = [to_row(payload) for payload in payloads]
-            fields = [
-                name
-                for name in fields or flat[0]
-                if any(row.get(name) not in (None, "") for row in flat)
-            ]
-        rows(payloads, mode=self.mode, fields=fields, title=title)
-
-    def projection(self, default: Sequence[str] = ()) -> Sequence[str]:
-        """The `--fields` names, trimmed and blanks dropped, `default` when none were given."""
-        return tuple(part.strip() for part in self.fields.split(",") if part.strip()) or default
 
 
 @Parameter(name="*")
@@ -224,13 +158,13 @@ class Dispatching(FrozenModel):
         return bool(self.split or self.per_job or "," in self.on)
 
     def proceeds(self) -> bool:
-        """Whether to dispatch: asked once at a terminal unless `--yes`, always from a script.
+        """Whether to dispatch: a person at a terminal is asked once unless `--yes`, an agent not.
 
         The question shares stderr with the expectation line it follows, since stdout belongs to
         the handle or the document the verb prints once the dispatch has happened. An input that
         ends unanswered is a no.
         """
-        if self.yes or not sys.stdin.isatty():
+        if self.yes or not Terminal.current().interactive:
             return True
         logger.prompt("dispatch? [y/N] ")
         try:

@@ -10,18 +10,17 @@ from tempfile import TemporaryDirectory
 
 import duckdb
 
-from .constants import MILLISECONDS_PER_SECOND
+from .constants import ALIAS, NO_TABLE
+from .core.constants.units import MILLISECONDS_PER_SECOND
 from .core.errors import MissionError
 from .core.project import Project
 from .render.query import Query, is_execution_timeout
 from .render.stamps import ResultHash, Stamp, canonical
 from .runtime.tree import FileBudget
-from .state.constants import ALIAS
 from .state.lake import Lake, quoted
 from .state.relations import Relation, Relations, records
 from .state.views import Views
 from .trials.artifacts import Artifact
-from .trials.store.constants import NO_TABLE
 
 _ARTIFACT_LISTING_SQL = "SELECT root, context, reference FROM artifacts"
 

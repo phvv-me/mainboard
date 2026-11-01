@@ -4,10 +4,9 @@
   "source": "Historical measurements.json; counts are historical, versions include the explicit rebaselines below and are not checker acceptance",
   "versions": {
     "mainboard": "0.5.4",
-    "mcmr": "0.0.4",
-    "ruff": "0.17.0",
+    "ruff": "0.17.2",
     "pyrefly": "1.4.0",
-    "ty": "0.0.85",
+    "ty": "0.0.91",
     "mypy": "2.4.0",
     "pytest": "9.1.1"
   },
@@ -18,6 +17,20 @@
       "current": "1.4.0",
       "date": "2026-10-21",
       "reason": "The locked workspace uses the stable release. Preserve historical diagnostic counts and measure the current checker separately; no tool installation, rule suppression or version guard relaxation."
+    },
+    {
+      "tool": "ruff",
+      "previous": "0.17.0",
+      "current": "0.17.2",
+      "date": "2026-11-01",
+      "reason": "The locked workspace moved to 0.17.2. Historical diagnostic counts stay; the current checker was measured separately: one finding, the import inside a function in guide/search.py. No installation, suppression or version guard relaxation."
+    },
+    {
+      "tool": "ty",
+      "previous": "0.0.85",
+      "current": "0.0.91",
+      "date": "2026-11-01",
+      "reason": "The locked workspace moved to 0.0.91. Historical diagnostic counts stay; the current checker was measured separately: 10 diagnostics, none in a module moved on 2026-11-01. No installation, suppression or version guard relaxation."
     }
   ],
   "counts": {
@@ -31,43 +44,41 @@
     "pyrefly_errors": 4,
     "pyrefly_warnings": 49,
     "ty": 25,
-    "mypy": 9,
-    "mcmr_findings": 1908,
-    "mcmr_failures": 1587
+    "mypy": 9
   },
   "cases": [
     {
-      "nodeid": "integration/cli/test_agents.py::test_claude_reads_agents_through_its_link_and_the_servers_verbatim",
+      "nodeid": "integration/agents/test_agents.py::test_claude_reads_agents_through_its_link_and_the_servers_verbatim",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_agents.py::test_codex_forwards_variables_by_name_and_keeps_its_own_settings",
+      "nodeid": "integration/agents/test_agents.py::test_codex_forwards_variables_by_name_and_keeps_its_own_settings",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_agents.py::test_opencode_spells_references_its_own_way_and_keeps_its_settings",
+      "nodeid": "integration/agents/test_agents.py::test_opencode_spells_references_its_own_way_and_keeps_its_settings",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_agents.py::test_sync_replaces_a_link_without_writing_through_it",
+      "nodeid": "integration/agents/test_agents.py::test_sync_replaces_a_link_without_writing_through_it",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_agents.py::test_sync_removes_what_agents_no_longer_declares",
+      "nodeid": "integration/agents/test_agents.py::test_sync_removes_what_agents_no_longer_declares",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_agents.py::test_codex_refuses_a_variable_forwarded_under_another_name",
+      "nodeid": "integration/agents/test_agents.py::test_codex_refuses_a_variable_forwarded_under_another_name",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_agents.py::test_check_names_drift_unset_variables_and_absent_harnesses",
+      "nodeid": "integration/agents/test_agents.py::test_check_names_drift_unset_variables_and_absent_harnesses",
       "classification": "passed",
       "reason": ""
     },
@@ -77,37 +88,37 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
+      "nodeid": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
+      "nodeid": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
+      "nodeid": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
+      "nodeid": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_registers_the_key_once_then_launches_with_it",
+      "nodeid": "integration/dispatch/backends/cloud/listed/test_lambdacloud.py::test_lambda_registers_the_key_once_then_launches_with_it",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
+      "nodeid": "integration/dispatch/backends/cloud/listed/test_lambdacloud.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_insufficient_capacity_is_a_retry",
+      "nodeid": "integration/dispatch/backends/cloud/listed/test_lambdacloud.py::test_lambda_insufficient_capacity_is_a_retry",
       "classification": "passed",
       "reason": ""
     },
@@ -132,7 +143,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/backends/cloud/test_runpod.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
+      "nodeid": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
       "classification": "passed",
       "reason": ""
     },
@@ -177,12 +188,12 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[self --help]",
+      "nodeid": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[code]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[doctor]",
+      "nodeid": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[code doctor]",
       "classification": "passed",
       "reason": ""
     },
@@ -197,12 +208,12 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[self update]",
+      "nodeid": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[host update]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_commands.py::test_the_help_names_the_groups_and_pixis_environment_verbs",
+      "nodeid": "integration/cli/test_commands.py::test_a_bare_tool_or_group_lists_one_short_row_per_member[the-ten-roots]",
       "classification": "passed",
       "reason": ""
     },
@@ -222,12 +233,22 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_commands.py::test_relation_queries_preserve_types_without_pyarrow",
+      "nodeid": "integration/results/test_results.py::test_a_query_that_cannot_run_is_refused_without_pyarrow",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_commands.py::test_relation_queries_execute_exactly_once",
+      "nodeid": "integration/results/test_results.py::test_an_empty_relation_keeps_its_column_types_without_pyarrow",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/results/test_results.py::test_relation_queries_preserve_types_without_pyarrow",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/results/test_results.py::test_relation_queries_execute_exactly_once",
       "classification": "passed",
       "reason": ""
     },
@@ -447,27 +468,27 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[add]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep add]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code agents]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents check]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code agents check]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents sync]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code agents sync]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents update]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code agents update]",
       "classification": "passed",
       "reason": ""
     },
@@ -477,17 +498,12 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[ci]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code ci]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[completion]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[doctor]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code doctor]",
       "classification": "passed",
       "reason": ""
     },
@@ -523,11 +539,6 @@
     },
     {
       "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[git status]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[help]",
       "classification": "passed",
       "reason": ""
     },
@@ -577,7 +588,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[install]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep install]",
       "classification": "passed",
       "reason": ""
     },
@@ -592,7 +603,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job collect]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake collect]",
       "classification": "passed",
       "reason": ""
     },
@@ -622,97 +633,92 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake check]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake check]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake compact]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake compact]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake dedup]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake dedup]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake evict]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake evict]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake ingest]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake ingest]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake materialize]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake materialize]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake replicate]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake replicate]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake serve]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake serve]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake upgrade]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake upgrade]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lint]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code lint]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[list]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep list]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lock]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep lock]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[new]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code new]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[pack]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host pack]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper build]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper build]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper plot]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[plot]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper plot]",
       "classification": "passed",
       "reason": ""
     },
@@ -747,12 +753,12 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[query]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data query]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[remove]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep remove]",
       "classification": "passed",
       "reason": ""
     },
@@ -767,62 +773,52 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host update]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self update]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep shell]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self version]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep tree]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[shell]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep update]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[tree]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep upgrade]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[update]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep add]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[upgrade]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code agents]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[add]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code agents check]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[agents]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code agents sync]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[agents check]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[agents sync]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[agents update]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code agents update]",
       "classification": "passed",
       "reason": ""
     },
@@ -832,17 +828,12 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[ci]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code ci]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[completion]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[doctor]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code doctor]",
       "classification": "passed",
       "reason": ""
     },
@@ -878,11 +869,6 @@
     },
     {
       "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[git status]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[help]",
       "classification": "passed",
       "reason": ""
     },
@@ -932,7 +918,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[install]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep install]",
       "classification": "passed",
       "reason": ""
     },
@@ -947,7 +933,7 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[job collect]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake collect]",
       "classification": "passed",
       "reason": ""
     },
@@ -977,97 +963,92 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake check]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake check]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake compact]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake compact]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake dedup]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake dedup]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake evict]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake evict]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake ingest]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake ingest]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake materialize]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake materialize]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake replicate]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake replicate]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake serve]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake serve]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake upgrade]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake upgrade]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lint]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code lint]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[list]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep list]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lock]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep lock]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[new]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code new]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[pack]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[host pack]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[paper]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data paper]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[paper build]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data paper build]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[paper plot]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[plot]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data paper plot]",
       "classification": "passed",
       "reason": ""
     },
@@ -1102,12 +1083,12 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[query]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data query]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[remove]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep remove]",
       "classification": "passed",
       "reason": ""
     },
@@ -1122,37 +1103,27 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[self]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[host update]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[self update]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep shell]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[self version]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep tree]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[shell]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep update]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[tree]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[update]",
-      "classification": "passed",
-      "reason": ""
-    },
-    {
-      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[upgrade]",
+      "nodeid": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep upgrade]",
       "classification": "passed",
       "reason": ""
     },
@@ -1382,112 +1353,137 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_one_claimant_wins_a_contended_entry",
+      "nodeid": "integration/dispatch/held/test_serve.py::test_one_claimant_wins_a_contended_entry",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_oldest_fitting_entry_is_next_and_claimed_or_cancelled_ones_are_skipped",
+      "nodeid": "integration/dispatch/held/test_serve.py::test_oldest_fitting_entry_is_next_and_claimed_or_cancelled_ones_are_skipped",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_the_node_runs_jobs_in_order_and_leaves_an_exit_artifact_each",
+      "nodeid": "integration/dispatch/held/test_serve.py::test_the_node_runs_jobs_in_order_and_leaves_an_exit_artifact_each",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_tombstone_ends_a_running_job_with_a_terminated_exit",
+      "nodeid": "integration/dispatch/held/test_serve.py::test_a_tombstone_ends_a_running_job_with_a_terminated_exit",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_job_that_cannot_fit_the_allocation_waits_and_the_server_ends_early",
+      "nodeid": "integration/dispatch/held/test_serve.py::test_a_job_that_cannot_fit_the_allocation_waits_and_the_server_ends_early",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_server_refuses_to_run_outside_an_allocation",
+      "nodeid": "integration/dispatch/held/test_serve.py::test_a_server_refuses_to_run_outside_an_allocation",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_the_beat_names_the_job_in_flight",
+      "nodeid": "integration/dispatch/held/test_serve.py::test_the_beat_names_the_job_in_flight",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_submission_is_queued_then_running_then_settled_from_its_exit",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_a_submission_is_queued_then_running_then_settled_from_its_exit",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_claim_without_an_exit_is_lost_only_when_pbs_says_its_allocation_ended",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_a_claim_without_an_exit_is_lost_only_when_pbs_says_its_allocation_ended",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_submission_needs_a_line_that_outlasts_it",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_a_submission_needs_a_line_that_outlasts_it",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_cancelling_an_unclaimed_job_fences_it_so_it_can_never_run",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_cancelling_an_unclaimed_job_fences_it_so_it_can_never_run",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_cancelling_a_running_job_returns_once_it_has_ended",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_cancelling_a_running_job_returns_once_it_has_ended",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_stopping_a_line_cancels_what_nobody_claimed_and_keeps_the_claimed",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_stopping_a_line_cancels_what_nobody_claimed_and_keeps_the_claimed",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_missing_spool_is_a_refusal_not_a_verdict",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_a_missing_spool_is_a_refusal_not_a_verdict",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_lost_reply_is_reconciled_by_asking_whether_it_landed",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_a_lost_reply_is_reconciled_by_asking_whether_it_landed",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_queue_declaring_a_scheduler_routes_its_jobs_there",
+      "nodeid": "integration/dispatch/held/test_scheduler.py::test_a_queue_declaring_a_scheduler_routes_its_jobs_there",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_line_reads_as_what_its_spool_adds_up_to",
+      "nodeid": "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[a-keeper-and-no-allocation]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_the_keeper_opens_a_generation_per_allocation_until_released",
+      "nodeid": "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[a-released-line]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_an_older_keeper_exits_once_a_newer_one_holds_the_token",
+      "nodeid": "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[an-allocation-answering]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_the_keeper_script_is_valid_bash",
+      "nodeid": "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[an-allocation-gone-for-the-next]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_a_held_submission_is_recorded_before_it_is_queued_and_closed_when_refused",
+      "nodeid": "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[an-allocation-running-a-job]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/dispatch/test_held.py::test_only_a_declared_pbs_host_has_a_line",
+      "nodeid": "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[no-keeper-beating]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/dispatch/held/test_line.py::test_the_keeper_opens_a_generation_per_allocation_until_released",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/dispatch/held/test_line.py::test_an_older_keeper_exits_once_a_newer_one_holds_the_token",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/dispatch/held/test_line.py::test_the_keeper_script_is_valid_bash",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/dispatch/held/test_line.py::test_a_held_submission_is_recorded_before_it_is_queued_and_closed_when_refused",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/dispatch/held/test_line.py::test_only_a_declared_pbs_host_has_a_line",
       "classification": "passed",
       "reason": ""
     },
@@ -1557,22 +1553,22 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/state/test_log_finalization.py::test_last_receipt_must_include_cleanup_artifacts[before]",
+      "nodeid": "integration/state/test_log_finalization.py::test_a_cleanup_artifact_attached_before_the_receipt_is_kept",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/state/test_log_finalization.py::test_last_receipt_must_include_cleanup_artifacts[after]",
+      "nodeid": "integration/state/test_log_finalization.py::test_a_cleanup_artifact_attached_after_the_receipt_refuses_the_close",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/state/test_log_finalization.py::test_last_receipt_must_include_cleanup_artifacts[resettled]",
+      "nodeid": "integration/state/test_log_finalization.py::test_a_resettled_receipt_keeps_the_cleanup_artifacts",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/state/test_log_finalization.py::test_last_receipt_must_include_cleanup_artifacts[mutated]",
+      "nodeid": "integration/state/test_log_finalization.py::test_a_mutated_artifact_after_the_receipt_refuses_the_close",
       "classification": "passed",
       "reason": ""
     },
@@ -1592,62 +1588,62 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-sh]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-sh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-bash]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-bash]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-zsh]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-zsh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-sh]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-sh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-bash]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-bash]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-zsh]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-zsh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-sh]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-sh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python[a-bare-path-is-refused-by-name]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python[a-bare-path-is-refused-by-name]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[sh]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_the_agent_answers_through_the_launcher[sh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[bash]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_the_agent_answers_through_the_launcher[bash]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[zsh]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_the_agent_answers_through_the_launcher[zsh]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[a-fetch-from-a-declared-host]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[a-fetch-from-a-declared-host]",
       "classification": "passed",
       "reason": ""
     },
@@ -1667,27 +1663,27 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_a_host_names_no_interpreter_of_its_own",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_host_names_no_interpreter_of_its_own",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[dispatch]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_no_remote_path_names_a_system_python[dispatch]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[manifest]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_no_remote_path_names_a_system_python[manifest]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[center]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_no_remote_path_names_a_system_python[center]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[engines]",
+      "nodeid": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_no_remote_path_names_a_system_python[engines]",
       "classification": "passed",
       "reason": ""
     },
@@ -1902,17 +1898,62 @@
       "reason": ""
     },
     {
-      "nodeid": "integration/cli/test_terminal.py::test_logging_to_a_terminal_starts_on_every_platform",
+      "nodeid": "integration/render/test_terminal.py::test_logging_to_a_terminal_starts_on_every_platform[a-terminal-log-is-colored]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/trials/test_trial_source.py::test_captured_trials_verify_both_listing_locations[local]",
+      "nodeid": "integration/render/test_terminal.py::test_logging_to_a_terminal_starts_on_every_platform[no-color-keeps-it-plain]",
       "classification": "passed",
       "reason": ""
     },
     {
-      "nodeid": "integration/trials/test_trial_source.py::test_captured_trials_verify_both_listing_locations[snapshot]",
+      "nodeid": "integration/trials/test_trial_source.py::test_a_captured_lane_is_admitted_and_an_unlisted_sibling_is_not[local]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_lane_whose_bytes_changed_is_unrecorded_and_refused[local]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_listing_checked_against_a_wrong_digest_is_refused[local]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_listing_with_a_changed_text_is_refused_by_its_digest[local]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_source_outside_the_captured_workspace_is_refused[local]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_captured_lane_is_admitted_and_an_unlisted_sibling_is_not[snapshot]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_lane_whose_bytes_changed_is_unrecorded_and_refused[snapshot]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_listing_checked_against_a_wrong_digest_is_refused[snapshot]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_listing_with_a_changed_text_is_refused_by_its_digest[snapshot]",
+      "classification": "passed",
+      "reason": ""
+    },
+    {
+      "nodeid": "integration/trials/test_trial_source.py::test_a_source_outside_the_captured_workspace_is_refused[snapshot]",
       "classification": "passed",
       "reason": ""
     },
@@ -2247,6 +2288,616 @@
         "integration/scenarios/test_clouds.py::test_hpcai_gives_up_on_an_image_that_will_not_pull": "integration/dispatch/backends/hpcai/test_core.py::test_hpcai_gives_up_on_an_image_that_will_not_pull",
         "integration/scenarios/test_clouds.py::test_reliability_charges_the_machine_not_the_job": "integration/fleet/test_reliability.py::test_reliability_charges_the_machine_not_the_job",
         "integration/scenarios/test_clouds.py::test_a_path_under_another_root_is_listed_once": "integration/dispatch/mirroring/test_sync.py::test_a_path_under_another_root_is_listed_once"
+      }
+    },
+    {
+      "date": "2026-10-31",
+      "reason": "Spine merge into live. ALL-FILE0003: integration/dispatch/backends/cloud held 9 test modules against a limit of 5, so the tests follow the sources into curated/ and listed/; each test is unchanged. The four parametrized receipt cases of test_log_finalization.py became four named tests with the same assertions, and the terminal logging test is now a table of two rows (colored, NO_COLOR), so its one id is two.",
+      "cases": {
+        "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_registers_the_key_once_then_launches_with_it": "integration/dispatch/backends/cloud/listed/test_lambdacloud.py::test_lambda_registers_the_key_once_then_launches_with_it",
+        "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh": "integration/dispatch/backends/cloud/listed/test_lambdacloud.py::test_lambda_reads_an_active_instance_as_ubuntu_over_ssh",
+        "integration/dispatch/backends/cloud/test_lambdacloud.py::test_lambda_insufficient_capacity_is_a_retry": "integration/dispatch/backends/cloud/listed/test_lambdacloud.py::test_lambda_insufficient_capacity_is_a_retry",
+        "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_runpod_creates_a_pod_that_opens_ssh_with_the_key",
+        "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_runpod_reads_a_running_pod_by_its_mapped_ssh_port",
+        "integration/dispatch/backends/cloud/test_runpod.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_runpod_out_of_capacity_is_a_retry_not_a_failure",
+        "integration/dispatch/backends/cloud/test_runpod.py::test_a_gone_pod_reads_as_gone_and_ends_quietly": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_a_gone_pod_reads_as_gone_and_ends_quietly",
+        "integration/dispatch/backends/cloud/test_runpod.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves": "integration/dispatch/backends/cloud/curated/test_runpod.py::test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves",
+        "integration/state/test_log_finalization.py::test_last_receipt_must_include_cleanup_artifacts[before]": "integration/state/test_log_finalization.py::test_a_cleanup_artifact_attached_before_the_receipt_is_kept",
+        "integration/state/test_log_finalization.py::test_last_receipt_must_include_cleanup_artifacts[after]": "integration/state/test_log_finalization.py::test_a_cleanup_artifact_attached_after_the_receipt_refuses_the_close",
+        "integration/state/test_log_finalization.py::test_last_receipt_must_include_cleanup_artifacts[resettled]": "integration/state/test_log_finalization.py::test_a_resettled_receipt_keeps_the_cleanup_artifacts",
+        "integration/state/test_log_finalization.py::test_last_receipt_must_include_cleanup_artifacts[mutated]": "integration/state/test_log_finalization.py::test_a_mutated_artifact_after_the_receipt_refuses_the_close"
+      },
+      "split": {
+        "integration/cli/test_terminal.py::test_logging_to_a_terminal_starts_on_every_platform": [
+          "integration/cli/test_terminal.py::test_logging_to_a_terminal_starts_on_every_platform[a-terminal-log-is-colored]",
+          "integration/cli/test_terminal.py::test_logging_to_a_terminal_starts_on_every_platform[no-color-keeps-it-plain]"
+        ]
+      }
+    },
+    {
+      "date": "2026-10-30",
+      "reason": "tests-apple (ALL-FILE0003): integration/apple held 12 modules against a ceiling of 5, so its eight test modules moved into bundle/, xcode/ and toolchain/; the cases are the same tests under their new paths.",
+      "moves": {
+        "integration/apple/test_bundle.py": "integration/apple/bundle/test_bundle.py",
+        "integration/apple/test_diagnostics.py": "integration/apple/xcode/test_diagnostics.py",
+        "integration/apple/test_execution.py": "integration/apple/xcode/test_execution.py",
+        "integration/apple/test_fonts.py": "integration/apple/toolchain/test_fonts.py",
+        "integration/apple/test_launch.py": "integration/apple/bundle/test_launch.py",
+        "integration/apple/test_results.py": "integration/apple/xcode/test_results.py",
+        "integration/apple/test_toolchain.py": "integration/apple/toolchain/test_toolchain.py",
+        "integration/apple/test_xcrun.py": "integration/apple/toolchain/test_xcrun.py"
+      }
+    },
+    {
+      "date": "2026-10-30",
+      "reason": "tests-pathways (ALL-FILE0003, ALL-FILE0004, PY-CEIL0001): test modules left the full analysis and cli folders and the folders that only led to one child (general, compile, providers) for the folder of the source they cover; the cases are the same tests under their new paths, except that the one 18 statement test of cli/test_apps.py is now the 12 ids of verbs/apps/test_apps.py.",
+      "moves": {
+        "integration/analysis/rules/general/project/test_filesystem.py": "integration/analysis/rules/project/test_filesystem.py",
+        "integration/analysis/test_catalog_modules.py": "integration/analysis/rules/test_catalog_modules.py",
+        "integration/analysis/test_project_automation_guidance.py": "integration/analysis/rules/project/test_onboarding.py",
+        "integration/cli/test_agents.py": "integration/agents/test_agents.py",
+        "integration/cli/test_apps.py::test_an_app_in_an_untracked_nested_repository_is_found": "integration/verbs/apps/test_apps.py::test_an_app_in_an_untracked_nested_repository_is_found",
+        "integration/cli/test_terminal.py": "integration/render/test_terminal.py",
+        "integration/engines/compile/ecosystems/test_archive.py": "integration/engines/ecosystems/test_archive.py",
+        "integration/probe/providers/nvidia/test_gpu.py": "integration/probe/nvidia/test_gpu.py",
+        "integration/profile/providers/test_tracers.py": "integration/profile/test_tracers.py"
+      },
+      "split": {
+        "integration/cli/test_apps.py::test_a_suite_resolves_to_the_inputs_its_task_spelled": [
+          "integration/verbs/apps/test_apps.py::test_a_build_keeps_its_products_where_its_task_spelled[a-folder-named-for-the-device]",
+          "integration/verbs/apps/test_apps.py::test_a_build_keeps_its_products_where_its_task_spelled[the-device-folder-it-declares]",
+          "integration/verbs/apps/test_apps.py::test_a_build_keeps_its_products_where_its_task_spelled[the-folder-the-suite-declares]",
+          "integration/verbs/apps/test_apps.py::test_a_device_adds_its_settings_to_the_apps",
+          "integration/verbs/apps/test_apps.py::test_a_device_resolves_to_the_destination_its_task_spelled[a-destination-spelled-whole]",
+          "integration/verbs/apps/test_apps.py::test_a_device_resolves_to_the_destination_its_task_spelled[a-simulator-at-the-apps-runtime]",
+          "integration/verbs/apps/test_apps.py::test_a_device_the_app_does_not_declare_is_refused",
+          "integration/verbs/apps/test_apps.py::test_a_suite_builds_the_project_it_declares",
+          "integration/verbs/apps/test_apps.py::test_a_suite_runs_on_the_devices_its_task_spelled[every-device-of-the-app]",
+          "integration/verbs/apps/test_apps.py::test_a_suite_runs_on_the_devices_its_task_spelled[the-apps-first-device]",
+          "integration/verbs/apps/test_apps.py::test_a_suite_runs_on_the_devices_its_task_spelled[the-devices-the-suite-lists]",
+          "integration/verbs/apps/test_apps.py::test_a_suite_the_app_does_not_declare_is_refused"
+        ]
+      }
+    },
+    {
+      "date": "2026-10-30",
+      "reason": "tests-held (ALL-CEIL0001, PY-CEIL0001, ALL-FILE0003): dispatch/test_held.py held 35 members and became held/test_serve.py, held/test_scheduler.py and held/test_line.py, and test_sync_manifest_name.py moved to mirroring/; the cases are the same tests under their new paths, except that the line test is now one table of six rows, so its one id is six.",
+      "moves": {
+        "integration/dispatch/test_held.py::test_a_claim_without_an_exit_is_lost_only_when_pbs_says_its_allocation_ended": "integration/dispatch/held/test_scheduler.py::test_a_claim_without_an_exit_is_lost_only_when_pbs_says_its_allocation_ended",
+        "integration/dispatch/test_held.py::test_a_held_submission_is_recorded_before_it_is_queued_and_closed_when_refused": "integration/dispatch/held/test_line.py::test_a_held_submission_is_recorded_before_it_is_queued_and_closed_when_refused",
+        "integration/dispatch/test_held.py::test_a_job_that_cannot_fit_the_allocation_waits_and_the_server_ends_early": "integration/dispatch/held/test_serve.py::test_a_job_that_cannot_fit_the_allocation_waits_and_the_server_ends_early",
+        "integration/dispatch/test_held.py::test_a_lost_reply_is_reconciled_by_asking_whether_it_landed": "integration/dispatch/held/test_scheduler.py::test_a_lost_reply_is_reconciled_by_asking_whether_it_landed",
+        "integration/dispatch/test_held.py::test_a_missing_spool_is_a_refusal_not_a_verdict": "integration/dispatch/held/test_scheduler.py::test_a_missing_spool_is_a_refusal_not_a_verdict",
+        "integration/dispatch/test_held.py::test_a_queue_declaring_a_scheduler_routes_its_jobs_there": "integration/dispatch/held/test_scheduler.py::test_a_queue_declaring_a_scheduler_routes_its_jobs_there",
+        "integration/dispatch/test_held.py::test_a_server_refuses_to_run_outside_an_allocation": "integration/dispatch/held/test_serve.py::test_a_server_refuses_to_run_outside_an_allocation",
+        "integration/dispatch/test_held.py::test_a_submission_is_queued_then_running_then_settled_from_its_exit": "integration/dispatch/held/test_scheduler.py::test_a_submission_is_queued_then_running_then_settled_from_its_exit",
+        "integration/dispatch/test_held.py::test_a_submission_must_fit_one_allocation_of_the_line": "integration/dispatch/held/test_scheduler.py::test_a_submission_must_fit_one_allocation_of_the_line",
+        "integration/dispatch/test_held.py::test_a_submission_needs_a_line_that_outlasts_it": "integration/dispatch/held/test_scheduler.py::test_a_submission_needs_a_line_that_outlasts_it",
+        "integration/dispatch/test_held.py::test_a_tombstone_ends_a_running_job_with_a_terminated_exit": "integration/dispatch/held/test_serve.py::test_a_tombstone_ends_a_running_job_with_a_terminated_exit",
+        "integration/dispatch/test_held.py::test_a_walltime_past_a_day_keeps_its_hours": "integration/dispatch/held/test_line.py::test_a_walltime_past_a_day_keeps_its_hours",
+        "integration/dispatch/test_held.py::test_an_older_keeper_exits_once_a_newer_one_holds_the_token": "integration/dispatch/held/test_line.py::test_an_older_keeper_exits_once_a_newer_one_holds_the_token",
+        "integration/dispatch/test_held.py::test_cancelling_a_running_job_returns_once_it_has_ended": "integration/dispatch/held/test_scheduler.py::test_cancelling_a_running_job_returns_once_it_has_ended",
+        "integration/dispatch/test_held.py::test_cancelling_an_unclaimed_job_fences_it_so_it_can_never_run": "integration/dispatch/held/test_scheduler.py::test_cancelling_an_unclaimed_job_fences_it_so_it_can_never_run",
+        "integration/dispatch/test_held.py::test_oldest_fitting_entry_is_next_and_claimed_or_cancelled_ones_are_skipped": "integration/dispatch/held/test_serve.py::test_oldest_fitting_entry_is_next_and_claimed_or_cancelled_ones_are_skipped",
+        "integration/dispatch/test_held.py::test_one_claimant_wins_a_contended_entry": "integration/dispatch/held/test_serve.py::test_one_claimant_wins_a_contended_entry",
+        "integration/dispatch/test_held.py::test_only_a_declared_pbs_host_has_a_line": "integration/dispatch/held/test_line.py::test_only_a_declared_pbs_host_has_a_line",
+        "integration/dispatch/test_held.py::test_stopping_a_line_cancels_what_nobody_claimed_and_keeps_the_claimed": "integration/dispatch/held/test_scheduler.py::test_stopping_a_line_cancels_what_nobody_claimed_and_keeps_the_claimed",
+        "integration/dispatch/test_held.py::test_the_beat_names_the_job_in_flight": "integration/dispatch/held/test_serve.py::test_the_beat_names_the_job_in_flight",
+        "integration/dispatch/test_held.py::test_the_keeper_opens_a_generation_per_allocation_until_released": "integration/dispatch/held/test_line.py::test_the_keeper_opens_a_generation_per_allocation_until_released",
+        "integration/dispatch/test_held.py::test_the_keeper_script_is_valid_bash": "integration/dispatch/held/test_line.py::test_the_keeper_script_is_valid_bash",
+        "integration/dispatch/test_held.py::test_the_node_runs_jobs_in_order_and_leaves_an_exit_artifact_each": "integration/dispatch/held/test_serve.py::test_the_node_runs_jobs_in_order_and_leaves_an_exit_artifact_each",
+        "integration/dispatch/test_sync_manifest_name.py": "integration/dispatch/mirroring/test_sync_manifest_name.py"
+      },
+      "split": {
+        "integration/dispatch/test_held.py::test_a_line_reads_as_what_its_spool_adds_up_to": [
+          "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[a-keeper-and-no-allocation]",
+          "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[a-released-line]",
+          "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[an-allocation-answering]",
+          "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[an-allocation-gone-for-the-next]",
+          "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[an-allocation-running-a-job]",
+          "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[no-keeper-beating]"
+        ]
+      }
+    },
+    {
+      "date": "2026-10-30",
+      "reason": "tests-managed (ALL-FILE0003): integration/engines/environments/managed_python held 6 modules against a ceiling of 5, so test_launcher.py moved into launcher/; the cases are the same tests under their new path.",
+      "moves": {
+        "integration/engines/environments/managed_python/test_launcher.py": "integration/engines/environments/managed_python/launcher/test_launcher.py"
+      }
+    },
+    {
+      "date": "2026-10-30",
+      "reason": "tests-small (ALL-CEIL0001, PY-CEIL0001): the five native helper tests moved from swift/test_analysis.py to swift/test_native_helper.py under the same names, and the loader test of machines/test_libraries.py is now one table of six rows, so its one id is six.",
+      "moves": {
+        "integration/analysis/swift/test_analysis.py::test_missing_native_host_libraries_fails_with_an_actionable_path": "integration/analysis/swift/test_native_helper.py::test_missing_native_host_libraries_fails_with_an_actionable_path",
+        "integration/analysis/swift/test_analysis.py::test_missing_native_toolchain_refuses_before_any_download": "integration/analysis/swift/test_native_helper.py::test_missing_native_toolchain_refuses_before_any_download",
+        "integration/analysis/swift/test_analysis.py::test_native_helper_compile_timeout_never_becomes_a_cache_hit": "integration/analysis/swift/test_native_helper.py::test_native_helper_compile_timeout_never_becomes_a_cache_hit",
+        "integration/analysis/swift/test_analysis.py::test_native_helper_is_cached_and_reports_bad_requests_without_crashing": "integration/analysis/swift/test_native_helper.py::test_native_helper_is_cached_and_reports_bad_requests_without_crashing",
+        "integration/analysis/swift/test_analysis.py::test_native_provider_accepts_a_relative_cli_root": "integration/analysis/swift/test_native_helper.py::test_native_provider_accepts_a_relative_cli_root"
+      },
+      "split": {
+        "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it": [
+          "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it[cache-before-defaults]",
+          "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it[default-directories]",
+          "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it[library-path-first]",
+          "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it[nothing-answers]",
+          "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it[rpath-before-library-path]",
+          "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it[runpath-before-cache]"
+        ]
+      }
+    },
+    {
+      "date": "2026-10-30",
+      "reason": "tests-ceil-1 (PY-CEIL0001): two oversized tests were split and keep every original assertion. The explain test keeps its name for the text check and gained the catalog and JSON checks as two ids, and the sealed bytes test of test_lint_scope.py gained the open draft check as a second id.",
+      "split": {
+        "integration/analysis/test_analysis_explain.py::test_explain_reports_rule_evidence_and_repair_policy": [
+          "integration/analysis/test_analysis_explain.py::test_explain_as_json_reports_the_rule_as_the_catalog_lists_it",
+          "integration/analysis/test_analysis_explain.py::test_explain_reports_rule_evidence_and_repair_policy",
+          "integration/analysis/test_analysis_explain.py::test_explain_without_a_rule_lists_the_catalog_and_some_rules_cite_references"
+        ],
+        "integration/analysis/test_lint_scope.py::test_no_step_rewrites_a_file_a_registration_sealed": [
+          "integration/analysis/test_lint_scope.py::test_a_pass_rewrites_the_open_draft_beside_the_files_a_registration_sealed",
+          "integration/analysis/test_lint_scope.py::test_no_step_rewrites_a_file_a_registration_sealed"
+        ]
+      }
+    },
+    {
+      "date": "2026-10-30",
+      "reason": "tests-ceil-2 (PY-CEIL0001, ALL-CEIL0001): the two Results tests of cli/test_commands.py moved to results/test_results.py with the pyarrow test split into three, the pueue tests of test_scheduler_lifecycle.py moved to dispatch/schedulers/test_pueue.py with the two unplaced states renamed to a test of their own, and the seeded extensions test of gates/test_harness.py is now three tests.",
+      "moves": {
+        "integration/cli/test_commands.py::test_relation_queries_execute_exactly_once": "integration/results/test_results.py::test_relation_queries_execute_exactly_once",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-3]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-3]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-killed]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-killed]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-success]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-success]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[forgotten]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[forgotten]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[locked-bare]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[locked-bare]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[locked]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[locked]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[paused]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[paused]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[queued]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[queued]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[running]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[running]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[stashed]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[stashed]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_the_pueue_table_names_every_state_pueue_has": "integration/dispatch/schedulers/test_pueue.py::test_the_pueue_table_names_every_state_pueue_has"
+      },
+      "cases": {
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[unknown-bare]": "integration/dispatch/schedulers/test_pueue.py::test_a_pueue_state_this_tool_cannot_place_is_never_stopped_by_a_guess[unknown-bare]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[unknown]": "integration/dispatch/schedulers/test_pueue.py::test_a_pueue_state_this_tool_cannot_place_is_never_stopped_by_a_guess[unknown]"
+      },
+      "split": {
+        "integration/cli/test_commands.py::test_relation_queries_preserve_types_without_pyarrow": [
+          "integration/results/test_results.py::test_a_query_that_cannot_run_is_refused_without_pyarrow",
+          "integration/results/test_results.py::test_an_empty_relation_keeps_its_column_types_without_pyarrow",
+          "integration/results/test_results.py::test_relation_queries_preserve_types_without_pyarrow"
+        ],
+        "integration/gates/test_harness.py::test_seeded_extensions_copy_without_user_duckdb_or_source_mutation": [
+          "integration/gates/test_harness.py::test_a_worker_modifying_its_extension_leaves_the_seed_untouched",
+          "integration/gates/test_harness.py::test_seeded_extensions_are_copied_into_the_workers_cache",
+          "integration/gates/test_harness.py::test_seeding_extensions_copies_nothing_of_the_users_duckdb_home"
+        ]
+      }
+    },
+    {
+      "date": "2026-10-30",
+      "reason": "tests-ceil-4 (PY-CEIL0001): the captured trials test of trials/test_trial_source.py is now five tests, each keeping its original assertions, over the same two listing locations (local and snapshot).",
+      "split": {
+        "integration/trials/test_trial_source.py::test_captured_trials_verify_both_listing_locations[local]": [
+          "integration/trials/test_trial_source.py::test_a_captured_lane_is_admitted_and_an_unlisted_sibling_is_not[local]",
+          "integration/trials/test_trial_source.py::test_a_lane_whose_bytes_changed_is_unrecorded_and_refused[local]",
+          "integration/trials/test_trial_source.py::test_a_listing_checked_against_a_wrong_digest_is_refused[local]",
+          "integration/trials/test_trial_source.py::test_a_listing_with_a_changed_text_is_refused_by_its_digest[local]",
+          "integration/trials/test_trial_source.py::test_a_source_outside_the_captured_workspace_is_refused[local]"
+        ],
+        "integration/trials/test_trial_source.py::test_captured_trials_verify_both_listing_locations[snapshot]": [
+          "integration/trials/test_trial_source.py::test_a_captured_lane_is_admitted_and_an_unlisted_sibling_is_not[snapshot]",
+          "integration/trials/test_trial_source.py::test_a_lane_whose_bytes_changed_is_unrecorded_and_refused[snapshot]",
+          "integration/trials/test_trial_source.py::test_a_listing_checked_against_a_wrong_digest_is_refused[snapshot]",
+          "integration/trials/test_trial_source.py::test_a_listing_with_a_changed_text_is_refused_by_its_digest[snapshot]",
+          "integration/trials/test_trial_source.py::test_a_source_outside_the_captured_workspace_is_refused[snapshot]"
+        ]
+      }
+    },
+    {
+      "date": "2026-10-29",
+      "reason": "cli-regroup: the ten roots (run dep job host proc code git data memory serve) moved every verb of 0.5.7 under its group, so the parametrized CLI ids follow the new paths; two tests were renamed for what they now check. Old ids are what the spine copy the regroup started from (12:30 JST) collects in the three CLI modules whose ids changed; the other touched test modules keep their ids.",
+      "moves": {
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[doctor]": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[code doctor]",
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[self --help]": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[code]",
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[self update]": "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[host update]",
+        "integration/cli/test_commands.py::test_the_help_names_the_groups_and_pixis_environment_verbs": "integration/cli/test_commands.py::test_a_bare_tool_or_group_lists_one_short_row_per_member[the-ten-roots]",
+        "integration/cli/test_every_command.py::test_a_command_line_imports_only_the_verb_modules_it_types[the-root-listing]": "integration/cli/test_every_command.py::test_a_command_line_imports_only_the_verb_modules_it_types[the-root-help]",
+        "integration/cli/test_every_command.py::test_a_command_line_naming_nothing_is_answered_from_the_tree[a-leaf-typed-at-the-root]": "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[a-leaf-typed-at-the-root]",
+        "integration/cli/test_every_command.py::test_a_command_line_naming_nothing_is_answered_from_the_tree[a-misspelled-verb]": "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[a-misspelled-verb]",
+        "integration/cli/test_every_command.py::test_a_command_line_naming_nothing_is_answered_from_the_tree[a-word-near-nothing]": "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[a-word-near-nothing]",
+        "integration/cli/test_every_command.py::test_a_command_line_naming_nothing_is_answered_from_the_tree[an-unknown-group-option]": "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[an-unknown-group-option]",
+        "integration/cli/test_every_command.py::test_an_alias_is_spelled_as_its_path_and_anything_else_is_left_alone": "integration/cli/test_every_command.py::test_an_alias_is_spelled_as_its_path_whatever_follows",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[add]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep add]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents check]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code agents check]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents sync]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code agents sync]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents update]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code agents update]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[agents]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code agents]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[app build]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app build]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[app list]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app list]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[app test]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app test]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[app]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple bundle]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app inspect]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple diagnostics]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app inspect]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple execute]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app execute]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple font-previews]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app fonts]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple launch]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app launch]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple results]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app inspect]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple simulators]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app simulators]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple toolchain]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app toolchain]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[apple]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[binary list]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep binary list]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[binary path]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep binary path]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[binary sync]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep binary]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[binary]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep binary]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[ci]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code ci]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[doctor]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code doctor]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[install]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep install]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[job collect]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake collect]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake check]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake check]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake compact]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake compact]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake dedup]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake dedup]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake evict]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake evict]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake ingest]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake ingest]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake materialize]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake materialize]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake replicate]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake replicate]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake serve]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake serve]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake upgrade]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake upgrade]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lake]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data lake]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lint]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code lint]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[list]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep list]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[lock]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep lock]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[new]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code new]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[pack]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host pack]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper build]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper build]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper plot]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper plot]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[paper]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[plot]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper plot]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[probe device]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data probe]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[probe]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data probe]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[query]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data query]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor catalog]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules explain]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor check]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules check]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor diagram]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor diagram]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor evidence]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper evidence]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor explain]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules explain]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor fix]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules fix]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor gate]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules gate]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor impact]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor impact]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor matrix]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor matrix]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor move]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor move]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor preview]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules preview]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor proof]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor proof]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor prose]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data paper prose]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor sql]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules sql]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor swift-compare]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor swift-compare]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor swift-inventory]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor swift-inventory]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor test]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules test]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor trial]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules trial]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor uses]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor uses]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code refactor]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[remove]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep remove]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self update]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[host update]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[shell]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep shell]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[tree]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep tree]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[update]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep update]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[upgrade]": "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep upgrade]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[add]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep add]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[agents check]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code agents check]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[agents sync]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code agents sync]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[agents update]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code agents update]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[agents]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code agents]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[app build]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app build]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[app list]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app list]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[app test]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app test]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[app]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple bundle]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app inspect]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple diagnostics]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app inspect]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple execute]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app execute]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple font-previews]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app fonts]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple launch]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app launch]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple results]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app inspect]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple simulators]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app simulators]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple toolchain]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app toolchain]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[apple]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[binary list]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep binary list]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[binary path]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep binary path]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[binary sync]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep binary]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[binary]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep binary]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[ci]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code ci]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[doctor]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code doctor]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[install]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep install]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[job collect]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake collect]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake check]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake check]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake compact]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake compact]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake dedup]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake dedup]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake evict]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake evict]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake ingest]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake ingest]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake materialize]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake materialize]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake replicate]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake replicate]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake serve]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake serve]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake upgrade]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake upgrade]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lake]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data lake]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lint]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code lint]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[list]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep list]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[lock]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep lock]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[new]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code new]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[pack]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[host pack]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[paper build]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data paper build]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[paper plot]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data paper plot]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[paper]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data paper]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[plot]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data paper plot]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[probe device]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data probe]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[probe]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data probe]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[query]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data query]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor check]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code rules check]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor fix]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code rules fix]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor gate]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code rules gate]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor move]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code refactor move]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor preview]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code rules preview]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor proof]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code refactor proof]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor sql]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code rules sql]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor test]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code rules test]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor trial]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code rules trial]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code refactor]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[remove]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep remove]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[self update]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[host update]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[shell]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep shell]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[tree]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep tree]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[update]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep update]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[upgrade]": "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep upgrade]",
+        "integration/cli/test_terminal.py::test_json_is_identical_for_both_audiences": "integration/cli/test_terminal.py::test_json_is_identical_for_both_audiences[a-query]"
+      },
+      "removed": [
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[completion]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[help]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[refactor compare]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self version]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[self]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[completion]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[help]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[refactor compare]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[self version]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[self]"
+      ],
+      "added": [
+        "integration/cli/test_commands.py::test_a_bare_tool_or_group_lists_one_short_row_per_member[a-group-two-words-deep]",
+        "integration/cli/test_commands.py::test_a_bare_tool_or_group_lists_one_short_row_per_member[a-group]",
+        "integration/cli/test_commands.py::test_a_moved_command_is_refused_naming_its_new_path[a-person]",
+        "integration/cli/test_commands.py::test_a_moved_command_is_refused_naming_its_new_path[an-agent]",
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[--help ingest evidence]",
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[--tree data --all]",
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[--tree]",
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[-h]",
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[help data lake ingest]",
+        "integration/cli/test_commands.py::test_a_verb_answers_in_a_fresh_workspace[the-bare-tool]",
+        "integration/cli/test_every_command.py::test_a_command_line_imports_only_the_verb_modules_it_types[a-moved-word]",
+        "integration/cli/test_every_command.py::test_a_command_line_imports_only_the_verb_modules_it_types[the-bare-listing]",
+        "integration/cli/test_every_command.py::test_a_command_line_imports_only_the_verb_modules_it_types[the-declaration]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-add]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-agents-check]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-agents-sync]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-agents-update]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-app-build]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-app-list]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-app-test]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-apple-bundle]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-apple-diagnostics]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-apple-execute]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-apple-font-previews]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-apple-launch]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-apple-results]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-apple-simulators]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-apple-toolchain]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-binary-sync]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-ci]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-completion]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-doctor]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-help]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-install]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-job-collect]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-check]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-compact]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-dedup]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-evict]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-ingest]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-materialize]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-replicate]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-serve]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lake-upgrade]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lint]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-list]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-lock]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-new]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-pack]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-paper-build]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-paper-plot]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-plot]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-probe-device]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-query]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-catalog]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-check]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-diagram]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-evidence]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-explain]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-fix]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-gate]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-impact]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-matrix]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-move]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-preview]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-proof]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-prose]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-sql]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-swift-compare]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-swift-inventory]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-test]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-trial]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-refactor-uses]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-remove]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-self-update]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-self-version]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-shell]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-tree]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-update]",
+        "integration/cli/test_every_command.py::test_a_line_of_0_5_7_runs_as_typed_or_is_refused_naming_its_new_path[moved-upgrade]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app bundle]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app diagnostics]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app results]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code rules]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[data]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[dep]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app bundle]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app diagnostics]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app results]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code rules]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[data]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[dep]",
+        "integration/cli/test_terminal.py::test_escapes_and_boxes_reach_only_a_person_who_can_see_them[agent-tree]",
+        "integration/cli/test_terminal.py::test_escapes_and_boxes_reach_only_a_person_who_can_see_them[person-tree-guides]",
+        "integration/cli/test_terminal.py::test_json_is_identical_for_both_audiences[the-declaration]"
+      ]
+    },
+    {
+      "date": "2026-10-29",
+      "reason": "cli-app-inspect: bundle, diagnostics and results merged into `code app inspect`. Three verb tests were renamed for what they now check (the id is the function name), and the results test gained a build-status parameter. The three hidden verbs' help and parameter cases of cli-regroup's test_every_command.py have no successor beyond `code app inspect`, which already had its own. New: three inspector tests in integration/apple/test_bundle.py (test_a_path_is_of_one_kind_and_only_that_kinds_inspector_asks_its_tools, test_a_path_of_no_kind_is_refused_naming_the_kinds, test_every_kind_has_exactly_one_inspector_of_its_own; folded there from integration/verbs/apps/, which never reached HEAD, by the review's B1 fix),test_a_build_that_never_reached_its_tests_is_judged_by_its_build_alone (2 params), test_bundle_checks_are_refused_on_a_result_bundle_before_anything_is_read (1).",
+      "moves": {
+        "integration/apple/test_bundle.py::test_the_bundle_verb_prints_json_and_exits_with_the_bundle_verdict[a-symbol-nothing-prints-passes]": "integration/apple/test_bundle.py::test_inspecting_a_built_bundle_prints_json_and_exits_with_the_bundle_verdict[a-symbol-nothing-prints-passes]",
+        "integration/apple/test_bundle.py::test_the_bundle_verb_prints_json_and_exits_with_the_bundle_verdict[a-printed-symbol-fails]": "integration/apple/test_bundle.py::test_inspecting_a_built_bundle_prints_json_and_exits_with_the_bundle_verdict[a-printed-symbol-fails]",
+        "integration/apple/test_diagnostics.py::test_the_diagnostics_verb_reads_the_newest_bundle_and_exits_with_the_build_verdict[a-succeeded-build-exits-zero]": "integration/apple/test_diagnostics.py::test_inspecting_a_folder_reads_the_newest_bundle_and_exits_with_the_build_verdict[a-succeeded-build-exits-zero]",
+        "integration/apple/test_diagnostics.py::test_the_diagnostics_verb_reads_the_newest_bundle_and_exits_with_the_build_verdict[a-failed-build-exits-one]": "integration/apple/test_diagnostics.py::test_inspecting_a_folder_reads_the_newest_bundle_and_exits_with_the_build_verdict[a-failed-build-exits-one]",
+        "integration/apple/test_diagnostics.py::test_the_diagnostics_verb_reads_the_newest_bundle_and_exits_with_the_build_verdict[an-unknown-status-exits-one]": "integration/apple/test_diagnostics.py::test_inspecting_a_folder_reads_the_newest_bundle_and_exits_with_the_build_verdict[an-unknown-status-exits-one]",
+        "integration/apple/test_results.py::test_the_results_verb_prints_json_and_exits_with_the_test_verdict[a-passing-run-exits-zero]": "integration/apple/test_results.py::test_inspecting_a_result_bundle_prints_both_records_and_exits_with_the_worst_verdict[a-passing-run-exits-zero]",
+        "integration/apple/test_results.py::test_the_results_verb_prints_json_and_exits_with_the_test_verdict[a-failed-run-exits-one]": "integration/apple/test_results.py::test_inspecting_a_result_bundle_prints_both_records_and_exits_with_the_worst_verdict[a-failed-test-exits-one]"
+      },
+      "removed_without_successor": [
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app bundle]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app diagnostics]",
+        "integration/cli/test_every_command.py::test_every_command_answers_the_help_flag[code app results]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app bundle]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app diagnostics]",
+        "integration/cli/test_every_command.py::test_every_parameter_says_what_it_is[code app results]"
+      ]
+    },
+    {
+      "date": "2026-11-01",
+      "reason": "Regroup rules-engine waves 4a to 7 (ALL-FILE0003, ALL-FILE0004, ALL-CEIL0001, PY-CEIL0001 and the engine's own test folders): test modules moved into the folder of the source they cover or were split; each moved id is listed once in moves.tsv of the regroup program and keeps its assertions.",
+      "moves": {
+        "integration/analysis/test_catalog_modules.py": "integration/analysis/rules/test_catalog_modules.py",
+        "integration/analysis/test_project_automation_guidance.py": "integration/analysis/rules/project/test_onboarding.py",
+        "integration/analysis/rules/general/project/test_filesystem.py": "integration/analysis/rules/project/test_filesystem.py",
+        "integration/cli/test_agents.py": "integration/agents/test_agents.py",
+        "integration/cli/test_apps.py": "integration/verbs/apps/test_apps.py",
+        "integration/cli/test_terminal.py": "integration/render/test_terminal.py",
+        "integration/engines/compile/ecosystems/builders.py": "integration/engines/ecosystems/builders.py",
+        "integration/engines/compile/ecosystems/constants.py": "integration/engines/ecosystems/constants.py",
+        "integration/engines/compile/ecosystems/test_archive.py": "integration/engines/ecosystems/test_archive.py",
+        "integration/probe/providers/nvidia/constants.py": "integration/probe/nvidia/constants.py",
+        "integration/probe/providers/nvidia/test_gpu.py": "integration/probe/nvidia/test_gpu.py",
+        "integration/profile/providers/constants.py": "integration/profile/constants.py",
+        "integration/profile/providers/test_tracers.py": "integration/profile/test_tracers.py",
+        "integration/dispatch/test_held.py": "integration/dispatch/held/test_line.py",
+        "integration/dispatch/test_sync_manifest_name.py": "integration/dispatch/mirroring/test_sync_manifest_name.py",
+        "integration/dispatch/test_held.py::test_one_claimant_wins_a_contended_entry": "integration/dispatch/held/test_serve.py::test_one_claimant_wins_a_contended_entry",
+        "integration/dispatch/test_held.py::test_oldest_fitting_entry_is_next_and_claimed_or_cancelled_ones_are_skipped": "integration/dispatch/held/test_serve.py::test_oldest_fitting_entry_is_next_and_claimed_or_cancelled_ones_are_skipped",
+        "integration/dispatch/test_held.py::test_the_node_runs_jobs_in_order_and_leaves_an_exit_artifact_each": "integration/dispatch/held/test_serve.py::test_the_node_runs_jobs_in_order_and_leaves_an_exit_artifact_each",
+        "integration/dispatch/test_held.py::test_a_tombstone_ends_a_running_job_with_a_terminated_exit": "integration/dispatch/held/test_serve.py::test_a_tombstone_ends_a_running_job_with_a_terminated_exit",
+        "integration/dispatch/test_held.py::test_a_job_that_cannot_fit_the_allocation_waits_and_the_server_ends_early": "integration/dispatch/held/test_serve.py::test_a_job_that_cannot_fit_the_allocation_waits_and_the_server_ends_early",
+        "integration/dispatch/test_held.py::test_a_server_refuses_to_run_outside_an_allocation": "integration/dispatch/held/test_serve.py::test_a_server_refuses_to_run_outside_an_allocation",
+        "integration/dispatch/test_held.py::test_the_beat_names_the_job_in_flight": "integration/dispatch/held/test_serve.py::test_the_beat_names_the_job_in_flight",
+        "integration/dispatch/test_held.py::test_a_submission_is_queued_then_running_then_settled_from_its_exit": "integration/dispatch/held/test_scheduler.py::test_a_submission_is_queued_then_running_then_settled_from_its_exit",
+        "integration/dispatch/test_held.py::test_a_claim_without_an_exit_is_lost_only_when_pbs_says_its_allocation_ended": "integration/dispatch/held/test_scheduler.py::test_a_claim_without_an_exit_is_lost_only_when_pbs_says_its_allocation_ended",
+        "integration/dispatch/test_held.py::test_a_submission_needs_a_line_that_outlasts_it": "integration/dispatch/held/test_scheduler.py::test_a_submission_needs_a_line_that_outlasts_it",
+        "integration/dispatch/test_held.py::test_a_submission_must_fit_one_allocation_of_the_line": "integration/dispatch/held/test_scheduler.py::test_a_submission_must_fit_one_allocation_of_the_line",
+        "integration/dispatch/test_held.py::test_cancelling_an_unclaimed_job_fences_it_so_it_can_never_run": "integration/dispatch/held/test_scheduler.py::test_cancelling_an_unclaimed_job_fences_it_so_it_can_never_run",
+        "integration/dispatch/test_held.py::test_cancelling_a_running_job_returns_once_it_has_ended": "integration/dispatch/held/test_scheduler.py::test_cancelling_a_running_job_returns_once_it_has_ended",
+        "integration/dispatch/test_held.py::test_stopping_a_line_cancels_what_nobody_claimed_and_keeps_the_claimed": "integration/dispatch/held/test_scheduler.py::test_stopping_a_line_cancels_what_nobody_claimed_and_keeps_the_claimed",
+        "integration/dispatch/test_held.py::test_a_missing_spool_is_a_refusal_not_a_verdict": "integration/dispatch/held/test_scheduler.py::test_a_missing_spool_is_a_refusal_not_a_verdict",
+        "integration/dispatch/test_held.py::test_a_lost_reply_is_reconciled_by_asking_whether_it_landed": "integration/dispatch/held/test_scheduler.py::test_a_lost_reply_is_reconciled_by_asking_whether_it_landed",
+        "integration/dispatch/test_held.py::test_a_queue_declaring_a_scheduler_routes_its_jobs_there": "integration/dispatch/held/test_scheduler.py::test_a_queue_declaring_a_scheduler_routes_its_jobs_there",
+        "integration/dispatch/test_held.py::test_a_line_reads_as_what_its_spool_adds_up_to": "integration/dispatch/held/test_line.py::test_a_line_reads_as_what_its_spool_adds_up_to[a-released-line]",
+        "integration/dispatch/test_held.py::test_the_keeper_opens_a_generation_per_allocation_until_released": "integration/dispatch/held/test_line.py::test_the_keeper_opens_a_generation_per_allocation_until_released",
+        "integration/dispatch/test_held.py::test_an_older_keeper_exits_once_a_newer_one_holds_the_token": "integration/dispatch/held/test_line.py::test_an_older_keeper_exits_once_a_newer_one_holds_the_token",
+        "integration/dispatch/test_held.py::test_the_keeper_script_is_valid_bash": "integration/dispatch/held/test_line.py::test_the_keeper_script_is_valid_bash",
+        "integration/dispatch/test_held.py::test_a_held_submission_is_recorded_before_it_is_queued_and_closed_when_refused": "integration/dispatch/held/test_line.py::test_a_held_submission_is_recorded_before_it_is_queued_and_closed_when_refused",
+        "integration/dispatch/test_held.py::test_only_a_declared_pbs_host_has_a_line": "integration/dispatch/held/test_line.py::test_only_a_declared_pbs_host_has_a_line",
+        "integration/dispatch/test_held.py::test_a_walltime_past_a_day_keeps_its_hours": "integration/dispatch/held/test_line.py::test_a_walltime_past_a_day_keeps_its_hours",
+        "integration/dispatch/test_sync_manifest_name.py::test_an_include_naming_a_manifest_ships_the_one_the_workspace_holds": "integration/dispatch/mirroring/test_sync_manifest_name.py::test_an_include_naming_a_manifest_ships_the_one_the_workspace_holds",
+        "integration/verbs/apps/test_apps.py::test_a_suite_resolves_to_the_inputs_its_task_spelled": "integration/verbs/apps/test_apps.py::test_a_suite_the_app_does_not_declare_is_refused",
+        "integration/apple/test_bundle.py": "integration/apple/bundle/test_bundle.py",
+        "integration/apple/test_launch.py": "integration/apple/bundle/test_launch.py",
+        "integration/apple/test_execution.py": "integration/apple/xcode/test_execution.py",
+        "integration/apple/test_results.py": "integration/apple/xcode/test_results.py",
+        "integration/apple/test_diagnostics.py": "integration/apple/xcode/test_diagnostics.py",
+        "integration/apple/test_toolchain.py": "integration/apple/toolchain/test_toolchain.py",
+        "integration/apple/test_xcrun.py": "integration/apple/toolchain/test_xcrun.py",
+        "integration/apple/test_fonts.py": "integration/apple/toolchain/test_fonts.py",
+        "integration/analysis/swift/test_analysis.py::test_missing_native_host_libraries_fails_with_an_actionable_path": "integration/analysis/swift/test_native_helper.py::test_missing_native_host_libraries_fails_with_an_actionable_path",
+        "integration/analysis/swift/test_analysis.py::test_missing_native_toolchain_refuses_before_any_download": "integration/analysis/swift/test_native_helper.py::test_missing_native_toolchain_refuses_before_any_download",
+        "integration/analysis/swift/test_analysis.py::test_native_helper_compile_timeout_never_becomes_a_cache_hit": "integration/analysis/swift/test_native_helper.py::test_native_helper_compile_timeout_never_becomes_a_cache_hit",
+        "integration/analysis/swift/test_analysis.py::test_native_helper_is_cached_and_reports_bad_requests_without_crashing": "integration/analysis/swift/test_native_helper.py::test_native_helper_is_cached_and_reports_bad_requests_without_crashing",
+        "integration/analysis/swift/test_analysis.py::test_native_provider_accepts_a_relative_cli_root": "integration/analysis/swift/test_native_helper.py::test_native_provider_accepts_a_relative_cli_root",
+        "integration/engines/environments/managed_python/test_launcher.py": "integration/engines/environments/managed_python/launcher/test_launcher.py",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_host_names_no_interpreter_of_its_own": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_host_names_no_interpreter_of_its_own",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-bash]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-bash]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-sh]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-sh]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-zsh]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[a-host-with-neither-is-refused-by-name-zsh]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-bash]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-bash]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-sh]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-sh]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-zsh]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[the-workspace-environment-runs-first-zsh]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-bash]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-bash]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-sh]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-sh]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-zsh]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_a_remote_python_starts_in_the_environment_else_in_uvs_cpython_else_the_host_is_refused[uv-managed-cpython-runs-before-the-environment-exists-zsh]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python[a-bare-path-is-refused-by-name]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python[a-bare-path-is-refused-by-name]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python[the-environment-runs-once-it-exists]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_activation_refuses_where_a_bare_path_would_find_a_system_python[the-environment-runs-once-it-exists]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[a-fetch-from-a-declared-host]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[a-fetch-from-a-declared-host]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[a-fetch-from-an-unrecorded-rental]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[a-fetch-from-an-unrecorded-rental]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[the-agent-bootstrap]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_dispatch_starts_every_remote_python_through_the_launcher[the-agent-bootstrap]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[center]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_no_remote_path_names_a_system_python[center]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[dispatch]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_no_remote_path_names_a_system_python[dispatch]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[engines]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_no_remote_path_names_a_system_python[engines]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_no_remote_path_names_a_system_python[manifest]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_no_remote_path_names_a_system_python[manifest]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[bash]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_the_agent_answers_through_the_launcher[bash]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[sh]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_the_agent_answers_through_the_launcher[sh]",
+        "integration/engines/environments/managed_python/test_launcher.py::test_the_agent_answers_through_the_launcher[zsh]": "integration/engines/environments/managed_python/launcher/test_launcher.py::test_the_agent_answers_through_the_launcher[zsh]",
+        "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it": "integration/machines/test_libraries.py::test_the_loader_takes_a_name_from_the_first_rule_that_has_it[nothing-answers]",
+        "integration/analysis/test_analysis_explain.py::test_explain_reports_rule_evidence_and_repair_policy": "integration/analysis/test_analysis_explain.py::test_explain_reports_rule_evidence_and_repair_policy",
+        "integration/analysis/test_lint_scope.py::test_no_step_rewrites_a_file_a_registration_sealed": "integration/analysis/test_lint_scope.py::test_a_pass_rewrites_the_open_draft_beside_the_files_a_registration_sealed",
+        "integration/cli/test_commands.py::test_relation_queries_execute_exactly_once": "integration/results/test_results.py::test_relation_queries_execute_exactly_once",
+        "integration/cli/test_commands.py::test_relation_queries_preserve_types_without_pyarrow": "integration/results/test_results.py::test_a_query_that_cannot_run_is_refused_without_pyarrow",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-3]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-3]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-killed]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-killed]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-success]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[done-success]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[forgotten]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[forgotten]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[locked-bare]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[locked-bare]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[locked]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[locked]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[paused]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[paused]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[queued]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[queued]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[running]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[running]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[stashed]": "integration/dispatch/schedulers/test_pueue.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[stashed]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[unknown-bare]": "integration/dispatch/schedulers/test_pueue.py::test_a_pueue_state_this_tool_cannot_place_is_never_stopped_by_a_guess[unknown-bare]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling[unknown]": "integration/dispatch/schedulers/test_pueue.py::test_a_pueue_state_this_tool_cannot_place_is_never_stopped_by_a_guess[unknown]",
+        "integration/dispatch/test_scheduler_lifecycle.py::test_the_pueue_table_names_every_state_pueue_has": "integration/dispatch/schedulers/test_pueue.py::test_the_pueue_table_names_every_state_pueue_has",
+        "integration/gates/test_harness.py::test_seeded_extensions_copy_without_user_duckdb_or_source_mutation": "integration/gates/test_harness.py::test_a_worker_modifying_its_extension_leaves_the_seed_untouched",
+        "integration/trials/test_trial_source.py::test_captured_trials_verify_both_listing_locations[local]": "integration/trials/test_trial_source.py::test_a_lane_whose_bytes_changed_is_unrecorded_and_refused[local]",
+        "integration/trials/test_trial_source.py::test_captured_trials_verify_both_listing_locations[snapshot]": "integration/trials/test_trial_source.py::test_a_lane_whose_bytes_changed_is_unrecorded_and_refused[snapshot]",
+        "integration/analysis/rules/python/cuda/test_streams.py::test_a_default_stream_call_gets_the_one_stream_or_stays_as_the_case_states[a-device-wide-barrier-has-no-row-bound-fix]": "integration/analysis/rules/python/cuda/test_streams.py::test_a_default_stream_call_gets_the_one_stream_or_stays_as_the_case_states[a-device-wide-barrier-becomes-a-wait-on-the-stream]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[under-a-binary-operator]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[under-a-binary-operator]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[under-a-unary-operator]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[under-a-unary-operator]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[under-a-subscript]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[under-a-subscript]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[an-atom-needs-none-under-an-attribute]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[an-atom-needs-none-under-an-attribute]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[as-an-element-of-a-list]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[as-an-element-of-a-list]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[as-a-statement]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[as-a-statement]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[an-atom-in-a-conditional]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[an-atom-in-a-conditional]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[an-operator-on-a-new-line]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[an-operator-on-a-new-line]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[strings-on-two-lines]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[strings-on-two-lines]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[a-call-covering-its-own-lines]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[a-call-covering-its-own-lines]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[a-string-with-a-line-break]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[a-string-with-a-line-break]",
+        "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_under_a_tighter_parent_or_over_lines_no_bracket_covers[a-dictionary-over-lines]": "integration/analysis/operations/nodes/rewriting/test_patterns.py::test_a_lone_hole_is_parenthesized_exactly_where_leaving_it_bare_changes_its_meaning[a-dictionary-over-lines]"
       }
     }
   ]

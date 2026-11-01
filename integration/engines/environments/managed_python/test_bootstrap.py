@@ -1,11 +1,12 @@
 import shlex
 import sys
+from collections.abc import Sequence
 from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
-from mainboard import Board, MissionError, Project
+from mainboard import Board, ExecutionPlan, MissionError, Project
 from mainboard.dispatch import Dialect, Onboarding
 from mainboard.dispatch.hosts.landing import Landing
 from mainboard.dispatch.hosts.onboard import Bootstrap
@@ -14,12 +15,18 @@ from mainboard.dispatch.transport.shells import HostShell
 from mainboard.engines.compile import Lockfile
 
 from .builders import stub
-from .constants import PLAN, PYTHON, PYTHON_INSTALL, ROOT, SYSTEM
+from .constants import PLAN, ROOT, SYSTEM
 from .fakes import Recorded
 
+_PYTHON = ">=3.14.0,<3.15"
+_PYTHON_INSTALL = f"uv python install --upgrade --no-bin {shlex.quote(_PYTHON)}"
 _MKDIR = f"mkdir -p {ROOT}"
 _HAS_UV = "command -v uv"
 _UPDATE = "uv self update --quiet"
+_INSTALL = "mainboard install default --locked --profile fakehost"
+# The tail of the line that reads the manifest a mirror left in the host's root.
+_READ = "|| true"
+_OTHER = '[workspace]\nname = "kernel-languages"\n'
 _CURL, _INSTALLER = Dialect.uv_bootstrap
 _UV = """echo "$@" >> "$HOME/asked"
 case "$1 $2" in
@@ -59,19 +66,19 @@ exit 1"""
     [
         pytest.param(
             (_HAS_UV,),
-            [_MKDIR, _HAS_UV, _CURL, _INSTALLER, PYTHON_INSTALL],
+            [_MKDIR, _HAS_UV, _CURL, _INSTALLER, _PYTHON_INSTALL],
             None,
             id="a-host-without-uv-fetches-it",
         ),
         pytest.param(
             (_UPDATE,),
-            [_MKDIR, _HAS_UV, _UPDATE, _CURL, _INSTALLER, PYTHON_INSTALL],
+            [_MKDIR, _HAS_UV, _UPDATE, _CURL, _INSTALLER, _PYTHON_INSTALL],
             None,
             id="a-uv-too-old-to-know-a-final-release-is-replaced",
         ),
         pytest.param(
             (),
-            [_MKDIR, _HAS_UV, _UPDATE, PYTHON_INSTALL],
+            [_MKDIR, _HAS_UV, _UPDATE, _PYTHON_INSTALL],
             None,
             id="a-uv-that-updates-itself-is-kept",
         ),
@@ -138,8 +145,8 @@ def test_python_and_the_tool_install_on_the_solved_minor(
 
     assert bootstrap.tool().winner == winner
     asked = (home / "asked").read_text(encoding="utf-8").splitlines()
-    assert asked[:2] == ["self update --quiet", f"python install --upgrade --no-bin {PYTHON}"]
-    assert (f"--python {PYTHON}" in asked[2], "--editable" in asked[2]) == (
+    assert asked[:2] == ["self update --quiet", f"python install --upgrade --no-bin {_PYTHON}"]
+    assert (f"--python {_PYTHON}" in asked[2], "--editable" in asked[2]) == (
         True,
         source == "editable",
     )
@@ -225,10 +232,10 @@ def test_setup_installs_python_and_the_tool_on_the_solved_minor_held_to_the_lock
     onboarder.run()
 
     [(constraints, pinned)] = shell.written.items()
-    assert pinned == "duckdb==2.0.0\npytz==2026.1\n" and shell.installed(PYTHON) == (True, True)
+    assert pinned == "duckdb==2.0.0\npytz==2026.1\n" and shell.installed(_PYTHON) == (True, True)
     assert any(f"--constraints {constraints}" in command for command in shell.commands)
-    assert "mainboard install default --locked --profile fakehost" in shell.commands
-    assert "mainboard lake upgrade" in shell.commands
+    assert _INSTALL in shell.commands
+    assert "mainboard data lake upgrade" in shell.commands
 
 
 def _synced(board: Board, onboarder: Onboarding, shell: Recorded) -> str:
@@ -242,7 +249,11 @@ def _synced(board: Board, onboarder: Onboarding, shell: Recorded) -> str:
     ("old", "new", "python", "pinned"),
     [
         pytest.param(
-            "duckdb-2.0.0", "duckdb-2.0.1", PYTHON, "duckdb==2.0.1\npytz==2026.1\n", id="a-release"
+            "duckdb-2.0.0",
+            "duckdb-2.0.1",
+            _PYTHON,
+            "duckdb==2.0.1\npytz==2026.1\n",
+            id="a-release",
         ),
         pytest.param(
             "3.14.8",
@@ -264,14 +275,78 @@ def test_a_sync_reinstalls_the_tool_only_when_the_lock_moved_what_it_runs_on(
     onboarder, shell = onboarding
     setup = onboarder.run().requires
     assert _synced(board, onboarder, shell) == setup
-    assert shell.installed(PYTHON) == (True, False)
+    assert shell.installed(_PYTHON) == (True, False)
 
     lock = Lockfile(board.root)
     lock.path.write_text(lock.path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
 
     assert _synced(board, onboarder, shell) != setup
     assert shell.installed(python) == (True, True) and list(shell.written.values()) == [pinned]
-    assert "mainboard lake upgrade" not in shell.commands
+    assert "mainboard data lake upgrade" not in shell.commands
+
+
+@pytest.fixture
+def mirrored(
+    board: Board, onboarding: tuple[Onboarding, Recorded], monkeypatch: pytest.MonkeyPatch
+) -> list[str]:
+    """Every root the workspace is mirrored to, the mirror itself standing aside."""
+    roots: list[str] = []
+
+    def mirror(
+        plan: ExecutionPlan, root: str, *, required: Sequence[Sequence[str]] = ()
+    ) -> list[str]:
+        roots.append(root)
+        return []
+
+    monkeypatch.setattr(board.dispatcher, "mirror", mirror)
+    return roots
+
+
+@pytest.mark.parametrize(
+    "held",
+    [
+        pytest.param("", id="a-root-with-no-manifest"),
+        pytest.param('[workspace]\nname = "it"\n[deps]\npython = "*"\n', id="this-workspace"),
+        pytest.param("[deps]\npython = '*'\n", id="a-manifest-naming-no-workspace"),
+        pytest.param("[workspace", id="a-manifest-that-is-not-toml"),
+    ],
+)
+def test_a_setup_mirrors_into_a_root_no_other_workspace_holds(
+    onboarding: tuple[Onboarding, Recorded], mirrored: list[str], held: str
+) -> None:
+    onboarder, shell = onboarding
+    shell.replies[_READ] = held
+
+    onboarder.run()
+
+    assert mirrored == [ROOT]
+
+
+def test_a_setup_refuses_a_root_another_workspace_holds_and_mirrors_nothing(
+    onboarding: tuple[Onboarding, Recorded], mirrored: list[str]
+) -> None:
+    onboarder, shell = onboarding
+    shell.replies[_READ] = _OTHER
+
+    with pytest.raises(MissionError, match="workspace 'kernel-languages'") as refused:
+        onboarder.run()
+
+    assert '[hosts.fakehost] root = "~/.mb-jobs-it"' in str(refused.value)
+    assert mirrored == [] and shell.written == {} and _INSTALL not in shell.commands
+
+
+def test_a_sync_refuses_a_root_another_workspace_took_since_the_setup(
+    onboarding: tuple[Onboarding, Recorded], mirrored: list[str]
+) -> None:
+    onboarder, shell = onboarding
+    onboarder.run()
+    shell.replies[_READ] = _OTHER
+    shell.reset()
+
+    with pytest.raises(MissionError, match="workspace 'kernel-languages'"):
+        onboarder.run(sync_only=True)
+
+    assert mirrored == [ROOT] and _INSTALL not in shell.commands
 
 
 def test_a_rental_uses_its_probed_platform_pin(rented: tuple[Landing, Rental, Recorded]) -> None:
@@ -291,7 +366,7 @@ def test_the_tool_runs_on_the_default_environments_python_and_a_host_without_one
     shell = Recorded()
     shell.plan = PLAN.model_copy(update={"env": "training"})
 
-    assert Bootstrap(shell, workspace=locked).python_request == PYTHON
+    assert Bootstrap(shell, workspace=locked).python_request == _PYTHON
 
     Lockfile(locked).path.unlink()
     with pytest.raises(MissionError, match="lock default"):

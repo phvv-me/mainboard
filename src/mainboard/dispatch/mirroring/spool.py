@@ -11,14 +11,15 @@ import secrets
 import shlex
 import time
 from collections.abc import Sequence
-from enum import StrEnum, auto
 from pathlib import Path
 from tempfile import mkstemp
 from typing import ClassVar
 
 from patos import FrozenModel
 
+from ...core import write_atomic
 from ...runtime.job import walltime_seconds
+from ..enums import Fence
 from ..shared import state_dir
 
 _CLAIM_TEMP_FILE_STEP = "  t=$(mktemp claims/.tmp.XXXXXX) || return 4"
@@ -98,19 +99,6 @@ class Beat(FrozenModel):
     at: float
     state: str
     running: str = ""
-
-
-class Fence(StrEnum):
-    """How far a cancel got, as `Remote.fence` prints it.
-
-    EXITED: the runner already wrote the exit artifact, which stands untouched.
-    FENCED: no allocation took the entry and none can now.
-    CLAIMED: an allocation owns it and ends it on the tombstone.
-    """
-
-    EXITED = auto()
-    FENCED = auto()
-    CLAIMED = auto()
 
 
 def handle() -> str:
@@ -333,10 +321,7 @@ class Spool:
     def replace(self, path: Path, text: str) -> None:
         """Overwrite `path` with `text` atomically: a reader sees the old file or the new one."""
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor, temporary = mkstemp(prefix=".tmp.", dir=path.parent)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as sink:
-            sink.write(text)
-        Path(temporary).replace(path)
+        write_atomic(path, text, mode=0o600)
 
     def stopped(self) -> bool:
         """Whether the line was released."""

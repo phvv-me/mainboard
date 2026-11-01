@@ -1,60 +1,26 @@
-import hashlib
-import json
 import re
-import stat
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, ClassVar
-from urllib.parse import urlsplit
-from zipfile import BadZipFile, ZipFile
+from typing import TYPE_CHECKING, ClassVar, Self
 
-from patos import FrozenModel
-from pydantic import ValidationError, model_validator
+from pydantic import ValidationError
 
 from ....core.errors import MissionError
 from ....core.execution.tool import ToolRunner
+from ....core.project import Project
+from .archive import Archive, Binaries, Receipt, sha256_of
 from .base import Ecosystem
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from typing import Self
 
+    from ....core.section import Section
     from ....manifest.schema.spec import Spec
-
-
-class Archive(FrozenModel):
-    """An immutable ZIP coordinate; only its named regular executable is extracted."""
-
-    version: str
-    url: str
-    sha256: str
-    member: str
-
-    @model_validator(mode="after")
-    def pinned(self) -> Self:
-        location = urlsplit(self.url)
-        member = PurePosixPath(self.member)
-        if (
-            not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z_.+-]*", self.version)
-            or location.scheme != "https"
-            or not location.hostname
-            or location.username is not None
-            or location.password is not None
-            or location.fragment
-            or not re.fullmatch(r"[a-f0-9]{64}", self.sha256)
-            or member.is_absolute()
-            or ".." in member.parts
-            or "\\" in self.member
-            or not member.name
-        ):
-            raise ValueError(
-                "binary requires a version, HTTPS URL, SHA-256 and relative ZIP member"
-            )
-        return self
+    from .stage import SecondStage
 
 
 class Binary(Ecosystem):
-    """Platform-scoped, hash-pinned executable ZIPs, without a system package manager.
+    """Platform-scoped, hash-pinned executables in ZIP or tar.gz releases, with no package manager.
 
     Installation is explicit. Activation and linting only read installed executables, and a
     missing tool remains a failed check. The manifest pins every downloaded byte.
@@ -62,6 +28,11 @@ class Binary(Ecosystem):
 
     toolchain: ClassVar[str] = "binary"
     shared: ClassVar[bool] = True
+
+    @classmethod
+    def of(cls, stage: SecondStage, env: str) -> Self:
+        """The binary ecosystem `stage` binds for `env`."""
+        return next(eco for eco in stage.ecosystems(env) if isinstance(eco, cls))
 
     @property
     def directory(self) -> Path:
@@ -111,52 +82,29 @@ class Binary(Ecosystem):
         if result.returncode or result.truncated:
             raise MissionError(f"binary download failed: {result.stderr or result.returncode}")
         try:
-            size, digest = destination.stat().st_size, _digest(destination)
+            size, actual = destination.stat().st_size, sha256_of(destination)
         except OSError as fault:
             raise MissionError(f"cannot read binary download: {fault}") from fault
         if size > 128 << 20:
             raise MissionError("binary download exceeded its size limit")
-        if digest != archive.sha256:
+        if actual != archive.sha256:
             raise MissionError("binary archive SHA-256 does not match its manifest pin")
 
     @staticmethod
     def _extract(archive: Archive, downloaded: Path, *, destination: Path) -> None:
-        try:
-            destination.write_bytes(Binary._member(archive, downloaded))
-        except (BadZipFile, OSError, RuntimeError) as fault:
-            raise MissionError(f"cannot read binary ZIP: {fault}") from fault
-
-    @staticmethod
-    def _member(archive: Archive, downloaded: Path) -> bytes:
-        """The bytes of the one member `archive` declares, a regular file under 64 MiB.
-
-        Never a pathname from the archive is extracted, including unrelated traversal entries.
-        """
-        with ZipFile(downloaded) as zipped:
-            matches = [entry for entry in zipped.infolist() if entry.filename == archive.member]
-            if len(matches) != 1:
-                raise MissionError("binary ZIP must contain exactly one declared member")
-            entry = matches[0]
-            mode = entry.external_attr >> 16
-            if (
-                entry.is_dir()
-                or stat.S_IFMT(mode) not in (0, stat.S_IFREG)
-                or not 0 < entry.file_size <= 64 << 20
-            ):
-                raise MissionError("binary ZIP member must be a regular executable under 64 MiB")
-            return zipped.read(entry)
+        destination.write_bytes(archive.format.read(downloaded, archive.member))
 
     @staticmethod
     def _satisfied(executable: Path, *, receipt: Path, archive: Archive) -> bool:
         try:
-            record = json.loads(receipt.read_text(encoding="utf-8"))
-        except FileNotFoundError, json.JSONDecodeError:
+            record = Receipt.model_validate_json(receipt.read_bytes())
+        except FileNotFoundError, ValidationError:
             return False
         return (
             not executable.is_symlink()
             and executable.is_file()
             and executable.stat().st_mode & 0o111 != 0
-            and record == {**archive.model_dump(), "executable_sha256": _digest(executable)}
+            and record == Receipt(**archive.model_dump(), executable_sha256=sha256_of(executable))
         )
 
     @staticmethod
@@ -172,13 +120,16 @@ class Binary(Ecosystem):
         """`archive` downloaded, its member checked and moved into place, its receipt last."""
         with TemporaryDirectory(prefix=".install-", dir=self.directory) as temporary:
             staging = Path(temporary)
-            downloaded = staging / "download.zip"
+            downloaded = staging / "download"
             self._download(archive, downloaded)
             binary = staging / "executable"
             self._extract(archive, downloaded, destination=binary)
             record = staging / "receipt.json"
             record.write_text(
-                json.dumps({**archive.model_dump(), "executable_sha256": _digest(binary)}) + "\n",
+                Receipt(
+                    **archive.model_dump(), executable_sha256=sha256_of(binary)
+                ).model_dump_json()
+                + "\n",
                 encoding="utf-8",
             )
             binary.chmod(0o755)
@@ -197,10 +148,22 @@ class Binary(Ecosystem):
     def binary_dirs(self) -> tuple[Path, ...]:
         return (self.directory / "bin",)
 
+    def declared(self) -> dict[str, str]:
+        """Each pinned tool's version for this platform."""
+        return {name: spec.version for name, spec in self.deps.items()}
+
     def frozen_inputs(self) -> tuple[Path, ...]:
         for name, spec in self.deps.items():
             self.archive(name, spec)
         return ()
+
+    def resolver(self) -> Binaries:
+        """Where this environment's tools are: its installed pins, `bin/` and then PATH."""
+        return Binaries(self.directory, environment=self.pixi.prefix(self.env).path / "bin")
+
+    def section(self) -> Section | None:
+        """The doctor's row over the pinned tools, None when this platform pins none."""
+        return self.resolver().section(self.declared(), fix=f"{Project().name} dep binary")
 
     def sync(self, *, resolve: bool = False) -> None:
         archives = {name: self.archive(name, spec) for name, spec in self.deps.items()}
@@ -215,8 +178,3 @@ class Binary(Ecosystem):
             receipt = self.directory / f"{name}.json"
             if not self._satisfied(directory / name, receipt=receipt, archive=archive):
                 self._installed(archive, executable=directory / name, receipt=receipt)
-
-
-def _digest(path: Path) -> str:
-    with path.open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()

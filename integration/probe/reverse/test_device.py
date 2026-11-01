@@ -12,11 +12,13 @@ from mainboard.probe.reverse.device.parsers import (
     parse_resources,
     parse_sass,
 )
-from mainboard.probe.reverse.models import ArchCoverage, Coverage, KernelInventory, SassResult
+from mainboard.probe.reverse.evidence import ArchCoverage, Coverage, KernelInventory, SassResult
 
 from ...constants import ELF, NVDISASM, PTX, RESOURCE, SASS, SASS_REAL
 from .builders import artifact
 from .fakes import FixtureRunner
+
+_KERNEL = "_Z6kernelPi"
 
 
 def test_listed_images_are_architecture_coverage_not_kernel_names() -> None:
@@ -42,7 +44,7 @@ def test_cuda_suffixes_survive_dispatch_arch_naming(target: str) -> None:
 def test_resources_keep_observed_zero_distinct_from_unknown() -> None:
     found = parse_resources(RESOURCE)
     assert found.coverage == Coverage.complete
-    assert {kernel.name for kernel in found.result.kernels} == {"_Z6kernelPi", "_Z5otherPi"}
+    assert {kernel.name for kernel in found.result.kernels} == {_KERNEL, "_Z5otherPi"}
     assert found.result.kernels[0].shared_bytes.value == 0
     missing = parse_resources("arch = sm_90\nFunction missing:\nREG:16\n")
     assert missing.result.kernels[0].shared_bytes.value is None
@@ -53,7 +55,7 @@ def test_real_fatbin_preamble_lines_are_metadata_not_unknowns() -> None:
     parsed = parse_sass(SASS_REAL)
     assert parsed.coverage is Coverage.complete
     assert parsed.unresolved == ()
-    assert [listing.kernel for listing in parsed.result.listings] == ["_Z6kernelPi"]
+    assert [listing.kernel for listing in parsed.result.listings] == [_KERNEL]
     only = parsed.result.listings[0]
     assert only.arch == "sm_90a"
     assert [insn.opcode for insn in only.instructions] == ["MOV", "EXIT", "BRA"]
@@ -65,14 +67,16 @@ def test_sass_retains_indirect_sites_and_instruction_fields(text: str) -> None:
     found = parse_sass(text)
     assert len(found.result.listings) == 1
     listing = found.result.listings[0]
-    assert listing.kernel == "_Z6kernelPi"
-    assert len(listing.instructions) == 3
-    assert listing.instructions[1].opcode == "BRX"
+    assert (
+        listing.kernel,
+        len(listing.instructions),
+        listing.instructions[1].opcode,
+        listing.branches.unresolved,
+        listing.branches.resolved,
+        listing.brx_sites,
+    ) == (_KERNEL, 3, "BRX", 1, 0, (16,))
     assert listing.instructions[1].predicate in {"@P0", "@!P0"}
-    assert listing.branches.unresolved == 1 and listing.branches.resolved == 0
-    assert listing.brx_sites == (16,)
-    assert found.coverage == Coverage.partial
-    assert len(found.unresolved) == 1
+    assert (found.coverage, len(found.unresolved)) == (Coverage.partial, 1)
     assert found.unresolved[0].site.endswith("/0x10")
 
 
@@ -113,7 +117,7 @@ def test_unknown_resource_tokens_are_not_silently_discarded() -> None:
 def test_multiple_functions_and_architectures_keep_separate_address_spaces() -> None:
     found = parse_sass(SASS + "arch = sm_100\nFunction : second\n/*0000*/ EXIT;\n")
     assert [(item.kernel, item.arch) for item in found.result.listings] == [
-        ("_Z6kernelPi", "sm_90a"),
+        (_KERNEL, "sm_90a"),
         ("second", "sm_100"),
     ]
     assert found.result.listings[1].instructions[0].address == 0
@@ -123,17 +127,19 @@ def test_registered_provider_constructs_profile_and_uses_literal_arguments() -> 
     runner = FixtureRunner()
     provider = CuobjdumpProvider(runner)
     assert CuobjdumpProvider in ReverseProvider.implementations()
-    request = Request(artifact=artifact(), operation="sass", arch="sm_90a", function="_Z6kernelPi")
+    request = Request(artifact=artifact(), operation="sass", arch="sm_90a", function=_KERNEL)
     found = provider.analyze(request)
-    assert found.tool_version == "13.4.48"
-    assert found.params == {"arch": "sm_90a", "function": "_Z6kernelPi"}
-    assert found.analysis_profile.provider == provider.tool
+    assert (
+        found.tool_version,
+        found.params,
+        found.analysis_profile.provider,
+        found.coverage,
+    ) == ("13.4.48", {"arch": "sm_90a", "function": _KERNEL}, provider.tool, Coverage.partial)
     assert (
         provider.tool,
-        ("--dump-sass", "--function", "_Z6kernelPi", artifact().path),
+        ("--dump-sass", "--function", _KERNEL, artifact().path),
         None,
     ) in runner.calls
-    assert found.coverage == Coverage.partial
     assert provider.operations["sass"].read_only
     assert not provider.operations["sass"].executes_foreign_code
 
@@ -184,15 +190,16 @@ def test_nvdisasm_extracts_in_a_temporary_directory_and_records_both_versions() 
     result = NvdisasmProvider(runner).analyze(
         Request(artifact=artifact(), operation="sass", arch="sm_90a")
     )
-    assert result.params["extractor_version"] == "13.4.48"
     extraction = [call for call in runner.calls if call[1][0] == "--extract-elf"]
-    assert len(extraction) == 1
+    assert (result.params["extractor_version"], len(extraction)) == ("13.4.48", 1)
     directory = extraction[0][2]
     assert directory is not None and not directory.exists()
     match result.result:
         case SassResult():
-            assert result.result.branches.unresolved == 1
-            assert result.result.listings[0].arch == "sm_90a"
+            assert (result.result.branches.unresolved, result.result.listings[0].arch) == (
+                1,
+                "sm_90a",
+            )
         case _:
             pytest.fail("expected SASS")
 

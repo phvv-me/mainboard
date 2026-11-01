@@ -111,8 +111,8 @@ class Scheduler(ABC):
         """The one command an interactive session runs inside the caller's ssh and staging.
 
         A queued backend asks for an interactive allocation (`qsub -I`, `srun --pty`). A host
-        that runs the work itself, as by default, hands the terminal to its own tool (`shell`,
-        or `run` for a command), which owns the activation, so an interactive session and a
+        that runs the work itself, as by default, hands the terminal to its own tool (`dep
+        shell`, or `run` for a command), which owns the activation, so an interactive session and a
         dispatched job never disagree about their interpreter; it allocates nothing.
 
         command: run instead of handing over the terminal, empty for a session.
@@ -122,7 +122,7 @@ class Scheduler(ABC):
         tool = Project().package
         if command:
             return shlex.join([tool, "run", "--env", env, "--", *command])
-        return shlex.join([tool, "shell", env])
+        return shlex.join([tool, "dep", "shell", env])
 
     def logs(self, remote: Machine, root: str, *, handle: str) -> str:
         """`handle`'s captured log so far (merged stdout+stderr), from its log file by default."""

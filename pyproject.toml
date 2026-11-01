@@ -27,6 +27,7 @@ dependencies = [
     # lake's own connections.
     "duckdb-sqlalchemy>=1.5.6",
     "sqlalchemy>=2.1.3",
+    # Never imported here: the DuckDB binary refers to pytz's cache type when it builds timestamps.
     "pytz>=2025.2",
     # Hardware inventory is a core Mainboard verb, so the official CUDA host bindings cannot be
     # hidden behind an extra on Linux, where NVIDIA supports them. The wheel depends only on
@@ -136,7 +137,13 @@ files = ["src"]
 # `mb lint` also hands mypy the integration tests, whose folders are no packages: each file is
 # named from these roots, so a gate test's `from . import runner` and its worker's `guard` resolve.
 explicit_package_bases = true
-mypy_path = ["src", ".", "integration/gates/worker"]
+mypy_path = ["src", ".", "integration/gates/worker", "stubs"]
+
+# cupti-python ships types, but it is a CUDA package with no macOS wheel, so a checker on a Mac
+# cannot resolve it; the code reads it as `Any` there and as typed where it is installed.
+[[tool.mypy.overrides]]
+module = ["cupti", "cupti.*"]
+ignore_missing_imports = true
 
 # pyarrow ships no type stubs; the engine only builds Arrow arrays for DuckDB's functions.
 [[tool.mypy.overrides]]
@@ -235,8 +242,6 @@ exclude = [
   "src/mainboard/trials/session.py",
   "src/mainboard/dispatch/transport/core.py",
   "src/mainboard/manifest/render/interpolate.py",
-  "src/mainboard/probe/providers/nvidia/protocols.py",
-  "src/mainboard/profile/providers/nvidia/bindings.py",
   "src/mainboard/profile/providers/nvidia/tracer.py",
 ]
 
@@ -272,7 +277,7 @@ exclude = [
 # declared, the provenance every row carries, the flag baseline, the open stores, the collected
 # lanes, the claim now resident and the first trial that moved a flag. None is derivable from
 # another and dropping any one loses a column of the receipt or a line of the refusal.
-[tool.mcmr.rules."ALL-CLAS0004"]
+[tool.mcmr.rules."ALL-CEIL0001".declared_fields]
 exclude = [
   "src/mainboard/trials/session.py",
   "src/mainboard/batch/estimate/core.py",
@@ -281,7 +286,6 @@ exclude = [
   "src/mainboard/dispatch/jobs/spec.py",
   "src/mainboard/dispatch/hosts/onboard/record.py",
   "src/mainboard/dispatch/state/cache.py",
-  "src/mainboard/dispatch/mirroring/sync.py",
   "src/mainboard/dispatch/transport/targets.py",
   "src/mainboard/dispatch/jobs/vocabulary.py",
   "src/mainboard/engines/compile/ecosystems/base.py",
@@ -305,7 +309,7 @@ exclude = [
 # opening comment group, and this workspace deliberately writes those decision logs long. The
 # comment is the sanctioned home for the why, and trimming it to a token budget would delete
 # exactly the record the house rules ask us to keep.
-[tool.mcmr.rules."ALL-COMM0001"]
+[tool.mcmr.rules."ALL-CEIL0001".comment_length]
 exclude = ["src"]
 
 # `Host` and `Machine` are the one-per-process hardware facade: the probe's lifetime is exactly
@@ -340,23 +344,12 @@ exclude = [
   "src/mainboard/batch/watch.py",
 ]
 
-# This package's collection policy is immutable by default: results are hashable patos
-# `FrozenModel` values whose homogeneous fields are tuples (see the PY-PYDA0007 entry), so a
-# `tuple` or `frozenset` constructor states the design at exactly the boundary the value is
-# frozen.
-[tool.mcmr.rules."PY-COLL0004"]
-exclude = ["src"]
-
-# The fixed pairs the rule still flags are records: the `(domain, id)` handle nvtx hands back,
-# and a parametrized `(env, script)` expectation.
-# Loosening them to `Sequence` would lose exactly the pair shape their readers destructure.
+# The fixed pair the rule still flags is a record, a parametrized `(env, script)` expectation.
+# Loosening it to `Sequence` would lose exactly the pair shape its readers destructure.
 # `pytest_collection_modifyitems` takes a `list` because pytest's own hookspec does, and a
 # plugin that narrowed it would be describing a different hook from the one it implements.
 [tool.mcmr.rules."PY-COLL0001"]
-exclude = [
-  "src/mainboard/profile/providers/nvidia/bindings.py",
-  "src/mainboard/trials/pytest_plugin.py",
-]
+exclude = ["src/mainboard/trials/pytest_plugin.py"]
 
 # One module holds one closed type family, the shapes of one contract, named by the module
 # comment: `receipts` is the event contract, `vocabulary` the verdict words, `estimate` the
@@ -364,17 +357,6 @@ exclude = [
 # folder, and the family-per-module layout is the one the house architecture asks to keep.
 [tool.mcmr.rules."ALL-MODU0005"]
 exclude = ["src"]
-
-# The house testing policy is maximum coverage from minimum test count, so a test is one dense
-# scenario or property with its whole story in one body, and helpers take their axes as named
-# keywords. Splitting to a ten-statement ceiling would multiply the test count the policy
-# exists to hold down. In `src`, `cli.build` is the declarative verb table whose statement
-# count is the roster's length.
-[tool.mcmr.rules."ALL-FUNC0001"]
-exclude = ["src/mainboard/cli.py"]
-
-[tool.mcmr.rules."ALL-FUNC0010"]
-exclude = ["src/mainboard/cli.py"]
 
 # mainboard is a standalone published package, and the house `common.log` logger lives in the
 # monorepo tree this checkout cannot depend on, so module-level `logging.getLogger(__name__)`
@@ -403,7 +385,6 @@ exclude = ["src"]
 exclude = [
   "src/mainboard/__init__.py",
   "src/mainboard/core/execution/shell.py",
-  "src/mainboard/probe/providers/nvidia/protocols.py",
   "src/mainboard/profile/formats/protocols.py",
   "src/mainboard/profile/spans.py",
   "src/mainboard/trials/pytest_plugin.py",
@@ -417,11 +398,6 @@ exclude = [
   "src/mainboard/profile/benchmark.py",
   "src/mainboard/profile/studies/stages.py",
 ]
-
-# `vars` over a module namespace is the profiler's discovery mechanism for the code objects it
-# owns.
-[tool.mcmr.rules."ALL-FUNC0011"]
-exclude = ["src/mainboard/profile/profiler.py"]
 
 # The schedulers are `Scheduler` registry implementations: the class is the unit runtime
 # dispatch selects by kind, so a namespace of verbs is its whole job. `Fabric` is a frozen
@@ -452,13 +428,19 @@ exclude = ["src/mainboard/core/errors.py", "src/mainboard/dispatch/transport/cor
 
 # The ancestry the rule counts is the patos `Registry` plus pydantic stack under every provider
 # backend, not a hierarchy this package can flatten.
-[tool.mcmr.rules."ALL-CLAS0005"]
+[tool.mcmr.rules."ALL-CEIL0001".ancestors]
 exclude = ["src/mainboard/dispatch/backends"]
 
 # `bool | None` here is a genuine tri-state: an offer whose provider never said whether it is
 # available, and a launch whose module-or-script choice is inferred from evidence when unset.
+# The spool's `wire.py` is the OTLP `AnyValue` shape, where `boolValue` is one of five fields of
+# which exactly one is present: `None` is the field left out of the JSON, not a third answer.
 [tool.mcmr.rules."PY-TYPE0002"]
-exclude = ["src/mainboard/costs/catalog.py", "src/mainboard/profile/profiler.py"]
+exclude = [
+  "src/mainboard/core/events/wire.py",
+  "src/mainboard/costs/catalog.py",
+  "src/mainboard/profile/profiler.py",
+]
 
 # The facade `__getattr__` answers any exported name, and `object` is the exact type typeshed
 # gives the PEP 562 hook.
@@ -480,28 +462,23 @@ exclude = [
 [tool.mcmr.rules."ALL-WAIV0001"]
 exclude = ["src/mainboard/engines/compile/generated/files.py"]
 
-# `Nvml` is a typed mirror of NVML's own C namespace, so its method count is the vendor's rather
-# than ours, and the test double stands in for that same namespace method for method.
-[tool.mcmr.rules."ALL-CLAS0003"]
-exclude = ["src/mainboard/probe/providers/nvidia/protocols.py"]
-
-# Same mirror argument one level out: every NVML entry point the provider calls has to be
-# declared, and each enum those calls index into needs its own protocol, because they are
-# separate objects with separate members. Splitting the module would state a boundary NVML
-# does not have.
 # A plugin's member count is pytest's hook list plus two fixtures, which is not ours to shorten,
 # and the verdict reader's is one settled-row shape per evidence shape it reads.
 # The verdict reader gained the receipts-store branch, which is one more evidence shape read
 # through the same settled-row surface rather than a second module a caller has to know about.
-[tool.mcmr.rules."ALL-MODU0001"]
+[tool.mcmr.rules."ALL-CEIL0001".module_lines]
 exclude = ["src/mainboard/waiting/verdicts.py"]
 
-[tool.mcmr.rules."ALL-MODU0006"]
-exclude = ["src/mainboard/waiting/verdicts.py"]
-
-[tool.mcmr.rules."ALL-MODU0002"]
+# The collection script is sent to a host as one file and run by its bare Python (`pack` streams
+# results home, `evict` removes the copies the lake holds), so it cannot split into modules.
+[tool.mcmr.rules."ALL-CEIL0001".module_statements]
 exclude = [
-  "src/mainboard/probe/providers/nvidia/protocols.py",
+  "src/mainboard/dispatch/collection/pack.py",
+  "src/mainboard/waiting/verdicts.py",
+]
+
+[tool.mcmr.rules."ALL-CEIL0001".module_members]
+exclude = [
   "src/mainboard/trials/pytest_plugin.py",
   "src/mainboard/waiting/verdicts.py",
 ]
@@ -509,20 +486,22 @@ exclude = [
 # `profile` reaching `probe.units` is the one deliberate edge between them, and it buys the whole
 # default: a session that wants device evidence and was handed no probe finds the host's own
 # cards instead of collecting nothing. The alternative is a registration seam whose only member
-# would be the probe package, which is the same dependency written indirectly.
+# would be the probe package, which is the same dependency written indirectly. `memory keep`
+# refuses a file under a place the agent children's `Read(...)` denies name, and those denies are
+# policy's own `ENFORCERS`: a copy in a stabler package is the drift that refusal must not have.
 [tool.mcmr.rules."ALL-ARCH0003"]
-exclude = ["src/mainboard/profile"]
+exclude = ["src/mainboard/profile", "src/mainboard/memory/keeps.py"]
 
-# The cyclopts verbs must each exist as a function for the CLI table, one line or not.
-[tool.mcmr.rules."ALL-FUNC0004"]
-exclude = ["src/mainboard/cli.py"]
+# The CLI is synchronous and AIZK's client is async, so each memory call is one bounded run of
+# it; no event loop lives longer than a call, and nothing else in mainboard runs one.
+[tool.mcmr.rules."PY-ASYN0001"]
+exclude = ["src/mainboard/memory/aizk.py"]
 
 # tomlkit and the interpolation engine hand back plain Python values, so rendering a compiled
 # table or a template result has to ask what each value is. There is no capability to depend on
 # at that boundary, the same disposition chefe records for its own pixi compiler.
 [tool.mcmr.rules."PY-INTE0001"]
 exclude = [
-  "src/mainboard/engines/compile/backend/pixi/core.py",
   "src/mainboard/engines/compile/pixi/manifest.py",
   "src/mainboard/engines/compile/pixi/paths.py",
   "src/mainboard/manifest/render/interpolate.py",
@@ -532,19 +511,27 @@ exclude = [
 # delegations on purpose, the same shape as the root facade's exports. `center/remote.py` is the
 # program a migration ships to its destination, and the carrier calls its functions by name over
 # the wire (`carrier.call("census", ...)`), so each one-line entry is the remote verb itself.
-# `durable.settler` is the one public seam over the private `_SETTLERS` registry; inlining it
-# would hand that registry to `doctor`.
+# `services.settler` and `services.resident` are the public seams over the private `_SETTLERS`
+# and `_RESIDENTS` registries; inlining them would hand those registries to `doctor` and `serve`.
 [tool.mcmr.rules."ALL-FUNC0005"]
 exclude = [
   "src/mainboard/center/migration/remote.py",
-  "src/mainboard/settling/durable/core.py",
+  "src/mainboard/core/services/core.py",
   "src/mainboard/profile/bottleneck/annotate.py",
 ]
 
 # `log.py` is the logger: its stderr sink and its `result` and `prompt` streams are the one place
 # the tool writes to a stream itself. The census also runs on a machine without mainboard (below).
+# `serve/keeper.py` and `serve/events/headers.py` run by path with the standard library alone, so
+# the project logger is out of reach: the keeper writes its usage line to stderr itself, and the
+# headers helper's protocol is its one JSON object on stdout.
 [tool.mcmr.rules."PY-LOGG0002"]
-exclude = ["src/mainboard/log/core.py", "src/mainboard/probe/census.py"]
+exclude = [
+  "src/mainboard/log/core.py",
+  "src/mainboard/probe/census.py",
+  "src/mainboard/serve/events/headers.py",
+  "src/mainboard/serve/keeper.py",
+]
 
 # Programs sent to another machine as source and run by its bare Python (the collection script,
 # the migration agent's census) import the standard library alone: their constants stay in them,
@@ -555,13 +542,10 @@ exclude = ["src/mainboard/dispatch/collection/pack.py"]
 [tool.mcmr.rules."PY-CONS0002"]
 exclude = ["src/mainboard/dispatch/collection/collector.py"]
 
-# psutil's partition namedtuple and CUPTI's raw records are not models, so the projections that
-# adapt them into typed rows must spell the fields at that third-party boundary.
+# CUPTI's raw records are not models, so the projections that adapt them into typed rows must
+# spell the fields at that third-party boundary.
 [tool.mcmr.rules."PY-MODE0004"]
-exclude = [
-  "src/mainboard/probe/facts/storage/partition_info.py",
-  "src/mainboard/profile/providers/nvidia/delivery.py",
-]
+exclude = ["src/mainboard/profile/providers/nvidia/delivery.py"]
 
 # Where each test folder that names no source package goes, decided once by the owner: the first
 # folder under `integration/` must be a package or module of `src/mainboard`, and a leaf name
@@ -577,11 +561,20 @@ targets = { lake = "state/lake", evidence = "state/evidence", environments = "en
 project-includes = ["src/**/*.py"]
 python-version = "3.14"
 # A gate test imports its worker's `guard` by name, as the worker puts its folder on the path.
-search-path = ["src", ".", "integration/gates/worker"]
+search-path = ["src", ".", "integration/gates/worker", "stubs"]
+# `stubs/` holds the hand-written `.pyi` of the optional CUDA, NVTX, ROCTx and signpost libraries
+# that ship no types; cupti-python ships them but has no macOS wheel (see the mypy override).
+ignore-missing-imports = ["cupti", "cupti.*"]
 
 [tool.ty.environment]
 python-version = "3.14"
-extra-paths = ["integration/gates/worker"]
+extra-paths = ["integration/gates/worker", "stubs"]
+
+[[tool.ty.overrides]]
+include = ["src/mainboard/profile/providers/nvidia/**"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 [tool.pytest.ini_options]
 # `integration/` runs the real `mb` in throwaway workspaces and is what a bare `pytest` runs.
@@ -609,7 +602,7 @@ preview = true
 # The same set patos, chefe and lote select, so one habit covers every house package, plus the
 # encoding rule this one adds because it reads and writes manifests on three operating systems,
 # and the banned-api rule that keeps dataclasses out.
-select = ["E", "F", "I", "UP", "B", "SIM", "PLW1514", "TID251"]
+select = ["E", "F", "I", "UP", "B", "SIM", "PLW1514", "TID251", "TID255", "PLC0415"]
 
 # The owner's rule is no dataclasses: a record is a patos model. The two remote scripts
 # (`dispatch/agent/program/`, `dispatch/collection/pack.py`) run on hosts with the standard
@@ -620,6 +613,19 @@ select = ["E", "F", "I", "UP", "B", "SIM", "PLW1514", "TID251"]
 "src/mainboard/analysis/rules/**" = ["E501"]
 # Shipped to a destination that has no mainboard yet, so its result is a bare print.
 "src/mainboard/center/standalone.py" = ["T201"]
+# The doctor's serve rows import the serve stack inside their methods while the tool runs Python
+# 3.14, which ignores `__lazy_modules__`: the library facade imports the doctor through
+# `fleet.board`, and `mb --help` imports no serve module (ROADMAP-v2 W1 gate). Drop this entry
+# when the tool moves to 3.15 and those imports join the module's list.
+"src/mainboard/upkeep/serving.py" = ["PLC0415"]
+# `memory/aizk.py` imports the optional AIZK client at its top, and a workspace without the extra
+# answers by naming it, so `Memory.aizk` is the one place that imports the module under
+# `except ImportError`.
+"src/mainboard/memory/outbox.py" = ["PLC0415"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "dataclasses".msg = "Use patos's Model, FrozenModel, FlexModel or FrozenFlexModel (`from patos import ...`); pydantic refuses positional arguments, so construct with keywords."
+
+# `sumbit` is the misspelt verb the did-you-mean test types on purpose.
+[tool.codespell]
+ignore-words-list = "sumbit"

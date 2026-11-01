@@ -5,7 +5,6 @@ from functools import cache
 from pathlib import Path
 
 from ..core.errors import MissionError
-from ..engines.compile.backend.result import CommandResult
 
 # Settings every call carries. A CRLF conversion warning is advice about a checkout on another
 # platform, printed once per file on every `add`, and it buried the one line that mattered in a
@@ -59,45 +58,47 @@ class Git:
 
     def ok(self, *args: str) -> bool:
         """Whether a yes-or-no query answered yes, which git says with exit code zero."""
-        return self.run(*args).succeeded
+        return self.run(*args).returncode == 0
 
     def out(self, *args: str, stdin: str = "") -> str:
         """The output of a call that has to succeed, refused with git's own words when not."""
         result = self.run(*args, stdin=stdin)
-        if not result.succeeded:
+        if result.returncode:
             raise MissionError(f"git {' '.join(args)} failed in {self.path}: {said(result)}")
         return result.stdout
 
-    def run(self, *args: str, stdin: str = "", network: bool = False) -> CommandResult:
+    def run(
+        self, *args: str, stdin: str = "", network: bool = False, errors: str = "replace"
+    ) -> subprocess.CompletedProcess[str]:
         """Run `git args` here, whatever it exits with.
 
         stdin: text fed to the command, for a `--pathspec-from-file=-`.
         network: bound the call and offer the `gh` credential, for a fetch, push or clone.
+        errors: how bytes that are no UTF-8 decode, `surrogateescape` to keep a path whole.
         """
         argv = [_executable(), "-C", str(self.path)]
         argv += [word for setting in _QUIET for word in ("-c", setting)]
         if network:
             argv.extend(Git._credential())
+        argv.extend(args)
         try:
-            done = subprocess.run(
-                [*argv, *args],
+            return subprocess.run(
+                argv,
                 input=stdin,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                errors="replace",
+                errors=errors,
                 env={**os.environ, **_ENVIRONMENT},
                 timeout=_NETWORK_SECONDS if network else None,
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            return CommandResult(
-                _TIMED_OUT, "", f"git {args[0]} gave no answer in {_NETWORK_SECONDS:.0f} s"
-            )
-        return CommandResult(done.returncode, done.stdout, done.stderr)
+            silent = f"git {args[0]} gave no answer in {_NETWORK_SECONDS:.0f} s"
+            return subprocess.CompletedProcess(argv, _TIMED_OUT, "", silent)
 
 
-def said(result: CommandResult) -> str:
+def said(result: subprocess.CompletedProcess[str]) -> str:
     """What git said went wrong: the remote's last word if it spoke, else git's last line.
 
     A refused push ends on `failed to push some refs`, which is true and says nothing; the

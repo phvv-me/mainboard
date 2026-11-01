@@ -3,18 +3,19 @@
 import hashlib
 from collections import Counter
 from pathlib import Path, PurePosixPath
-from typing import Annotated
 
-from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ValidationError
 
 from ....core.errors import MissionError
-from ....log import logger
+from ....render import Output
 from ...providers.swift import SwiftToolchain
 from ..report import Report
 from .constants import LANGUAGES
-from .models import AppleSourceFile, SourceTotal, SwiftInventory, SyntaxStatus
+from .enums import SyntaxStatus
+from .models import AppleSourceFile, SourceTotal, SwiftInventory
+
+_COMPACT = Output()
 
 
 class SourceChange(FrozenModel):
@@ -218,12 +219,13 @@ def swift_compare(
     baseline: Path,
     current: Path,
     *,
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
 ) -> None:
     """Compare two saved Swift inventories without Xcode, source edits or test execution.
 
+    `--json` retains per-file changes, artifact hashes, category totals and parser provenance.
+
     baseline: the earlier `swift-inventory --json` artifact.
     current: the later artifact for the same repository-relative scope.
-    as_json: retain per-file changes, artifact hashes, category totals and parser provenance.
     """
-    logger.result(SwiftComparison.of(baseline, current=current).render(as_json=as_json))
+    SwiftComparison.of(baseline, current=current).show(output)

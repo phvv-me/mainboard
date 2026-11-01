@@ -1,8 +1,9 @@
+from ...enums import Pricing
 from .arch import arch, capability, card, sm
 from .commandline import joined, vetted
 from .evidence import framing, printed, receipts_in, staging
 from .spec import JobSpec
-from .vocabulary import Allocation, JobState, OfferFilter, Pricing, Request, Resources
+from .vocabulary import Allocation, JobState, OfferFilter, Request, Resources
 
 __all__ = [
     "Allocation",

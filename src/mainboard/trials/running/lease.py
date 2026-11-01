@@ -4,7 +4,8 @@
 # moments apart both read a free card and measured beside each other. A lease is a pid, a time and
 # a token in a file, not an OS lock: an `flock` releases when its holder dies but has no ttl, so a
 # live session that ran too long would hold it forever. The file's own text answers both staleness
-# questions, whether the pid lives and how long it has held.
+# questions, whether the pid lives and how long it has held. filelock's `SoftFileLock` is not used
+# because it reclaims a stale lease only through a rename-exchange, which NFS and Lustre refuse.
 #
 # ONE LEASE PER PHYSICAL CARD, HOST-WIDE (owner decision Q05, 2026-10-10). It was a file under each
 # universe's root named by `CUDA_VISIBLE_DEVICES`, so two experiments, or the masks `0,1` and `1`,

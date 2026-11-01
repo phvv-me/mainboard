@@ -9,9 +9,10 @@ from ...dispatch.jobs.vocabulary import Request
 from ...jobs.testing import lanes as lanes_module
 from ...jobs.testing.lanes import Group
 from ...log import logger
-from ...render import progress, totals
-from ..base import Verbs
-from ..options import Asked, Declared, Dispatching, Output
+from ...render import Output, progress, totals
+from ..constants import TREE
+from ..options import Asked, Declared, Dispatching
+from ..session import Verbs
 from .jobs import JobVerbs, Waiting
 
 # The verbs' defaults: compact output, the profile's resources, a lone job, no batch.
@@ -238,3 +239,17 @@ class SubmitVerbs(Verbs):
         if how.is_lane:
             return self._lane(request, how)
         return self._one(request, how=how, output=output)
+
+
+# The job group's verbs live in two modules; this one imports the other.
+_JOBS = JobVerbs()
+job = TREE.node("job").app(
+    SubmitVerbs(jobs=_JOBS).submit,
+    _JOBS.cancel,
+    _JOBS.digest,
+    _JOBS.events,
+    _JOBS.logs,
+    _JOBS.show,
+    list=_JOBS.jobs,
+)
+collect = TREE.node("data lake").bind(_JOBS.collect)["collect"]

@@ -15,12 +15,14 @@ from patos import FrozenModel
 from sqlalchemy import func, literal_column
 from sqlalchemy import select as selecting
 
+from ...constants import ALIAS
 from ...core.errors import MissionError
 from .. import schema
-from ..constants import ALIAS, VERSION
+from ..constants import VERSION
+from ..enums import Access
 from ..schema import ddl, kind
 from ..storage.database import first_line
-from .attachment import Access, Attachment
+from .attachment import Attachment
 from .session import patiently
 from .staging import compiled, insert
 
@@ -119,7 +121,7 @@ class Maintained(Attachment):
         if (size := self.catalog.stat().st_size) > _CATALOG_FLOOR_BYTES:
             yield Finding(
                 kind="bloat",
-                detail=f"the catalog holds {size >> 20} MB; `mb lake compact` flushes it to "
+                detail=f"the catalog holds {size >> 20} MB; `mb data lake compact` flushes it to "
                 "Parquet and gives the space back",
             )
 

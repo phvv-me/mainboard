@@ -8,13 +8,12 @@ from pathlib import Path
 
 import duckdb
 
+from ..constants import ALIAS
 from ..dispatch.jobs import vocabulary
 from ..observe.files import FrameFile
-from .constants import ALIAS
 from .evidence import EvidenceTree
 from .lake import Lake
-from .storage.parsed import names
-from .storage.records import ndjson
+from .storage.sql import names, ndjson
 
 _EMITTED_ARTIFACTS_VIEW_SQL = """
             CREATE VIEW emitted_artifacts AS SELECT DISTINCT e.project, e.stream,

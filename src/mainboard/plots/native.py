@@ -49,7 +49,11 @@ def subplots(
     sharey: bool | Literal["none", "all", "row", "col"] = False,
     gridspec_kw: Mapping[str, float | Sequence[float]] | None = None,
 ) -> tuple[Figure, Axes | NDArray[np.object_]]:
-    """Create native axes at a manuscript width in inches and per-panel aspect ratio."""
+    """Create native axes at a manuscript width in inches and per-panel aspect ratio.
+
+    Returns one Axes for a single panel, else an object-dtype array of shape (nrows, ncols), with
+    any length-one dimension squeezed out as `plt.subplots` squeezes it.
+    """
     return plt.subplots(
         nrows,
         ncols,

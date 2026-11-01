@@ -78,7 +78,7 @@ class Scope(FrozenModel):
         if not path.is_dir():
             raise MissionError(f"{path} is not a directory")
         found = Git(path).run("rev-parse", "--show-toplevel", "--show-prefix")
-        if not found.succeeded:
+        if found.returncode:
             return cls(root=path, prefix="")
         # Git owns both spellings: a case-insensitive filesystem may accept a different case
         # for the checkout's parents while tracked descendant names remain case-sensitive.

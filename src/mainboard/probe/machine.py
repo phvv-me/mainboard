@@ -61,7 +61,7 @@ class Machine(Singleton):
 
     @cached_property
     def host(self) -> Host:
-        """Detected host CPU, memory, and disk."""
+        """Detected host CPU and memory."""
         return Host()
 
     @cached_property

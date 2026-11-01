@@ -1,7 +1,6 @@
 """The shared SQL a rule reads (relations, functions, fact families), installed in a fact base."""
 
 import re
-from collections import defaultdict
 from collections.abc import Iterable, Sequence, Set
 from functools import cache
 from typing import TYPE_CHECKING, ClassVar
@@ -15,7 +14,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..engine.facts import Facts
-    from .rules import Rule
 
 
 class Evidenced(FrozenModel):
@@ -58,10 +56,10 @@ class Relation(Evidenced):
 
     @classmethod
     def _defined(cls, db: Facts, *, languages: Set[str | None]) -> None:
-        """Create the macro, after a stored relation's rows (see `install`)."""
+        """Create the macro, after a stored relation's rows (see `Relation.install`)."""
         if cls.stored:
             cls._stored(db, languages=languages)
-        db.db.execute(cls.definition())
+        db.connection.execute(cls.definition())
 
     @classmethod
     def _stored(cls, db: Facts, *, languages: Set[str | None]) -> None:
@@ -76,7 +74,7 @@ class Relation(Evidenced):
                 f"CREATE OR REPLACE TABLE {language or 'main'}.{table} AS {body}"
             )
         if None not in languages:
-            db.db.execute(
+            db.connection.execute(
                 f"CREATE OR REPLACE TABLE main.{table} AS "
                 f"SELECT * FROM {next(iter(languages))}.{table} LIMIT 0"
             )
@@ -90,9 +88,10 @@ class Relation(Evidenced):
 
     @classmethod
     def install(cls, db: Facts, *, languages: Set[str | None]) -> None:
-        """Define the relation in `db` with the empty views its body names.
+        """Define the relation in `db`.
 
         A stored one's rows are computed first in every language of `languages` that reads it.
+        Raises ValueError when the body names a view no family derived or DuckDB refuses it.
         """
         db.ensure(Query(sql=cls.query))
         try:
@@ -215,26 +214,5 @@ def define(db: Facts, sql: list[str]) -> None:
     """
     for function in _called(sql):
         if function not in db.defined:
-            function.create(db.db)
+            function.create(db.connection)
             db.defined.add(function)
-
-
-def install(db: Facts, rules: Iterable[Rule], *, fixes: bool = True) -> None:
-    """Create in `db` the shared functions and relations `rules` call.
-
-    Their fixes' calls count too with `fixes`, and each relation comes after those it calls, with
-    the empty views their bodies name. A stored relation's rows are computed in every language that
-    reads it (a schema-only copy in `main` lets its macro bind there), or built empty where the
-    project lacks its evidence.
-    """
-    readers: defaultdict[type[Relation], set[str | None]] = defaultdict(set)
-    queries, statements = [], []
-    for rule in rules:
-        mine = [query for query in (rule.rows(), rule.edits() if fixes else None) if query]
-        queries += mine
-        statements.append(rule.statement())
-        for relation in needed(mine):
-            readers[relation].add(rule.language)
-    define(db, [*statements, *(q.sql for q in queries), *(r.query for r in needed(queries))])
-    for relation in needed(queries):
-        relation.install(db, languages=readers[relation])

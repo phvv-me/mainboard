@@ -5,10 +5,10 @@ from patos import FrozenModel
 from ...log import logger
 from ...probe.units.gpu import GPU
 from ..benchmark import BenchSample, benchmark
+from ..enums import Activity
 from ..profiler import Profiler
 from ..result import Profile
 from ..spans import span
-from ..trace import Activity
 
 _US_PER_MS = 1e3
 

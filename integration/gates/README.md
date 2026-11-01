@@ -6,8 +6,8 @@ Only test infrastructure lives here. Run it from any worktree of this repository
 sh integration/gates/run.sh MODE [--report DIR] [--budget SECONDS] [NODEID...]
 ```
 
-`MODE` is `suite`, `target` (the given pytest node ids), `inspect`, `seed`, `ruff`, `pyrefly`, `ty`,
-`mypy` or `mcmr`. `--report` names the folder the logs, `MODE.json` and `MODE.xml` land in; without
+`MODE` is `suite`, `target` (the given pytest node ids), `inspect`, `seed`, `ruff`, `pyrefly`, `ty`
+or `mypy`. `--report` names the folder the logs, `MODE.json` and `MODE.xml` land in; without
 it a new `/tmp/mb-gate-report.*` folder is made and printed. `--budget` is the hard limit of the
 whole run in seconds: 900 for `suite`, 120 for `inspect` and `target`, 300 for `seed` and a
 checker. The worker gets the budget less 30 seconds reserved for launch, preflight and cleanup, and
@@ -16,7 +16,7 @@ checker. The worker gets the budget less 30 seconds reserved for launch, preflig
 ```sh
 sh integration/gates/run.sh suite --report /tmp/m07-gate
 sh integration/gates/run.sh target --budget 90 integration/dispatch/test_dead_host.py
-sh integration/gates/run.sh mcmr
+sh integration/gates/run.sh mypy
 ```
 
 On macOS, the native Swift cases need Xcode's SwiftParser host libraries; Command Line Tools
@@ -46,7 +46,7 @@ temporary basetemp. The worker and each test start in an empty directory, never 
 
 `[tool.mainboard.ci]` runs the gate as two steps, `uv run sh integration/gates/run.sh seed` and
 `uv run sh integration/gates/run.sh suite --report build/gate-report --budget 1500`, so
-`mainboard ci`, `mainboard ci --matrix` and the GitHub workflows gate the installation this
+`mainboard code ci`, `mainboard code ci --matrix` and the GitHub workflows gate the installation this
 checkout's lock builds. A bare `pytest` is refused by `conftest.py`, with no fallback.
 
 - `seed` is the one lane that goes online. The sandbox has no network and downloads nothing, so
@@ -73,7 +73,9 @@ checkout's lock builds. A bare `pytest` is refused by `conftest.py`, with no fal
 
 ## Isolation boundary
 
-The launcher creates a fresh `/tmp/mb-gate.*` root and removes it at the end. Worker
+The launcher creates a fresh `/tmp/mb-gate.<its pid>.*` root and removes it at the end; the root
+of a killed launcher stays, and `mb code doctor` names it with the command that removes it. A
+lane refuses to start on a disk below the floor every large writer keeps (`Disk`). Worker
 environment variables are rebuilt from a small allowlist: HOME, configuration, cache, plotting,
 solver and pytest files go into that root. No remote-workspace, lake endpoint, provider credential
 or SSH agent variable is inherited. Existing tests create their workspaces and `.mb` lakes below
@@ -138,21 +140,20 @@ verifies the temporary data directory and disabled TCP.
 
 ## Checker contract
 
-A lane refuses drift of its own tool against the recorded versions: pytest 9.1.1, Ruff 0.17.0,
-pyrefly 1.4.0, ty 0.0.85, mypy 2.4.0 and mcmr 0.0.4. The pyrefly stable-release version rebaseline
-is recorded in `baseline.json`; its old diagnostic counts remain historical until remeasured.
+A lane refuses drift of its own tool against the recorded versions: pytest 9.1.1, Ruff 0.17.2,
+pyrefly 1.4.0, ty 0.0.91 and mypy 2.4.0. The version rebaselines (pyrefly's stable
+release, Ruff 0.17.2, ty 0.0.91) are recorded in `baseline.json`; their old diagnostic counts remain
+historical until remeasured. The MCMR lane is gone with MCMR, whose rules run in `mb code rules`.
 Do not install or upgrade tools during gates. Ruff covers `src` and `integration`; the three type
 checkers retain the existing `src` scope
-and explicit worktree config; pyrefly includes warnings. Deterministic MCMR covers the worktree with
-contextual/external lanes, writeback and repair disabled. Pyrefly and ty query the gate's actual
+and explicit worktree config; pyrefly includes warnings. Pyrefly and ty query the gate's actual
 interpreter, so a stale project-local `.venv` cannot replace the locked workspace's dependency
 metadata. Logs record exact argv and elapsed time.
 
-Historical debt is Ruff 0; pyrefly 4 errors and 49 warnings; ty 25 diagnostics; mypy 9 errors;
-MCMR 1908 findings and 1587 failures. Nonzero checker exits are preserved, not converted to success.
+Historical debt is Ruff 0; pyrefly 4 errors and 49 warnings; ty 25 diagnostics; mypy 9 errors.
+Nonzero checker exits are preserved, not converted to success.
 Compare diagnostics, not only counts: no new diagnostic outside the package's recorded ownership
-is acceptable. Fix baseline errors in changed source files; do not add ignores. The harness itself
-adds no MCMR finding beyond the baseline conftest's `MB` constant. A new skip must have an explicit
+is acceptable. Fix baseline errors in changed source files; do not add ignores. A new skip must have an explicit
 obligation and owner; missing cases, unexpected skips, failures and incomplete timeout runs remain
 unaccepted. M33 must close the cumulative six flow families and nine incident witnesses.
 

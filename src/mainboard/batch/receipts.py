@@ -41,7 +41,6 @@
 # published before it settles, so the terminal line is the last one and a sink may close on it.
 
 import json
-from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -49,31 +48,13 @@ from pydantic import JsonValue, ValidationError
 from sqlalchemy import literal_column, select
 
 from ..dispatch.shared import now
+from ..enums import Topic
 from ..log import logger
 from ..state import schema
 from ..state.lake import Session
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-
-
-class Topic(StrEnum):
-    """Every routing key a batch publishes under, dotted the way a broker subject is."""
-
-    OPENED = "batch.opened"
-    PREPARED = "job.prepared"
-    ESTIMATED = "job.estimated"
-    SUBMITTED = "job.submitted"
-    REFUSED = "job.refused"
-    HELD = "job.held"
-    SKIPPED = "job.skipped"
-    STATE = "job.state"
-    ATTESTED = "job.attested"
-    SAMPLE = "job.sample"
-    SETTLED = "job.settled"
-    EVIDENCE = "job.evidence"
-    COST = "job.cost"
-    CLOSED = "batch.closed"
 
 
 # The three answers a target gives about one offered job, read together since a row asks only

@@ -1,6 +1,6 @@
 """`gate`: the engine as a lint step, safe fixes and findings for the files one pass reads.
 
-`mainboard lint` runs it once per owner, from the owner's directory, with the pass's files. The
+`mb code lint` runs it once per owner, from the owner's directory, with the pass's files. The
 whole owner is analyzed (a rule reads every file's facts), but only the named files are repaired
 and reported, so a commit is red for what it touched alone. Fixes are the engine's `safe` ones: a
 review fix renames or deletes public API, so `fix --unsafe` stays a person's call. The reach rules
@@ -12,12 +12,17 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from cyclopts import Parameter
+from patos import FrozenModel
+from pydantic import ConfigDict
+
 from ...core.errors import MissionError
 from ...log import logger
 from ..catalog import Rule
 from ..engine.fixing import Fixpoint
 from ..engine.lint import Lint, load_catalog, selected
-from ..findings import Report, Seen
+from ..engine.lint.seen import Seen
+from ..findings import Report
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Sequence
@@ -70,27 +75,18 @@ class Pass(Lint):
 
     def reported(self, db: Facts) -> Report:
         """The findings in the pass's files."""
+        return self.whole(db).within(self.files)
+
+    def whole(self, db: Facts) -> Report:
+        """Every finding of the owner, which `Seen` nets moves over."""
         return Report(
             found={
                 rule: [
-                    (path, line or 0, column or 0, message)
-                    for path, line, column, message in rows
-                    if path in self.files
+                    (path, line or 0, column or 0, message) for path, line, column, message in rows
                 ]
                 for rule, rows in self.findings(db).items()
             }
         )
-
-
-def _selected(skip: Collection[str], rule: tuple[str, ...] = ()) -> list[type[Rule]]:
-    load_catalog()
-    unknown = sorted(set(skip) - set(Rule.defined))
-    if unknown:
-        raise MissionError(f"no rule {unknown[0]!r} to skip; see `mainboard refactor catalog`")
-    unknown = sorted(set(rule) - set(Rule.defined))
-    if unknown:
-        raise MissionError(f"no rule {unknown[0]!r} to select; see `mainboard refactor catalog`")
-    return [entry for entry in selected(rule) if entry.id not in skip]
 
 
 def _named(root: Path, files: Collection[Path]) -> set[str]:
@@ -104,43 +100,66 @@ def _named(root: Path, files: Collection[Path]) -> set[str]:
     return names
 
 
-def gate(
-    *files: Path,
-    root: Path = Path(),
-    fix: bool = False,
-    skip: tuple[str, ...] = (),
-    rule: tuple[str, ...] = (),
-    memory: str = "2GB",
-    new: bool = False,
-) -> int:
+@Parameter(name="*")
+class Options(FrozenModel):
+    """How one pass runs."""
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+    fix: bool = False
+    """apply the engine's safe fixes to FILES; a review fix is never applied."""
+    skip: tuple[str, ...] = ()
+    """rule ids left out of the pass."""
+    rule: tuple[str, ...] = ()
+    """only these rule ids; the whole catalog when empty."""
+    memory: str = "2GB"
+    """a DuckDB memory limit such as `4GB`."""
+    new: bool = False
+    """report only the findings FILES gained since they were last checked; every pass records
+    what it found either way."""
+
+    def lint(self, root: Path, files: Collection[str]) -> Pass:
+        """The pass over `files` of the project at `root`, with these rules and budget."""
+        return Pass(root, self.selected(), files, memory=self.memory, fixing=self.fix)
+
+    def selected(self) -> list[type[Rule]]:
+        """The rules of `rule` (the whole catalog when empty) without those of `skip`."""
+        load_catalog()
+        unknown = sorted(set(self.skip) - set(Rule.defined))
+        if unknown:
+            raise MissionError(
+                f"no rule {unknown[0]!r} to skip; `mb code rules explain` lists them"
+            )
+        return [entry for entry in selected(self.rule) if entry.id not in self.skip]
+
+
+_PLAIN = Options()
+
+
+def gate(*files: Path, root: Path = Path(), options: Options = _PLAIN) -> int:
     """Report the findings in FILES, repairing their safe ones first with `--fix`.
 
     The exit is 0 when nothing remains in FILES and 1 otherwise, so the step is red exactly for
-    the files the pass reads. Findings print grouped, as `mainboard refactor check` prints them; a
+    the files the pass reads. Findings print grouped, as `mb code rules check` prints them; a
     fix refused because another repository imports what it removes is told after them. With
     `--fix`, a line `path:line RULE change` for each fix kept comes first, so whoever reads the
     output knows what the engine did.
 
     Args:
         files: the pass's files, relative to ROOT.
-        root: the project to analyze, the working directory by default (`mainboard lint` runs
+        root: the project to analyze, the working directory by default (`mb code lint` runs
             the step inside each owner).
-        fix: apply the engine's safe fixes to FILES; a review fix is never applied.
-        skip: rule ids left out of the pass.
-        rule: only these rule ids; the whole catalog when empty.
-        memory: a DuckDB memory limit such as `4GB`.
-        new: report only the findings FILES gained since they were last checked; every pass
-            records what it found either way.
+        options: how the pass runs.
     """
     root = root.resolve()
     names = _named(root, files)
-    with Pass(root, _selected(skip, rule), names, memory=memory, fixing=fix) as lint:
+    with options.lint(root, names) as lint:
         facts = lint.facts(root)
-        if fix and any(lint.repairs(facts, _SAFE).values()):
+        if options.fix and any(lint.repairs(facts, _SAFE).values()):
             facts = lint.repair(root)
-        found = lint.reported(facts)
+        found = lint.whole(facts)
         fresh = Seen(root).fresh(found, names)
-        found = fresh if new else found
+        found = fresh if options.new else found.within(names)
         refused = lint.refused
         changes = lint.changes
     shown = [found.grouped] if found.total else []

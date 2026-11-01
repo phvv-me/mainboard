@@ -19,7 +19,7 @@ REACH = {
     "modules": r"""
         WITH packages AS (
           SELECT DISTINCT regexp_replace(path, '/?[^/]*$', '') AS dir FROM ast_files
-          WHERE language = 'python' AND regexp_matches(path, '(^|/)__init__\.pyi?$')
+          WHERE language = 'python' AND is_initializer_path(path)
         ), roots AS (
           SELECT DISTINCT regexp_replace(p.dir, '/?[^/]*$', '') AS root FROM packages p
           WHERE p.dir <> '' AND regexp_replace(p.dir, '/?[^/]*$', '') <> ''
@@ -30,7 +30,7 @@ REACH = {
                replace(regexp_replace(regexp_replace(
                  CASE WHEN r.root IS NULL THEN f.path ELSE substr(f.path, length(r.root) + 2) END,
                  '\.pyi?$', ''), '(^|/)__init__$', ''), '/', '.') AS module,
-               regexp_matches(f.path, '(^|/)__init__\.pyi?$') AS is_package
+               is_initializer_path(f.path) AS is_package
         FROM ast_files f LEFT JOIN roots r ON starts_with(f.path, r.root || '/')
         WHERE f.language = 'python'
         QUALIFY row_number() OVER (PARTITION BY f.fact_id

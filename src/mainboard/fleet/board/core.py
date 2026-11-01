@@ -7,8 +7,8 @@ from ...batch.estimate.transfer import TransferSet
 from ...batch.runner import Batch
 from ...batch.spec import BatchJob, Selection
 from ...batch.watch import Watch
-from ...constants import SSH_FAMILY
 from ...context.admission import admit
+from ...core.constants.names import SSH_FAMILY
 from ...core.errors import MissionError
 from ...core.section import Section
 from ...deps import Dependencies

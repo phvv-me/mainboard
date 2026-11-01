@@ -7,8 +7,8 @@ from pathlib import Path
 import psutil
 import pytest
 
+from mainboard.enums import Exit
 from mainboard.jobs.call import Fresh
-from mainboard.proc import Exit
 
 
 def _is_gone(pid: int) -> bool:

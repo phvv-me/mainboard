@@ -4,6 +4,42 @@ Helion's hard-coded config."""
 
 from ....catalog import Example, Rule
 
+# A numba-cuda kernel under the decorator an example states.
+_NUMBA = "from numba import cuda\n\n\n{}\ndef kernel(x):\n    x[0] = 1\n"
+# A flag with a comment between it and its neighbor, which dropping the flag would lose.
+_COMMENTED_DEBUG = """from numba import cuda
+
+
+@cuda.jit(
+    fastmath=True,
+    # keep debugging until the race is found
+    debug=True,
+)
+def kernel(x):
+    x[0] = 1
+"""
+# A config with a comment between it and its neighbor, which dropping the config would lose.
+_COMMENTED_CONFIG = """import helion
+
+
+@helion.kernel(
+    static_shapes=True,
+    # tuned on the H100 in March
+    config=helion.Config(block_sizes=[16]),
+)
+def scale(x):
+    return x
+"""
+# A config of another decorator above the kernel's, which dropping the kernel's config must keep.
+_STACKED_CONFIG = """import helion
+
+
+@other(config=helion.Config())
+{}
+def scale(x):
+    return x
+"""
+
 
 class KernelReturnsValue(Rule, id="PY-CUDA0014", applicability="review"):
     """An explicit value returned from a numba-cuda or patos kernel: a kernel's return value never
@@ -113,8 +149,11 @@ class DebugBuildCommitted(Rule, id="PY-CUDA0016", applicability="review"):
     """A numba-cuda function compiled with `debug=True` or `opt=False`: slow, and `assert` and
     `raise` behave differently than in the optimized build."""
 
-    query = """
-        SELECT d.path, d.start_line, d.start_column, d.end_line, d.end_column, d.name,
+    # The flag is a keyword of the call that compiles the function (`numba.cuda.jit`), not of a
+    # call nested in its arguments or of another decorator, since the fix drops the node it names.
+    query = r"""
+        SELECT kw.node_id AS node, d.path, d.start_line, d.start_column, d.end_line, d.end_column,
+               d.name,
                kn.name || '=' || CASE kv.type WHEN 'true' THEN 'True' ELSE 'False' END AS flag
         FROM cuda_device_code() d
         JOIN cuda_nodes() f ON f.fact_id = d.fact_id AND f.node_id = d.function_id
@@ -122,8 +161,10 @@ class DebugBuildCommitted(Rule, id="PY-CUDA0016", applicability="review"):
           AND w.type = 'decorated_definition'
         JOIN cuda_nodes() dc ON dc.fact_id = w.fact_id AND dc.parent_id = w.node_id
           AND dc.type = 'decorator'
-        JOIN cuda_nodes() kw ON kw.fact_id = dc.fact_id AND kw.type = 'keyword_argument'
-          AND kw.node_id BETWEEN dc.node_id + 1 AND dc.node_id + dc.descendant_count
+        JOIN cuda_calls() jit ON jit.fact_id = dc.fact_id AND jit.parent_id = dc.node_id
+          AND regexp_matches(jit.qualified_name, '^(numba\.)?cuda\.jit$')
+        JOIN cuda_nodes() kw ON kw.fact_id = jit.fact_id AND kw.parent_id = jit.arguments_id
+          AND kw.type = 'keyword_argument'
         JOIN cuda_nodes() kn ON kn.fact_id = kw.fact_id AND kn.parent_id = kw.node_id
           AND kn.sibling_index = 0
         JOIN cuda_nodes() kv ON kv.fact_id = kw.fact_id AND kv.parent_id = kw.node_id
@@ -136,10 +177,28 @@ class DebugBuildCommitted(Rule, id="PY-CUDA0016", applicability="review"):
         "and its `assert` and `raise` differ from the shipped one. Fix: drop the flag before "
         "committing"
     )
+    # The keyword goes with its comma, and a decorator left without arguments loses its
+    # parentheses. Review: a comment beside the flag may say why it stays, and the operation
+    # leaves such a call to a person.
+    fix = "SELECT finding_key, 'drop-argument' AS operation, path, node FROM finding"
+    change = "dropped `{flag}` from the decorator of `{name}`"
     examples = (
         Example(
-            bad="from numba import cuda\n\n\n@cuda.jit(debug=True)\ndef kernel(x):\n    x[0] = 1\n",
-            good="from numba import cuda\n\n\n@cuda.jit\ndef kernel(x):\n    x[0] = 1\n",
+            bad=_NUMBA.format("@cuda.jit(debug=True)"),
+            good=_NUMBA.format("@cuda.jit"),
+        ),
+        Example(
+            bad=_NUMBA.format('@cuda.jit("void(f4[:])", opt=False)'),
+            good=_NUMBA.format('@cuda.jit("void(f4[:])")'),
+        ),
+        Example(
+            bad=_NUMBA.format("@cuda.jit(debug=True, fastmath=True)"),
+            good=_NUMBA.format("@cuda.jit(fastmath=True)"),
+        ),
+        Example(bad=_COMMENTED_DEBUG, good=_COMMENTED_DEBUG),
+        Example(
+            bad=_NUMBA.format("@other(debug=True)\n@cuda.jit(debug=True)"),
+            good=_NUMBA.format("@other(debug=True)\n@cuda.jit"),
         ),
     )
 
@@ -197,16 +256,21 @@ class HardcodedHelionConfig(Rule, id="PY-CUDA0018", applicability="review"):
     """A `@helion.kernel` whose config is one `helion.Config` written out: autotuned tile
     configs do not carry across GPU generations."""
 
-    query = """
-        SELECT d.path, d.start_line, d.start_column, d.end_line, d.end_column, d.name
+    # The config is a keyword of the call that compiles the function (`helion.kernel`), not of a
+    # call nested in its arguments or of another decorator, since the fix drops the node it names.
+    query = r"""
+        SELECT kw.node_id AS node, d.path, d.start_line, d.start_column, d.end_line,
+               d.end_column, d.name
         FROM cuda_device_code() d
         JOIN cuda_nodes() f ON f.fact_id = d.fact_id AND f.node_id = d.function_id
         JOIN cuda_nodes() w ON w.fact_id = f.fact_id AND w.node_id = f.parent_id
           AND w.type = 'decorated_definition'
         JOIN cuda_nodes() dc ON dc.fact_id = w.fact_id AND dc.parent_id = w.node_id
           AND dc.type = 'decorator'
-        JOIN cuda_nodes() kw ON kw.fact_id = dc.fact_id AND kw.type = 'keyword_argument'
-          AND kw.node_id BETWEEN dc.node_id + 1 AND dc.node_id + dc.descendant_count
+        JOIN cuda_calls() kernel ON kernel.fact_id = dc.fact_id AND kernel.parent_id = dc.node_id
+          AND regexp_matches(kernel.qualified_name, '^helion\.(kernel|jit)$')
+        JOIN cuda_nodes() kw ON kw.fact_id = kernel.fact_id AND kw.parent_id = kernel.arguments_id
+          AND kw.type = 'keyword_argument'
         JOIN cuda_nodes() kn ON kn.fact_id = kw.fact_id AND kn.parent_id = kw.node_id
           AND kn.sibling_index = 0 AND kn.name = 'config'
         JOIN cuda_nodes() kv ON kv.fact_id = kw.fact_id AND kv.parent_id = kw.node_id
@@ -225,6 +289,11 @@ class HardcodedHelionConfig(Rule, id="PY-CUDA0018", applicability="review"):
         "generation run slower, or not at all, on another. Fix: draw the config from a per-arch "
         "registry"
     )
+    # The `config` keyword goes with its comma, and a decorator left without arguments loses its
+    # parentheses; the kernel then autotunes. Review: that changes the first call's cost, and a
+    # name bound only for the config stays for the dead-code rules to report.
+    fix = "SELECT finding_key, 'drop-argument' AS operation, path, node FROM finding"
+    change = "dropped the hardcoded `config` of the Helion kernel `{name}`"
     examples = (
         Example(
             bad=(
@@ -237,5 +306,37 @@ def scale(x):
 """
             ),
             good=("import helion\n\n\n@helion.kernel\ndef scale(x):\n    return x\n"),
+        ),
+        Example(
+            bad=(
+                """import helion
+
+cfg = helion.Config(block_sizes=[16])
+
+
+@helion.kernel(config=cfg, static_shapes=True)
+def scale(x):
+    return x
+"""
+            ),
+            good=(
+                """import helion
+
+cfg = helion.Config(block_sizes=[16])
+
+
+@helion.kernel(static_shapes=True)
+def scale(x):
+    return x
+"""
+            ),
+        ),
+        Example(
+            bad=_COMMENTED_CONFIG,
+            good=_COMMENTED_CONFIG,
+        ),
+        Example(
+            bad=_STACKED_CONFIG.format("@helion.kernel(config=helion.Config(block_sizes=[16]))"),
+            good=_STACKED_CONFIG.format("@helion.kernel"),
         ),
     )

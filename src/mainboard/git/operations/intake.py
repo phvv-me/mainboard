@@ -47,9 +47,9 @@ class Intake:
         changed = {change.path for change in changes}
         return {
             path
-            for path in self.repo.unlinked()
+            for path in self.repo.worktree.unlinked()
             if path in changed
-            and (path not in self.named or linking == "false" or self.repo.faithful(path))
+            and (path not in self.named or linking == "false" or self.repo.worktree.faithful(path))
         }
 
     def _heavy(self, paths: Sequence[str]) -> set[str]:

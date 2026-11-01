@@ -1,6 +1,103 @@
 """Rules over test cases written out by hand (mcmr's PY-TEST cases group)."""
 
-from ....catalog import Example, Relation, Rule
+from ....catalog import Example, Function, Relation, Rule
+from ....operations.python.suites import MergeTests
+
+
+class CommonPrefix(Function):
+    """The leading words two names share, words being parted by `_` (`test_f_one` and `test_f_two`
+    share `test_f`)."""
+
+    a: str
+    b: str
+
+    expression = """array_to_string(
+      string_split(a, '_')[1:coalesce(
+        list_min(list_filter(
+          range(1, least(len(string_split(a, '_')), len(string_split(b, '_'))) + 1),
+          lambda i: string_split(a, '_')[i] <> string_split(b, '_')[i])),
+        least(len(string_split(a, '_')), len(string_split(b, '_'))) + 1) - 1], '_')"""
+
+
+class CommonSuffix(Function):
+    """The trailing words two names share, words being parted by `_`."""
+
+    a: str
+    b: str
+
+    expression = """array_to_string(list_reverse(string_split(common_prefix(
+      array_to_string(list_reverse(string_split(a, '_')), '_'),
+      array_to_string(list_reverse(string_split(b, '_')), '_')), '_')), '_')"""
+
+
+class CollectedTestScopes(Relation):
+    """The start of the pytest node id of each collected test: its file, then the class holding it
+    (`t.py::TestF::`), so `scope || name` is the id."""
+
+    query = """
+    SELECT d.path, d.ordinal, d.path || '::' || coalesce((
+      SELECT c.name || '::' FROM test_function_nodes h
+      JOIN test_function_nodes c ON c.fact_id = h.fact_id AND c.node_id = h.parent_id
+        AND c.type = 'class_definition'
+      WHERE h.fact_id = d.fact_id AND h.node_id = d.holder AND h.type = 'block'), '') AS scope
+    FROM test_function_declared d WHERE d.collected
+"""
+
+
+class MergeableTestGroups(Relation):
+    """Each group of two or more collected tests sharing a holder (a module or a class), a body
+    shape, marks and what they reach, whose literal cases all differ and none is parametrized or
+    property based, with the test they merge into.
+
+    `merged` is the words their names share at both ends (at least `test` and one more, and no
+    other group of the holder takes the name), `ids` what sets each name apart in between, and
+    `renamed` the id map `old -> merged[id]`, which the fixpoint's collection proof reads.
+    """
+
+    query = """
+    WITH cases AS (
+      SELECT d.path, d.holder, d.test, d.name, s.body_shape, s.literals, r.fixture_names,
+             r.reachable_targets,
+             coalesce((SELECT list(k.mark ORDER BY k.ordinal) FROM test_function_decorators k
+                       WHERE k.fact_id = d.fact_id AND k.fn = d.test), []) AS marks
+      FROM test_function_declared d
+      JOIN test_function_shapes s ON s.fact_id = d.fact_id AND s.test = d.test
+      LEFT JOIN pytest_reaching() r ON r.path = d.path AND r.ordinal = d.ordinal
+      WHERE d.collected AND NOT EXISTS (
+        SELECT 1 FROM test_function_decorators k WHERE k.fact_id = d.fact_id AND k.fn = d.test
+          AND (ends_with(k.mark, 'parametrize') OR ends_with(k.mark, 'given')))
+    ), grouped AS (
+      SELECT path, holder, body_shape, marks, fixture_names, reachable_targets, count(*) AS size,
+             list(test ORDER BY test) AS tests, list(name ORDER BY test) AS names,
+             list_reduce(list(name ORDER BY test), lambda a, b: common_prefix(a, b)) AS head
+      FROM cases
+      GROUP BY path, holder, body_shape, marks, fixture_names, reachable_targets
+      HAVING count(*) > 1 AND count(DISTINCT literals) = count(*)
+    ), parted AS (
+      SELECT *, list_transform(names,
+                  lambda n: string_split(n, '_')[len(string_split(head, '_')) + 1:]) AS rests
+      FROM grouped
+    ), tailed AS (
+      SELECT *, greatest(0, least(
+               coalesce(len(string_split(nullif(list_reduce(
+                 list_transform(rests, lambda r: array_to_string(r, '_')),
+                 lambda a, b: common_suffix(a, b)), ''), '_')), 0),
+               list_min(list_transform(rests, lambda r: len(r))) - 1)) AS tail
+      FROM parted
+    ), identified AS (
+      SELECT *, head || CASE WHEN tail > 0
+                            THEN '_' || array_to_string(rests[1][len(rests[1]) - tail + 1:], '_')
+                            ELSE '' END AS merged,
+             list_transform(rests, lambda r: array_to_string(r[1:len(r) - tail], '-')) AS ids
+      FROM tailed
+      WHERE head <> '' AND (len(string_split(head, '_')) > 1 OR tail > 0)
+        AND list_bool_and(list_transform(ids, lambda i: i <> ''))
+      QUALIFY count(*) OVER (PARTITION BY path, holder, merged) = 1
+    )
+    SELECT *, array_to_string(list_transform(range(1, size + 1),
+                lambda i: names[i] || ' -> ' || merged || '[' || ids[i] || ']'), ', ') AS renamed
+    FROM identified
+"""
 
 
 class PytestVectorGroups(Relation):
@@ -21,20 +118,203 @@ class PytestVectorGroups(Relation):
 """
 
 
-class ParametrizationCandidateGroupCount(Rule, id="PY-TEST0003"):
+class ParametrizationCandidateGroupCount(Rule, id="PY-TEST0003", applicability="review"):
     """Groups of tests with a few distinct literal cases that one parametrized test would cover."""
 
     minimum_cases: int = 3
     maximum_cases: int = 9
 
     query = f"""
-        SELECT f.*, n AS value FROM test_case_group_facts f JOIN (
+        SELECT f.*, n AS value, m.renamed FROM test_case_group_facts f JOIN (
           SELECT fact_id, count(*) AS n FROM {PytestVectorGroups.name()}()
           WHERE vector_count BETWEEN $minimum_cases AND $maximum_cases
             AND vector_count = distinct_vector_count
           GROUP BY fact_id) USING (fact_id)
+        LEFT JOIN (
+          SELECT path, string_agg(renamed, ', ' ORDER BY tests[1]) AS renamed
+          FROM {MergeableTestGroups.name()}()
+          WHERE size BETWEEN $minimum_cases AND $maximum_cases GROUP BY path) m USING (path)
     """
     message = "parametrization candidate group count is {value} for `{fact_id}`"
+    change = "parametrized {renamed}"
+    fix = f"""
+        SELECT f.finding_key, '{MergeTests.name}' AS operation, g.path, g.holder AS node, g.tests,
+               g.merged AS name, g.ids
+        FROM finding f JOIN {MergeableTestGroups.name()}() g ON g.path = f.path
+        WHERE g.size BETWEEN $minimum_cases AND $maximum_cases
+    """
+    examples = (
+        Example(
+            bad=(
+                """def f(x):
+    return x + 1
+
+
+def test_f_one():
+    assert f(1) == 2
+
+
+def test_f_two():
+    assert f(2) == 3
+
+
+def test_f_three():
+    assert f(3) == 4
+"""
+            ),
+            good=(
+                """import pytest
+
+
+def f(x):
+    return x + 1
+
+
+@pytest.mark.parametrize(
+    ("case_0", "expected"),
+    [
+        pytest.param(1, 2, id="one"),
+        pytest.param(2, 3, id="two"),
+        pytest.param(3, 4, id="three"),
+    ],
+)
+def test_f(case_0, expected):
+    assert f(case_0) == expected
+"""
+            ),
+        ),
+        Example(
+            bad=(
+                """def parse(text):
+    return text.upper()
+
+
+def test_parse_a():
+    assert parse(text="a") == "A"
+
+
+def test_parse_b():
+    assert parse(text="b") == "B"
+
+
+def test_parse_c():
+    assert parse(text="c") == "C"
+"""
+            ),
+            good=(
+                """import pytest
+
+
+def parse(text):
+    return text.upper()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("a", "A", id="a"),
+        pytest.param("b", "B", id="b"),
+        pytest.param("c", "C", id="c"),
+    ],
+)
+def test_parse(text, expected):
+    assert parse(text=text) == expected
+"""
+            ),
+        ),
+        Example(
+            bad=(
+                """import pytest
+
+
+def f(x):
+    return x + 1
+
+
+def test_f_one():
+    assert f(1) == 2
+
+
+@pytest.mark.slow
+def test_f_two():
+    assert f(2) == 3
+
+
+def test_f_three():
+    assert f(3) == 4
+"""
+            ),
+            good=(
+                """import pytest
+
+
+def f(x):
+    return x + 1
+
+
+def test_f_one():
+    assert f(1) == 2
+
+
+@pytest.mark.slow
+def test_f_two():
+    assert f(2) == 3
+
+
+def test_f_three():
+    assert f(3) == 4
+"""
+            ),
+        ),
+        Example(
+            bad=(
+                """import pytest
+
+
+def f(x):
+    return x + 1
+
+
+@pytest.mark.skipif(f(0) == 1, reason="one")
+def test_f_one():
+    assert f(1) == 2
+
+
+@pytest.mark.skipif(f(0) == 2, reason="two")
+def test_f_two():
+    assert f(2) == 3
+
+
+@pytest.mark.skipif(f(0) == 3, reason="three")
+def test_f_three():
+    assert f(3) == 4
+"""
+            ),
+            good=(
+                """import pytest
+
+
+def f(x):
+    return x + 1
+
+
+@pytest.mark.skipif(f(0) == 1, reason="one")
+def test_f_one():
+    assert f(1) == 2
+
+
+@pytest.mark.skipif(f(0) == 2, reason="two")
+def test_f_two():
+    assert f(2) == 3
+
+
+@pytest.mark.skipif(f(0) == 3, reason="three")
+def test_f_three():
+    assert f(3) == 4
+"""
+            ),
+        ),
+    )
 
 
 class TestingCasesLoopEdits(Relation):

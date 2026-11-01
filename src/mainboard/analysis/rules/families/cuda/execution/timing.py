@@ -14,7 +14,8 @@ class CudaDeviceWork(CudaRelation):
     """Calls that queue work on the device. `direct` ones are the work itself: a launch, a call
     whose result is a device value, a method called on a device value (`x.fill(0)`). The rest
     call a project function that does such work, up to three calls deep. `framework` is the
-    framework of the work."""
+    framework of the work, the smaller name where a function reaches work of two (a `USING KEY`
+    step keeps whichever row its join emits last, which differs per run)."""
 
     stored = True
     query = """
@@ -32,7 +33,8 @@ class CudaDeviceWork(CudaRelation):
           WHERE c.method NOT IN ('get', 'item', 'tolist', 'numpy', 'tobytes', 'cpu',
                                  'copy_to_host', 'synchronize')
         ), reach(fact_id, function_id, framework, hops) USING KEY (fact_id, function_id) AS (
-          SELECT DISTINCT fact_id, scope_id, framework, 0 FROM direct WHERE scope_id <> -1
+          SELECT fact_id, scope_id, min(framework), 0 FROM direct WHERE scope_id <> -1
+          GROUP BY fact_id, scope_id
           UNION
           SELECT t.fact_id, c.scope_id, r.framework, r.hops + 1
           FROM reach r
@@ -41,6 +43,7 @@ class CudaDeviceWork(CudaRelation):
           JOIN cuda_calls() c ON c.fact_id = t.fact_id AND c.node_id = t.node_id
           WHERE r.hops < 3 AND c.scope_id <> -1 AND NOT EXISTS (
             SELECT 1 FROM recurring.reach p WHERE p.fact_id = t.fact_id AND p.function_id = c.scope_id)
+          QUALIFY row_number() OVER (PARTITION BY t.fact_id, c.scope_id ORDER BY r.framework) = 1
         )
         SELECT fact_id, path, node_id, scope_id, framework, true AS direct FROM direct
         UNION

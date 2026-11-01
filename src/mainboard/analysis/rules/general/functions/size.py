@@ -1,11 +1,11 @@
 """Rules over how much one callable holds (mcmr's ALL-FUNC size rules)."""
 
-from ....catalog import Example, Rule
+from ....catalog import Example, Part, Rule
 
 
-class FunctionStatementCount(Rule, id="ALL-FUNC0001"):
+class FunctionStatementCount(Part):
     """Direct statements in one callable body, declarative bodies excepted. A test function is
-    PY-TEST0012's, which counts a test's statements as a test reads."""
+    `OwnedTestStatementCount`'s, which counts a test's statements as a test reads."""
 
     maximum: int = 10
 
@@ -56,7 +56,10 @@ class ShallowCallable(Rule, id="ALL-FUNC0006", applicability="review"):
                    OR is_protocol_name OR is_framework_hook OR is_polymorphic
                    OR is_pass_body OR is_raise_body)
     """
-    message = "`{fact_id}` satisfies shallow callable"
+    message = (
+        "`{fact_id}` is a one-line public function with no behavior of its own and too few "
+        "references to earn its name"
+    )
     examples = (
         Example(
             bad=(

@@ -17,7 +17,7 @@ class HotAllocation(Rule, id="PY-CUDA0005", applicability="review"):
     query = r"""
         WITH hot AS (
           SELECT * FROM cuda_hot()
-          WHERE NOT coalesce(list_bool_or(list_transform($exempt, lambda p: regexp_matches(origin_path, p))), false)
+          WHERE NOT coalesce(len($exempt) > 0 AND regexp_matches(origin_path, '(?:' || array_to_string($exempt, ')|(?:') || ')'), false)
           QUALIFY row_number() OVER (PARTITION BY fact_id, function_id
                                      ORDER BY hops, origin_path, origin_line) = 1
         ), placed AS (
@@ -102,7 +102,7 @@ class HotAllocation(Rule, id="PY-CUDA0005", applicability="review"):
                     ELSE 'allocate once outside the loop, with headroom, and reuse the buffer '
                          || '(`out=`, `fill`)' END AS remedy
         FROM (SELECT * FROM repeated UNION ALL SELECT * FROM growth) f
-        WHERE NOT coalesce(list_bool_or(list_transform($exempt, lambda p: regexp_matches(f.path, p))), false)
+        WHERE NOT coalesce(len($exempt) > 0 AND regexp_matches(f.path, '(?:' || array_to_string($exempt, ')|(?:') || ')'), false)
     """
     message = (
         "`{shown}`{extra} {what}{where_text}: each allocation goes through the pool, may reach "

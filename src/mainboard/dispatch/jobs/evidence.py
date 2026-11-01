@@ -19,7 +19,7 @@ import re
 import string
 
 from ...jobs.testing.beacon import unbeaconed
-from ..constants import RECEIPTS_VAR
+from ...constants import RECEIPTS_VAR
 
 # A rented machine keeps no workspace, hence `/tmp`. The shell's pid is in the name because a
 # cluster node runs several jobs out of one `/tmp`, and a shared file would hand each other's

@@ -1,16 +1,12 @@
-import os
 from collections.abc import Iterable
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from .environ import Variable
 from .errors import MissionError, NoWorkspace
 from .membership import Membership
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 _PACKAGE = __name__.split(".")[0]
 
@@ -30,28 +26,36 @@ def _names() -> tuple[str, ...]:
     return tuple(sorted(found, key=lambda name: (len(name), name))) or (_PACKAGE,)
 
 
-class Variable(FrozenModel):
-    """One environment variable the tool trades with the processes it starts, under every name.
+class Marker(FrozenModel):
+    """A cross-machine marker file `.<name>-<suffix>`, written under one name and read under all.
 
-    Both ends may run different releases, so an export sets every name (an older reader knows
-    only the legacy one) and a read takes the first name set, primary first.
+    suffix: what the file marks, the part of its name after the tool's.
     """
 
-    names: tuple[str, ...]
+    suffix: str
 
-    def exported(self, value: str) -> dict[str, str]:
-        """`value` under every name, the mapping a child environment is updated with."""
-        return dict.fromkeys(self.names, value)
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Every name the marker file is read under, primary first."""
+        return tuple(f".{name}-{self.suffix}" for name in Project().names)
 
-    def present(self, environ: Mapping[str, str] | None = None) -> bool:
-        """Whether `environ` (the process environment) sets the variable under any name."""
-        source = os.environ if environ is None else environ
-        return any(name in source for name in self.names)
+    @property
+    def written(self) -> str:
+        """The name the marker file is written under.
 
-    def read(self, environ: Mapping[str, str] | None = None) -> str:
-        """The value under the first name `environ` (the process environment) sets, else empty."""
-        source = os.environ if environ is None else environ
-        return next((source[name] for name in self.names if name in source), "")
+        Deliberately the legacy stem: center and hosts may run different releases, and a marker
+        an older release cannot find reads as missing (an unpinned tree, an unbuilt prefix), so
+        writers keep the name every release reads until no host runs one without `names`.
+        """
+        return f".{Project().package}-{self.suffix}"
+
+    def at(self, directory: Path) -> Path:
+        """The marker file in `directory`, under the first name it exists by.
+
+        Otherwise it is where `written` names it.
+        """
+        found = (directory / name for name in self.names)
+        return next((path for path in found if path.exists()), directory / self.written)
 
 
 class Project(FrozenModel):
@@ -99,11 +103,6 @@ class Project(FrozenModel):
         """The generated-state directory names a workspace root may hold, primary first."""
         return tuple(f".{name}" for name in self.names)
 
-    @property
-    def plugin_groups(self) -> tuple[str, ...]:
-        """The entry-point groups third-party providers advertise under, primary first."""
-        return tuple(f"{name}.providers" for name in self.names)
-
     @staticmethod
     def _one(directory: Path, names: Iterable[str], why: str) -> Path | None:
         """The one file `directory` holds under any of `names`, None when it holds none.
@@ -139,20 +138,6 @@ class Project(FrozenModel):
         `mb shell-hook` names it for a shell to source.
         """
         return f"{self.out_dir(root)}/envs/{env}/activate.sh"
-
-    def dotenv(self, root: Path) -> dict[str, str]:
-        """The variables workspace `root`'s `.env` defines, by name, quotes around a value gone."""
-        try:
-            text = (root / ".env").read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return {}
-        lines = (line.lstrip().removeprefix("export ") for line in text.splitlines())
-        pairs = (line.partition("=") for line in lines)
-        return {
-            name.strip(): value.strip().strip("'\"")
-            for name, sign, value in pairs
-            if sign and not name.startswith("#")
-        }
 
     def find_root(self, start: Path) -> Path:
         """The workspace `start` lies in: the nearest manifest upward, or the one composing it.
@@ -191,26 +176,9 @@ class Project(FrozenModel):
         """
         return self._declared(directory) or directory / self.manifests[0]
 
-    def marked(self, directory: Path, suffix: str) -> Path:
-        """The marker file `.<name>-<suffix>` in `directory`, under the first name it exists by.
-
-        Otherwise it is where `marker` writes it.
-        """
-        found = (directory / name for name in self.markers(suffix))
-        return next((path for path in found if path.exists()), directory / self.marker(suffix))
-
     def marker(self, suffix: str) -> str:
-        """The name a cross-machine marker file `.<name>-<suffix>` is written under.
-
-        Deliberately the legacy stem: center and hosts may run different releases, and a marker
-        an older release cannot find reads as missing (an unpinned tree, an unbuilt prefix), so
-        writers keep the name every release reads until no host runs one without `markers`.
-        """
-        return f".{self.package}-{suffix}"
-
-    def markers(self, suffix: str) -> tuple[str, ...]:
-        """Every name a marker file `.<name>-<suffix>` is read under, primary first."""
-        return tuple(f".{name}-{suffix}" for name in self.names)
+        """The name a cross-machine marker file `.<name>-<suffix>` is written under (`Marker`)."""
+        return Marker(suffix=suffix).written
 
     def out(self, root: Path | None = None) -> Path:
         """The generated-state directory itself, under `root` or the cwd's workspace."""
@@ -235,10 +203,6 @@ class Project(FrozenModel):
                 return name
         declared = self._declared(here)
         return f".{declared.stem}" if declared else self.out_dirs[0]
-
-    def table[T](self, tool: Mapping[str, T]) -> T | None:
-        """This tool's table in a pyproject's `[tool]`: the primary name's, else a legacy one's."""
-        return next((tool[name] for name in self.names if name in tool), None)
 
     def variable(self, key: str) -> Variable:
         """The environment variable `<NAME>_<key>` under every name, `MB_SOURCE` first."""

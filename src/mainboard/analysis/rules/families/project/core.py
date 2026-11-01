@@ -2,8 +2,8 @@
 directory the project's `.gitignore` files keep).
 
 A directory's source depth is measured from its source root: the nearest ancestor that is a `src`
-directory or the parent of a top-level Python package (a directory holding `__init__.py` below no
-other). mcmr also treats a same-named directory in another branch as a namespace portion of such a
+directory or the parent of a top-level Python package (a directory holding a package initializer,
+source or stub, below no other). mcmr also treats a same-named directory in another branch as a namespace portion of such a
 package, but its `Packages::of` mutates a set while iterating it, so the depth of those directories
 depends on iteration order and differs between runs; the derived depth never counts them.
 """
@@ -18,6 +18,7 @@ from pathlib import Path
 from patos import FrozenModel
 
 from ....catalog import Family, Function
+from ....constants import VOCABULARY_PATH
 from ....engine.facts import Facts, lint_excludes
 
 _PROJECT_ENTRIES_EXISTS_SQL = "SELECT 1 FROM duckdb_tables() WHERE table_name = 'project_entries'"
@@ -51,7 +52,8 @@ class ProjectTree(FrozenModel):
         """The git command that judges `root`.
 
         It runs in the repository holding `root`, else in a throwaway empty bare repository removed
-        on exit.
+        on exit. Git reads `--work-tree` after `-C` has changed directory, so a relative `root` is
+        resolved first.
         """
         git = [*_GIT, "-C", str(self.root)]
         probe = subprocess.run([*git, "rev-parse", "--git-dir"], capture_output=True, check=False)
@@ -60,11 +62,12 @@ class ProjectTree(FrozenModel):
         elif _NOT_A_REPOSITORY not in probe.stderr:
             raise RuntimeError(f"git in {self.root}: {probe.stderr.decode()}")
         else:
-            root = str(self.root)
+            work_tree = str(self.root.resolve())
             with tempfile.TemporaryDirectory() as bare:
                 init = [*_GIT, "init", "--bare", "-q", bare]
                 subprocess.run(init, capture_output=True, check=True)
-                yield [*git, "-c", "core.ignorecase=false", "--git-dir", bare, "--work-tree", root]
+                options = ["-c", "core.ignorecase=false", "--git-dir", bare]
+                yield [*git, *options, "--work-tree", work_tree]
 
     def _ignored(self, git: list[str], names: Iterable[str]) -> set[str]:
         """The entries the ignore patterns exclude.
@@ -112,11 +115,11 @@ class ProjectTree(FrozenModel):
 
     def register(self, facts: Facts) -> None:
         """Create `project_entries` (entry, is_directory) in `facts`, once."""
-        if facts.db.execute(_PROJECT_ENTRIES_EXISTS_SQL).fetchone():
+        if facts.connection.execute(_PROJECT_ENTRIES_EXISTS_SQL).fetchone():
             return
-        facts.db.execute(_PROJECT_ENTRIES_CREATE_SQL)
+        facts.connection.execute(_PROJECT_ENTRIES_CREATE_SQL)
         if entries := self.entries():
-            facts.db.executemany(_PROJECT_ENTRIES_INSERT_SQL, entries)
+            facts.connection.executemany(_PROJECT_ENTRIES_INSERT_SQL, entries)
 
 
 class ProjectParent(Function):
@@ -159,10 +162,18 @@ class ProjectDepth(Function):
     )
 
 
-class Directory(Family):
+class TreeFamily(Family):
+    """A family whose relations read the project tree, loaded by `ProjectTree`."""
+
+    @classmethod
+    def provide(cls, facts: Facts, root: Path) -> None:
+        ProjectTree(root=root).register(facts)
+
+
+class Directory(TreeFamily):
     family = "DirectoryFact"
     relations = {
-        "facts": r"""
+        "facts": rf"""
             WITH directories AS (
               SELECT '' AS directory UNION ALL
               SELECT entry FROM project_entries WHERE is_directory
@@ -170,15 +181,17 @@ class Directory(Family):
               SELECT project_parent(entry) AS directory,
                      count(*) AS entry_count,
                      count(*) FILTER (WHERE NOT is_directory
-                                      AND project_name(entry) <> '__init__.py') AS file_count,
+                                      AND NOT is_initializer_path(entry)) AS file_count,
                      count(*) FILTER (WHERE is_directory) AS directory_count,
                      any_value(project_name(entry)) FILTER (WHERE is_directory) AS child,
                      count(*) FILTER (WHERE NOT is_directory AND project_is_source(entry)
-                                      AND project_name(entry) <> '__init__.py') AS module_count
+                                      AND NOT is_initializer_path(entry)
+                                      AND NOT regexp_matches(entry, '{VOCABULARY_PATH}'))
+                       AS module_count
               FROM project_entries GROUP BY directory
             ), packages AS (
               SELECT project_parent(entry) AS directory FROM project_entries
-              WHERE NOT is_directory AND project_name(entry) = '__init__.py'
+              WHERE NOT is_directory AND is_initializer_path(entry)
             ), documents AS (
               SELECT DISTINCT unnest(list_transform(
                        range(1, length(entry) - length(replace(entry, '/', '')) + 1),
@@ -234,8 +247,3 @@ class Directory(Family):
             ORDER BY d.directory
         """,
     }
-
-    @classmethod
-    def provide(cls, facts: Facts, root: Path) -> None:
-        """Load the tree the relation reads."""
-        ProjectTree(root=root).register(facts)

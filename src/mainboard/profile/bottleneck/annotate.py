@@ -3,7 +3,6 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from ..spans import finish, start
-from ..trace import CallbackSession
 from ..tracer import Tracer
 
 if TYPE_CHECKING:
@@ -28,11 +27,6 @@ def tracer(*, present: frozenset[str] = frozenset()) -> Tracer:
     if _tracer is None:
         _tracer = Tracer.detect(present=present)
     return _tracer
-
-
-def callbacks(domains: tuple[str, ...] = ("runtime", "driver")) -> CallbackSession:
-    """Count selected native API callbacks through the detected backend."""
-    return tracer().callbacks(domains)
 
 
 def _open_frames() -> list[SpanToken]:

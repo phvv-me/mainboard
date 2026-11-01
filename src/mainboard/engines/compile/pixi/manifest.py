@@ -6,8 +6,8 @@ import tomlkit.items
 from patos import FrozenModel
 from pydantic import Field
 
+from ....core.constants.names import GENERATED_DIR
 from ....core.execution.host import platform_selectors
-from ..constants import GENERATED_DIR
 from ..inputs.platforms import PlatformMatrix
 
 # `Toml` backs pydantic fields below, so it must resolve at class-creation time.

@@ -7,14 +7,14 @@ the project to its fixpoint (fixing.py). A test runs every rule's examples throu
 and fix.
 """
 
-from .core import Lint, load_catalog, selected
-from .verbs import Selection, check, compare, fix, test
+from .catalog import load_catalog, selected
+from .core import Lint
+from .verbs import Selection, check, fix, test
 
 __all__ = [
     "Lint",
     "Selection",
     "check",
-    "compare",
     "fix",
     "load_catalog",
     "selected",

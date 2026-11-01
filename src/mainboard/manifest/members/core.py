@@ -33,10 +33,10 @@ from ...core.errors import MissionError
 from ...core.membership import Membership
 from ...core.project import Project
 from ..parsing import rendered, validated
-from ..schema.compute.toolchain import Toolchain
-from ..schema.root import Manifest
+from ..root import Manifest
 from ..schema.scope import PlatformScope, Scope
 from ..schema.spec import Spec
+from ..schema.toolchain import Toolchain
 from .models import Member, Package
 from .rebasing import anchored, moved, namespaced, rebased, sources_rebased
 

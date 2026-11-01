@@ -14,7 +14,10 @@ class RedundantEnumValue(Rule, id="PY-ENUM0001", applicability="safe"):
                 AND (m.explicit_value_integer = m.standard_auto_value_integer
                      OR m.explicit_value_string = m.standard_auto_value_string))
         """
-    message = "`{fact_id}` satisfies redundant enum value"
+    message = (
+        "`{fact_id}` holds an enum whose explicit values equal what the standard auto generator "
+        "assigns"
+    )
     # Every member of the file whose literal equals what the standard `auto()` generates after
     # the member before it, which keeps its own value. The finding is the file, so its members
     # are the edits of one group, and `auto` is imported unless the file already imports it.
@@ -47,8 +50,7 @@ class Mode(StrEnum):
 """
             ),
             good=(
-                """from enum import StrEnum
-from enum import auto
+                """from enum import StrEnum, auto
 
 
 class Mode(StrEnum):
@@ -144,7 +146,7 @@ class ParallelEnumMetadata(Rule, id="PY-ENUM0002"):
           SELECT 1 FROM keyed k WHERE k.file_id = f.file_id AND k.keys_length = k.items
             AND k.values_length = k.items AND k.owners = 1 AND k.keys_length >= 2)
     """
-    message = "`{fact_id}` satisfies parallel enum metadata"
+    message = "`{fact_id}` holds a dictionary that maps the members of one enum to strings"
 
 
 class PreferEnumConversion(Rule, id="PY-ENUM0005", applicability="safe"):
@@ -178,19 +180,22 @@ class PreferEnumConversion(Rule, id="PY-ENUM0005", applicability="safe"):
              AND NOT EXISTS (SELECT 1 FROM core_node f
                              WHERE f.file_id = b.file_id AND f.type = 'function_definition'
                                AND f.owner_id = b.class AND f.name IN ('__str__', '__int__'))
+        ), scope AS (
+          SELECT DISTINCT file_id FROM enums WHERE list_has_any(bases, ['StrEnum', 'IntEnum'])
         ), heads AS (
           SELECT p.file_id, p.node_id AS node, c.name AS head
           FROM core_node p
           JOIN core_node c ON c.file_id = p.file_id AND c.parent_id = p.node_id
             AND c.sibling_index = 0 AND c.type = 'identifier'
           WHERE p.type IN ('attribute', 'call', 'subscript')
+            AND p.file_id IN (SELECT file_id FROM scope)
         ), finalized AS (
           WITH RECURSIVE walk(file_id, assignment, value, value_type) AS (
             SELECT a.file_id, a.node_id, v.node_id, v.type
             FROM core_node a
             JOIN core_node v ON v.file_id = a.file_id AND v.parent_id = a.node_id
               AND v.sibling_index = a.children_count - 1
-            WHERE a.type = 'assignment'
+            WHERE a.type = 'assignment' AND a.file_id IN (SELECT file_id FROM scope)
             UNION ALL
             SELECT f.file_id, f.assignment, v.node_id, v.type
             FROM walk f
@@ -212,7 +217,7 @@ class PreferEnumConversion(Rule, id="PY-ENUM0005", applicability="safe"):
                            'dictionary_splat_pattern')
           LEFT JOIN core_node t ON t.file_id = c.file_id AND t.parent_id = c.node_id
             AND t.type = 'type'
-          WHERE p.type = 'parameters'
+          WHERE p.type = 'parameters' AND p.file_id IN (SELECT file_id FROM scope)
           UNION ALL
           SELECT a.file_id, coalesce(a.function_id, -1), l.name,
                  CASE WHEN t.node_id IS NOT NULL THEN calls_annotation_name(t.name)
@@ -225,12 +230,14 @@ class PreferEnumConversion(Rule, id="PY-ENUM0005", applicability="safe"):
           LEFT JOIN finalized f ON f.file_id = a.file_id AND f.assignment = a.node_id
           LEFT JOIN heads h ON h.file_id = a.file_id AND h.node = f.value
           WHERE a.type = 'assignment' AND a.owner_id IS DISTINCT FROM a.class_id
+            AND a.file_id IN (SELECT file_id FROM scope)
           UNION ALL
           SELECT a.file_id, coalesce(a.function_id, -1), l.name, NULL
           FROM core_node a
           JOIN core_node l ON l.file_id = a.file_id AND l.parent_id = a.node_id
             AND l.sibling_index = 0 AND l.type = 'identifier'
           WHERE a.type = 'augmented_assignment' AND a.owner_id IS DISTINCT FROM a.class_id
+            AND a.file_id IN (SELECT file_id FROM scope)
           UNION ALL
           SELECT f.file_id, coalesce(f.function_id, -1), l.name,
                  CASE r.type WHEN 'identifier' THEN r.name WHEN 'call' THEN h.head END
@@ -241,7 +248,7 @@ class PreferEnumConversion(Rule, id="PY-ENUM0005", applicability="safe"):
             AND r.sibling_index = 3
           LEFT JOIN heads h ON h.file_id = f.file_id AND h.node = r.node_id
           WHERE f.type IN ('for_statement', 'for_in_clause')
-            AND f.owner_id IS DISTINCT FROM f.class_id
+            AND f.owner_id IS DISTINCT FROM f.class_id AND f.file_id IN (SELECT file_id FROM scope)
           UNION ALL
           SELECT t.file_id, coalesce(t.function_id, -1), i.name, NULL
           FROM core_node t
@@ -251,6 +258,7 @@ class PreferEnumConversion(Rule, id="PY-ENUM0005", applicability="safe"):
           JOIN core_node u ON u.file_id = t.file_id AND u.node_id = w.parent_id
             AND u.type = 'with_item'
           WHERE t.type = 'as_pattern_target' AND t.owner_id IS DISTINCT FROM t.class_id
+            AND t.file_id IN (SELECT file_id FROM scope)
         ), proven AS (
           SELECT e.file_id, e.func, e.name, e.held
           FROM (SELECT file_id, func, name, any_value(held) AS held
@@ -277,6 +285,7 @@ class PreferEnumConversion(Rule, id="PY-ENUM0005", applicability="safe"):
           LEFT JOIN core_node i2 ON i2.file_id = a.file_id AND i2.parent_id = i1.node_id
             AND i1.type = 'parenthesized_expression' AND i2.sibling_index = 1
           WHERE a.type = 'attribute' AND f.language = 'python'
+            AND a.file_id IN (SELECT file_id FROM scope)
         )
         SELECT s.path, s.start_line, s.start_column, s.end_line, s.end_column,
                syntax_slice(src.content, s.rsl, s.rsc, s.rel, s.rec) AS receiver_text,

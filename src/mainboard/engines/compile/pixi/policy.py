@@ -1,29 +1,9 @@
-from enum import StrEnum, auto
-
 from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ConfigDict
 
 from ....core.errors import MissionError
-
-
-class LockPolicy(StrEnum):
-    """What a verb may do to the lock before it installs, spelled as pixi spells it.
-
-    update: solve again when the lock no longer answers the manifest, pixi's default.
-    locked: refuse a lock that no longer answers the manifest (`--locked`), what a host does,
-        since a host installs what the center solved and never solves for itself.
-    frozen: take the lock as it stands without asking whether it answers (`--frozen`).
-    """
-
-    UPDATE = auto()
-    LOCKED = auto()
-    FROZEN = auto()
-
-    @property
-    def flag(self) -> str:
-        """The flag passing this policy on to another machine's install, empty for the default."""
-        return "" if self is LockPolicy.UPDATE else f"--{self}"
+from ....enums import LockPolicy
 
 
 @Parameter(name="*")

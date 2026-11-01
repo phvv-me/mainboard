@@ -7,7 +7,7 @@ import os
 import shlex
 import sys
 from collections.abc import Generator
-from contextlib import closing, contextmanager
+from contextlib import AbstractContextManager, closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,11 +17,13 @@ import pytest
 
 from mainboard.runtime import Job
 from mainboard.runtime.job import WorkspaceActivation
-from mainboard.runtime.runner import Runner
 from mainboard.state import Lake
 from mainboard.state.storage.blobs import Blobs
+from mainboard.verbs.work.runner import Runner
 
 resource = pytest.importorskip("resource", reason="POSIX RLIMIT_NOFILE")
+
+type _Opening = AbstractContextManager[duckdb.DuckDBPyConnection]
 
 
 @contextmanager
@@ -86,8 +88,9 @@ def test_fragmented_membership_recovers_and_releases_files(fragmented) -> None:
         ):
             lake.attach(connection)
             blobs.held(connection, digests)
-        assert session.run(lambda connection: blobs.held(connection, digests)) == digests
-        assert session.run(lambda connection: blobs.held(connection, digests)) == digests
+        assert [
+            session.run(lambda connection: blobs.held(connection, digests)) for _ in range(2)
+        ] == [digests, digests]
         session.close()
         assert psutil.Process().num_fds() <= before + 4
 
@@ -138,18 +141,29 @@ def test_hard_exhaustion_and_other_io_errors_escape_without_retry(workspace) -> 
     session.close()
 
 
-def test_overlapping_lakes_restore_the_limit_after_last_close(workspace, tmp_path) -> None:
-    first = Lake.at(workspace).ready().open()
-    second = Lake.at(tmp_path / "other").ready().open()
+@pytest.fixture
+def lakes(workspace: Path) -> tuple[_Opening, _Opening]:
+    """Two lakes in two directories, created and not yet opened."""
+    return Lake.at(workspace).ready().open(), Lake.at(workspace / "other").ready().open()
+
+
+@pytest.fixture
+def narrowed() -> Generator[int]:
+    """The hard file limit, while the soft one is 256."""
     with _file_limit(256):
-        hard = _limit()[1]
-        left = first.__enter__()
-        right = second.__enter__()
-        try:
-            assert left.execute("SELECT 1").fetchall() == [(1,)]
-            assert right.execute("SELECT 1").fetchall() == [(1,)]
-        finally:
-            first.__exit__(None, None, None)
-            assert _limit()[0] > 256
-            second.__exit__(None, None, None)
-        assert _limit() == (256, hard)
+        yield _limit()[1]
+
+
+def test_overlapping_lakes_restore_the_limit_after_last_close(
+    lakes: tuple[_Opening, _Opening], narrowed: int
+) -> None:
+    first, second = lakes
+    left = first.__enter__()
+    right = second.__enter__()
+    try:
+        assert all(lake.execute("SELECT 1").fetchall() == [(1,)] for lake in (left, right))
+    finally:
+        first.__exit__(None, None, None)
+        assert _limit()[0] > 256
+        second.__exit__(None, None, None)
+    assert _limit() == (256, narrowed)

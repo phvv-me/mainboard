@@ -3,7 +3,7 @@
 import os
 import re
 import socket
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -60,12 +60,6 @@ class RowLog:
         self.rows.append(dict(row))
         self._keys.add(key)
         return True
-
-    def drop_where(self, predicate: Callable[[dict], bool]) -> None:
-        """Remove this writer's rows satisfying `predicate`."""
-        dropped = {self._key(row) for row in self.rows if predicate(row)}
-        self.rows = [row for row in self.rows if not predicate(row)]
-        self._keys -= dropped
 
     def extend(self, rows: Sequence[Mapping[str, JsonValue]]) -> int:
         """Append many rows, returning how many were new."""

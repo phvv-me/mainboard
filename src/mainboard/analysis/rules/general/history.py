@@ -33,7 +33,7 @@ class CoupledFilesThatNeverNameEachOther(Rule, id="ALL-HIST0003"):
           WHERE NOT EXISTS (SELECT 1 FROM repository_history_files t WHERE t.is_test
                             AND t.fact_id = a.fact_id AND t.path IN (a.path, b.path))
             AND NOT (regexp_replace(a.path, '/[^/]*$', '') = regexp_replace(b.path, '/[^/]*$', '')
-                     AND (ends_with(a.path, '/__init__.py') OR ends_with(b.path, '/__init__.py')))
+                     AND (is_initializer_path(a.path) OR is_initializer_path(b.path)))
           GROUP BY ALL
           HAVING shared >= $minimum_shared_commits
              AND shared >= $minimum_confidence * least(left_commits, right_commits)
@@ -107,10 +107,10 @@ class FileTooManyHandsHaveTouched(Rule, id="ALL-HIST0002"):
     minimum_commits: int = 5
 
     query = """
-        SELECT f.*, s.value FROM repository_history_facts f JOIN (
-          SELECT fact_id, count(*) AS value FROM repository_history_files
-          WHERE author_count >= $minimum_authors
-            AND author_count + additional_commit_count >= $minimum_commits
-          GROUP BY fact_id) s USING (fact_id)
+        SELECT path, 1 AS start_line, 0 AS start_column, author_count AS authors,
+               author_count + additional_commit_count AS commits
+        FROM repository_history_files
+        WHERE author_count >= $minimum_authors
+          AND author_count + additional_commit_count >= $minimum_commits
     """
-    message = "file too many hands have touched is {value} for `{fact_id}`"
+    message = "`{path}` took {commits} commits from {authors} authors"

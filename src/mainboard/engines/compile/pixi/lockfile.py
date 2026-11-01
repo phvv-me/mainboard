@@ -4,9 +4,7 @@
 # one, so the solve now lives in one committed file at the workspace root, a section per
 # environment, and the state directory's copy is materialized from it.
 #
-# The lock text rides byte for byte in a TOML multi-line literal string. A TOML reader normalizes
-# the line endings inside one, so the text is cut from the file's own characters and only checked
-# against what the reader parsed.
+# The lock text rides byte for byte in a TOML multi-line literal string.
 
 import json
 import re
@@ -45,15 +43,8 @@ _DELIMITER = "'''"
 # What an environment name may be written as unquoted in a table header.
 _BARE = re.compile(r"[A-Za-z0-9_-]+")
 
-# A section's header, its name bare or quoted (`environment_segment` allows dots), and its lock:
-# the literal after the opening line, up to a delimiter no further quote follows, the one or two
-# quotes a literal may end in kept. Both anchored to a line start and scanned in order, so the
-# text of one lock never reads as the next header.
-_SECTION = re.compile(r'^\[environments\.([A-Za-z0-9_-]+|"[^"\\\r\n]*")\]\r?\n', re.MULTILINE)
-_LOCK = re.compile(r"^lock = '''\r?\n(.*?'{0,2})'''(?!')", re.MULTILINE | re.DOTALL)
-
-# What a TOML literal string cannot hold once CRLF pairs are taken out: every control character
-# but the tab and the newline, a lone carriage return among them.
+# What a TOML literal string cannot hold: every control character but the tab and the newline,
+# a carriage return among them.
 _UNCARRIABLE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 # Conda encodes name, version and build in the artifact's filename, even when the lock omits
@@ -81,20 +72,6 @@ class Solved(FrozenModel):
 class Lockfile:
     """The committed lock at a workspace root: one section per environment, sorted by name."""
 
-    @staticmethod
-    def _texts(raw: str) -> dict[str, str]:
-        """Each section's lock, cut from the file's own characters so its line endings survive."""
-        texts: dict[str, str] = {}
-        position = 0
-        while (header := _SECTION.search(raw, position)) and (
-            lock := _LOCK.search(raw, header.end())
-        ):
-            # A quoted table-header key is JSON; a bare one is the environment's name itself.
-            key = header.group(1)
-            texts[str(json.loads(key)) if key.startswith('"') else key] = lock.group(1)
-            position = lock.end()
-        return texts
-
     def __init__(self, root: Path) -> None:
         project = Project()
         self.path = project.lock(root)
@@ -102,7 +79,7 @@ class Lockfile:
 
     def _carriable(self, environment: str, *, text: str) -> str:
         """`text`, refused when a TOML literal string cannot carry it byte for byte."""
-        if _DELIMITER in text or _UNCARRIABLE.search(text.replace("\r\n", "")):
+        if _DELIMITER in text or _UNCARRIABLE.search(text):
             raise MissionError(
                 f"the lock solved for {environment!r} holds {_DELIMITER} or a control character, "
                 f"which {self.path.name} cannot carry byte for byte, so nothing was written"
@@ -141,18 +118,14 @@ class Lockfile:
             )
         return tables
 
-    def _solved(self, name: str, table: Json, text: str | None) -> Solved:
-        """The solve `table` records for environment `name`, its lock being `text`."""
-        if (
-            not isinstance(table, dict)
-            or text is None
-            or text.replace("\r\n", "\n") != table.get("lock")
-        ):
+    def _solved(self, name: str, table: Json) -> Solved:
+        """The solve `table` records for environment `name`."""
+        if not isinstance(table, dict) or not isinstance(lock := table.get("lock"), str):
             raise self._malformed(f"[environments.{name}] is not in the shape it is written")
         return Solved(
             solved_from=str(table.get("solved_from", "")),
             solved_by=str(table.get("solved_by", "")),
-            lock=text,
+            lock=lock,
         )
 
     def conda_names(self) -> dict[str, str]:
@@ -176,8 +149,7 @@ class Lockfile:
         except UnicodeDecodeError as error:
             raise self._malformed(f"it is not UTF-8 ({error.reason})") from error
         tables = self._parsed_tables(raw)
-        texts = self._texts(raw)
-        return {name: self._solved(name, table, texts.get(name)) for name, table in tables.items()}
+        return {name: self._solved(name, table) for name, table in tables.items()}
 
     def get(self, environment: str) -> Solved | None:
         """`environment`'s committed solve, None when the file holds none."""

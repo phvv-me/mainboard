@@ -11,17 +11,31 @@ class NonInitReexportModule(Rule, id="PY-MODU0001"):
         WHERE has_only_imports_and_all AND NOT is_package_initializer
           AND NOT ends_with(path, 'conftest.py')
     """
-    message = "`{fact_id}` satisfies non init reexport module"
+    message = "`{fact_id}` only re-exports imports and is not a package initializer"
+    # An `__init__.pyi` is a package initializer like `__init__.py`: re-exporting is its job.
+    examples = (
+        Example(
+            bad='from .tool import tool\n\n__all__ = ["tool"]\n',
+            good="from .tool import tool\n\n\ndef run() -> None:\n    tool()\n",
+            context={
+                "stubs/pkg/__init__.pyi": "from .tool import tool as tool\n",
+                "stubs/pkg/sub/__init__.pyi": "# The stubs of `sub` sit beside this file.\n",
+            },
+        ),
+    )
 
 
 class EmptyPackageInitializer(Rule, id="PY-MODU0002", applicability="review"):
     """Package initializers that state no executable package surface."""
 
+    # A stub initializer is left out: nothing in a stub executes, and removing one turns its
+    # package into a namespace package for the type checkers.
     query = """
         SELECT * FROM module_facts
         WHERE is_package_initializer AND NOT is_test AND executable_statement_count = 0
+          AND NOT ends_with(path, '.pyi')
     """
-    message = "`{fact_id}` satisfies empty package initializer"
+    message = "`{fact_id}` is a package initializer with no executable statement"
     examples = (
         Example(
             bad="\n",
@@ -43,18 +57,107 @@ class EmptyPackageInitializer(Rule, id="PY-MODU0002", applicability="review"):
     """
 
 
-class InitializerDeclaration(Rule, id="PY-MODU0003"):
+_HELPER = """def helper():
+    return 1
+
+
+__all__ = ["helper"]
+"""
+_HELPER_READING = "LIMIT = 3\n\n\ndef helper():\n    return LIMIT\n"
+_HELPER_USER = "from pkg import helper\n\n\ndef run() -> int:\n    return helper()\n"
+_PRIVATES = "def _one():\n    return 1\n\n\ndef _two():\n    return 2\n"
+_PRIVATES_USER = """from pkg import _one, _two
+
+
+def run() -> int:
+    return _one() + _two()
+"""
+_HIDDEN = "def _hidden():\n    return 1\n"
+_HIDDEN_USER = "from pkg import _hidden\n\n\ndef run() -> int:\n    return _hidden()\n"
+
+
+class InitializerDeclaration(Rule, id="PY-MODU0003", applicability="review"):
     """Ordinary function and class declarations in package initializers."""
 
+    # A stub initializer is left out: its declarations are the surface the stub describes, not
+    # behavior. Each declaration is a finding of its own, so that moving one is progress the fixer
+    # sees.
     query = """
-        SELECT f.*, c.value FROM module_facts f
-        JOIN (SELECT fact_id, count(*) AS value FROM module_members
-              WHERE kind = 'class'
-                 OR (kind = 'function' AND name NOT IN ('__getattr__', '__dir__'))
-              GROUP BY fact_id) c ON c.fact_id = f.fact_id
-        WHERE f.is_package_initializer
+        SELECT f.path, d.start_line, d.start_column, m.name,
+               '`' || m.name || '` is declared in a package initializer' AS message
+        FROM module_facts f
+        JOIN module_members m ON m.fact_id = f.fact_id
+        JOIN core_def d ON d.path = f.path AND d.name = m.name AND d.owner_id IS NULL
+        WHERE f.is_package_initializer AND NOT ends_with(f.path, '.pyi')
+          AND (m.kind = 'class' OR (m.kind = 'function' AND m.name NOT IN ('__getattr__', '__dir__')))
     """
-    message = "initializer declaration is {value} for `{fact_id}`"
+    # Each declaration moves into a module of its own beside the initializer
+    # (`move-definitions`). A public one is imported back, so that the package keeps its surface
+    # and its importers stay as they are (a module of the same name as the function would be
+    # shadowed by it, so `package.name` must not be rerouted through the module); a private one is
+    # not, and every import of it is respelled. A module that exists is left untouched, and so is
+    # what the operation refuses (a declaration reading a name of the initializer that stays, an
+    # importer binding the package as `import a as b`).
+    fix = r"""
+        WITH moved AS (
+          SELECT finding_key, path, name, module_path(regexp_replace(path, '/?[^/]*$', ''), name)
+                   AS destination, starts_with(name, '_') AS is_private
+          FROM finding
+        ), free AS (
+          SELECT * FROM moved m
+          WHERE NOT EXISTS (SELECT 1 FROM core_file c WHERE c.path = m.destination)
+        )
+        SELECT m.finding_key, 'move-definitions' AS operation,
+               r.* REPLACE (list_filter(r.importers, lambda i: m.is_private) AS importers,
+                            list_filter(r.reached, lambda i: m.is_private) AS reached)
+        FROM free m, move_row(m.path, [m.name], m.destination) r
+        UNION ALL BY NAME
+        SELECT finding_key, path,
+               'from .' || regexp_extract(destination, '([^/]*)\.py$', 1) || ' import ' || name
+                 AS "import"
+        FROM free WHERE NOT is_private
+    """
+    examples = (
+        Example(
+            bad="def launch():\n    return 1\n",
+            good="from .launch import launch\n",
+            path="src/launcher/__init__.py",
+            context={"stubs/launcher/__init__.pyi": "def launch() -> int: ...\n"},
+        ),
+        Example(
+            bad=_HELPER,
+            good='from .helper import helper\n\n__all__ = ["helper"]\n',
+            path="pkg/__init__.py",
+            context={"pkg/use.py": _HELPER_USER},
+        ),
+        Example(
+            bad=_HIDDEN_USER,
+            good=_HIDDEN_USER.replace("from pkg import", "from pkg._hidden import"),
+            path="pkg/use.py",
+            context={"pkg/__init__.py": _HIDDEN},
+        ),
+        Example(
+            bad=_PRIVATES_USER,
+            good=_PRIVATES_USER.replace(
+                "from pkg import _one, _two",
+                "from pkg._one import _one\nfrom pkg._two import _two",
+            ),
+            path="pkg/use.py",
+            context={"pkg/__init__.py": _PRIVATES},
+        ),
+        Example(
+            bad=_HELPER_USER,
+            good=_HELPER_USER,
+            path="pkg/use.py",
+            context={"pkg/__init__.py": _HELPER, "pkg/helper.py": "VALUE = 1\n"},
+        ),
+        Example(
+            bad=_HELPER_USER,
+            good=_HELPER_USER,
+            path="pkg/use.py",
+            context={"pkg/__init__.py": _HELPER_READING},
+        ),
+    )
 
 
 class ExplicitAllOnlyInInitializer(Rule, id="PY-MODU0004", applicability="review"):
@@ -69,7 +172,7 @@ class ExplicitAllOnlyInInitializer(Rule, id="PY-MODU0004", applicability="review
           FROM module_all_declarations GROUP BY fact_id) d ON d.fact_id = f.fact_id
         WHERE f.declares_all AND NOT f.is_package_initializer
     """
-    message = "`{fact_id}` satisfies explicit all outside initializer"
+    message = "`{fact_id}` declares an explicit export list outside a package initializer"
     examples = (
         Example(
             bad='__all__ = ["tool"]\n\n\ndef tool():\n    return 1\n',
@@ -124,7 +227,7 @@ class UnusedExplicitExport(Rule, id="PY-MODU0005", applicability="review"):
         WHERE public_export_consumer_count = 0
           AND NOT EXISTS (
             SELECT 1 FROM source_files t
-            WHERE ends_with(t.path, 'pyproject.toml') AND regexp_matches(e.path, '__init__\.pyi?$')
+            WHERE ends_with(t.path, 'pyproject.toml') AND is_initializer_path(e.path)
               AND starts_with(e.path, regexp_replace(t.path, 'pyproject\.toml$', ''))
               AND regexp_matches(t.content, '(?ms)^\[project\]\s*$.*?^name\s*=\s*"[^"]+"')
               AND replace(lower(regexp_extract(t.content,

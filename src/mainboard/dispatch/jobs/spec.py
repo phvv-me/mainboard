@@ -7,21 +7,14 @@ import shlex
 from patos import FrozenModel
 
 from ...context.plan import ExecutionPlan
+from ...core.events.frames import FrameSpec
 from ...core.project import Project
 from ...runtime.job import Job, PrefixActivation, ToolCall, WorkspaceActivation
 from .. import wrapping
-from ..constants import (
-    ATTEMPT_VAR,
-    CHECKPOINT_VAR,
-    CLOSURE_VAR,
-    COMMIT_VAR,
-    DEFERRED_VAR,
-    DIGEST_VAR,
-    FIRST_PARTY_VAR,
-    SOURCE_VAR,
-)
+from ..constants import ATTEMPT_VAR, CHECKPOINT_VAR, COMMIT_VAR
 from ..shared import state_dir
 from ..wrapping import absent, activation, missing
+from ...constants import CLOSURE_VAR, DEFERRED_VAR, DIGEST_VAR, FIRST_PARTY_VAR, SOURCE_VAR
 
 
 class JobSpec(FrozenModel):
@@ -140,6 +133,7 @@ class JobSpec(FrozenModel):
             provide=self.provide,
             attestation=self.attestation,
             sampler=self.sampler,
+            frames=FrameSpec(directory=f"{self.root}/{state_dir()}/frames", host=self.plan.host),
         )
 
     def render(self, *, pbs: bool) -> str:

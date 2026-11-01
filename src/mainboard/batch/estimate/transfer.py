@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ...dispatch.agent import program, walk
+from ...dispatch.agent.program import walk
+from ...dispatch.agent.program.constants import FILE
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -118,9 +119,7 @@ class Transfer:
         """
         scope = self.board.dispatcher.scope(plan, paths)
         return [
-            self.root / entry.path
-            for entry in walk(str(self.root), scope)
-            if entry.kind == program.FILE
+            self.root / entry.path for entry in walk(str(self.root), scope) if entry.kind == FILE
         ]
 
     def watermark(self, alias: str) -> str:

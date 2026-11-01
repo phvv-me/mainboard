@@ -1,11 +1,11 @@
-from .core import DeviceEvidence, Profile, ProfileDiff
+from .core import Profile
+from .enums import DeviceEvidence
 from .models import ProcessReading, RegionStat, RegionSummary
 
 __all__ = [
     "DeviceEvidence",
     "ProcessReading",
     "Profile",
-    "ProfileDiff",
     "RegionStat",
     "RegionSummary",
 ]

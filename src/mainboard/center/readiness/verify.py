@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...agents import Agents
-from ...core.errors import MissionError
-from ...core.section import Section, Verdict, staged
+from ...core import MissionError, Section, Verdict, captured, staged
 from ...engines.compile.provisioner import Provisioner
-from ...fleet.fitness import Fitness, Role
+from ...enums import Role
+from ...fleet.fitness import Fitness
 from ...probe.system import System
 from ...state.lake import Lake
 from .exposure import Exposure, Spawn, executables
@@ -49,16 +49,7 @@ _SHELL_SECONDS = 60.0
 def _spawned(command: Sequence[str], environment: Mapping[str, str]) -> tuple[int, str]:
     """Run `command` under `environment`, bounded, answering its status and joined output."""
     try:
-        done = subprocess.run(
-            list(command),
-            env=dict(environment),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_SHELL_SECONDS,
-            check=False,
-        )
+        done = captured(command, env=environment, timeout=_SHELL_SECONDS)
     except OSError, subprocess.SubprocessError:
         return 127, ""
     return done.returncode, done.stdout + done.stderr
@@ -96,8 +87,8 @@ class Verification:
 
     def _folders(self) -> list[Path]:
         """Every executable directory of the default environment, in PATH order."""
-        prefix = self.provisioner.pixi_for("default").env_prefix("default")
-        return [prefix / "bin", *self.provisioner.binaries("default")]
+        shard = self.provisioner.shard("default")
+        return [shard.pixi.prefix("default").path / "bin", *shard.binaries()]
 
     def _smoke(self) -> tuple[int, str]:
         """Run the smoke command in the default environment, bounded."""
@@ -129,7 +120,7 @@ class Verification:
             section="lake",
             verdict=Verdict.FAIL,
             detail=f"the manifest keeps the lake at {lake.home}, and {lake.catalog} is not here",
-            fix=f"mount or copy the lake to {lake.home}, then mainboard lake check",
+            fix=f"mount or copy the lake to {lake.home}, then mainboard data lake check",
         )
 
     def lint(self) -> Section:
@@ -162,7 +153,7 @@ class Verification:
 
     def path(self) -> list[Section]:
         """The default environment on every shell's PATH, then where each tool resolves there."""
-        prefix = self.provisioner.pixi_for("default").env_prefix("default")
+        prefix = self.provisioner.shard("default").pixi.prefix("default").path
         if not (prefix / "conda-meta").is_dir():
             return [
                 Section(

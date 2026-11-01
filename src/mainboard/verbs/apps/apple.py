@@ -5,8 +5,10 @@ from uuid import uuid4
 from ...apple import Apple, BuildReport, BundleChecks, Preview, TestReport, XcodeRun
 from ...core.errors import MissionError
 from ...log import logger
-from ..base import Verbs
-from ..options import Output
+from ...render import Output
+from ..session import Verbs
+from .enums import Kind
+from .inspectors import inspect
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -60,40 +62,6 @@ class AppleVerbs(Verbs):
         logger.info(f"Apple {kind} evidence unavailable: {fault}")
         return False
 
-    def apple_bundle(
-        self, path: Path, *, checks: BundleChecks = _UNCHECKED, output: Output = _COMPACT
-    ) -> int:
-        """Inspect a built app's metadata, resources and every packaged Mach-O architecture.
-
-        No app code is executed. nm/otool inspect all architectures and their complete
-        output stays in the report. Missing/truncated native evidence fails. Inspection
-        is bounded to 10,000 entries, 128 Mach-O files and 16 slices per fat header.
-        Internal symlinks are deduplicated;
-        links escaping the bundle fail. This does not prove source provenance, optimized-out
-        static dependencies, signing, installation or rendering.
-
-        Args:
-            path: a built app bundle, including its embedded products.
-        """
-        report = Apple().bundle(path, checks)
-        output.print_record(report.document(), title="Apple bundle")
-        return 0 if report.successful else 1
-
-    def apple_diagnostics(self, path: Path, *, output: Output = _COMPACT) -> int:
-        """Read compiler errors, warnings, source locations and the build action's status.
-
-        Exit 1 for failed or unknown builds; malformed or incomplete evidence is an error.
-        Warnings remain visible without failing a successful build. Works when compilation
-        failed before tests started. Build success does not establish test success; use
-        apple results for that. Incremental builds are not a whole-project warning audit.
-
-        Args:
-            path: an exact .xcresult bundle or a directory (newest direct bundle).
-        """
-        report = Apple().diagnostics(path)
-        output.print_record(report.document(), title="Apple build diagnostics")
-        return 0 if report.summary.successful else 1
-
     def apple_execute(self, project: Path, *, run: XcodeRun, results: Path = _RESULTS) -> int:
         """Run Xcode on a project/workspace/package; retain fresh evidence and its verdict.
 
@@ -138,6 +106,30 @@ class AppleVerbs(Verbs):
         rendered = Apple().font_previews(paths, preview, directory)
         output.print_rows([item.document() for item in rendered], title="Font previews")
 
+    def apple_inspect(
+        self, path: Path, *, checks: BundleChecks = _UNCHECKED, output: Output = _COMPACT
+    ) -> int:
+        """Read what a built bundle or a result bundle holds, by the path's kind.
+
+        A built bundle prints its metadata, resources and every packaged Mach-O architecture.
+        No app code is executed. nm/otool inspect all architectures and their complete
+        output stays in the report. Missing/truncated native evidence fails. Inspection
+        is bounded to 10,000 entries, 128 Mach-O files and 16 slices per fat header.
+        Internal symlinks are deduplicated; links escaping the bundle fail. This does not
+        prove source provenance, optimized-out static dependencies, signing, installation
+        or rendering. A result bundle prints its build diagnostics (compiler errors, warnings,
+        source locations and the build status), then its test counts, failures, devices and
+        ten slowest cases through the installed xcresulttool (Swift Testing and XCTest).
+        Exit 1 for a failed, unknown or empty run; malformed or incomplete evidence is an error.
+        Warnings, skips and expected failures stay visible without failing a passing run.
+        A bundle whose tests never started is judged by its build.
+
+        Args:
+            path: a built app bundle (including its embedded products), an exact .xcresult
+                bundle, or a folder holding them (the newest bundle directly inside).
+        """
+        return inspect(path, kind=Kind.of(path), apple=Apple(), checks=checks, output=output)
+
     def apple_launch(
         self,
         path: Path,
@@ -157,20 +149,6 @@ class AppleVerbs(Verbs):
             path, simulator=simulator, os_version=os_version, timeout=timeout
         )
         output.print_record(launched, title="Launched app")
-
-    def apple_results(self, path: Path, *, output: Output = _COMPACT) -> int:
-        """Read xcresult test counts, failures, devices and the ten slowest test cases.
-
-        Exit 1 for failed, unknown or empty runs. Skips and expected failures stay visible.
-        Build failures without test evidence are errors, never a successful zero-test run.
-        Supports Swift Testing and XCTest through the installed xcresulttool.
-
-        Args:
-            path: an exact .xcresult bundle or a Logs/Test directory (newest direct bundle).
-        """
-        report = Apple().results(path)
-        output.print_record(report.document(), title="Apple tests")
-        return 0 if report.summary.successful else 1
 
     def apple_simulators(self, *, output: Output = _COMPACT) -> None:
         """List available simulator names, runtime identifiers, UDIDs and current states.

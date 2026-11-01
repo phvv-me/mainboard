@@ -1,9 +1,9 @@
 """Rules over a manuscript's notation index (mcmr's ALL-MANU0007 to ALL-MANU0009)."""
 
-from ....catalog import Rule
+from ....catalog import Part
 
 
-class SymbolMissingFromTheNotationIndex(Rule, id="ALL-MANU0007"):
+class SymbolMissingFromTheNotationIndex(Part):
     """Symbols used across sections that a manuscript's notation index never lists."""
 
     minimum_sections: int = 2
@@ -22,7 +22,7 @@ class SymbolMissingFromTheNotationIndex(Rule, id="ALL-MANU0007"):
     message = "`{name}` crosses {section_count} sections and the notation index never lists it"
 
 
-class NotationEntryAbsentFromTheBody(Rule, id="ALL-MANU0008"):
+class NotationEntryAbsentFromTheBody(Part):
     """Notation index rows whose symbol the body never sets."""
 
     query = """
@@ -34,7 +34,7 @@ class NotationEntryAbsentFromTheBody(Rule, id="ALL-MANU0008"):
     message = "the notation index lists `{symbol}` as `{meaning}` and the body never sets it"
 
 
-class SymbolIntroducedUnderTwoMeanings(Rule, id="ALL-MANU0009"):
+class SymbolIntroducedUnderTwoMeanings(Part):
     """Symbols introduced under two meanings the index does not separate into senses."""
 
     query = """

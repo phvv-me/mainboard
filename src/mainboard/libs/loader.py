@@ -1,12 +1,12 @@
 import platform
 import shutil
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=asks the machine's own ldconfig for its cache, fixed argv only since=2026-10-17
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..constants import ASK_SECONDS
+from ..core.constants.units import ASK_SECONDS
+from ..core.execution.tool import ToolRunner
 from .elf import Elf
 
 if TYPE_CHECKING:
@@ -19,23 +19,15 @@ _TRUSTED = ("/lib", "/usr/lib", "/lib64", "/usr/lib64")
 def system_cache() -> dict[str, Path]:
     """The soname-to-file map of the machine's `ld.so.cache`, empty where `ldconfig` is absent.
 
-    The first entry of a soname wins, as the loader takes the first.
+    A listing `ldconfig` does not finish in time is empty too, never a partial map. The first
+    entry of a soname wins, as the loader takes the first.
     """
     ldconfig = shutil.which("ldconfig") or "/sbin/ldconfig"
-    try:
-        said = subprocess.run(
-            [ldconfig, "-p"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=ASK_SECONDS,
-            check=False,
-        ).stdout
-    except OSError, subprocess.TimeoutExpired:
+    listing = ToolRunner(timeout=ASK_SECONDS).run(ldconfig, ["-p"])
+    if listing.truncated:
         return {}
     cache: dict[str, Path] = {}
-    for line in said.splitlines():
+    for line in listing.stdout.splitlines():
         name, arrow, target = line.strip().partition(" => ")
         if arrow:
             cache.setdefault(name.split(" ")[0], Path(target))

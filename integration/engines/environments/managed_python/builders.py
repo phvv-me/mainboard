@@ -1,14 +1,6 @@
 import subprocess
 from pathlib import Path
 
-from mainboard.context.plan import environment_prefix
-from mainboard.dispatch.agent.program import Request
-
-
-def survey(root: str) -> Request:
-    """The first thing a mirror asks: describe `root`, here with nothing in scope."""
-    return {"survey": {"root": root, "state": ".state", "scopes": [], "named": []}}
-
 
 def stub(path: Path, body: str) -> Path:
     """An executable `sh` script at `path` running `body`."""
@@ -21,11 +13,6 @@ def stub(path: Path, body: str) -> Path:
 def login_environment(home: Path) -> dict[str, str]:
     """What a login under `home` sees: its own HOME and a PATH leading with the system stubs."""
     return {"HOME": str(home), "PATH": f"{home}/system-bin:/usr/bin:/bin"}
-
-
-def environment(home: Path) -> Path:
-    """Where the workspace environment's interpreter sits under `home`."""
-    return Path(environment_prefix(str(home / ".mb-jobs"), env="default")) / "bin" / "python"
 
 
 def sshd(home: Path, line: str, *, program: str) -> subprocess.CompletedProcess[str]:

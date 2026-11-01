@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from ...state import schema
 from ...state.lake import Lake, staged
-from .models import DeviceResult, Evidence
+from .evidence import DeviceResult, Evidence
 
 
 class NotFound(FrozenModel):

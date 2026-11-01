@@ -2,15 +2,16 @@ import os
 import re
 from collections import deque
 from collections.abc import Iterable
-from enum import StrEnum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..core.section import Section, Verdict
+from ..core.section import Section
+from ..enums import Verdict
 from ..runtime.activation import Runtime
 from .elf import Elf
+from .enums import Kind
 from .inventory import Family, Inventory, Provided, family_of
 from .loader import Found, Loader, system_cache
 from .remedy import Raise, Relink, Remedy
@@ -26,14 +27,6 @@ _NUMBER = re.compile(r"\d+")
 _SUFFIX = re.compile(r"\.so((?:\.\d+)+)$")
 
 type Release = tuple[int, ...]
-
-
-class Kind(StrEnum):
-    """What is wrong with a family: a library from outside, one from nowhere, or two releases."""
-
-    OUTSIDE = auto()
-    MISSING = auto()
-    SPLIT = auto()
 
 
 class Finding(FrozenModel):

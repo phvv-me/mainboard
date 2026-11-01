@@ -1,7 +1,9 @@
 from .catalog import Catalog, Offer, Quote
-from .imports import catalog_provider, from_gpuhunt, from_vast
+from .enums import Verdict
+from .imports import from_vast
 from .ledger import Ledger, Observation, SetupFit
 from .model import BillingModel
+from .score import Score, Scorecard, Track
 
 __all__ = [
     "BillingModel",
@@ -10,8 +12,10 @@ __all__ = [
     "Observation",
     "Offer",
     "Quote",
+    "Score",
+    "Scorecard",
     "SetupFit",
-    "catalog_provider",
-    "from_gpuhunt",
+    "Track",
+    "Verdict",
     "from_vast",
 ]

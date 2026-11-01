@@ -240,6 +240,8 @@ class Route(Family):
         `source_files` then reads them.
         """
         paths = [path for path in listed(root) if path.rsplit(".", 1)[-1] in _SUFFIXES]
-        facts.db.execute(_ROUTE_CORPUS_TABLE_SQL)
+        facts.connection.execute(_ROUTE_CORPUS_TABLE_SQL)
         if paths:
-            facts.db.executemany("INSERT INTO route_corpus VALUES (?)", [(p,) for p in paths])
+            facts.connection.executemany(
+                "INSERT INTO route_corpus VALUES (?)", [(p,) for p in paths]
+            )

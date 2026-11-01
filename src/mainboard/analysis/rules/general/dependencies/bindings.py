@@ -1,6 +1,6 @@
 """Rules over artifacts one language declares and another reaches (mcmr's ALL-BIND family)."""
 
-from ....catalog import Relation, Rule
+from ....catalog import Part, Relation
 
 
 class BindingsCrossings(Relation):
@@ -13,7 +13,7 @@ class BindingsCrossings(Relation):
 """
 
 
-class UnreachedCrossLanguageArtifact(Rule, id="ALL-BIND0001"):
+class UnreachedCrossLanguageArtifact(Part):
     """Artifacts one language declares that no other language reaches."""
 
     query = """
@@ -23,9 +23,22 @@ class UnreachedCrossLanguageArtifact(Rule, id="ALL-BIND0001"):
     message = (
         "{mechanism} `{name}` is declared in {declared_language} but no other language reaches it"
     )
+    # A CUDA kernel whose name no file spells but its definition goes with the definition. Any
+    # other artifact is a contract a person narrows. Review: a consumer outside the repository may
+    # launch the kernel, which the facts cannot see.
+    fix = """
+        SELECT f.finding_key, 'delete-node' AS operation, f.path, d.node_id AS node
+        FROM finding f
+        JOIN ast_nodes d ON d.path = f.path AND d.type = 'function_definition' AND d.name = f.name
+        WHERE f.mechanism = 'kernel'
+          AND NOT EXISTS (SELECT 1 FROM source_files s
+                          WHERE contains(s.content, f.name)
+                            AND (s.path <> f.path OR len(string_split(s.content, f.name)) > 2))
+    """
+    change = "deleted the kernel `{name}`, which no other language reaches"
 
 
-class CrossLanguageBoundaryWidth(Rule, id="ALL-BIND0002"):
+class CrossLanguageBoundaryWidth(Part):
     """Artifacts reached from more than one other language."""
 
     maximum: int = 1

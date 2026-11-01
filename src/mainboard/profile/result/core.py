@@ -1,86 +1,20 @@
 # The `Profile`, the result of a profiling session, and what you do with it.
 
-from enum import StrEnum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ...constants import BYTES_PER_KIBIBYTE
-from ...log import logger
-from ..constants import NANOSECONDS_PER_MILLISECOND
+from ...core.constants.units import BYTES_PER_KIBIBYTE, NANOSECONDS_PER_MILLISECOND
 from ..trace import ActivityRecord, BottleneckReport, KernelTrace, MemcpyTrace, RegionWindow
 from .efficiency import EfficiencyReport
+from .enums import DeviceEvidence
 from .models import RegionStat, RegionSummary
 from .perfetto import write_trace
 from .timeline import DeviceTimeline
 
 if TYPE_CHECKING:
     from os import PathLike
-
-
-class DeviceEvidence(StrEnum):
-    """Whether device evidence was sought and found.
-
-    A session that attached to no device must never read as a run that did no GPU work.
-
-    UNSOUGHT: neither device telemetry nor GPU activity was requested.
-    ABSENT: requested, but no device was visible or the profiled code never touched it.
-    COLLECTED: at least one device reading, kernel, copy or activity was observed.
-    """
-
-    UNSOUGHT = auto()
-    ABSENT = auto()
-    COLLECTED = auto()
-
-
-class RegionDelta(FrozenModel):
-    """One region's change between two profiles (baseline → current)."""
-
-    name: str
-    baseline_ms: float
-    current_ms: float
-    delta_ms: float
-    speedup: float  # baseline / current; >1 is faster
-
-
-class ProfileDiff(FrozenModel):
-    """Region deltas between two profiles, ranked by absolute wall-time change."""
-
-    rows: tuple[RegionDelta, ...]
-    baseline_host: str = ""
-    current_host: str = ""
-    baseline_device: str = ""
-    current_device: str = ""
-
-    @classmethod
-    def between(cls, baseline: Profile, *, current: Profile) -> ProfileDiff:
-        """Match regions by name and rank by absolute wall-time change."""
-        before = {s.name: s.total_ms for s in baseline.stats()}
-        after = {s.name: s.total_ms for s in current.stats()}
-        rows = sorted(
-            (
-                RegionDelta(
-                    name=name,
-                    baseline_ms=before.get(name, 0.0),
-                    current_ms=after.get(name, 0.0),
-                    delta_ms=after.get(name, 0.0) - before.get(name, 0.0),
-                    speedup=before[name] / after[name]
-                    if name in before and after.get(name, 0.0) > 0
-                    else 0.0,
-                )
-                for name in before.keys() | after.keys()
-            ),
-            key=lambda r: abs(r.delta_ms),
-            reverse=True,
-        )
-        return cls(
-            rows=tuple(rows),
-            baseline_host=baseline.host,
-            current_host=current.host,
-            baseline_device=baseline.device,
-            current_device=current.device,
-        )
 
 
 class Profile(FrozenModel):
@@ -158,10 +92,6 @@ class Profile(FrozenModel):
         """The slowest region names by total wall time."""
         return self.stats()[:top]
 
-    def diff(self, baseline: Profile) -> ProfileDiff:
-        """Compare regions against a `baseline` profile."""
-        return ProfileDiff.between(baseline, current=self)
-
     def efficiency(
         self,
         *,
@@ -203,11 +133,8 @@ class Profile(FrozenModel):
         )
 
     def save(self, path: str | PathLike[str]) -> None:
-        """Persist to JSON so a later run can :meth:`load` and :meth:`diff` it."""
+        """Persist to JSON so a later run can :meth:`load` it."""
         Path(path).write_text(self.model_dump_json(), encoding="utf-8", newline="\n")
-
-    def show(self) -> None:
-        logger.result(self.report())
 
     def stats(self) -> list[RegionStat]:
         """Per-name aggregates (calls/total/avg/peak), slowest total first."""

@@ -17,7 +17,7 @@ class CudaModules(CudaRelation):
     stored = True
     query = f"""
         WITH {MODULE_NAMES}
-        SELECT fact_id, path, module, regexp_matches(path, '(^|/)__init__\\.pyi?$') AS is_package
+        SELECT fact_id, path, module, is_initializer_path(path) AS is_package
         FROM module_names
     """
 

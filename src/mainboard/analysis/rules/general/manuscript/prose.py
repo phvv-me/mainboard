@@ -2,7 +2,7 @@
 
 from pydantic import model_validator
 
-from ....catalog import Rule
+from ....catalog import Part
 
 _OPENERS = (
     "what",
@@ -23,7 +23,7 @@ _OPENERS = (
 )
 
 
-class SentenceLengthOutsideHouseBounds(Rule, id="ALL-MANU0010"):
+class SentenceLengthOutsideHouseBounds(Part):
     """Prose sentences shorter or longer than the house word-count bounds."""
 
     minimum_words: int = 10
@@ -49,7 +49,7 @@ class SentenceLengthOutsideHouseBounds(Rule, id="ALL-MANU0010"):
     message = "{sentence} of {word_count} words opens `{opening}`"
 
 
-class ParagraphLongerThanAReaderHolds(Rule, id="ALL-MANU0011"):
+class ParagraphLongerThanAReaderHolds(Part):
     """Prose paragraphs over the word or sentence ceiling."""
 
     maximum_words: int = 200
@@ -64,7 +64,7 @@ class ParagraphLongerThanAReaderHolds(Rule, id="ALL-MANU0011"):
     message = "a paragraph of {word_count} words over {sentence_count} sentences"
 
 
-class SectionTitleThatIsNotANounPhrase(Rule, id="ALL-MANU0012"):
+class SectionTitleThatIsNotANounPhrase(Part):
     """Section headings that ask a question, open with a verb or run past a short name."""
 
     openers: tuple[str, ...] = _OPENERS

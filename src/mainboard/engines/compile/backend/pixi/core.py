@@ -1,42 +1,35 @@
-import json
-import os
-import tomllib
-from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
+from patos import FrozenOpenModel
 from plumbum import local
 from plumbum.commands.base import BoundEnvCommand
+from pydantic import TypeAdapter
 
-from .....core import MissionError, Project
-from .....core.execution.host import current_platform
+from .....core import Disk, MissionError, Project
 from .....log import logger
 from ..process import Process
 from ..tool import Tool
+from .compiled import CompiledManifest
 from .engine import PixiEngine
-from .repair import EnvironmentAudit
+from .prefix import PixiPrefix
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator, Sequence
+    from collections.abc import Sequence
 
     from plumbum.commands.base import BaseCommand
 
-    from ...inputs.toml import Toml
     from ..result import CommandResult
 
-# What pixi writes into a prefix's `conda-meta/` once an installation has finished.
-_FINGERPRINT = ".pixi-environment-fingerprint"
 
-# The env var vouching each virtual-package floor, so a machine that cannot present the package
-# (a login node with no GPU driver) still installs the frozen lock its jobs run under.
-_FLOOR_OVERRIDES = {
-    "archspec": "CONDA_OVERRIDE_ARCHSPEC",
-    "cuda": "CONDA_OVERRIDE_CUDA",
-    "glibc": "CONDA_OVERRIDE_GLIBC",
-    "linux": "CONDA_OVERRIDE_LINUX",
-    "macos": "CONDA_OVERRIDE_OSX",
-    "osx": "CONDA_OVERRIDE_OSX",
-}
+class _Package(FrozenOpenModel):
+    """One row of `pixi list`: an editable workspace member is listed with no version."""
+
+    name: str
+    version: str | None
+
+
+_PACKAGES = TypeAdapter(list[_Package])
 
 
 class Pixi(Tool):
@@ -49,14 +42,6 @@ class Pixi(Tool):
     name = "pixi"
     filename = "pixi.toml"
 
-    @contextmanager
-    def activated(self, env: str = "default") -> Generator[None]:
-        """Prepend the environment's `bin`, once installed, to PATH for the block."""
-        binaries = self.env_prefix(env) / "bin"
-        leading = [str(binaries)] if binaries.is_dir() else []
-        with local.env(PATH=os.pathsep.join([*leading, local.env["PATH"]])):
-            yield
-
     @property
     def command(self) -> BaseCommand:
         """The engine's pixi with the workspace's `overrides` bound over its own environment.
@@ -66,9 +51,14 @@ class Pixi(Tool):
         callers see one shape.
         """
         engine = self.engine.command
-        environment = dict(engine.env or {}) | self.overrides
+        environment = dict(engine.env or {}) | self.declared.overrides
         executable = Path(engine.formulate()[0])
         return BoundEnvCommand(local[str(executable)], env=environment)
+
+    @property
+    def declared(self) -> CompiledManifest:
+        """What the compiled manifest declares, read afresh each time it is asked."""
+        return CompiledManifest(path=self.manifest)
 
     @property
     def executable(self) -> Path:
@@ -78,41 +68,6 @@ class Pixi(Tool):
     @property
     def lock(self) -> Path:
         return self.manifest.with_suffix(".lock")
-
-    @property
-    def overrides(self) -> dict[str, str]:
-        return Pixi._floor_overrides(self.manifest)
-
-    @staticmethod
-    def _floor_overrides(manifest: Path) -> dict[str, str]:
-        """The `CONDA_OVERRIDE_*` values for the floors in `manifest`'s platform descriptors.
-
-        An override the process already exports is left to stand, so the caller has the last word.
-        """
-        try:
-            parsed = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
-        entries = parsed.get("workspace", {}).get("platforms", [])
-        return {
-            _FLOOR_OVERRIDES[key]: str(value)
-            for entry in entries
-            if isinstance(entry, dict)
-            for key, value in entry.items()
-            if key in _FLOOR_OVERRIDES and _FLOOR_OVERRIDES[key] not in os.environ
-        }
-
-    @staticmethod
-    def _nested_tables(document: Toml) -> Iterator[dict[str, Toml]]:
-        """Every table in `document`, `document` itself included, at any depth."""
-        pending = [document]
-        while pending:
-            node = pending.pop()
-            if isinstance(node, dict):
-                yield node
-                pending.extend(node.values())
-            elif isinstance(node, list):
-                pending.extend(node)
 
     @staticmethod
     def _raise_on_lock_drift(result: CommandResult) -> None:
@@ -133,16 +88,44 @@ class Pixi(Tool):
         self.engine = PixiEngine()
         self.manifest = out / self.filename
 
-    def _has_editable_paths(self) -> bool:
-        """Whether the generated manifest carries a mutable editable Python source."""
-        try:
-            manifest = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return False
-        return any(
-            isinstance(table.get("path"), str) and table.get("editable") is True
-            for table in self._nested_tables(manifest)
+    def _environment_result(self, verb: str, *args: str) -> CommandResult:
+        """Run an environment verb over the lock as it stands, retaining its streamed output.
+
+        `--locked` unless an editable source is declared, whose metadata pixi re-reads and so
+        would call stale on every edit; such a lock is installed `--frozen`, the caller having
+        already asked whether it answers the manifest.
+        """
+        if not self.lock.exists():
+            project = Project()
+            raise MissionError(
+                f"pixi.lock is missing. Run `{project.name} dep lock` on a "
+                "solve-capable machine to create and verify the generated manifest/lock pair, "
+                f"and commit the {project.locks[0]} it writes."
+            )
+        editable = self.declared.editable
+        return self.within_cwd(Process.stream, verb, *args, locked=not editable, frozen=editable)
+
+    def _repair(self, env: str) -> None:
+        """Reinstall whatever `env` holds that is missing files or can no longer import.
+
+        Only a finished install is audited, since a half-written prefix reads damaged everywhere.
+        A package still missing files after the reinstall raises.
+        """
+        prefix = self.prefix(env)
+        if not prefix.ready:
+            return
+        audit = prefix.audit
+        packages = audit.suspect()
+        if not packages:
+            return
+        logger.warning(
+            f"{Project().name}: reinstalling {', '.join(packages)} in {env!r}: files they "
+            "installed are missing, or an editable's build is behind its sources"
         )
+        if self._environment_result("reinstall", "-e", env, *packages).returncode:
+            raise MissionError("`pixi reinstall` failed while repairing the environment")
+        if remaining := audit.damaged():
+            raise MissionError(f"{', '.join(remaining)} stayed incomplete after `pixi reinstall`")
 
     def capture(
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
@@ -157,39 +140,24 @@ class Pixi(Tool):
             *command,
         )
 
-    def env_prefix(self, env: str) -> Path:
-        return self.manifest.parent / ".pixi" / "envs" / env
-
-    def environment_result(self, verb: str, *args: str) -> CommandResult:
-        """Run an environment verb over the lock as it stands, retaining its streamed output.
-
-        `--locked` unless an editable source is declared, whose metadata pixi re-reads and so
-        would call stale on every edit; such a lock is installed `--frozen`, the caller having
-        already asked whether it answers the manifest.
-        """
-        if not self.lock.exists():
-            project = Project()
-            raise MissionError(
-                f"pixi.lock is missing. Run `{project.name} lock` on a "
-                "solve-capable machine to create and verify the generated manifest/lock pair, "
-                f"and commit the {project.locks[0]} it writes."
-            )
-        editable = self._has_editable_paths()
-        return self.within_cwd(Process.stream, verb, *args, locked=not editable, frozen=editable)
-
     def install(self, env: str) -> None:
-        """Install `env` from its lock, then repair whatever it holds that is incomplete."""
-        result = self.environment_result("install", "-e", env)
+        """Install `env` from its lock, then repair whatever it holds that is incomplete.
+
+        An environment runs to gigabytes, so a disk already below its floor refuses first
+        (`Disk.require`).
+        """
+        Disk(path=self.prefix(env).path).require(doing=f"installing {env}")
+        result = self._environment_result("install", "-e", env)
         self._raise_on_lock_drift(result)
         if result.returncode:
             raise MissionError("`pixi install` failed (see its output above)")
-        self.repair(env)
+        self._repair(env)
 
     def locked(self, env: str) -> dict[str, str]:
         """Every package the lock pins for `env`, name to version, empty when it has none.
 
         `--frozen` reads the lock as it sits, so readings before and after an edit show exactly
-        what the solve moved.
+        what the solve moved. An editable member of the workspace has the empty version.
         """
         if not self.lock.exists():
             return {}
@@ -197,33 +165,14 @@ class Pixi(Tool):
         result = Process.capture(command)
         if not result.succeeded:
             return {}
-        packages = cast("list[dict[str, str]]", json.loads(result.stdout))
-        return {package["name"]: package["version"] for package in packages}
+        return {
+            package.name: package.version or ""
+            for package in _PACKAGES.validate_json(result.stdout)
+        }
 
-    def ready(self, env: str) -> bool:
-        """Whether pixi finished installing `env`: its fingerprint, not a mere prefix, exists."""
-        return (self.env_prefix(env) / "conda-meta" / _FINGERPRINT).is_file()
-
-    def repair(self, env: str) -> None:
-        """Reinstall whatever `env` holds that is missing files or can no longer import.
-
-        Only a finished install is audited, since a half-written prefix reads damaged everywhere.
-        A package still missing files after the reinstall raises.
-        """
-        if not self.ready(env):
-            return
-        audit = EnvironmentAudit(self.env_prefix(env))
-        packages = audit.suspect()
-        if not packages:
-            return
-        logger.warning(
-            f"{Project().name}: reinstalling {', '.join(packages)} in {env!r}: files they "
-            "installed are missing, or an editable's build is behind its sources"
-        )
-        if self.environment_result("reinstall", "-e", env, *packages).returncode:
-            raise MissionError("`pixi reinstall` failed while repairing the environment")
-        if remaining := audit.damaged():
-            raise MissionError(f"{', '.join(remaining)} stayed incomplete after `pixi reinstall`")
+    def prefix(self, env: str) -> PixiPrefix:
+        """Where pixi installs `env`, whether or not it has yet."""
+        return PixiPrefix(path=self.manifest.parent / ".pixi" / "envs" / env)
 
     def run(self, command: Sequence[str], env: str = "default") -> int:
         """Run a task or command argv through Pixi, each token a distinct argument, no shell.
@@ -231,19 +180,6 @@ class Pixi(Tool):
         command: a task name and arguments, or an ad-hoc argv.
         """
         return self.within_cwd(Process.passthrough, "run", "--frozen", "-e", env, *command)
-
-    def runs_here(self) -> bool:
-        """Whether the compiled manifest declares this platform, or none, or is not compiled."""
-        try:
-            parsed = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return True
-        declared = parsed.get("workspace", {}).get("platforms", [])
-        names = {
-            entry if isinstance(entry, str) else str(entry.get("platform", ""))
-            for entry in declared
-        }
-        return not names or current_platform() in names
 
     def scope(self) -> tuple[str, ...]:
         return ("--manifest-path", str(self.manifest))
@@ -281,11 +217,8 @@ class Pixi(Tool):
         Install nothing when the lock carries no editable source; with one, pixi must build the
         environment to read that source's metadata, so `--no-install` fails the solve
         ("installation of conda environment is required to solve PyPI source dependencies") and is
-        dropped, exactly as `environment_result` installs such a lock `--frozen`.
+        dropped, exactly as `_environment_result` installs such a lock `--frozen`.
         """
-        flags = () if self._has_editable_paths() else ("--no-install",)
+        flags = () if self.declared.editable else ("--no-install",)
         if self.within_cwd(Process.stream, "update", *flags, "-e", env, *names).returncode:
             raise MissionError("`pixi update` failed (see its output above)")
-
-    def version(self) -> str:
-        return self.engine.version()

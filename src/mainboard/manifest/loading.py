@@ -1,9 +1,9 @@
 from typing import TYPE_CHECKING
 
 from .composing import composition
+from .root import Manifest
 from .schema.figures.plot import PlotStyle
 from .schema.project.workspace import Header
-from .schema.root import Manifest
 
 if TYPE_CHECKING:
     from pathlib import Path

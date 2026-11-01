@@ -1,6 +1,6 @@
 """Rules over docstrings (mcmr's PY-DOCU family)."""
 
-from ....catalog import Rule
+from ....catalog import Example, Rule
 
 _LABELED_LINE = (
     r"(?m)^(?:(?i:args:|arguments:|returns:|parameters|returns)$|:param|:return|:rtype"
@@ -14,10 +14,11 @@ class CompactHouseDocstring(Rule, id="PY-DOCU0001"):
 
     A label is a line of at most three words ending in a colon, so prose that runs into a colon
     is not one. A cyclopts command keeps its `Args:` heading, since cyclopts reads the parameter
-    help under it: a function decorated `*.command` or `*.default`, one handed to such a call by
-    name (`group.command(verbs.submit)`), or a function named through its module or class
-    (`lint.check`, `JobVerbs.show`) or listed bare in a tuple or list (`_COMMANDS = (sql, move)`)
-    in a module that makes such calls, the shape of a route table.
+    help under it: a function decorated `*.command` or `*.default`, one handed by name to such a
+    call or to a node's `*.app` or `*.bind` (`group.command(verbs.submit)`,
+    `TREE.node("job").app(verbs.submit, verbs.show)`), or a function named through its module or
+    class (`lint.check`, `JobVerbs.show`) or listed bare in a tuple or list
+    (`_COMMANDS = (sql, move)`) in a module that makes such calls, the shape of a route table.
     """
 
     maximum_summary: int = 99
@@ -28,12 +29,11 @@ class CompactHouseDocstring(Rule, id="PY-DOCU0001"):
                  EXISTS (SELECT 1 FROM core_decor x
                          WHERE x.file_id = d.file_id AND x.def_id = d.def_id
                            AND regexp_extract(trim(split_part(x.name, '(', 1)), '[^.]*$')
-                               IN ('command', 'default'))
+                               IN ('command', 'default', 'app', 'bind'))
                  OR EXISTS (SELECT 1 FROM call_calls c
                             JOIN call_expressions e ON e.call_id = c.call_id
-                              AND e.root_relation = 'argument' AND e.root_ordinal = 0
-                              AND e.depth = 0
-                            WHERE regexp_extract(c.callee_text, '[^.]*$') IN ('command', 'default')
+                              AND e.root_relation = 'argument' AND e.depth = 0
+                            WHERE regexp_extract(c.callee_text, '[^.]*$') IN ('command', 'default', 'app', 'bind')
                               AND regexp_extract(e.text, '[^.]*$') = d.name)
                  OR EXISTS (SELECT 1 FROM ast_nodes a
                             JOIN ast_nodes o ON o.fact_id = a.fact_id AND o.parent_id = a.node_id
@@ -43,14 +43,14 @@ class CompactHouseDocstring(Rule, id="PY-DOCU0001"):
                             WHERE a.type = 'attribute' AND m.name = d.name
                               AND a.path IN (SELECT r.path FROM call_calls r
                                              WHERE regexp_extract(r.callee_text, '[^.]*$')
-                                                   IN ('command', 'default')))
+                                                   IN ('command', 'default', 'app', 'bind')))
                  OR EXISTS (SELECT 1 FROM ast_nodes i
                             JOIN ast_nodes t ON t.fact_id = i.fact_id AND t.node_id = i.parent_id
                               AND t.type IN ('tuple', 'list')
                             WHERE i.type = 'identifier' AND i.name = d.name
                               AND i.path IN (SELECT r.path FROM call_calls r
                                              WHERE regexp_extract(r.callee_text, '[^.]*$')
-                                                   IN ('command', 'default'))) AS is_command
+                                                   IN ('command', 'default', 'app', 'bind'))) AS is_command
           FROM core_def d WHERE type = 'function_definition' AND language = 'python'
             AND docstring IS NOT NULL
         ), spelled AS (
@@ -88,6 +88,25 @@ class CompactHouseDocstring(Rule, id="PY-DOCU0001"):
 
     constants = {"labeled": _LABELED_LINE}
 
+    examples = (
+        Example(
+            bad='def submit(target):\n    """Send a job.\n\n    Args:\n        target: its file.\n    """\n',
+            good='''from .constants import TREE
+
+
+def submit(target):
+    """Send a job.
+
+    Args:
+        target: its file.
+    """
+
+
+job = TREE.node("job").app(submit)
+''',
+        ),
+    )
+
 
 class TensorDocstringSemantics(Rule, id="PY-DOCU0002"):
     """Public tensor callables whose docstring states no shape or no dtype semantics."""
@@ -98,4 +117,6 @@ class TensorDocstringSemantics(Rule, id="PY-DOCU0002"):
               AND NOT (has_tensor_shape_semantics AND has_tensor_dtype_semantics)
               AND EXISTS (SELECT 1 FROM function_tensor_roles r WHERE r.function_id = f.entity_id)
         """
-    message = "`{fact_id}` satisfies tensor docstring semantics"
+    message = (
+        "`{fact_id}` is a public tensor function whose docstring leaves out the shape or the dtype"
+    )

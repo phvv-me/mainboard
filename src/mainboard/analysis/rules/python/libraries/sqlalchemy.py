@@ -204,6 +204,6 @@ class SqlmodelPrimaryKeyGet(Rule, id="PY-SQLA0005", applicability="review"):
         Example(
             bad=_HERO
             + "    return session.exec(select(Hero).where(Hero.id == hero_id)).first()\n",
-            good=_HERO + "    return session.get(Hero, hero_id)\n",
+            good=_HERO.replace(", select", "") + "    return session.get(Hero, hero_id)\n",
         ),
     )

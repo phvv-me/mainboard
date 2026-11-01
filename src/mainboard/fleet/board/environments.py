@@ -1,12 +1,11 @@
 import os
 import shlex
-from enum import StrEnum, auto
 from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
-from ...constants import SSH_FAMILY
 from ...context.admission import admit
+from ...core.constants.names import MANIFEST, SSH_FAMILY
 from ...core.errors import MissionError
 from ...core.execution.shell import become, interactive_shell
 from ...core.project import Project
@@ -22,14 +21,13 @@ from ...dispatch.schedulers import pick
 from ...dispatch.transport.shells import Dialect, open_shell
 from ...dispatch.wrapping import missing, wrap
 from ...engines.compile import backend as backend_module
-from ...engines.compile.constants import MANIFEST
+from ...engines.compile.generated import SyncState
 from ...engines.compile.pixi.paths import self_installed
-from ...engines.compile.pixi.policy import LockPolicy
 from ...engines.compile.prefixes import Prefixes, digest_of, prefix_path
 from ...engines.compile.provisioner import Provisioner, environment_shard, task_line
-from ...engines.compile.state import SyncState
 from ...engines.pack import Formats, Packed, pack
 from ...engines.runtimes import resolve
+from ...enums import LockPolicy, Onboard
 from ...jobs.call import Fresh
 from ...jobs.closure import Closure
 from ...jobs.targets.target import Target
@@ -44,16 +42,6 @@ if TYPE_CHECKING:
 
 # An interactive session as the host's profile shapes it, one node, not held.
 _ALLOCATION = Allocation()
-
-
-class Onboard(StrEnum):
-    """How much of a host's onboarding runs: all of it, all of it with the workspace's dotfiles,
-    or a sync (re-mirror and re-provision, the tool and the hardware probe left as they are,
-    the dotfiles as the setup chose)."""
-
-    MINIMAL = auto()
-    DOTFILES = auto()
-    SYNC = auto()
 
 
 class Environments(Workspace):
@@ -105,6 +93,7 @@ class Environments(Workspace):
             "shipped, which is a mirror left behind by a manifest edit"
         )
         solved = state.solved_by or "an unrecorded pixi"
+        running = provisioner.shard().pixi.engine.version() or "none"
         raise MissionError(
             f"{where} describes environment {arrived}, but the dispatch pinned {expect}. "
             "Check the selected second-stage runtime and ordered host modules as well as the "
@@ -112,7 +101,7 @@ class Environments(Workspace):
             f"artifact was compiled for {state.compiled_at or 'an unrecorded root'} from "
             f"manifest {state.compiled_from[:12] or 'nothing'}, so {behind}. It "
             f"was solved by pixi {solved} while this machine runs pixi "
-            f"{provisioner.solver_version() or 'none'}: a pixi that is not the one the fleet is "
+            f"{running}: a pixi that is not the one the fleet is "
             f"pinned to ({backend_module.PixiEngine.VERSION}) rewrites the lock while "
             "provisioning and moves the address with it too. Run "
             f"`{self.project.name} host setup {self.host}` from the dispatching workspace, which "
@@ -246,7 +235,7 @@ class Environments(Workspace):
         # `setup`.
         activate = (
             str(provisioner.activate(plan.env, modules=plan.profile.modules))
-            if install and provisioner.runs_here(plan.env)
+            if install and provisioner.shard(plan.env).pixi.declared.runs_here
             else ""
         )
         return HostSetup(
@@ -280,7 +269,7 @@ class Environments(Workspace):
         """
         if self.local:
             raise MissionError(
-                f"an interactive session needs a host. Run `{self.project.name} shell` for "
+                f"an interactive session needs a host. Run `{self.project.name} dep shell` for "
                 "this machine."
             )
         plan = self.plan(env=env, container="none")
@@ -324,13 +313,13 @@ class Environments(Workspace):
         )
 
     def pack(self, env: str, formats: Formats) -> Packed:
-        """`env` built into artifacts on this host, by its own tool (`mb pack`).
+        """`env` built into artifacts on this host, by its own tool (`mb host pack`).
 
         The package mirrors are close there, and nothing crosses from this machine but the request.
         """
         if self.local:
             return pack(self.root, env, formats)
-        line = shlex.join([self.project.name, "pack", env, *formats.flags, "--json"])
+        line = shlex.join([self.project.name, "host", "pack", env, *formats.flags, "--json"])
         with open_shell(self.plan(container="none"), self.remote_root()) as shell:
             said = shell.run(line, activate=True)
         answer = next((row for row in reversed(said.splitlines()) if row.startswith("{")), "")
@@ -411,7 +400,7 @@ class Environments(Workspace):
             )
         plan = self.resolver.plan(self.host, env=env, container="none")
         provisioner = Provisioner(self.root, self.manifest)
-        compiler = provisioner.compiler_for(plan.env)
+        compiler = provisioner.shard(plan.env).compiler
         if policy is LockPolicy.LOCKED:
             # The host will refuse a lock this manifest did not solve; ask here first, before
             # the mirror and the remote install spend minutes reaching that answer.
@@ -453,13 +442,13 @@ class Environments(Workspace):
         if not self.local:
             raise MissionError(
                 f"a shell runs on this machine only. Run "
-                f"`{self.project.name} shell --on {self.host}` for a session there."
+                f"`{self.project.name} dep shell --on {self.host}` for a session there."
             )
         plan = self.plan(env=env, container="none")
         provisioner = Provisioner(self.root, self.manifest)
         provisioner.refreshed(plan.env, policy=policy, install=install)
-        pixi = provisioner.pixi_for(plan.env)
-        if not pixi.ready(plan.env):
+        pixi = provisioner.shard(plan.env).pixi
+        if not pixi.prefix(plan.env).ready:
             raise MissionError(missing(plan, plan.prefix(str(self.root))))
         script = self.root / self.project.activation(plan.env, self.root)
         if not script.is_file():
@@ -468,4 +457,6 @@ class Environments(Workspace):
                 raise MissionError(f"{plan.env!r} has no activation; run `{tool} install`")
             script = provisioner.activate(plan.env, modules=plan.profile.modules)
         entering = ["/bin/sh", "-c", '. "$1" && shift && exec "$@"', "mb-shell", str(script)]
-        replace(entering[0], [*entering, *interactive_shell()], os.environ | pixi.overrides)
+        replace(
+            entering[0], [*entering, *interactive_shell()], os.environ | pixi.declared.overrides
+        )

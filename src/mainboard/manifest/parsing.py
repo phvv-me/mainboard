@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from ..core.errors import MissionError
 from .render.interpolate import Interpolator
-from .schema.root import Manifest
+from .root import Manifest
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -6,7 +6,6 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Self
 
 from ...core.errors import MissionError
-from ...core.execution.shell import foreground
 from ...core.project import Project
 from ...engines.compile import backend
 from .. import wrapping
@@ -135,10 +134,6 @@ class HostShell:
     def execute(self, line: str) -> tuple[int, str, str]:
         """Run one already staged `line` and answer its exit status, stdout and stderr."""
         return self.remote["bash"][["-lc", guarded(line, self.plan)]].run(retcode=None)
-
-    def foreground(self, command: str, *, activate: bool = True) -> int:
-        """Run `command` with this terminal's stdio and answer its exit status."""
-        return foreground(self.remote["bash"]["-lc", self.stage(command, activate=activate)])
 
     def ok(self, command: str, *, activate: bool = False) -> bool:
         """Whether `command` exits zero on the host, its output discarded."""

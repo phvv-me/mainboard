@@ -6,9 +6,8 @@ import re
 import tokenize
 from collections.abc import Mapping, Sequence
 
-from .... import edits
 from ....catalog import Example, Relation, Rule
-from ....edits import Edit
+from ....edits import Edit, Replace
 from ....engine.facts import Setting
 from ....findings import Hit, Span
 
@@ -213,9 +212,11 @@ value = blend(1.0, right=2.0)
         )
         shift = first - 1 - bool(column)
         return [
-            edits.replace(
-                _point(str(hit.definition_path), line=shift + node.lineno, column=node.col_offset),
-                text,
+            Replace(
+                span=_point(
+                    str(hit.definition_path), line=shift + node.lineno, column=node.col_offset
+                ),
+                text=text,
             )
             for node, text in ((function, ""), (parameter, "*, "))
         ]
@@ -232,14 +233,14 @@ value = blend(1.0, right=2.0)
             return None
         lines = text.split("\n")
         return [
-            edits.replace(
-                _point(
+            Replace(
+                span=_point(
                     str(call["path"]),
                     line=int(call["line"]) + row - 1,
                     column=len(lines[row - 1][:offset].encode())
                     + (int(call["column"]) if row == 1 else 0),
                 ),
-                f"{names[index]}=",
+                text=f"{names[index]}=",
             )
             for index, (row, offset) in list(enumerate(starts))[int(hit.boundary_index or 0) :]
         ]

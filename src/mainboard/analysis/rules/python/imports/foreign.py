@@ -47,8 +47,8 @@ class ForeignPrivateApi(Rule, id="PY-IMPO0007", applicability="none"):
           FROM foreign_imports i
           WHERE regexp_matches(i.module, '(^|\.)_[A-Za-z]')
              OR regexp_matches(i.imported_name, '^_[A-Za-z]')
-             OR coalesce(list_bool_or(list_transform($internal,
-                  lambda p: regexp_matches(i.module || '.' || i.imported_name, p))), false)
+             OR coalesce(len($internal) > 0 AND regexp_matches(i.module || '.' || i.imported_name,
+                  '(?:' || array_to_string($internal, ')|(?:') || ')'), false)
         ), grouped AS (
           SELECT path, distribution, min(start_line) AS start_line,
                  min(start_column) AS start_column, min(end_line) AS end_line,
@@ -103,10 +103,10 @@ class ForeignPrivateApi(Rule, id="PY-IMPO0007", applicability="none"):
                  ELSE 'the patch is seen by every user of the distribution in the process, and '
                       || 'breaks when what it replaces changes' END AS cost
         FROM (SELECT * FROM grouped UNION ALL SELECT * FROM patched) f
-        WHERE NOT coalesce(list_bool_or(list_transform($exempt,
-                lambda p: regexp_matches(f.path, p))), false)
-          AND NOT coalesce(list_bool_or(list_transform($fence_patterns,
-                lambda p: regexp_matches(f.path, p))), false)
+        WHERE NOT coalesce(len($exempt) > 0 AND regexp_matches(f.path,
+                '(?:' || array_to_string($exempt, ')|(?:') || ')'), false)
+          AND NOT coalesce(len($fence_patterns) > 0 AND regexp_matches(f.path,
+                '(?:' || array_to_string($fence_patterns, ')|(?:') || ')'), false)
     """
     message = (
         "This file {what}: {cost}. Fix: keep it in one adapter package with a test that imports "

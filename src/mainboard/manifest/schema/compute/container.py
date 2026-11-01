@@ -1,15 +1,5 @@
-from enum import StrEnum, auto
-
 from ....core.base import Declared
-
-
-class Guardrail(StrEnum):
-    """Protections applied when layering an env onto a base image.
-
-    `unset_pip_constraint` clears the `PIP_CONSTRAINT` NGC images bake in (unwritable in a SIF).
-    """
-
-    UNSET_PIP_CONSTRAINT = auto()
+from ....enums import Guardrail
 
 
 class Container(Declared):

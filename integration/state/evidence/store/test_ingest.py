@@ -11,10 +11,13 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from mainboard import MissionError
+from mainboard.core.constants.units import DISK_FLOOR
 from mainboard.state import Evidence
 from mainboard.state.evidence import keeping as keeping_module
 from mainboard.state.evidence.keeping import windows
 from mainboard.state.storage.blobs import Blobs
+
+from ....fakes import disks
 
 _COUNTS = "SELECT (SELECT count(*) FROM lake.blobs), (SELECT count(*) FROM lake.evidence_log)"
 _PAYLOADS = [b"same", b"same", b"same", b"diff", b"kept"]
@@ -122,6 +125,18 @@ def test_ingest_ignores_the_tools_own_aside(kept: Evidence) -> None:
     (folder / "kept.bin").write_bytes(b"kept")
     assert kept.ingest([folder]).files == 1
     assert [row.path for row in kept.indexed()] == ["evidence/kept.bin"]
+
+
+def test_an_ingest_whose_files_would_cross_the_disk_floor_keeps_nothing(
+    kept: Evidence, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = kept.root / _FOLDER
+    folder.mkdir()
+    (folder / "big.bin").write_bytes(b"0123456789")
+    monkeypatch.setattr(shutil, "disk_usage", disks(DISK_FLOOR + 9))
+    with pytest.raises(MissionError, match="keeping 1 file"):
+        kept.ingest([folder])
+    assert kept.indexed() == []
 
 
 def test_a_file_that_changes_while_it_is_read_is_not_ingested(

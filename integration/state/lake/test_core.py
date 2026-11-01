@@ -88,7 +88,7 @@ def served(workspace: Path) -> Iterator[dict[str, str]]:
         port = probe.getsockname()[1]
     with ExitStack() as cleanup:
         server = subprocess.Popen(
-            [MB, "lake", "serve", "--port", str(port)],
+            [MB, "data", "lake", "serve", "--port", str(port)],
             cwd=workspace,
             env={**os.environ, "NO_COLOR": "1"},
             stdout=subprocess.PIPE,
@@ -108,9 +108,9 @@ def served(workspace: Path) -> Iterator[dict[str, str]]:
 
 
 def test_a_fresh_lake_is_whole_and_compacts(mb, workspace: Path) -> None:
-    assert mb("lake", "check").code == 0
+    assert mb("data", "lake", "check").code == 0
     assert Lake.at(workspace).query("SELECT count(*) FROM lake.runs") == [(0,)]
-    compacted = mb("lake", "compact")
+    compacted = mb("data", "lake", "compact")
     assert compacted.code == 0 and "compacted" in compacted.out
 
 
@@ -118,15 +118,15 @@ def test_a_catalog_at_an_older_spec_names_the_upgrade_that_reaches_every_project
     mb, lakes: Sequence[Lake]
 ) -> None:
     _downgraded(lakes[0])
-    older = mb("lake", "check", "--json")
+    older = mb("data", "lake", "check", "--json")
     [finding] = json.loads(older.out)
     assert older.code == 1 and finding["kind"] == "catalog"
-    assert "`mb lake upgrade`" in finding["detail"]
+    assert "`mb data lake upgrade`" in finding["detail"]
     assert "AUTOMATIC_MIGRATION" not in finding["detail"]
-    upgraded = mb("lake", "upgrade", "--json")
+    upgraded = mb("data", "lake", "upgrade", "--json")
     assert upgraded.code == 0, upgraded.said
     assert {row["lake"] for row in json.loads(upgraded.out)} == {str(it.catalog) for it in lakes}
-    assert mb("lake", "check").code == 0
+    assert mb("data", "lake", "check").code == 0
 
 
 def test_a_second_workspace_reads_and_writes_the_served_lake(mb, elsewhere: Path, served) -> None:
@@ -163,7 +163,7 @@ def test_a_blocking_served_query_obeys_the_server_timeout(mb, workspace: Path, s
 
 
 def test_a_served_lake_refuses_maintenance_and_strangers(mb, elsewhere: Path, served) -> None:
-    compact = mb("lake", "compact", cwd=elsewhere, env=served)
+    compact = mb("data", "lake", "compact", cwd=elsewhere, env=served)
     assert compact.code == 1 and "served from" in compact.err
     stranger = {**served, "MB_LAKE_READ_TOKEN": "not-the-token"}
     ran = mb("query", "SELECT 1 FROM lake.runs", cwd=elsewhere, env=stranger)

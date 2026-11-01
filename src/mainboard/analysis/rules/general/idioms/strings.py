@@ -38,16 +38,45 @@ class FragmentedMultilineLiteral(Rule, id="ALL-STRI0001", applicability="safe"):
     )
 
 
-class DecorativeRepeatedSeparatorCount(Rule, id="ALL-STRI0002"):
+class DecorativeRepeatedSeparatorCount(Rule, id="ALL-STRI0002", applicability="review"):
     """Separator lines built by repeating one punctuation character."""
 
     minimum_repetitions: int = 3
 
     query = r"""
-        SELECT t.path, b.start_line, b.start_column, t.value AS literal,
+        SELECT t.path, b.start_line, b.start_column, b.node_id AS node, t.value AS literal,
                t.repeat_count AS repetition_count
         FROM core_text t JOIN core_node b ON b.file_id = t.file_id AND b.node_id = t.repeat_id
         WHERE t.parses AND regexp_matches(t.value, '^[-_*=~.#]+$')
           AND t.repeat_count >= $minimum_repetitions
     """
     message = "Decorative separator repeats `{literal}` {repetition_count} times"
+    # A statement calling something with nothing but the separator prints a rule line: it goes.
+    # Review: the call may do more than print. A separator inside a larger expression, a variable
+    # or a call with other arguments is left alone.
+    fix = """
+        SELECT f.finding_key, 'delete-node' AS operation, f.path, s.node_id AS node
+        FROM finding f
+        JOIN core_file c ON c.path = f.path
+        JOIN core_node r ON r.file_id = c.file_id AND r.node_id = f.node
+        JOIN core_node a ON a.file_id = r.file_id AND a.node_id = r.parent_id
+                        AND a.type = 'argument_list' AND a.children_count = 3
+        JOIN core_node k ON k.file_id = a.file_id AND k.node_id = a.parent_id AND k.type = 'call'
+        JOIN core_node s ON s.file_id = k.file_id AND s.node_id = k.parent_id
+                        AND s.type = 'expression_statement'
+    """
+    change = "deleted the call printing the separator `{literal}`"
+    examples = (
+        Example(
+            bad='def report(rows):\n    print("=" * 60)\n    for row in rows:\n        print(row)\n',
+            good="def report(rows):\n    for row in rows:\n        print(row)\n",
+        ),
+        Example(
+            bad='def banner():\n    logger.info("#" * 20)\n',
+            good="def banner():\n    pass\n",
+        ),
+        Example(
+            bad='def banner():\n    print("=" * 40 + "\\n")\n',
+            good='def banner():\n    print("=" * 40 + "\\n")\n',
+        ),
+    )

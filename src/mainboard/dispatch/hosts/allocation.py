@@ -25,7 +25,11 @@ class Allocation(FrozenModel):
         self.cache.creations.prepared(self.record, vocabulary.Word.SUBMITTING, lease=lease)
 
     def created(self, handle: str) -> str:
-        """Attach the returned handle atomically, before waiting or running another API call."""
+        """Attach the returned handle atomically, before waiting or running another API call.
+
+        The reap pass calls it for a label it finds in a provider's listing, which is how a crash
+        between the create and this call is recovered.
+        """
         if not handle or handle == "None":
             raise MissionError(
                 f"provider returned no handle for {self.label}; reconcile its label"
@@ -41,8 +45,9 @@ class Allocation(FrozenModel):
             self.cache.creations.prepared(current, vocabulary.Word.FAILED)
         elif current.verdict == vocabulary.Word.SUBMITTING:
             logger.error(
-                "creation {} has no confirmed provider handle; reconcile this exact label "
-                "before retrying, because the request may have allocated a billable instance",
+                "creation {} has no confirmed provider handle; reconcile this exact label with "
+                "the provider before retrying (the reap pass binds it once `REAP_DELETES` is "
+                "on), because the request may have allocated a billable instance",
                 self.label,
             )
         elif (

@@ -82,21 +82,24 @@ def test_the_newest_release_is_the_newest_final_one_that_keeps_an_unyanked_file(
     named: tuple[str, str],
     where: tuple[tuple[str, ...], str],
 ) -> None:
-    files = [
-        {"filename": "notes.zip", "yanked": True},
-        *(
-            {"filename": _FILES[at % 2].format(version), "yanked": yanked}
-            for version, flags in releases.items()
-            for at, yanked in enumerate(flags)
-        ),
-    ]
-    body = json.dumps({"versions": list(releases), "files": files}).encode()
+    listing = {
+        "versions": list(releases),
+        "files": [
+            {"filename": "notes.zip", "yanked": True},
+            *(
+                {"filename": _FILES[at % 2].format(version), "yanked": yanked}
+                for version, flags in releases.items()
+                for at, yanked in enumerate(flags)
+            ),
+        ],
+    }
     offered = [Version(v) for v, flags in releases.items() if not flags or not all(flags)]
     (sources, base), (requested, listed) = where, named
     python = Index.of("python")
     python.sources = sources
 
-    with patch("urllib.request.urlopen", **{"return_value.read.return_value": body}) as opened:
+    with patch("urllib.request.urlopen") as opened:
+        opened.return_value.read.return_value = json.dumps(listing).encode()
         newest = python.latest(requested)
 
     assert newest == str(max([v for v in offered if not v.is_prerelease] or offered))

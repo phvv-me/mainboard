@@ -6,12 +6,15 @@ from ....catalog import Example, Relation, Rule
 class StringGroups(Relation):
     """The string expressions of each Python file grouped by what they say and the role they
     play: `value` (anywhere else, including the called expression itself), `argument` (a
-    positional argument), `keyword` (a keyword argument or `**` spread) or `comparison` (either
-    side of a single `==`), with how many times the file writes the group (`occurrence_count`).
-    The roles that hand the text to a callable (`argument`, `keyword`) or state it as the
-    module's own (`value`, `argument`) are flagged for the rules that exclude one of them. A
-    group lives in one file, and a text of three characters or fewer makes none. The keys of a
-    dict literal in a test module are not counted: an expectation spells its record's fields."""
+    positional argument), `keyword` (a keyword argument or `**` spread, and what it holds but a
+    dict), `entry` (a key or a value of a dict literal a keyword holds) or `comparison` (either
+    side of a single `==`), with how many times the file writes the group (`occurrence_count`)
+    and where it first does (`first_line`, `first_column`). `is_excluded_vocabulary` marks the
+    roles ALL-DUPL0002 leaves out (`value`, `argument`, `entry`) and `is_callee_vocabulary` the
+    ones that hand the text to a callable, which ALL-DUPL0005 leaves out (`argument`, `keyword`,
+    `entry`). A group lives in one file and may be written once there, and a text of three
+    characters or fewer makes none. The keys of a dict literal in a test module are not counted:
+    an expectation spells its record's fields."""
 
     stored = True
     query = r"""
@@ -21,9 +24,9 @@ class StringGroups(Relation):
           FROM core_node n JOIN core_file f USING (file_id)
           WHERE f.language = 'python'
             AND n.type IN ('call', 'argument_list', 'generator_expression', 'keyword_argument',
-                           'dictionary_splat', 'comparison_operator', '==')
+                           'dictionary_splat', 'comparison_operator', '==', 'dictionary')
         ), strings AS (
-          SELECT file_id, text_id AS id, path, value FROM core_text
+          SELECT file_id, text_id AS id, path, value, start_line, start_column FROM core_text
           WHERE kind = 'string' AND plain AND repeat_id IS NULL
             AND parent_type IS DISTINCT FROM 'expression_statement'
             AND NOT (parent_type = 'pair' AND import_is_test_path(path) AND EXISTS (
@@ -31,7 +34,7 @@ class StringGroups(Relation):
                        WHERE k.file_id = core_text.file_id AND k.node_id = core_text.text_id
                          AND k.sibling_index = 0))
           UNION ALL
-          SELECT file_id, repeat_id, path, value FROM core_text
+          SELECT file_id, repeat_id, path, value, start_line, start_column FROM core_text
           WHERE kind = 'string' AND repeat_count IS NOT NULL
         ), setters AS (
           SELECT file_id, id, id + dc AS last, 'value' AS role FROM python WHERE type = 'call'
@@ -51,49 +54,148 @@ class StringGroups(Relation):
           FROM python c JOIN python o ON o.file_id = c.file_id AND o.pid = c.id AND o.sib = 1
             AND o.type = '=='
           WHERE c.type = 'comparison_operator' AND c.cc = 3
-        ), roles AS (
-          SELECT s.path, s.value, coalesce(arg_max(t.role, t.id), 'value') AS role
+          UNION ALL
+          SELECT file_id, id, id + dc, 'entry' FROM python WHERE type = 'dictionary'
+        ), enclosed AS (
+          SELECT s.path, s.value, s.start_line, s.start_column,
+                 coalesce(arg_max(t.role, t.id) FILTER (WHERE t.role <> 'entry'), 'value') AS role,
+                 coalesce(max(t.id) FILTER (WHERE t.role <> 'entry'), -1) AS role_id,
+                 coalesce(max(t.id) FILTER (WHERE t.role = 'entry'), -1) AS dictionary_id
           FROM strings s LEFT JOIN setters t ON t.file_id = s.file_id AND t.id < s.id
             AND s.id <= t.last
-          GROUP BY s.file_id, s.id, s.path, s.value
+          GROUP BY s.file_id, s.id, s.path, s.value, s.start_line, s.start_column
+        ), roles AS (
+          SELECT path, value, start_line, start_column,
+                 CASE WHEN role = 'keyword' AND dictionary_id > role_id THEN 'entry'
+                      ELSE role END AS role
+          FROM enclosed
+        ), grouped AS (
+          SELECT path, value, role, count(*)::BIGINT AS occurrence_count,
+                 min({'line': start_line, 'col': start_column}) AS earliest
+          FROM roles GROUP BY path, value, role HAVING strlen(value) > 3
         )
-        SELECT path, 'literalgroupfact:' || path AS fact_id, value, role,
-               count(*)::BIGINT AS occurrence_count,
-               role IN ('value', 'argument') AS is_excluded_vocabulary,
-               role IN ('argument', 'keyword') AS is_callee_vocabulary
-        FROM roles GROUP BY path, value, role HAVING count(*) > 1 AND strlen(value) > 3
+        SELECT path, 'literalgroupfact:' || path AS fact_id, value, role, occurrence_count,
+               earliest.line AS first_line, earliest.col AS first_column,
+               role IN ('value', 'argument', 'entry') AS is_excluded_vocabulary,
+               role IN ('argument', 'keyword', 'entry') AS is_callee_vocabulary
+        FROM grouped
     """
 
 
 class RepeatedSemanticStringLiteral(Rule, id="ALL-DUPL0002"):
-    """Repeated string literals that occupy one exact semantic role across several files."""
+    """Repeated string literals that occupy one exact semantic role across several files.
+
+    A group is one text in one role: the value of a keyword argument (a literal tuple or list it
+    holds included) or one side of an `==`. Its occurrences count over every file, so a text each
+    of three files passes once is as repeated as one a single file writes three times; it is
+    reported when they reach `minimum_occurrences` in at least `minimum_files` files, and each
+    file that holds it gets the finding at the text's first line there.
+
+    A dict literal's keys and values are not keyword values: a key names a field, and the value
+    takes its role from that key, so `headers={"Content-Type": ...}` and `media_type=...` are two
+    roles.
+    """
 
     minimum_occurrences: int = 3
     minimum_files: int = 2
     minimum_length: int = 12
 
-    query = """
-        SELECT path, 1 AS start_line, 0 AS start_column, fact_id, count(*) AS value
-        FROM string_groups()
-        WHERE NOT is_excluded_vocabulary AND length(value) >= $minimum_length
-          AND occurrence_count >= $minimum_occurrences AND 1 >= $minimum_files
-        GROUP BY path, fact_id
+    query = r"""
+        WITH shared AS (
+          SELECT value, role, sum(occurrence_count) AS occurrences, count(*) AS files
+          FROM string_groups()
+          WHERE NOT is_excluded_vocabulary AND length(value) >= $minimum_length
+          GROUP BY value, role
+          HAVING sum(occurrence_count) >= $minimum_occurrences AND count(*) >= $minimum_files
+        )
+        SELECT g.path, g.first_line AS start_line, g.first_column AS start_column,
+               left(replace(g.value, chr(10), '\n'), 80) AS literal, g.role,
+               s.occurrences, s.files
+        FROM string_groups() g JOIN shared s ON s.value = g.value AND s.role = g.role
     """
-    message = "repeated semantic string literal is {value} for `{fact_id}`"
+    message = "`{literal}` fills the {role} role {occurrences} times across {files} files"
+    examples = (
+        Example(
+            bad=(
+                """def publish(client):
+    client.send(topic="audit-events-stream")
+    client.send(topic="audit-events-stream")
+"""
+            ),
+            good=(
+                """from .topics import AUDIT_EVENTS
+
+
+def publish(client):
+    client.send(topic=AUDIT_EVENTS)
+    client.send(topic=AUDIT_EVENTS)
+"""
+            ),
+            path="ledger/first.py",
+            context={
+                "ledger/__init__.py": "",
+                "ledger/second.py": 'def replay(client):\n    client.send(topic="audit-events-stream")\n',
+            },
+        ),
+        Example(
+            bad='def fast(mode):\n    return mode == "fast-path-literal"\n',
+            good=(
+                """from .modes import FAST_PATH
+
+
+def fast(mode):
+    return mode == FAST_PATH
+"""
+            ),
+            path="ledger/first.py",
+            context={
+                "ledger/__init__.py": "",
+                "ledger/second.py": 'def quick(mode):\n    return mode == "fast-path-literal"\n',
+                "ledger/third.py": 'def rapid(mode):\n    return mode == "fast-path-literal"\n',
+            },
+        ),
+        Example(
+            bad='def publish(client):\n    client.send(topic="audit-events-stream")\n',
+            good=(
+                """from .topics import AUDIT_EVENTS
+
+
+def publish(client):
+    client.send(topic=AUDIT_EVENTS)
+"""
+            ),
+            path="ledger/first.py",
+            context={
+                "ledger/__init__.py": "",
+                "ledger/second.py": """def replay(client):
+    client.send(topic="audit-events-stream")
+    client.send(topic="audit-events-stream")
+""",
+                "ledger/third.py": 'def tag(client):\n    client.send(headers={"audit-events-stream": 1})\n',
+            },
+        ),
+    )
 
 
 class ModuleRepeatedStringLiteral(Rule, id="ALL-DUPL0005", applicability="review"):
-    """One string literal a single module writes out over and over."""
+    """One string literal a single module writes out over and over.
+
+    The finding sits at the first place the module writes it, the text it hands to a callable
+    left out.
+    """
 
     minimum_occurrences: int = 4
     minimum_length: int = 8
 
     query = """
-        SELECT path, 1 AS start_line, 0 AS start_column, fact_id, value AS literal,
-               sum(occurrence_count) AS module_occurrences
-        FROM string_groups() WHERE NOT is_callee_vocabulary
-        GROUP BY path, fact_id, value
-        HAVING length(value) >= $minimum_length AND sum(occurrence_count) >= $minimum_occurrences
+        SELECT path, earliest.line AS start_line, earliest.col AS start_column, fact_id, literal,
+               module_occurrences
+        FROM (
+          SELECT path, fact_id, value AS literal, sum(occurrence_count) AS module_occurrences,
+                 min({'line': first_line, 'col': first_column}) AS earliest
+          FROM string_groups() WHERE NOT is_callee_vocabulary AND occurrence_count > 1
+          GROUP BY path, fact_id, value
+          HAVING length(value) >= $minimum_length AND sum(occurrence_count) >= $minimum_occurrences)
     """
     message = "`{literal}` is written {module_occurrences} times in this module"
     # Python only, for a value of word, path and flag characters (`observed`, `staged.txt`,

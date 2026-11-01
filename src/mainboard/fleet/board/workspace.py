@@ -17,7 +17,7 @@ from ...dispatch.transport.targets import rooted
 from ...engines.compile.provisioner import Provisioner
 from ...git import Tree
 from ...jobs.targets.target import Target
-from ...manifest.schema.root import Manifest
+from ...manifest.root import Manifest
 from ...manuscript import Manuscript
 from ...state.storage.holds import holding
 from ..nodes import evidence_of

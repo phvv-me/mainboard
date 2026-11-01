@@ -5,13 +5,13 @@ import json
 import math
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from enum import StrEnum, auto
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from patos import FrozenModel
 
 from ..core.errors import MissionError
+from .enums import Ending
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -82,14 +82,6 @@ def _text(displayed: Json) -> str:
             return json.dumps(displayed, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
         case _:
             return format(displayed, ".12g")
-
-
-class Ending(StrEnum):
-    """How a scan ended: it read every row, it was stopped early, or it timed out."""
-
-    COMPLETE = auto()
-    STOPPED = auto()
-    TIMED_OUT = auto()
 
 
 class Stamp(FrozenModel):

@@ -1,7 +1,7 @@
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from ...core.section import Verdict
+from ...enums import Verdict
 from ..report import Finding
 from . import commit as commit_module
 
@@ -37,7 +37,7 @@ class Check:
     @staticmethod
     def _distance(repo: Repo, upstream: str) -> list[Finding]:
         """How far the branch stands from its upstream: diverged, ahead or behind."""
-        ahead, behind = repo.counts(upstream)
+        ahead, behind = repo.commits.counts(upstream)
         if ahead and behind:
             detail = f"diverged from {upstream}: {ahead} ahead, {behind} behind; pull merges it"
             return [_fail(repo, "branch", detail=detail)]
@@ -52,16 +52,19 @@ class Check:
         """No author configured, so the next commit here fails."""
         return (
             []
-            if repo.identified()
+            if repo.worktree.identified()
             else [_fail(repo, "identity", detail=commit_module.Commit.NO_IDENTITY)]
         )
 
     @staticmethod
     def _line(repo: Repo) -> list[Finding]:
         """Where HEAD stands against the branch it should be on and that branch's upstream."""
-        branch, upstream = repo.branch(), repo.upstream()
+        branch, upstream = repo.tracking.branch(), repo.tracking.upstream()
         if not branch:
-            detail = f"detached at {repo.short('HEAD')}; commit or pull puts it on {repo.trunk()}"
+            detail = (
+                f"detached at {repo.commits.short('HEAD')}; "
+                f"commit or pull puts it on {repo.tracking.trunk()}"
+            )
             attached = [_warn(repo, "branch", detail=detail)]
         elif not upstream:
             attached = [
@@ -79,10 +82,10 @@ class Check:
                 repo,
                 "symlink",
                 detail=f"{path} is a plain file here; commit puts the link back"
-                if repo.faithful(path)
+                if repo.worktree.faithful(path)
                 else f"{path} is a plain file edited through; move the edit to its target",
             )
-            for path in repo.unlinked()
+            for path in repo.worktree.unlinked()
         ]
 
     @staticmethod
@@ -139,7 +142,7 @@ class Check:
 
     def _lfs(self, repo: Repo) -> list[Finding]:
         """LFS content this machine has no git-lfs to fetch or push."""
-        if repo.lfs() and not self.lfs_installed:
+        if repo.worktree.lfs() and not self.lfs_installed:
             return [
                 _fail(repo, "lfs", detail="keeps files in Git LFS and git-lfs is not installed")
             ]
@@ -150,11 +153,12 @@ class Check:
         if not child.initialized:
             detail = f"{child.name} is not checked out, so {commit[:7]} is unverified"
             return [_warn(repo, "pointer", detail=detail)]
-        if not child.serves(commit):
+        if not child.remote.serves(commit):
             return [self._unserved(repo, child=child, commit=commit, published=published)]
-        if child.head() != commit:
+        if child.commits.head() != commit:
             detail = (
-                f"{child.name} is checked out at {child.short('HEAD')}, HEAD records {commit[:7]}"
+                f"{child.name} is checked out at {child.commits.short('HEAD')}, "
+                f"HEAD records {commit[:7]}"
             )
             return [_warn(repo, "checkout", detail=detail)]
         return []
@@ -162,7 +166,7 @@ class Check:
     def _pointers(self, repo: Repo) -> list[Finding]:
         """Every submodule pointer HEAD records, against what that submodule's remote holds."""
         recorded = repo.pointers()
-        published = bool(repo.homes(repo.head()))
+        published = bool(repo.remote.homes(repo.commits.head()))
         return [
             finding
             for child in repo.children
@@ -203,7 +207,7 @@ class Check:
     def _unserved(self, repo: Repo, *, child: Repo, commit: str, published: bool) -> Finding:
         """A pointer no branch of the submodule's remote holds, pending only if a push fixes it."""
         where = f"{child.name}@{commit[:7]}"
-        if child.owned and not published and child.exists(commit):
+        if child.owned and not published and child.commits.exists(commit):
             return _warn(repo, "pointer", detail=f"{where} is not pushed yet; push carries it")
         reason = self.unfetched.get(child.name, "no branch of its remote holds it")
         if published:

@@ -2,7 +2,7 @@
 
 A manuscript is a root (a file that declares a document class) with the files it includes spliced
 in where they are included. `ManuscriptFact` reads that one reading-order stream (the helper
-relation `element`, see constants/manuscripts_stream.py) as the headings, numbered statements, floats,
+relation `element`, see constants/manuscripts/stream.py) as the headings, numbered statements, floats,
 labels, references, paragraphs and sentences of mcmr's skeleton; the notation and evidence
 families read the same stream.
 
@@ -11,8 +11,8 @@ Typst manuscripts are not read: the research writes LaTeX, and the Typst files h
 
 from ....catalog import Family, Function
 from ..constants.manuscripts.core import SPACE_CHARS
+from ..constants.manuscripts.sql import quoted, words
 from ..constants.manuscripts.stream import ELEMENTS
-from .reader import quoted, words
 
 _ELEMENT = "manuscript_element"
 # A sentence never ends at the dot of one of these words.

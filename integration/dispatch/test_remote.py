@@ -34,5 +34,5 @@ def test_the_fleet_is_listed_without_error(mb) -> None:
 
 @pytest.mark.parametrize("host", hosts())
 def test_each_host_runs_a_command(mb, host: str) -> None:
-    ran = mb("shell", "--on", host, "--", "hostname", cwd=Path(_ROOT), timeout=120)
+    ran = mb("dep", "shell", "--on", host, "--", "hostname", cwd=Path(_ROOT), timeout=120)
     assert ran.code == 0, ran.said

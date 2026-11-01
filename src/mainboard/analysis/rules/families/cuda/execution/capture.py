@@ -40,7 +40,10 @@ class CudaCaptureRegions(CudaRelation):
 
 class CudaCaptured(CudaRelation):
     """The functions that run under capture: those a call inside a capture region reaches,
-    directly or through up to three calls."""
+    directly or through up to three calls. `region_path` and `region_line` are the place of the
+    call in the region that starts the chain, the smaller one where a function is reached from
+    several (a `USING KEY` step otherwise keeps whichever row its join emits last, which differs
+    per run)."""
 
     stored = True
     query = """
@@ -51,6 +54,8 @@ class CudaCaptured(CudaRelation):
           JOIN cuda_calls() c ON c.fact_id = r.fact_id AND c.node_id BETWEEN r.first AND r.last
           JOIN cuda_resolved_calls() t ON t.fact_id = c.fact_id AND t.node_id = c.node_id
             AND t.kind = 'function' AND t.via <> 'override'
+          QUALIFY row_number() OVER (PARTITION BY t.definition_fact, t.definition_id
+                                     ORDER BY c.path, c.start_line) = 1
           UNION
           SELECT t.definition_fact, t.definition_id, r.hops + 1, r.region_path, r.region_line
           FROM reach r
@@ -60,6 +65,8 @@ class CudaCaptured(CudaRelation):
           WHERE r.hops < 3 AND NOT EXISTS (
             SELECT 1 FROM recurring.reach p
             WHERE p.fact_id = t.definition_fact AND p.function_id = t.definition_id)
+          QUALIFY row_number() OVER (PARTITION BY t.definition_fact, t.definition_id
+                                     ORDER BY r.region_path, r.region_line) = 1
         )
         SELECT * FROM reach
     """

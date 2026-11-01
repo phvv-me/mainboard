@@ -12,13 +12,14 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..constants import SECONDS_PER_HOUR
+from ..core.constants.units import SECONDS_PER_HOUR
 from ..costs import Ledger, Observation
 from ..dispatch.jobs import vocabulary
 from ..dispatch.shared import now
+from ..enums import Topic
 from . import receipts
 from .estimate.core import platform
-from .receipts import Journal, Topic, latest, publish
+from .receipts import Journal, latest, publish
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence

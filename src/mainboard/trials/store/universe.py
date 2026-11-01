@@ -8,7 +8,7 @@ from typing import ClassVar
 from patos import FrozenModel
 
 from ...state.evidence import EvidenceTree
-from .constants import NESTED
+from ..constants import NESTED
 from .dataset import Dataset
 
 

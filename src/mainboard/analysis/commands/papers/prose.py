@@ -12,15 +12,15 @@ line where it starts. Files are read in the order the document includes them (`\
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
 
 import duckdb
-from cyclopts import Parameter
 from patos import FrozenModel
 
 from ....core.errors import MissionError
-from ....log import logger
+from ....render import Output
 from ..report import Report
+
+_COMPACT = Output()
 
 _MANUSCRIPT_TABLE_SQL = "CREATE TABLE manuscript (position INT, path VARCHAR, content VARCHAR)"
 
@@ -246,12 +246,11 @@ class Manuscript:
 def prose(
     paper: Path,
     *,
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
 ) -> None:
     """The narrative paragraphs of a paper with file and line, math, floats and commands removed.
 
     paper: a paper's directory, its main `.tex` file, or a Markdown file.
-    as_json: print JSON for a program.
     """
     files = Manuscript(paper).files()
     connection = duckdb.connect()
@@ -268,7 +267,7 @@ def prose(
             for _, path, line, kind, text in connection.execute(_PARAGRAPHS).fetchall()
         ],
     )
-    logger.result(report.render(as_json=as_json))
+    report.show(output)
 
 
 def _relative(path: Path) -> str:

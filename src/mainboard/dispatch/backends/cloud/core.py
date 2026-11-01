@@ -19,7 +19,10 @@ import shlex
 from time import monotonic, sleep
 from typing import TYPE_CHECKING, ClassVar
 
+from ....core.constants.units import DEFAULT_RUN_SECONDS
 from ....core.errors import MissionError
+from ....costs.ledger import Ledger
+from ....costs.score import Scorecard
 from ....log import logger
 from ...hosts.lease import Lease
 from ...hosts.rentals import Rental, identity, reachable, waiting
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
     from ....context.plan import ExecutionPlan
     from ....costs.catalog import Offer
     from ...hosts.allocation import Allocation
+    from ...hosts.lease import Cap
     from ...jobs.vocabulary import Resources
     from ..base import Transport
     from ..capabilities import Rented
@@ -71,7 +75,7 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
     catalog_name: ClassVar[str] = ""
 
     lacks = {
-        Delivery: "a cloud machine is an ssh host: `mb job collect {path} --on <alias>`",
+        Delivery: "a cloud machine is an ssh host: `mb data lake collect {path} --on <alias>`",
     }
 
     @property
@@ -106,20 +110,27 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
             f"{self.name} machine {handle} published no address in {_BOOT_SECONDS}s"
         )
 
-    def _created(self, resources: Resources, *, allocation: Allocation, public_key: str) -> str:
-        """A machine from the cheapest offer that still has one, leased before it is created.
+    def _created(
+        self, resources: Resources, *, cap: Cap, allocation: Allocation, public_key: str
+    ) -> str:
+        """A machine from the best-ranked offer that still has one, leased under `cap` first.
 
         The lease comes first, so a crash between create and record still leaves the run registry
-        holding the handle the sweep ends.
+        holding the handle the sweep ends, and the cap that bounds it if the sweep never runs.
         """
-        found = self._offers(resources)
+        found = self._offers(resources, scorecard=Scorecard.of(Ledger(allocation.cache.session)))
         for offer in found:
-            allocation.begin(
-                lease=Lease.priced(as_offer(offer), resources, setup_s=Rental.LANDING_SECONDS)
+            lease = Lease.priced(
+                self._offered(offer), resources, cap=cap, setup_s=Rental.LANDING_SECONDS
             )
+            allocation.begin(lease=lease)
             try:
                 handle = self.api.create(
-                    offer, name=allocation.label, public_key=public_key, disk_gb=self.disk_gb
+                    offer,
+                    lease=lease,
+                    name=allocation.label,
+                    public_key=public_key,
+                    disk_gb=self.disk_gb,
                 )
             except CapacityGone as gone:
                 allocation.refused()
@@ -132,7 +143,7 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
                 continue
             allocation.created(handle)
             return handle
-        raise MissionError(f"{self.name} had no capacity for the {len(found)} cheapest offers")
+        raise MissionError(f"{self.name} had no capacity for the {len(found)} best offers")
 
     def _hunted(self, wanted: OfferFilter) -> list[CatalogItem]:
         """The offers for `wanted` that this cloud can create a machine for.
@@ -157,13 +168,28 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
         )
         return endpoint
 
-    def _offers(self, resources: Resources) -> list[CatalogItem]:
-        """The cheapest offers under the budget a rent tries, refusing when there is none."""
+    def _offered(self, item: CatalogItem) -> Offer:
+        """`item` as the offer a lease and a score price, with this cloud's billing terms."""
+        return self.billed(as_offer(item))
+
+    def _offers(self, resources: Resources, *, scorecard: Scorecard) -> list[CatalogItem]:
+        """The best offers under the budget a rent tries, refusing when there is none.
+
+        They rank by dollars per useful GPU hour at this cloud's record (`Scorecard.RULE`), which
+        is the listed price order while nothing was measured.
+        """
         rented = resources.model_copy(update={"gpus": max(resources.gpus, 1)})
         wanted = OfferFilter.rented(
             rented, ceiling=hourly_cap(resources, landing=Rental.LANDING_SECONDS)
         )
-        if found := self._hunted(wanted)[:_OFFERS_TRIED]:
+        run_s = resources.walltime_s or DEFAULT_RUN_SECONDS
+        best = sorted(
+            self._hunted(wanted),
+            key=lambda item: (
+                scorecard.score(self._offered(item), kind=self.name, run_s=run_s).order
+            ),
+        )
+        if found := best[:_OFFERS_TRIED]:
             return found
         raise MissionError(
             f"{self.name} lists no {wanted.spoken} offer right now; `mb host offers` shows every "
@@ -196,7 +222,7 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
 
     def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
         found = self._hunted(OfferFilter(gpu_name=gpu_name, gpus=gpus))
-        return [as_offer(item) for item in (found[:limit] if limit else found)]
+        return [self._offered(item) for item in (found[:limit] if limit else found)]
 
     def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
         found = self.api.machine(handle)
@@ -207,11 +233,13 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
     def logs(self, handle: str) -> str:
         return self._read(handle, path=_LOG_PATH)
 
-    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
-        """The cheapest offer under the budget, created, reachable over ssh, or nothing billing."""
-        self.admit(plan, resources)
+    def rent(
+        self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation, cap: Cap
+    ) -> Rental:
+        """The best-ranked offer under budget and cap, created and reachable, or none billing."""
+        self.admit(plan, resources, cap=cap)
         key = identity(plan.profile.vars.get("ssh-key", ""))
-        handle = self._created(resources, allocation=allocation, public_key=key.public)
+        handle = self._created(resources, cap=cap, allocation=allocation, public_key=key.public)
         try:
             return Rental(handle=handle, endpoint=self._landed(handle, private=key.private))
         except BaseException:
@@ -256,7 +284,13 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
         return JobState(handle=handle, state=found.status, exit_code=code, verdict=verdict)
 
     def submit(
-        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+        self,
+        plan: ExecutionPlan,
+        command: str,
+        resources: Resources,
+        *,
+        allocation: Allocation,
+        cap: Cap,
     ) -> str:
         raise MissionError(
             f"{self.name} runs no prebuilt image: drop the container from {plan.host!r} so the "

@@ -1,13 +1,13 @@
 import os
 import shutil
 import sys
-from functools import cached_property
+from functools import cache, cached_property
 from pathlib import Path
 
 from patos import FrozenModel
+from plumbum import local
 
 from ..enums import CompilerKind
-from ..shell import run
 
 _CUDA_ROOT = Path("/usr/local")
 _NVCC_BINARIES = ("nvcc", "cuda-nvcc")
@@ -23,6 +23,16 @@ _KIND_BY_MARKER = (
 )
 
 
+@cache
+def _run(*command: str) -> str:
+    """The stdout of `command`, e.g. `("clang", "--version")`.
+
+    Cached by argv, so repeated identity probes run the process once.
+    """
+    program, *args = command
+    return local[program](*args)
+
+
 class Compiler(FrozenModel):
     """One discovered compiler binary, by absolute path."""
 
@@ -33,7 +43,7 @@ class Compiler(FrozenModel):
         """Compiler family, read from the binary name and then its `--version` banner."""
         if self.path.stem in _NVCC_BINARIES:
             return CompilerKind.NVCC
-        banner = run(str(self.path), "--version").lower()
+        banner = _run(str(self.path), "--version").lower()
         return next(
             (kind for marker, kind in _KIND_BY_MARKER if marker in banner), CompilerKind.UNKNOWN
         )
@@ -59,7 +69,7 @@ class Compilers(FrozenModel):
     def cxx(self) -> Compiler:
         """Host C++ compiler, Grace Clang on aarch64 when installed, otherwise g++ then clang++."""
         grace = shutil.which("clang++")
-        if self.arch == "aarch64" and grace and "grace" in run(grace, "--version").lower():
+        if self.arch == "aarch64" and grace and "grace" in _run(grace, "--version").lower():
             return Compiler(path=Path(grace))
         if found := shutil.which("g++") or grace:
             return Compiler(path=Path(found))

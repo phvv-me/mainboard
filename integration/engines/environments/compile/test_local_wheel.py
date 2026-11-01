@@ -72,12 +72,12 @@ def compiled(tmp_path: Path, wheel: str) -> Provisioner:
 def test_local_files_are_shipped_without_becoming_editable_roots(
     compiled: Provisioner, wheel: str
 ) -> None:
-    text = compiled.pixi.manifest.read_text(encoding="utf-8")
+    text = compiled.shard().pixi.manifest.read_text(encoding="utf-8")
     shard = compiled.environment_dir().relative_to(compiled.root)
 
-    assert wheel in compiled.artifact
+    assert wheel in compiled.artifact_for("default")
     # Linux raises NotADirectoryError for wheel/pyproject.toml; no metadata is owed there.
-    assert len(compiled.compiler.resolution_digest()) == 64
+    assert len(compiled.shard().compiler.resolution_digest()) == 64
     assert local_sources(text, generated_dir=shard) == [wheel]
     assert self_installed(text, generated_dir=shard) == []
 

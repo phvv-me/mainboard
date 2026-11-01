@@ -1,8 +1,8 @@
 from patos import FrozenModel
 from pydantic import Field
 
-from ..trace import Activity
-from .feature import Feature
+from ..enums import Activity
+from .enums import Feature
 
 
 class Collection(FrozenModel):

@@ -122,8 +122,9 @@ def make(width: int):
 """
             ),
             good=(
-                """from numba import cuda
-from functools import cache
+                """from functools import cache
+
+from numba import cuda
 
 
 @cache
@@ -150,8 +151,9 @@ def make(width: int):
 """
             ),
             good=(
-                """from numba import cuda
-from functools import cache
+                """from functools import cache
+
+from numba import cuda
 
 
 @cache

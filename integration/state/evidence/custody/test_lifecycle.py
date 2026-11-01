@@ -18,6 +18,9 @@ class EvidenceLifecycle(RuleBasedStateMachine):
     """One workspace's evidence folder under any order of writes, deletes, ingests, evictions
     and restores, checked against a model of the tree and of what the lake indexes."""
 
+    tree: dict[str, bytes]
+    index: dict[str, bytes]
+
     @initialize()
     def start_with_kept_files(self) -> None:
         for name, payload in [("a.bin", b"one"), ("sub/c.bin", b"two")]:
@@ -89,8 +92,8 @@ class EvidenceLifecycle(RuleBasedStateMachine):
         (base / "mb.toml").write_text('[workspace]\nname = "it"\n', encoding="utf-8")
         self.evidence = Evidence(Lake.at(base))
         self.root = base / "evidence"
-        self.tree: dict[str, bytes] = {}
-        self.index: dict[str, bytes] = {}
+        self.tree = {}
+        self.index = {}
 
     def teardown(self) -> None:
         assert self.evidence.verify() == []

@@ -1,6 +1,6 @@
 """Rules over how quickly a newcomer can work (mcmr's ALL-ONBO0001)."""
 
-from ....catalog import Rule
+from ....catalog import Example, Rule
 from ....engine.facts import Setting
 
 
@@ -27,6 +27,29 @@ class OnboardingReadiness(Rule, id="ALL-ONBO0001"):
         WHERE value < $minimum
     """
     message = "onboarding readiness is {value} for `{fact_id}`"
+    examples = (
+        Example(
+            bad="# Ledger\n\nA small bookkeeping library.\n",
+            good="""\
+# Ledger
+
+Prepare the checkout with `mb run setup` and check it with `mb run test`.
+Read the layout with `mb run architecture`, trace a failure with `mb run debug`
+and prepare a change with `mb run contribute`.
+""",
+            path="README.md",
+            context={
+                "mb.toml": """\
+[tasks]
+setup = "mb dep install"
+test = "pytest"
+architecture = "mb code graph"
+debug = "pytest -x --lf"
+contribute = "mb lint"
+"""
+            },
+        ),
+    )
 
     def parameters(self) -> dict[str, Setting]:
         required = len(set(self.required_capabilities))

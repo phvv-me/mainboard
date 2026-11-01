@@ -9,15 +9,15 @@ outside the project is drawn as a plain box.
 import re
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Annotated
 
-from cyclopts import Parameter
 from patos import FrozenModel
 
-from ....log import logger
+from ....render import Output
 from ..report import Report
 from ..workspace import Workspace
 from .scope import Scope, UnitGraph
+
+_COMPACT = Output()
 
 _CLASSES = """
     SELECT module, qualname, base, target_module, target FROM class_bases()
@@ -126,17 +126,16 @@ def diagram(
     path: Path = Path(),
     *,
     kind: DiagramKind = DiagramKind.PACKAGES,
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
     memory: str = "2GB",
 ) -> None:
     """A Mermaid diagram of a package's dependencies or of its classes and their bases.
 
     path: a directory of the project.
     kind: `packages` for the units and what they import, `classes` for the inheritance.
-    as_json: print the nodes and edges as JSON instead of Mermaid.
     memory: a DuckDB memory limit such as `4GB`.
     """
     scope = Scope.of(path)
     drawing = Drawing(Workspace(scope.root, memory=memory), scope)
     shown = drawing.packages() if kind is DiagramKind.PACKAGES else drawing.classes()
-    logger.result(shown.render(as_json=as_json))
+    shown.show(output)

@@ -22,8 +22,9 @@ from typing import TYPE_CHECKING
 from cyclopts import App
 from patos import FrozenModel, FrozenOpenModel
 
-from ..constants import BYTES_PER_GB
+from ..core.constants.units import BYTES_PER_GB, MILLISECONDS_PER_SECOND
 from ..log import logger
+from ..profile.benchmark import benchmark
 from .machine import Machine
 
 _FLOPS_PER_TERAFLOP = 1e12
@@ -216,17 +217,12 @@ class Stress:
         Never below one tick of the clock: a call shorter than that reads as zero,
         and a rate divided by it would be infinite rather than merely unmeasurable.
         """
-        for _ in range(self.warmups):
-            call()
-        self.kernels.synchronize()
-        timings = []
-        for _ in range(self.repetitions):
-            self.kernels.synchronize()
-            begin = perf_counter()
-            call()
-            self.kernels.synchronize()
-            timings.append(perf_counter() - begin)
-        return max(median(timings), get_clock_info("perf_counter").resolution)
+        timed = benchmark(
+            call, iters=self.repetitions, warmup=self.warmups, sync=self.kernels.synchronize
+        )
+        # The samples are microseconds: a thousandth of a thousandth of a second.
+        seconds = median(timed.samples) / MILLISECONDS_PER_SECOND / MILLISECONDS_PER_SECOND
+        return max(seconds, get_clock_info("perf_counter").resolution)
 
     def measure(self) -> StressReport:
         """Time every precision and copy path, answering the report."""

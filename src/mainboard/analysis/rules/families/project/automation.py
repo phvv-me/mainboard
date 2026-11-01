@@ -1,4 +1,4 @@
-"""mcmr's AutomationTaskFact, derived from the root `mainboard.toml`'s syntax tree.
+"""mcmr's AutomationTaskFact, derived from the root `mb.toml`'s syntax tree.
 
 A task is a capability the manifest automates, declared under `[tasks]` or `[envs.<name>.tasks]`
 as a string, an array of words, or a table whose `run` or `cmd` is one of those (a task with
@@ -79,15 +79,15 @@ class AutomationTask(Family):
     family = "AutomationTaskFact"
     relations = {
         "facts": r"""
-            SELECT 0 AS fact_order, 'automation:mainboard' AS fact_id, 'mainboard.toml' AS path,
+            SELECT 0 AS fact_order, 'automation:mainboard' AS fact_id, 'mb.toml' AS path,
                    1 AS start_line, 0 AS start_column, 1 AS end_line, 0 AS end_column,
                    'python' AS language
-            FROM ast_files WHERE path = 'mainboard.toml' AND language = 'toml'
+            FROM ast_files WHERE path = 'mb.toml' AND language = 'toml'
         """,
         "declarations": r"""
             WITH RECURSIVE toml AS (
               SELECT n.* FROM ast_nodes n JOIN ast_files a USING (fact_id)
-              WHERE a.path = 'mainboard.toml' AND a.language = 'toml'
+              WHERE a.path = 'mb.toml' AND a.language = 'toml'
             ), pairs AS (
               SELECT p.node_id, CASE WHEN t.type = 'table' THEN t.name || '.' || p.name
                                      ELSE p.name END AS key
@@ -178,7 +178,7 @@ class AutomationTask(Family):
             JOIN (SELECT s.*, row_number() OVER (ORDER BY s.capability) - 1 AS ordinal,
                          (SELECT count(*) FROM guides g
                           WHERE list_contains(regexp_extract_all(g.content,
-                            '(?:^|[^[:alnum:]_-])mainboard[[:blank:]]+run[[:blank:]]+'
+                            '(?:^|[^[:alnum:]_-])(?:mainboard|mb)[[:blank:]]+run[[:blank:]]+'
                             || '(?:--(?:locked|frozen|no-install|as-is)[[:blank:]]+)*'
                             || '([^[:space:]`]+)', 1), s.capability)
                              OR (s.capability = 'setup'
@@ -193,11 +193,12 @@ class AutomationTask(Family):
         """Load the guides the tasks relation reads: `project_guides` (path, content)."""
         ProjectTree(root=root).register(facts)
         files = [
-            str(root / entry) for (entry,) in facts.db.execute(_GUIDE_FILE_ENTRIES_SQL).fetchall()
+            str(root / entry)
+            for (entry,) in facts.connection.execute(_GUIDE_FILE_ENTRIES_SQL).fetchall()
         ]
-        facts.db.execute(_CREATE_GUIDES_TABLE_SQL)
+        facts.connection.execute(_CREATE_GUIDES_TABLE_SQL)
         if files:
-            facts.db.execute(
+            facts.connection.execute(
                 _LOAD_GUIDE_CONTENTS_SQL,
                 {"root": str(root), "files": files},
             )

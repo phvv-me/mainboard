@@ -26,8 +26,6 @@ if TYPE_CHECKING:
 
 # Verdicts that say how the command ended, whatever its exit code.
 _RAN = frozenset({vocabulary.Word.OK, vocabulary.Word.TIMEOUT})
-# Verdicts that settle a run without judging the machine: asked to stop, or never dispatched.
-_UNJUDGED = frozenset({vocabulary.Word.CANCELLED, vocabulary.Word.HELD, vocabulary.Word.SKIPPED})
 
 
 class Reliability(FrozenModel):

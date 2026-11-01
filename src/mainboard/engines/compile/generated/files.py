@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from filelock import FileLock
 from patos import FrozenModel
 
-from ..state import SyncState
+from .state import SyncState
 from .writer import Writer
 
 if TYPE_CHECKING:

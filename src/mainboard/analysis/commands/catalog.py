@@ -1,4 +1,5 @@
-"""`catalog`: every rule of the engine with what a user needs to choose, configure and trust it.
+"""`explain`: a rule, or every rule of the engine, with what a user needs to choose, configure
+and trust it.
 
 Per rule: its id and one-line summary, the language its prefix names (`ALL-` rules read every
 language), whether its fix may run unattended (`applicability`), the settings a project can
@@ -6,18 +7,17 @@ override with their defaults, the kind of its fix (`sql` over the findings, a `m
 cannot compute the text, or `none`) and how many examples `lint test` proves.
 """
 
-from typing import Annotated
-
-from cyclopts import Parameter
 from patos import FrozenModel
 
 from ...core.errors import MissionError
-from ...log import logger
-from ..catalog import Rule, RuleProvenance
+from ...render import Output
+from ..catalog import Bundle, Rule, RuleProvenance
 from ..constants import LANGUAGES
 from ..engine.facts import Setting
 from ..engine.lint import load_catalog
 from .report import Report
+
+_COMPACT = Output()
 
 
 class RuleSetting(FrozenModel):
@@ -62,7 +62,9 @@ class RuleEntry(FrozenModel):
                     if isinstance(field.default, tuple)
                     else field.default,
                 )
-                for name, field in rule.model_fields.items()
+                for name, field in (
+                    rule.fields() if issubclass(rule, Bundle) else rule.model_fields
+                ).items()
             ],
         )
 
@@ -98,21 +100,6 @@ class Catalog(Report):
         )
 
 
-def catalog(
-    *,
-    rule: tuple[str, ...] = (),
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
-) -> None:
-    """Every rule with its language, applicability, settings, fix kind and example count.
-
-    rule: rule ids to list, every rule when empty.
-    as_json: print JSON for a program.
-    """
-    load_catalog()
-    chosen = [Rule.defined[id] for id in sorted(Rule.defined) if not rule or id in rule]
-    logger.result(Catalog(rules=[RuleEntry.of(entry) for entry in chosen]).render(as_json=as_json))
-
-
 class Explanation(Report):
     """A rule's evidence, repair policy and official migration references, available offline."""
 
@@ -138,18 +125,24 @@ class Explanation(Report):
 
 
 def explain(
-    rule: str,
+    rule: str = "",
     *,
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
 ) -> None:
-    """Explain RULE, its repair policy and remediation references without fetching documentation.
+    """Explain RULE, its repair policy and remediation references, or list every rule without one.
 
-    rule: the exact rule id from a finding or `mainboard refactor catalog`.
-    as_json: print structured guidance and reference URLs for an agent.
+    The list gives each rule's language, applicability, settings, fix kind and example count.
+    Nothing is fetched: the documentation ships with the engine.
+
+    rule: the exact rule id from a finding or from the list; every rule is listed when omitted.
     """
     load_catalog()
+    if not rule:
+        listed = [RuleEntry.of(Rule.defined[id]) for id in sorted(Rule.defined)]
+        Catalog(rules=listed).show(output)
+        return
     try:
         specification = Rule.defined[rule]
     except KeyError:
-        raise MissionError(f"no rule {rule!r}; see `mainboard refactor catalog`") from None
-    logger.result(Explanation(rule=RuleEntry.of(specification)).render(as_json=as_json))
+        raise MissionError(f"no rule {rule!r}; `mb code rules explain` lists them") from None
+    Explanation(rule=RuleEntry.of(specification)).show(output)

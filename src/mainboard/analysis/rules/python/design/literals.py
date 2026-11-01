@@ -188,7 +188,7 @@ class RepeatedPrivateConstant(Rule, id="PY-CONS0005", applicability="review"):
         WITH definers AS (
           SELECT f.name, f.value, split_part(f.module, '.', 1) AS top, f.path, f.module,
                  s.content, min(f.finding_key) AS finding_key,
-                 if(ends_with(f.path, '__init__.py'), string_split(f.module, '.'),
+                 if(is_initializer_path(f.path), string_split(f.module, '.'),
                     list_slice(string_split(f.module, '.'), 1, -2)) AS package,
                  string_split(rtrim(regexp_replace(f.path, '[^/]*$', ''), '/'), '/') AS folders
           FROM finding f JOIN source_files s USING (path)
@@ -252,8 +252,7 @@ def ssh(mode):
 """
             ),
             good=(
-                """from typing import Final
-from .constants import SSH_MODE
+                """from .constants import SSH_MODE
 
 
 def ssh(mode):

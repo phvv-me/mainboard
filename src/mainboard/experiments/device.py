@@ -45,9 +45,3 @@ def device_tag(index: int = 0) -> str:
     tag = _shorten(gpus[index].label)
     architecture = getattr(gpus[index], "cuda_architecture", None)
     return tag if architecture is None else f"{tag}_CC{architecture.major}.{architecture.minor}"
-
-
-def device_name(index: int = 0) -> str:
-    """The probe's full product name for the GPU at `index`, or `cpu` without one."""
-    gpus = Machine().gpus
-    return gpus[index].label if index < len(gpus) else "cpu"

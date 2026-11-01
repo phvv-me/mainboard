@@ -5,7 +5,7 @@ from pathlib import Path
 import psutil
 from patos import FrozenModel
 
-from ....constants import BYTES_PER_KIBIBYTE
+from ....core.constants.units import BYTES_PER_KIBIBYTE
 
 _CGROUP_PROC = Path("/proc/self/cgroup")
 _CGROUP_ROOT = Path("/sys/fs/cgroup")

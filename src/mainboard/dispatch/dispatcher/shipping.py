@@ -18,9 +18,10 @@ from ...state import schema
 from ...state.lake import Lake
 from ..agent import Agent, Scope, SshLink
 from ..constants import CARD_LEASES
+from ..hosts.locking import SyncLock
+from ..ignores import GitignoreFilter, denied, patterns
 from ..mirroring.mirror import Mirror
 from ..mirroring.snapshots import Image, Mirrored, Sealed, Snapshots, writable
-from ..mirroring.sync import GitignoreFilter, SyncLock, denied, patterns
 from ..provenance import Source, SourceTree
 from ..shared import now, state_path
 from ..state.cache import Cache
@@ -118,13 +119,16 @@ class Shipper:
     def _present(self, plan: ExecutionPlan, required: Sequence[Sequence[str]]) -> list[str]:
         """The sync include paths present here, refusing a mirror with nothing to ship.
 
-        A required group with a file missing is refused as well.
+        The refusal names the manifest that was read: a nested workspace reads only its own and
+        inherits none of its parent's hosts. A required group with a file missing is refused too.
         """
         scope = plan.profile.sync
         if not scope.include:
             raise LookupError(
-                f"nothing to sync to {plan.host!r}; declare [hosts.{plan.host}.sync].include "
-                "(or [hosts.defaults.sync].include) before dispatching"
+                f"nothing to sync to {plan.host!r}: {Project().manifest(self.root)} declares no "
+                f"sync include for it. Declare [hosts.{plan.host}.sync].include (or "
+                "[hosts.defaults.sync].include) in that manifest before dispatching; a nested "
+                "workspace does not inherit the [hosts] of the workspace above it"
             )
         shipped = scope.shipped(self.root)
         include = [path for path in shipped if self.local(path).exists()]

@@ -5,10 +5,10 @@ from collections.abc import Callable, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from ..constants import POLL_SECONDS
 from ..core.errors import MissionError
 from ..dispatch.backends.base import ProviderBackend, Rentable
 from ..dispatch.backends.capabilities import Delivery, LogSource
-from ..dispatch.constants import POLL_SECONDS
 from ..dispatch.dispatcher import Handle, Verdict
 from ..dispatch.hosts.rentals import identity
 from ..dispatch.jobs import vocabulary

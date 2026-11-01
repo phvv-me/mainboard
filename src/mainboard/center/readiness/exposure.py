@@ -20,8 +20,8 @@ from shlex import quote
 from typing import TYPE_CHECKING
 
 from ...core.project import Project
-from ...core.section import Section, Verdict
-from .workstation import abbreviated
+from ...core.section import Section, abbreviated
+from ...enums import Verdict
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence

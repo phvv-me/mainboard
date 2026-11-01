@@ -9,15 +9,19 @@ moment the class body holds a statement it cannot follow (a nested class, a loop
 assignment, a value that is not an integer or `auto()` in a numeric enum), or binds
 `_generate_next_value_` or `_ignore_`.
 
-One more fact, `enums:repository`, answers what no file can: the shared modules that would hold
-the enums imported across modules (`scopes`) and the shape of every file under an `enums`
-directory (`files`). A scope is the deepest directory holding an enum and all its importers.
+One more fact, `enums:repository`, answers what no file can: the shape of every file under an
+`enums` directory (`files`). The `enums.py` that holds an enum imported across modules (`reuse`)
+sits in the deepest directory holding the enum and all its importers, tests apart from source.
 
-Differences from the kernel, kept on purpose: `is_shared_across_unrelated_branches` of a file,
-which no rule reads, is not stated.
+Differences from the kernel, kept on purpose:
+
+- `is_shared_across_unrelated_branches` of a file, which no rule reads, is not stated;
+- test code includes test support (a module only tests import, one of them from its own folder),
+  since the tests of a project need not sit in `tests/` and their helpers are not named like tests.
 """
 
 from .....catalog import Family
+from .....constants import TEST_PATH
 
 _KINDS = (
     "CASE regexp_extract(dotted, '[^.]*$') WHEN 'StrEnum' THEN 'str_enum' "
@@ -194,10 +198,27 @@ _ENUMS_MEMBERS = """
     WINDOW w AS (PARTITION BY s.class_id ORDER BY s.pos)
 """
 
+# Test code is a module named like a test, a module under a test folder (`integration/`), or test
+# support: only tests import it and one of them sits in its own folder (`builders.py` or `fakes.py`
+# beside the tests that use them), so a helper never widens the directory a source enum would be
+# shared from.
+_SIDES = f"""
+    WITH users AS (
+      SELECT m.path, bool_and(classes_is_test(i.path)) AS only_tests,
+             bool_or(regexp_extract(i.path, '^(.*)/', 1) = regexp_extract(m.path, '^(.*)/', 1))
+               AS beside
+      FROM class_modules m JOIN class_from_imports i ON i.target = m.module
+      GROUP BY m.path)
+    SELECT f.path, classes_is_test(f.path) OR regexp_matches(f.path, '{TEST_PATH}')
+                   OR coalesce(u.only_tests AND u.beside, false) AS is_test
+    FROM class_files f LEFT JOIN users u ON u.path = f.path
+"""
+
 _DEFINITIONS = """
-    SELECT k.class_id, k.module, k.name, k.path, classes_is_test(k.path) AS is_test
+    SELECT k.class_id, k.module, k.name, k.path, o.is_test
     FROM enum_classes e
     JOIN class_keys k ON k.class_id = e.class_id
+    JOIN enum_sides o ON o.path = k.path
     JOIN class_defs d ON d.class_id = e.class_id
     JOIN class_nodes s ON s.fact_id = d.fact_id AND s.node_id = d.statement_node AND s.depth = 1
 """
@@ -207,7 +228,8 @@ _IMPORTS = """
     FROM enum_definitions d
     JOIN class_from_imports i ON i.target = d.module AND i.imported_name = d.name
     JOIN class_modules m ON m.path = i.path
-    WHERE m.module <> d.module AND classes_is_test(m.path) = d.is_test
+    JOIN enum_sides o ON o.path = m.path
+    WHERE m.module <> d.module AND o.is_test = d.is_test
       AND EXISTS (SELECT 1 FROM class_nodes n
                   WHERE n.path = i.path AND n.type = 'import_from_statement' AND n.depth = 1
                     AND n.start_line = i.start_line)
@@ -239,50 +261,15 @@ _REUSE = r"""
       FROM agreement a JOIN totals t USING (class_id)
       GROUP BY a.class_id, a.is_test
     )
-    SELECT s.class_id, s.is_test,
-           coalesce(array_to_string(list(a.comp ORDER BY a.pos) FILTER (WHERE a.pos <= s.length),
-                                    '/'), '') AS directory,
-           (SELECT count(*) FROM enum_imports i WHERE i.class_id = s.class_id) AS importers
-    FROM shared s JOIN agreement a ON a.class_id = s.class_id
-    GROUP BY s.class_id, s.is_test, s.length
-"""
-
-_SCOPE_KEYS = """
-    SELECT directory, is_test, count(*) AS reused_enum_count, sum(importers) AS
-          cross_module_import_count
-    FROM enum_reuse GROUP BY directory, is_test
-"""
-
-_ASSIGNED = """
-    SELECT d.class_id, coalesce(r.directory, h.directory) AS directory, d.is_test
-    FROM enum_definitions d
-    LEFT JOIN enum_reuse r ON r.class_id = d.class_id
-    LEFT JOIN (
-      SELECT d2.class_id, arg_max(k.directory, length(k.directory)) AS directory
-      FROM enum_definitions d2
-      JOIN enum_scope_keys k ON k.is_test = d2.is_test
-                            AND (k.directory = ''
-                                 OR CASE WHEN contains(d2.path, '/')
-                                         THEN regexp_replace(d2.path, '/[^/]*$', '') ELSE '' END
-                                    = k.directory
-                                 OR starts_with(CASE WHEN contains(d2.path, '/')
-                                                     THEN regexp_replace(d2.path, '/[^/]*$', '')
-                                                     ELSE '' END, k.directory || '/'))
-      GROUP BY d2.class_id) h ON h.class_id = d.class_id
-    WHERE coalesce(r.directory, h.directory) IS NOT NULL
-"""
-
-_SCOPES = """
-    SELECT 'enums:repository' AS fact_id, 'enums:repository' AS parent_id,
-           'enums:repository/scopes:'
-             || (row_number() OVER (ORDER BY k.directory, k.is_test) - 1) AS record_id,
-           row_number() OVER (ORDER BY k.directory, k.is_test) - 1 AS ordinal,
-           CASE WHEN k.directory = '' THEN 'enums.py' ELSE k.directory || '/enums.py' END
-             AS destination,
-           (SELECT count(*) FROM enum_assigned a
-            WHERE a.directory = k.directory AND a.is_test = k.is_test) AS enum_count,
-           k.reused_enum_count, k.cross_module_import_count
-    FROM enum_scope_keys k
+    SELECT *, CASE WHEN directory = '' THEN 'enums.py' ELSE directory || '/enums.py' END
+                AS destination
+    FROM (
+      SELECT s.class_id, s.is_test,
+             coalesce(array_to_string(list(a.comp ORDER BY a.pos) FILTER (WHERE a.pos <= s.length),
+                                      '/'), '') AS directory,
+             (SELECT count(*) FROM enum_imports i WHERE i.class_id = s.class_id) AS importers
+      FROM shared s JOIN agreement a ON a.class_id = s.class_id
+      GROUP BY s.class_id, s.is_test, s.length)
 """
 
 _FILES = """
@@ -299,7 +286,7 @@ _FILES = """
             JOIN class_nodes s ON s.fact_id = c.fact_id AND s.node_id = c.statement_node
                               AND s.depth = 1
             WHERE e.file_id = f.fact_id) AS enum_class_count,
-           ends_with(f.path, '__init__.py') AS is_package_initializer
+           is_initializer_path(f.path) AS is_package_initializer
     FROM class_files f
     WHERE list_contains(string_split(CASE WHEN contains(f.path, '/')
                                           THEN regexp_replace(f.path, '/[^/]*$', '') ELSE '' END,
@@ -316,11 +303,9 @@ class Enums(Family):
         "steps": _STEPS,
         "enums": _ENUMS,
         "enums_members": _ENUMS_MEMBERS,
+        "sides": _SIDES,
         "definitions": _DEFINITIONS,
         "imports": _IMPORTS,
         "reuse": _REUSE,
-        "scope_keys": _SCOPE_KEYS,
-        "assigned": _ASSIGNED,
-        "scopes": _SCOPES,
         "files": _FILES,
     }

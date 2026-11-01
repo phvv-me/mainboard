@@ -81,15 +81,15 @@ class GitLog(FrozenModel):
     def register(self, facts: Facts) -> None:
         """Create `git_commits`, `git_entries` and `git_files` in `facts`."""
         log, listed = self._history()
-        facts.db.execute(_TABLES[0], {"log": log})
+        facts.connection.execute(_TABLES[0], {"log": log})
         for statement in _TABLES[1:]:
-            facts.db.execute(statement)
+            facts.connection.execute(statement)
         suffixes = tuple(s for ends in Facts.SUFFIXES.values() for s in ends)
-        touched = facts.db.execute(
+        touched = facts.connection.execute(
             _TOUCHED_NAMES_SQL,
             {"listed": [name for name in listed if name.lower().endswith(suffixes)]},
         ).fetchall()
-        facts.db.execute(
+        facts.connection.execute(
             _GIT_FILES_TABLE_SQL,
             {"names": [name for (name,) in touched if (self.root / name).is_file()]},
         )

@@ -82,7 +82,7 @@ _PROJECTION_GROUPS = """
 """
 
 _PROJECTION_KEYS = """
-    SELECT fact_id, container, list(key ORDER BY entry) AS keys
+    SELECT fact_id, container, list(key ORDER BY entry, key) AS keys
     FROM class_projection_entries WHERE key IS NOT NULL GROUP BY fact_id, container
 """
 
@@ -99,7 +99,7 @@ _MODEL_FILE_ROWS = """
            count(s.class_id) FILTER (
              WHERE NOT s.is_model_configuration_base AND (s.foundation_base OR s.is_dataclass)
            ) AS model_class_count,
-           ends_with(f.path, '__init__.py') AS is_package_initializer
+           is_initializer_path(f.path) AS is_package_initializer
     FROM class_files f
     LEFT JOIN class_staged s ON s.path = f.path AND NOT s.nested
     WHERE regexp_replace(f.path, '/[^/]*$', '') IN (SELECT directory FROM class_model_package_dirs)

@@ -1,9 +1,9 @@
 """Rules over comprehensions (mcmr's PY-COMP family)."""
 
-from ....catalog import Example, Rule
+from ....catalog import Example, Part, Rule
 
 
-class ComprehensionLoopCount(Rule, id="PY-COMP0001"):
+class ComprehensionLoopCount(Part):
     """Modules holding a comprehension with more loops than the project accepts."""
 
     maximum: int = 2

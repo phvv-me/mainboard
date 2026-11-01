@@ -17,18 +17,18 @@ from typing import TYPE_CHECKING
 
 from ...core.errors import MissionError
 from ...log import logger
-from ..agent import program
+from ..agent.program import closure_path
 from ..backends.base import ProviderBackend, Rentable
 from ..dispatcher import Handle, Order
 from ..jobs import JobSpec, vocabulary
 from ..mirroring.snapshots import Snapshots
-from ..mirroring.sync import SyncLock
 from ..schedulers.base import failure_reason
 from ..shared import announce
 from ..transport.core import SshTransport
 from ..transport.shells import HostShell
 from ..transport.targets import probe_capabilities, resolve, rooted
 from ..wrapping import connection, wrap
+from .locking import SyncLock
 from .onboard import Bootstrap
 from .rentals import Rental, handoff
 
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from ..state.cache import RunRecord
     from ..transport.core import Machine
     from .allocation import Allocation
+    from .lease import Cap
 
 
 def renter(backend: ProviderBackend, plan: ExecutionPlan) -> Rentable | None:
@@ -63,14 +64,18 @@ class Landing:
     floor: the tool version a rental installs from an index when the workspace vendors no source.
     """
 
+    @property
+    def plan(self) -> ExecutionPlan:
+        """The order's plan, once `equip` has resolved its profile against the rental's facts."""
+        return self.resolved or self.order.plan
+
     def __init__(
         self, dispatcher: Dispatcher, backend: Rentable, order: Order, *, floor: str = ""
     ) -> None:
         self.dispatcher = dispatcher
         self.backend = backend
         self.order = order
-        self.plan = order.plan
-        self.resources = order.resources
+        self.resolved: ExecutionPlan | None = None
         self.watch = order.watch or announce
         self.floor = floor
 
@@ -114,7 +119,9 @@ class Landing:
             connection(where, policy) as remote,
         ):
             facts = probe_capabilities(where, ssh=policy)
-            self.plan = self.plan.model_copy(update={"profile": resolve(self.plan.profile, facts)})
+            self.resolved = self.plan.model_copy(
+                update={"profile": resolve(self.plan.profile, facts)}
+            )
             root = rooted(self.plan.profile, host=where)
             listing = self.dispatcher.stage_listing(shipment)
             script = self.script(root=root, listing=listing)
@@ -161,19 +168,23 @@ class Landing:
                 self.dispatcher.cache.delivery(registered, "pending")
                 self.start(remote, pinned=pinned, script=f"{pinned}/{Snapshots.script(script)}")
 
-    def land(self) -> Handle:
+    def land(self, cap: Cap) -> Handle:
         """Register a rental before provisioning it, then return the same tracked handle.
 
         The shared registry retains the rental if this process dies during provisioning. A
         failed landing still attempts immediate cleanup; a failed cleanup remains tracked.
         The provider must persist its returned handle before waiting for SSH. A lost create
         response leaves its labeled intent visible and requires provider-side reconciliation.
+
+        cap: the provider's bound the warden let the rental through under (`Warden.rent`).
         """
         allocation = self.dispatcher.allocating(self.order, evidence="not_started")
         rental = None
         started = False
         try:
-            rental = self.backend.rent(self.plan, self.resources, allocation=allocation)
+            rental = self.backend.rent(
+                self.plan, self.order.resources, allocation=allocation, cap=cap
+            )
             self.equip(rental)
             started = True
         finally:
@@ -203,14 +214,14 @@ class Landing:
             cmd=shipment.command,
             plan=self.plan,
             root=pinned,
-            walltime=self.resources.walltime or "",
-            gpus=self.resources.gpus,
-            mem_gb=self.resources.mem_gb,
+            walltime=self.order.resources.walltime or "",
+            gpus=self.order.resources.gpus,
+            mem_gb=self.order.resources.mem_gb,
             pythonpath=":".join(f"{pinned}/{place}".rstrip("/") for place in shipment.imports),
             source=shipment.source.identity,
             commit=shipment.source.commit,
             digest=shipment.source.digest,
-            closure=program.closure_path(pinned) if listing else "",
+            closure=closure_path(pinned) if listing else "",
             first_party=":".join(shipment.first_party),
             deferred=":".join(shipment.deferred),
             exports=self.plan.exports,

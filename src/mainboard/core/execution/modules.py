@@ -1,5 +1,29 @@
+from collections.abc import Iterable
+from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
+
+from ...log import logger
+
+
+def importable(names: Iterable[str]) -> list[str]:
+    """The modules of `names` that import, each one imported.
+
+    A module failing on a library outside its own top-level package, an optional extra that is
+    not installed, is skipped and named in the log. Any other failure is a defect and raises.
+    """
+    kept = []
+    for name in names:
+        package = name.partition(".")[0]
+        try:
+            import_module(name)
+        except ImportError as error:
+            if (error.name or package).partition(".")[0] == package:
+                raise
+            logger.warning("{} is skipped: {}", name, error)
+        else:
+            kept.append(name)
+    return kept
 
 
 def submodules(package: str) -> list[str]:

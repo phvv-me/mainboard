@@ -1,3 +1,5 @@
+from math import inf, isfinite
+from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from cyclopts import Parameter
@@ -5,22 +7,28 @@ from patos import FrozenModel
 from pydantic import ConfigDict, field_validator
 
 from ...core.errors import MissionError
+from ...costs.catalog import Offer
+from ...costs.ledger import Ledger
+from ...costs.score import Rank, Scorecard
 from ...dispatch.backends import HyperstackBackend, ShadeformBackend
 from ...dispatch.backends.base import ProviderBackend
 from ...dispatch.backends.capabilities import Account
 from ...dispatch.backends.cloud.offers import hunt
 from ...dispatch.backends.hpcai import HpcAiBackend
 from ...dispatch.jobs.arch import arch, capability, sm
-from ...dispatch.jobs.vocabulary import OfferFilter, Pricing
+from ...dispatch.jobs.vocabulary import OfferFilter
+from ...enums import Pricing
 from ...fleet.reliability import by_kind, reliability, window
 from ...holding.holds import Cards, Holding, Holds
 from ...holding.line import Line
-from ...render import progress
-from ..base import Verbs
-from ..options import Output
+from ...log import logger
+from ...policy.grants import Grants, GrantsFile
+from ...render import Output, progress
+from ..session import Verbs
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from pathlib import Path
 
     from ...render.values import Node
     from ...state.storage.holds import Held
@@ -81,7 +89,15 @@ class Shopping(FrozenModel):
 
 
 class _Listed(FrozenModel):
-    """One offer as `host offers` prints it, or a catalog that would not list, saying why."""
+    """One offer as `host offers` prints it, or a catalog that would not list, saying why.
+
+    delivered: the share of the last 30 days' dispatches that ran, from the run registry.
+    useful_usd_hr: dollars per useful GPU hour at the landing share the lake measured, which is
+        what the rows rank by (`Scorecard.RULE`); empty for a provider never measured, which still
+        ranks at its price.
+    landed: that landing share (Laplace smoothed), ready_s the median seconds to ssh answering.
+    cap: what bounds the provider's bill, the bound every lease of it records.
+    """
 
     provider: str
     gpu: str = ""
@@ -94,12 +110,32 @@ class _Listed(FrozenModel):
     stock: str = ""
     rent: str = ""
     delivered: float | None = None
+    useful_usd_hr: float | None = None
+    landed: float | None = None
+    ready_s: float | None = None
+    cap: str = ""
+
+    @property
+    def offer(self) -> Offer | None:
+        """The priced offer this row lists, None for a catalog that would not list."""
+        if self.usd_hr is None:
+            return None
+        return Offer(
+            provider=self.provider,
+            gpu=self.gpu,
+            gpu_count=self.count,
+            spot=self.spot,
+            region=self.region,
+            rate_usd_hr=self.usd_hr,
+        )
 
 
 # The verbs' defaults: compact output, every card in every catalog, the cards a profile names.
 _COMPACT = Output()
 _SHOPPING = Shopping()
 _CARDS = Cards()
+# The rank of a catalog that would not list: after every priced offer.
+_UNPRICED: Rank = (inf, 0.0, 0.0)
 
 
 class RentalVerbs(Verbs):
@@ -208,17 +244,92 @@ class RentalVerbs(Verbs):
         output.print_record(payload, title=title)
 
     @staticmethod
+    def _ranked(found: Sequence[_Listed], *, scorecard: Scorecard) -> list[_Listed]:
+        """`found` scored and best first, equal ranks keeping the order the catalogs listed."""
+        logger.info("ranked by {}", Scorecard.RULE)
+        scored = [RentalVerbs._scored(listed, scorecard=scorecard) for listed in found]
+        return [listed for _, listed in sorted(scored, key=itemgetter(0))]
+
+    @staticmethod
     def _rentable(
-        listed: _Listed, keys: Mapping[str, bool], delivered: Mapping[str, float]
+        listed: _Listed,
+        *,
+        keys: Mapping[str, bool],
+        delivered: Mapping[str, float],
+        grants: Grants,
     ) -> _Listed:
-        """`listed` with the provider `host hold` rents it through and the share that ran.
+        """`listed` with the provider `host hold` rents it through, the share that ran and its cap.
 
         The provider reads `keyed` when its key is here; the share is of the dispatches to that
         provider that started and ran to an exit.
         """
         kind = _RENTABLE.get(listed.provider, "")
         rent = f"{kind} keyed" if kind and keys.get(kind) else kind
-        return listed.model_copy(update={"rent": rent, "delivered": delivered.get(kind)})
+        return listed.model_copy(
+            update={
+                "rent": rent,
+                "delivered": delivered.get(kind),
+                "cap": RentalVerbs.capped(kind, grants=grants),
+            }
+        )
+
+    @staticmethod
+    def _scored(listed: _Listed, *, scorecard: Scorecard) -> tuple[Rank, _Listed]:
+        """`listed` with its useful price and landing record, and the key the rows rank by.
+
+        A catalog that would not list carries no price and ranks last. An offer of a provider
+        never measured is priced at the prior (`Scorecard.RULE`) but shows no measurement.
+        """
+        offer = listed.offer
+        if offer is None:
+            return _UNPRICED, listed
+        kind = _RENTABLE.get(listed.provider, "")
+        if kind:
+            offer = ProviderBackend.find(kind).billed(offer)
+        score = scorecard.score(offer, kind=kind)
+        track = score.track
+        if not track.landings:
+            return score.order, listed
+        ready = track.ready_p50_s
+        measured = {
+            "useful_usd_hr": round(score.useful_usd_hr, 4),
+            "landed": round(track.delivered, 3),
+            "ready_s": None if ready is None else round(ready, 1),
+        }
+        return score.order, listed.model_copy(update=measured)
+
+    @staticmethod
+    def capped(kind: str, *, grants: Grants, balance_usd: float | None = None) -> str:
+        """What bounds provider `kind`'s bill, as every lease of it records, and what is left.
+
+        A card shows its declared limit, or says none is declared and that a rent is then
+        refused; a prepaid provider shows its balance once it was read; a threshold provider is
+        bounded rental by rental, so it shows the bound alone. Empty for a name that is no
+        provider (a host, a rental).
+
+        grants: the owner's grants, which hold the card limits.
+        balance_usd: the balance the provider reports (`Standing.credit_usd`), None unread.
+        """
+        if kind not in ProviderBackend.names():
+            return ""
+        backend = ProviderBackend.find(kind)
+        try:
+            cap = backend.cap(card_usd=grants.card(kind))
+        except MissionError:
+            return f"{backend.bound}, no limit declared"
+        left = cap.remaining(balance_usd=balance_usd)
+        return (
+            str(cap.bound) if left is None or not isfinite(left) else f"{cap.bound} ${left:,.2f}"
+        )
+
+    @staticmethod
+    def granted(root: Path) -> Grants:
+        """The owner's grants of the workspace at `root`, none while its file is refused."""
+        try:
+            return GrantsFile(root).read()
+        except MissionError as refused:
+            logger.warning("no card limit is shown, the grants file was refused: {}", refused)
+            return Grants()
 
     def hold(
         self,
@@ -264,7 +375,7 @@ class RentalVerbs(Verbs):
         limit: int = 25,
         output: Output = _COMPACT,
     ) -> None:
-        """Every cloud's GPU offers, cheapest first, and whether this tool can rent each here.
+        """Every cloud's GPU offers, best useful hour first, and whether this tool can rent each.
 
         Read from gpuhunt, the open catalog dstack publishes: public price lists and live
         marketplaces (AWS, GCP, Azure, Lambda, RunPod, Vast, Verda, Nebius and more), most
@@ -276,9 +387,17 @@ class RentalVerbs(Verbs):
         `delivered` is the share of the last 30 days' dispatches to that provider whose job
         started and ran to an exit (`host list --reliability` breaks it down).
 
+        Rows rank by dollars per useful GPU hour (`useful_usd_hr`) for a one-hour job: the price
+        per GPU, plus the setup, the release time and the provider's billed minimum, plus the
+        failed landings the lake recorded for that provider, each paying its setup, spread over
+        the landings that delivered (`landed`, smoothed so two landings cannot outrank forty;
+        `ready_s` is the median time to ssh). Equal costs rank by `landed`, then `ready_s`. A
+        provider never measured ranks at its price and shows neither. `cap` is what bounds the
+        provider's bill, which a rent through it must stay under.
+
         Args:
             gpu: the card, as any catalog spells it (`B200`, `RTX 4090`, `H100`).
-            limit: how many rows, cheapest first.
+            limit: how many rows, best first.
         """
         wanted = shopping.wanted(gpu)
         with progress(f"asking every cloud for {wanted.spoken or 'any'} GPUs"):
@@ -287,12 +406,15 @@ class RentalVerbs(Verbs):
                 *RentalVerbs._hpcai(wanted, shopping.provider),
                 *RentalVerbs._own(wanted, shopping.provider),
             ]
-        runs = self.session.board("local").dispatcher.cache.listed(since=window(30))
-        delivered = by_kind(reliability(runs))
+        cache = self.session.board("local").dispatcher.cache
+        delivered = by_kind(reliability(cache.listed(since=window(30))))
+        grants = RentalVerbs.granted(self.session.workspace_root())
         keys = {kind: RentalVerbs._keyed(kind) for kind in _RENTABLE.values()}
-        # A catalog that would not list carries no price and goes last.
-        cheapest = sorted(found, key=lambda listed: (listed.usd_hr is None, listed.usd_hr or 0.0))
-        rows = [RentalVerbs._rentable(listed, keys, delivered) for listed in cheapest[:limit]]
+        best = RentalVerbs._ranked(found, scorecard=Scorecard.of(Ledger(cache.session)))
+        rows = [
+            RentalVerbs._rentable(listed, keys=keys, delivered=delivered, grants=grants)
+            for listed in best[:limit]
+        ]
         output.print_rows([row.model_dump() for row in rows], title="offers")
 
     def release(self, alias: str, *, output: Output = _COMPACT) -> None:

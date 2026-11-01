@@ -1,7 +1,7 @@
 import json
 from typing import TYPE_CHECKING
 
-from ...batch.receipts import Topic, publish
+from ...batch.receipts import publish
 from ...core.errors import MissionError
 from ...core.section import Section
 from ...dispatch.hosts.onboard import (
@@ -11,9 +11,9 @@ from ...dispatch.hosts.onboard import (
 )
 from ...dispatch.jobs.vocabulary import Resources
 from ...dispatch.transport.shells import open_shell
+from ...enums import Topic
 from ...probe.readings.occupancy import Occupancy
 from ...probe.readings.snapshot import HostFacts
-from ...runtime.job import walltime_seconds
 from ...tracking import Sampler, attesting, is_batched, sampling, streamed
 from ..fitness import Fitness
 from ..runs import Run
@@ -151,5 +151,5 @@ class Tracking(Environments):
             stream=stream,
             job=job,
             interval=declared.interval,
-            seconds=walltime_seconds(resources.walltime) if resources.walltime else 0.0,
+            seconds=resources.walltime_s,
         )

@@ -1,11 +1,10 @@
 """ALL-TEST0004: test files outside the place their ecosystem's layout gives them."""
 
-from .... import edits
 from ....catalog import Example, Rule
-from ....edits import Edit
+from ....edits import Edit, Rename
 from ....engine.facts import Setting
 from ....findings import Hit
-from ..project.relocation import respelled
+from ....operations import ModuleRelocation
 from .constants import ANCHOR
 
 _PYPROJECT = """\
@@ -458,14 +457,14 @@ class TestFolderMirrorsSource(Rule, id="ALL-TEST0004", applicability="review"):
         """
         if hit.target is None:
             return None
-        made = respelled(hit, self._moves(hit))
+        made = ModuleRelocation.respelled(hit.records("files"), self._moves(hit))
         if made is None:
             return None
         source, target = str(hit.source), str(hit.target)
         return [
             *made,
             *(
-                edits.rename(str(path), target=target + str(path).removeprefix(source))
+                Rename(path=str(path), target=target + str(path).removeprefix(source))
                 for path in hit.sequence("carried")
             ),
         ]

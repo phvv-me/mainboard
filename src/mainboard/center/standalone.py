@@ -14,8 +14,9 @@ from plumbum.commands.processes import ProcessTimedOut
 
 from ..core.errors import MissionError
 from ..core.project import Project
-from ..core.section import Section, Verdict
+from ..core.section import Section
 from ..engines.compile.backend.process import Process
+from ..enums import Verdict
 from ..git.process import Git
 from ..manifest.members import Package
 
@@ -265,7 +266,7 @@ class Standalone:
         with TemporaryDirectory(prefix="mainboard-member-", ignore_cleanup_errors=True) as scratch:
             clone = Path(scratch) / member.name
             cloned = Git(self.root).run("clone", "-q", str(self.root / member.path), str(clone))
-            if not cloned.succeeded:
+            if cloned.returncode:
                 return [_row(member, "install", Verdict.FAIL, _squashed(cloned.stderr))]
             return [self._imported_alone(member, member.package, clone)]
 

@@ -166,7 +166,9 @@ class Line:
         flags = build_qsub_flags(
             Resources(queue=spec.queue, mem_gb=spec.mem_gb, account=spec.account)
         )
-        keeper = keeper_script(spec, spool=spool.path, token=token, flags=flags, template=serve)
+        keeper = keeper_script(
+            spec, spool=spool.path, ownership=token, flags=flags, template=serve
+        )
         written = {"line.json": spec.model_dump_json(), "keeper.token": token, "keeper.sh": keeper}
         for name, text in written.items():
             self._write(remote, spool, name, text=text)
@@ -180,7 +182,55 @@ class Line:
         if started[0]:
             raise MissionError(f"could not start the keeper on {self.host}: {started[2].strip()}")
 
-    def _status(self, remote: Machine, spool: Remote) -> LineStatus:
+    def _stop(self, remote: Machine, spool: Remote) -> LineStatus:
+        """Stop the line, then free the allocation unless a job is still running in it.
+
+        The allocation gets a few seconds to end itself before it is `qdel`led.
+        """
+        code, _, err = login_ask(remote, spool.stop())
+        if code:
+            raise MissionError(
+                f"could not stop the held line on {self.host} (exit {code}): {err.strip()[-200:]}"
+            )
+        deadline = time.monotonic() + _ENDS
+        status = self.read(remote, spool)
+        while status.alloc and not status.running and time.monotonic() < deadline:
+            time.sleep(_POLL)
+            status = self.read(remote, spool)
+        if status.alloc and not status.running:
+            qdel(remote, status.alloc)
+            status = self.read(remote, spool)
+        return status
+
+    def open(self, duration: str, *, walltime: str = "", watch: Watcher = announce) -> LineStatus:
+        """Keep the interactive slot for `duration`, answering once an allocation is serving.
+
+        Idempotent: a line already kept is reported, never doubled. A first allocation that does
+        not come (the slot is another job's) closes the line again and says why, rather than
+        queueing behind it unseen.
+
+        walltime: how long each allocation lasts, the queue's ceiling when empty.
+        """
+        spec = self._spec(duration, walltime=walltime)
+        spool = Remote(spool_path(self.board.remote_root()))
+        with connection(self.host) as remote:
+            if (seen := self.read(remote, spool)).state not in {"absent", "unkept", "ended"}:
+                return seen.model_copy(update={"detail": "already held"})
+            watch(f"opening the line on {self.host}")
+            self._start(remote, spool, spec)
+            deadline = time.monotonic() + _READY
+            while time.monotonic() < deadline:
+                time.sleep(_POLL)
+                if (seen := self.read(remote, spool)).state in {"ready", "busy"}:
+                    return seen
+            pane = self._pane(remote)
+            self._stop(remote, spool)
+        raise MissionError(
+            f"no allocation answered on {self.host} within {_READY:g}s, so the line was closed. "
+            f"The keeper's terminal said:\n{pane}"
+        )
+
+    def read(self, remote: Machine, spool: Remote) -> LineStatus:
         """Read the spool's own files and name the state they add up to."""
         code, out, err = login_ask(remote, spool.status())
         if code:
@@ -203,54 +253,6 @@ class Line:
             running=running,
         )
 
-    def _stop(self, remote: Machine, spool: Remote) -> LineStatus:
-        """Stop the line, then free the allocation unless a job is still running in it.
-
-        The allocation gets a few seconds to end itself before it is `qdel`led.
-        """
-        code, _, err = login_ask(remote, spool.stop())
-        if code:
-            raise MissionError(
-                f"could not stop the held line on {self.host} (exit {code}): {err.strip()[-200:]}"
-            )
-        deadline = time.monotonic() + _ENDS
-        status = self._status(remote, spool)
-        while status.alloc and not status.running and time.monotonic() < deadline:
-            time.sleep(_POLL)
-            status = self._status(remote, spool)
-        if status.alloc and not status.running:
-            qdel(remote, status.alloc)
-            status = self._status(remote, spool)
-        return status
-
-    def open(self, duration: str, *, walltime: str = "", watch: Watcher = announce) -> LineStatus:
-        """Keep the interactive slot for `duration`, answering once an allocation is serving.
-
-        Idempotent: a line already kept is reported, never doubled. A first allocation that does
-        not come (the slot is another job's) closes the line again and says why, rather than
-        queueing behind it unseen.
-
-        walltime: how long each allocation lasts, the queue's ceiling when empty.
-        """
-        spec = self._spec(duration, walltime=walltime)
-        spool = Remote(spool_path(self.board.remote_root()))
-        with connection(self.host) as remote:
-            if (seen := self._status(remote, spool)).state not in {"absent", "unkept", "ended"}:
-                return seen.model_copy(update={"detail": "already held"})
-            watch(f"opening the line on {self.host}")
-            self._start(remote, spool, spec)
-            deadline = time.monotonic() + _READY
-            while time.monotonic() < deadline:
-                time.sleep(_POLL)
-                if (seen := self._status(remote, spool)).state in {"ready", "busy"}:
-                    return seen
-            pane = self._pane(remote)
-            self._stop(remote, spool)
-        raise MissionError(
-            f"no allocation answered on {self.host} within {_READY:g}s, so the line was closed. "
-            f"The keeper's terminal said:\n{pane}"
-        )
-
     def release(self) -> LineStatus:
         """End the line and free its allocation, letting a running job finish.
 
@@ -264,11 +266,11 @@ class Line:
     def status(self) -> LineStatus:
         """The line as its spool says now."""
         with connection(self.host) as remote:
-            return self._status(remote, Remote(spool_path(self.board.remote_root())))
+            return self.read(remote, Remote(spool_path(self.board.remote_root())))
 
 
 def keeper_script(
-    spec: LineSpec, *, spool: str, token: str, flags: list[str], template: str
+    spec: LineSpec, *, spool: str, ownership: str, flags: list[str], template: str
 ) -> str:
     """The bash loop the keeper runs: one `qsub -I` allocation after another.
 
@@ -282,7 +284,7 @@ def keeper_script(
     return f"""#!/bin/bash
 # Keeps a held line: opens one interactive allocation after another until it is released, fenced
 # out by a newer keeper, or past its deadline. Generated by `host hold`.
-spool={shlex.quote(spool)}; token={shlex.quote(token)}; deadline={int(spec.deadline)}
+spool={shlex.quote(spool)}; token={shlex.quote(ownership)}; deadline={int(spec.deadline)}
 cap={walltime_seconds(spec.walltime)}
 template={shlex.quote(template)}
 own() {{ [ "$(cat "$spool/keeper.token" 2>/dev/null)" = "$token" ]; }}

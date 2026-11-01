@@ -10,7 +10,7 @@ from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from stat import S_ISREG
 
-from .pack import Digests, excluded, sha256, walked
+from .pack import Digests, excluded, is_unchanged, sha256, walked
 
 # How long a run must have written nothing before `link` counts its files settled, in seconds.
 _QUIET = 3600
@@ -137,7 +137,7 @@ class _Linking:
             moved = [
                 path
                 for path, stat in names
-                if self.dry or (_is_unchanged(source, kept) and _is_unchanged(path, stat))
+                if self.dry or (is_unchanged(source, kept) and is_unchanged(path, stat))
             ]
             for path in () if self.dry else moved:
                 _Linking._relink(source, path=path)
@@ -158,13 +158,3 @@ def _run(path: Path) -> Path:
         if under + 2 < len(parts):
             return Path(*parts[: under + 2])
     return path
-
-
-def _is_unchanged(path: Path, seen: os.stat_result) -> bool:
-    """Whether `path` is still the file `seen` described when it was hashed."""
-    now = path.lstat()
-    return (now.st_ino, now.st_size, now.st_mtime_ns) == (
-        seen.st_ino,
-        seen.st_size,
-        seen.st_mtime_ns,
-    )

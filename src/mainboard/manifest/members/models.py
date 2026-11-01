@@ -8,7 +8,7 @@ from packaging.utils import canonicalize_name
 from patos import FrozenModel
 
 from ...core.errors import MissionError
-from ..schema.root import Manifest
+from ..root import Manifest
 
 if TYPE_CHECKING:
     from pathlib import Path

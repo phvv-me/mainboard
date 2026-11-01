@@ -31,9 +31,10 @@ from typing import TYPE_CHECKING
 
 from cyclopts import App
 
-from ..dispatch.constants import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR, RECEIPTS_VAR
+from ..constants import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR, RECEIPTS_VAR
+from ..enums import Exit
 from ..log import logger
-from ..proc import Exit, Processes
+from ..proc import Processes
 from .constants import NESTED
 from .targets.pins import staging
 from .targets.target import Target, dotted, home_of

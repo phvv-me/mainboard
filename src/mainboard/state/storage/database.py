@@ -21,6 +21,7 @@ from pathlib import Path
 
 import duckdb
 
+from ...core.environ import Dotenv
 from ...core.errors import MissionError
 from ...core.project import Project
 from ...manifest.composing import composition
@@ -145,7 +146,7 @@ def settings() -> dict[str, Setting]:
     declared = composition(manifest).manifest.duckdb if manifest.is_file() else {}
     machine = {
         name.removeprefix(_PREFIX): value
-        for name, value in (Project().dotenv(root) | dict(os.environ)).items()
+        for name, value in (Dotenv.at(root).values | dict(os.environ)).items()
         if name.startswith(_PREFIX)
     }
     merged = {name.lower(): value for name, value in (_DEFAULTS | declared | machine).items()}
@@ -157,14 +158,14 @@ def settings() -> dict[str, Setting]:
 def _unpinned() -> None:
     """Relaunch the threads of the instance `import duckdb` opened, none pinned to a core.
 
-    A thread count change relaunches them, so it goes to one and back.
+    DuckDB pins by the machine's cores, not this process's affinity, so the guard reads
+    `os.cpu_count`. A thread count change relaunches them, so it goes to one and back.
     """
-    if (os.cpu_count() or 0) <= 64:
-        return
-    [(threads,)] = duckdb.execute("SELECT current_setting('threads')").fetchall()
-    duckdb.execute("SET pin_threads = 'off'")
-    duckdb.execute("SET threads = 1")
-    duckdb.execute(f"SET threads = {threads}")
+    if (os.cpu_count() or 0) > 64:
+        [(threads,)] = duckdb.execute("SELECT current_setting('threads')").fetchall()
+        duckdb.execute("SET pin_threads = 'off'")
+        duckdb.execute("SET threads = 1")
+        duckdb.execute(f"SET threads = {threads}")
 
 
 _unpinned()

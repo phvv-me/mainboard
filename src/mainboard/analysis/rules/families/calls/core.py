@@ -5,9 +5,8 @@ A call is a `call` node; its callee is the first child and its arguments the sec
 callee's dotted name through the file's imports, the project's own definitions, the builtins and
 the declared type of its receiver (an annotated parameter or variable seen earlier in the file,
 by name): `resolved` does the same in SQL, except that a call in a parameter default stays
-unresolved, as in mcmr (`x: frozenset = frozenset()` is a deliberate immutable default, which a
-resolved `builtins.frozenset` would make PY-COLL0004 flag). The expression trees `call_expressions`
-holds (positional arguments, the receiver, and below a nested call its arguments or below a
+unresolved, as in mcmr (`x: frozenset = frozenset()` is a deliberate immutable default). The
+expression trees `call_expressions` holds (positional arguments, the receiver, and below a nested call its arguments or below a
 dictionary its values) come from walking those children. tree-sitter reads `[*a.b()]` as an
 attribute whose receiver is the `list_splat`: `call_splats` moves such spans past the star.
 """

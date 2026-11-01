@@ -9,18 +9,16 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from mainboard.probe.reverse import Evidence
-from mainboard.probe.reverse.models import (
+from mainboard.probe.reverse.evidence import (
     Artifact,
     ArtifactKind,
-    Confidence,
-    Fact,
     JsonValue,
     Kernel,
     KernelInventory,
     Provenance,
 )
 
-from ..builders import evidence
+from ..builders import evidence, inventories
 
 # Keys and strings stay short and recursion shallow: the property is about canonical encoding,
 # not volume, and an unbounded recursive strategy trips Hypothesis's input-entropy health check.
@@ -89,20 +87,8 @@ def test_profile_is_required_and_must_match_the_evidence() -> None:
 
 
 def test_inventory_diff_reports_exact_metadata_changes() -> None:
-    unchanged = Kernel(name="same", arch="sm_90a")
-    older = Kernel(name="changed", arch="sm_90a")
-    newer = older.model_copy(
-        update={
-            "registers": Fact[int | None](
-                value=32,
-                confidence=Confidence.observed,
-                provenance=Provenance.IMPORTED,
-            )
-        }
-    )
-    removed, added = Kernel(name="old", arch="sm_90a"), Kernel(name="new", arch="sm_100")
-    before = KernelInventory(kernels=(unchanged, older, removed), arches=("sm_90a",))
-    after = KernelInventory(kernels=(added, newer, unchanged), arches=("sm_90a", "sm_100"))
+    before, after = inventories()
+    (_, older, removed), (added, newer, _) = before.kernels, after.kernels
     diff = before.diff(after)
     assert diff.added == (added,)
     assert diff.removed == (removed,)

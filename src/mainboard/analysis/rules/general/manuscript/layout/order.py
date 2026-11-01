@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 
-from .....catalog import Rule
+from .....catalog import Part
 
 _HELD = (
     "theorem",
@@ -21,7 +21,7 @@ _HELD = (
 )
 
 
-class ForwardReferenceToUnreadMaterial(Rule, id="ALL-MANU0001"):
+class ForwardReferenceToUnreadMaterial(Part):
     """References sending a reader to something they have not read yet."""
 
     kinds: Sequence[str] = _HELD
@@ -47,7 +47,7 @@ class ForwardReferenceToUnreadMaterial(Rule, id="ALL-MANU0001"):
     )
 
 
-class SymbolUsedBeforeItIsIntroduced(Rule, id="ALL-MANU0002"):
+class SymbolUsedBeforeItIsIntroduced(Part):
     """Symbols a reader meets before the manuscript says what they are."""
 
     minimum_uses: int = 3
@@ -72,7 +72,7 @@ class SymbolUsedBeforeItIsIntroduced(Rule, id="ALL-MANU0002"):
     message = "`{name}` is used {use_count} times and is introduced {introduced}"
 
 
-class TermUsedBeforeItIsMarked(Rule, id="ALL-MANU0003"):
+class TermUsedBeforeItIsMarked(Part):
     """Terms a reader meets in prose before the manuscript marks them."""
 
     marking_commands: Sequence[str] = ("term",)

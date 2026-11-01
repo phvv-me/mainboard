@@ -1,25 +1,13 @@
 # One-call bottleneck reporting: run a callable, say where the GPU time went.
 
 from collections.abc import Sequence
-from enum import Enum
 
 from patos import FrozenModel
 
-from ...constants import BYTES_PER_GB
-from ..constants import NANOSECONDS_PER_MILLISECOND
+from ...core.constants.units import BYTES_PER_GB, NANOSECONDS_PER_MILLISECOND
+from ..enums import Activity, Bound
 from ..result import DeviceEvidence, Profile
-from ..trace import Activity, BottleneckReport, HotKernel, KernelTrace
-
-
-class Bound(Enum):
-    """Whether the dominant work is limited by memory traffic or compute throughput.
-
-    UNKNOWN when there was nothing to classify: no kernels, no copies, no utilization signal.
-    """
-
-    MEMORY = "memory"
-    COMPUTE = "compute"
-    UNKNOWN = "unknown"
+from ..trace import BottleneckReport, HotKernel, KernelTrace
 
 
 class KernelStat(FrozenModel):

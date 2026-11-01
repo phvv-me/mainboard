@@ -21,12 +21,13 @@ from patos import FrozenModel, Model
 from pydantic import ValidationError
 
 from ..batch import receipts as receipts_module
-from ..batch.receipts import Event, Journal, Topic, latest
+from ..batch.receipts import Event, Journal, latest
 from ..core.errors import MissionError
 from ..dispatch.jobs import vocabulary
 from ..dispatch.jobs.vocabulary import JobState
 from ..dispatch.schedulers import HostUnreachable, short_reason
 from ..dispatch.state.captured import Captured
+from ..enums import Topic
 from ..log import logger
 from ..settling.monitor import Settlement, owes_receipt
 from ..tracking import streamed
@@ -77,6 +78,7 @@ _EXITS = {
     vocabulary.Word.SUBMITTING: 2,
 }
 _INCOMPLETE = "evidence settlement is incomplete"
+_UNVERIFIED = "unverified"
 
 
 # A wait that holds on until its target settles, at the vigil's own stall threshold.
@@ -241,7 +243,7 @@ class Verdicts:
         settlement: Settlement, record: RunRecord, receipts: tuple[str, ...], fault: Exception
     ) -> None:
         """Record that the evidence `record` left could not be verified, and why."""
-        settlement.evidence(record, receipts, status="unverified", detail=f"cancelled: {fault}")
+        settlement.evidence(record, receipts, status=_UNVERIFIED, detail=f"cancelled: {fault}")
 
     @staticmethod
     def _killed(run: Run, settlement: Settlement) -> str:
@@ -580,7 +582,7 @@ class Verdicts:
         cache = self.board.dispatcher.cache
         settlement = Settlement(self.board)
         detail = f"cancelled: {record.target} is no longer declared, so its output is lost"
-        settlement.evidence(record, (), status="unverified", detail=detail)
+        settlement.evidence(record, (), status=_UNVERIFIED, detail=detail)
         stored = cache.resolve(record, vocabulary.Word.CANCELLED, None, vocabulary.Word.CANCELLED)
         verdict = stored.verdict or vocabulary.Word.CANCELLED
         state = JobState(
@@ -857,7 +859,7 @@ def _corrected(trial: TrialVerdict, status: Event | None) -> TrialVerdict:
     """`trial` under its newest delivery status, withheld unless that status is benign."""
     if status is None or status.data.get("status") in {"verified", "not_started"}:
         return trial
-    word = "unverified" if status.data.get("status") == "unverified" else "blocked"
+    word = _UNVERIFIED if status.data.get("status") == _UNVERIFIED else "blocked"
     detail = str(status.data.get("detail") or _INCOMPLETE)
     return trial.model_copy(update={"verdict": word, "detail": detail})
 
@@ -940,12 +942,12 @@ def _gated(sweep: JsonValue) -> str:
 
 def _delivery(trial: TrialVerdict, record: RunRecord) -> TrialVerdict:
     """Fail closed on the cache checkpoint even if its next event was never published."""
-    if record.evidence not in {"pending", "copied", "unverified"}:
+    if record.evidence not in {"pending", "copied", _UNVERIFIED}:
         return trial
-    unverified = record.evidence == "unverified"
+    unverified = record.evidence == _UNVERIFIED
     return trial.model_copy(
         update={
-            "verdict": "unverified" if unverified else "blocked",
+            "verdict": _UNVERIFIED if unverified else "blocked",
             "detail": "evidence is unverified" if unverified else _INCOMPLETE,
         }
     )

@@ -3,7 +3,6 @@
 import json
 import platform
 from contextlib import suppress
-from enum import StrEnum, auto
 from hashlib import blake2b, sha256
 from importlib.metadata import PackageNotFoundError, packages_distributions, version
 from pathlib import Path
@@ -11,12 +10,13 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..core.project import Project
-from ..dispatch.constants import CLOSURE_VAR, DIGEST_VAR
-from ..dispatch.provenance import Row, SourceTree, Status, blob_of, listing
+from ..core.project import Marker, Project
+from ..constants import CLOSURE_VAR, DIGEST_VAR
+from ..dispatch.provenance import Row, SourceTree, blob_of, listing
+from ..enums import Status
 from ..probe.machine import Machine
-from .lanes.coverage import Probed
-from .store.constants import BASELINES
+from .constants import BASELINES
+from .enums import Admissibility, Probed
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -28,21 +28,6 @@ _SOURCES = "*.py"
 # Every digest's width in bytes: a fingerprint a person can compare by eye in a receipt column. It
 # accelerates the question whether two trees are the same and never settles it.
 _WIDTH = 16
-
-
-class Admissibility(StrEnum):
-    """Whether one row's producing tree can be identified, which is what makes it evidence.
-
-    ADMISSIBLE: the lane belongs to the verified content snapshot.
-    DIRTY: historical rejection label, preserved when reading old receipts.
-    UNTRACKED: historical rejection label, preserved when reading old receipts.
-    UNRECORDED: the row was written before this field existed and can prove none of the above.
-    """
-
-    ADMISSIBLE = auto()
-    DIRTY = auto()
-    UNTRACKED = auto()
-    UNRECORDED = auto()
 
 
 def parsed(manifest: str) -> list[Row]:
@@ -108,7 +93,7 @@ class Source(FrozenModel):
         # Snapshots keep the listing at their root; local runs stage it under workspace state.
         root = (
             closure.parent
-            if closure.name in Project().markers("closure")
+            if closure.name in Marker(suffix="closure").names
             else Project().find_root(closure.parent)
         )
         tree = SourceTree(root)

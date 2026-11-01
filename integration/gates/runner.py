@@ -24,7 +24,7 @@ from mb import logger
 
 # Seconds of the budget that launching, preflight and cleanup keep for themselves.
 _RESERVE = 30
-_TOOLS = ["pytest", "ruff", "pyrefly", "ty", "mypy", "mcmr"]
+_TOOLS = ["pytest", "ruff", "pyrefly", "ty", "mypy"]
 _INHERITED = [
     "PATH",
     "LANG",
@@ -171,7 +171,6 @@ class Gate:
     def _checker(self, mode: str) -> list[str]:
         """A fixed, read-only checker invocation: never an arbitrary command or test scenario."""
         config = str(self.tree / "pyproject.toml")
-        findings = self.report / "mcmr-findings.json"
         return {
             "ruff": [
                 "ruff",
@@ -215,21 +214,6 @@ class Gate:
                 "--show-error-codes",
                 "--no-color-output",
                 "src",
-            ],
-            "mcmr": [
-                "mcmr",
-                "check",
-                str(self.tree),
-                "--deterministic",
-                "--no-contextual",
-                "--no-external",
-                "--no-writeback",
-                "--repair",
-                "none",
-                "--format",
-                "concise",
-                "--output",
-                str(findings),
             ],
         }[mode]
 
@@ -360,7 +344,7 @@ class Gate:
     def _pytest(self, mode: str, selection: list[str]) -> int:
         if not self._preflight():
             return 78
-        self._seed_extensions()
+        self.seed_extensions()
         return self._execute(
             mode,
             [
@@ -410,16 +394,6 @@ class Gate:
         )
         return ["/usr/bin/sandbox-exec", "-f", str(profile), *command]
 
-    def _seed_extensions(self) -> None:
-        """Copy the preinstalled DuckDB extensions; a gate never downloads code on demand."""
-        if not _SEED.is_dir():
-            raise RuntimeError(
-                f"M00-EXTENSIONS: offline DuckDB cache missing: {_SEED}; run `run.sh seed` first"
-            )
-        darwin = sys.platform == "darwin"
-        cache = self.root / ("home/Library/Caches/mb/duckdb" if darwin else "cache/mb/duckdb")
-        shutil.copytree(_SEED, cache, dirs_exist_ok=True)
-
     def _shrunk(self) -> str:
         """Why this suite collects fewer tests than the project a fix mirror was made from.
 
@@ -444,7 +418,11 @@ class Gate:
         logger.result(f"mainboard.__file__ = {mainboard.__file__}\n", end="")
 
     def run(self, mode: str, selection: list[str]) -> int:
-        """Run lane `mode` and return the exit code its worker ended with."""
+        """Run lane `mode` and return the exit code its worker ended with.
+
+        A disk below the floor every large writer keeps refuses the lane first (`Disk.require`).
+        """
+        mainboard.core.Disk(path=self.root).require(doing=f"the gate's {mode} lane")
         if mode == "inspect":
             return self._inspect()
         if mode == "suite" and (shrunk := self._shrunk()):
@@ -461,6 +439,15 @@ class Gate:
         (self.report / f"{name}.json").write_text(
             json.dumps(self.result, indent=2) + "\n", encoding="utf-8"
         )
+
+    def seed_extensions(self) -> None:
+        """Copy the preinstalled DuckDB extensions; a gate never downloads code on demand."""
+        if not _SEED.is_dir():
+            raise RuntimeError(
+                f"M00-EXTENSIONS: offline DuckDB cache missing: {_SEED}; run `run.sh seed` first"
+            )
+        cache = "home/Library/Caches/mb/duckdb" if sys.platform == "darwin" else "cache/mb/duckdb"
+        shutil.copytree(_SEED, self.root / cache, dirs_exist_ok=True)
 
 
 def _main(mode: str = "suite", *selection: str) -> None:

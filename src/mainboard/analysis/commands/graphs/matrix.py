@@ -8,14 +8,13 @@ groups of files, and of units, that import each other around a loop.
 """
 
 from pathlib import Path
-from typing import Annotated
 
-from cyclopts import Parameter
-
-from ....log import logger
+from ....render import Output
 from ..report import Report
 from ..workspace import Workspace
 from .scope import Graph, Scope, UnitGraph
+
+_COMPACT = Output()
 
 _GRID = 32
 
@@ -71,15 +70,14 @@ class Matrix(Graph, Report):
 def matrix(
     path: Path = Path(),
     *,
-    as_json: Annotated[bool, Parameter(name="--json")] = False,
+    output: Output = _COMPACT,
     memory: str = "2GB",
 ) -> None:
     """The import design structure matrix of a package, by subpackage or module, with its cycles.
 
     path: a directory of the project; its subpackages and modules are the rows.
-    as_json: print JSON for a program.
     memory: a DuckDB memory limit such as `4GB`.
     """
     scope = Scope.of(path)
     graph = UnitGraph(Workspace(scope.root, memory=memory), scope)
-    logger.result(Matrix(**graph.fields()).render(as_json=as_json))
+    Matrix(**graph.fields()).show(output)

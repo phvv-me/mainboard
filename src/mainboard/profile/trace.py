@@ -3,42 +3,14 @@
 import math
 from collections import Counter
 from collections.abc import Iterable, Sequence
-from enum import Flag, auto
 from types import TracebackType
 
 from patos import FrozenModel
 
+from .enums import Activity
 from .formats.protocols import KernelActivity, MemcpyActivity
 
 _NANOSECONDS_PER_MICROSECOND = 1000.0
-
-
-class Activity(Flag):
-    """The activity kinds to trace, combined with `|`, each mapped to a vendor's native kind.
-
-    KERNEL and MEMCPY become typed `KernelTrace`/`MemcpyTrace`, the rest `ActivityRecord`.
-    DEFAULT is the minimal, low-impact set; ALL adds the high-volume runtime/driver kinds.
-    """
-
-    KERNEL = auto()
-    MEMCPY = auto()
-    MEMSET = auto()
-    SYNC = auto()
-    OVERHEAD = auto()
-    MEMORY = auto()
-    JIT = auto()
-    RUNTIME = auto()
-    DRIVER = auto()
-    MEMORY_POOL = auto()
-    DEFAULT = KERNEL | MEMCPY
-    ALL = (
-        KERNEL | MEMCPY | MEMSET | SYNC | OVERHEAD | MEMORY | JIT | RUNTIME | DRIVER | MEMORY_POOL
-    )
-
-    @property
-    def label(self) -> str:
-        """The lowercase name used in records and on the Perfetto timeline."""
-        return (self.name or "activity").lower()
 
 
 _MEMCPY_KIND = dict(
@@ -102,11 +74,6 @@ class KernelTrace(FrozenModel):
         The CUPTI activity record carries the launch config but not achieved occupancy.
         """
         return 100.0 * self.threads_per_block / _MAX_THREADS_PER_BLOCK
-
-    @property
-    def shared_mem(self) -> int:
-        """Per-block static plus dynamic shared memory in bytes."""
-        return self.static_shared_mem + self.dynamic_shared_mem
 
     @property
     def threads_per_block(self) -> int:
@@ -233,30 +200,19 @@ class TraceCollector:
         """Drain and stop collection (a single device sync happens here)."""
 
 
-class CallbackSession:
-    """No-op CUPTI Callback subscription; vendor backends count API calls by name.
+def busy_runs(spans: Iterable[tuple[int, int, str]]) -> list[tuple[int, int, str, str]]:
+    """The union of half-open `(start_ns, end_ns, name)` spans as busy runs, empty spans dropped.
 
-    The Callback API intercepts runtime/driver calls synchronously, unlike the asynchronous
-    Activity stream, so it counts calls without buffering. Read `counts` after the context.
+    A run is `(start_ns, end_ns, first, last)`: the span that began it and the one that reached
+    its end, which name the two sides of the gap beside it.
     """
-
-    def __enter__(self) -> CallbackSession:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        self.stop()
-
-    def counts(self) -> dict[str, int]:
-        """Calls observed per API function name."""
-        return {}
-
-    def stop(self) -> None:
-        """Unsubscribe from the callback domains."""
+    runs: list[tuple[int, int, str, str]] = []
+    for start, end, name in sorted(span for span in spans if span[1] > span[0]):
+        if not runs or start > runs[-1][1]:
+            runs.append((start, end, name, name))
+        elif end > runs[-1][1]:
+            runs[-1] = (runs[-1][0], end, runs[-1][2], name)
+    return runs
 
 
 def busy_ns(spans: Iterable[tuple[int, int]]) -> int:
@@ -268,16 +224,8 @@ def busy_ns(spans: Iterable[tuple[int, int]]) -> int:
     statistical: reproducibility's `recovery_cost` read device shares of 1.908 and 1.860 of its
     own wall from a sum, and its 2026-08-29 referee reproduced that at ten launches.
     """
-    ordered = sorted((start, end) for start, end in spans if end > start)
-    busy, reach = 0, None
-    for start, end in ordered:
-        if reach is None or start > reach:
-            busy += end - start
-            reach = end
-        elif end > reach:
-            busy += end - reach
-            reach = end
-    return busy
+    runs = busy_runs((start, end, "") for start, end in spans)
+    return sum(end - start for start, end, _, _ in runs)
 
 
 class HotKernel(FrozenModel):
@@ -332,6 +280,7 @@ class BottleneckReport(FrozenModel):
         share = total_kernel or 1
         walls = {w.name: w.wall_ns for w in windows}
         by_region = ((cls._region_of(k.start_ns, windows), k.duration_ns) for k in kernels)
+        by_kernel = ((k.name, k.duration_ns) for k in kernels)
         return cls(
             total_kernel_ns=total_kernel,
             total_memcpy_ns=total_memcpy,
@@ -352,7 +301,7 @@ class BottleneckReport(FrozenModel):
                     wall_ns=walls.get(name, 0),
                     share_pct=100.0 * ns / share,
                 )
-                for name, calls, ns in _hottest(by_region, top)
+                for name, calls, ns in cls._hottest(by_region, top)
             ),
             hot_kernels=tuple(
                 HotKernel(
@@ -362,9 +311,19 @@ class BottleneckReport(FrozenModel):
                     avg_ns=ns / calls,
                     share_pct=100.0 * ns / share,
                 )
-                for name, calls, ns in _hottest(((k.name, k.duration_ns) for k in kernels), top)
+                for name, calls, ns in cls._hottest(by_kernel, top)
             ),
         )
+
+    @staticmethod
+    def _hottest(timed: Iterable[tuple[str, int]], top: int) -> list[tuple[str, int, int]]:
+        """`(name, calls, total_ns)` per name, the `top` largest totals first."""
+        calls: Counter[str] = Counter()
+        nanos: Counter[str] = Counter()
+        for name, ns in timed:
+            calls[name] += 1
+            nanos[name] += ns
+        return [(name, calls[name], ns) for name, ns in nanos.most_common(top)]
 
     @staticmethod
     def _region_of(start_ns: int, windows: Sequence[RegionWindow]) -> str:
@@ -381,13 +340,3 @@ class BottleneckReport(FrozenModel):
             if best_span is None or span < best_span:
                 best, best_span = window.name, span
         return best
-
-
-def _hottest(timed: Iterable[tuple[str, int]], top: int) -> list[tuple[str, int, int]]:
-    """`(name, calls, total_ns)` per name, the `top` largest totals first."""
-    calls: Counter[str] = Counter()
-    nanos: Counter[str] = Counter()
-    for name, ns in timed:
-        calls[name] += 1
-        nanos[name] += ns
-    return [(name, calls[name], ns) for name, ns in nanos.most_common(top)]

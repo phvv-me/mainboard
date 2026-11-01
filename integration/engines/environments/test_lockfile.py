@@ -13,7 +13,7 @@ from mainboard.engines.compile import Lockfile
 from mainboard.engines.compile.generated import GeneratedFiles, Writer
 from mainboard.engines.compile.pixi.lockfile import Solved
 
-type _Step = tuple[str, str, Solved] | tuple[str, set[str]] | tuple[str]
+type _Step = tuple[str, str, Solved] | tuple[str, set[str]]
 
 _NAME = st.one_of(
     st.sampled_from(["default", "gpu", "tl", "a.b", "X_1"]),
@@ -25,15 +25,14 @@ _LINE = st.one_of(
     st.sampled_from(["[environments.gpu]", "lock = x", "version: 7"]),
 )
 _LOCK = st.builds(
-    lambda lines, eol, tail: eol.join(lines) + tail,
+    lambda lines, tail: "\n".join(lines) + tail,
     st.lists(_LINE, max_size=4),
-    st.sampled_from(["\n", "\r\n"]),
     st.sampled_from(["", "'", "''"]),
 )
 _UNCARRIABLE = st.builds(
     lambda head, bad, tail: head + bad + tail,
     _LINE,
-    st.sampled_from(["'''", "\r", "\x00", "\x7f"]),
+    st.sampled_from(["'''", "\r", "\r\n", "\x00", "\x7f"]),
     _LINE,
 )
 _STEP = st.one_of(
@@ -46,7 +45,6 @@ _STEP = st.one_of(
         st.builds(Solved, solved_from=_WORD, solved_by=_WORD, lock=_UNCARRIABLE),
     ),
     st.tuples(st.just("retain"), st.sets(_NAME)),
-    st.tuples(st.just("checkout-with-crlf")),
 )
 _RECORDED = [
     ("put", name, Solved(solved_from=name, solved_by="fake", lock="version: 7\n"))
@@ -74,15 +72,6 @@ def _retained(lock: Lockfile, files: Writer, model: dict[str, Solved], declared:
         del model[name]
 
 
-def _checked_out_with_crlf(lock: Lockfile, model: dict[str, Solved]) -> None:
-    """End every line of the file in CRLF, as a checkout with `autocrlf` does, and the model's."""
-    if (kept := _written(lock)) is not None:
-        lock.path.write_bytes(kept.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
-    for name, solved in model.items():
-        text = solved.lock.replace("\r\n", "\n").replace("\n", "\r\n")
-        model[name] = solved.model_copy(update={"lock": text})
-
-
 def _apply(lock: Lockfile, files: Writer, model: dict[str, Solved], step: _Step) -> None:
     """Run `step` on the lock and on the dict that models it, then check the file reads as it."""
     match step:
@@ -93,8 +82,6 @@ def _apply(lock: Lockfile, files: Writer, model: dict[str, Solved], step: _Step)
             _refused(lock, files, name, solved)
         case ("retain", declared):
             _retained(lock, files, model, declared)
-        case ("checkout-with-crlf",):
-            _checked_out_with_crlf(lock, model)
     assert lock.environments() == model
     assert list(lock.environments()) == sorted(model)
 
@@ -109,8 +96,7 @@ def _apply(lock: Lockfile, files: Writer, model: dict[str, Solved], step: _Step)
 )
 @example(
     steps=[
-        ("put", "gpu", Solved(solved_from="a", solved_by="b", lock="x\r\ny''")),
-        ("checkout-with-crlf",),
+        ("put", "gpu", Solved(solved_from="a", solved_by="b", lock="x\ny''")),
         ("put", "default", _RECORDED[0][2]),
     ]
 )
@@ -127,10 +113,32 @@ def test_a_solve_is_recorded_beside_the_others_and_only_retain_drops_a_section(
 ) -> None:
     with tempfile.TemporaryDirectory() as raw:
         workspace = Path(raw)
-        lock, model = Lockfile(workspace), {}
+        lock, model = Lockfile(workspace), dict[str, Solved]()
         with GeneratedFiles(directory=Project().out(workspace)).locked() as files:
             for step in steps:
                 _apply(lock, files, model, step)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            "version = 1\n[environments.gpu]\nsolved_from = 'a'\n", id="a-section-with-no-lock"
+        ),
+        pytest.param("version = 1\n[environments.gpu]\nlock = 3\n", id="a-lock-that-is-not-text"),
+        pytest.param("version = 1\nenvironments = 3\n", id="environments-that-are-not-a-table"),
+        pytest.param("version = 2\n", id="a-version-this-release-does-not-read"),
+        pytest.param("version = [\n", id="text-that-is-not-toml"),
+    ],
+)
+def test_a_lock_file_not_in_the_shape_it_is_written_is_refused_with_how_to_restore_it(
+    tmp_path: Path, text: str
+) -> None:
+    lock = Lockfile(tmp_path)
+    lock.path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(MissionError, match=r"cannot be read: .*Restore it from git"):
+        lock.environments()
 
 
 def test_the_lock_names_its_pypi_releases_and_its_conda_packages(locked: Path) -> None:

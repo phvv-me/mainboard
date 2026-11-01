@@ -58,20 +58,20 @@ def test_evidence_survives_a_round_trip_through_the_lake_verbs(
     verb, evidence, node, spelled, files_of
 ) -> None:
     before = files_of(evidence)
-    assert [verb("lake", "ingest", spelled), verb("lake", "ingest", spelled)] == [
+    assert [verb("data", "lake", "ingest", spelled), verb("data", "lake", "ingest", spelled)] == [
         [{"files": 4, "indexed": 4, "objects": 4, "size": sum(map(len, before.values()))}],
         [{"files": 4, "indexed": 0, "objects": 0, "size": 0}],
     ]
-    assert verb("lake", "dedup", spelled, "--dry-run")[0]["linked"] == 0
-    assert verb("lake", "evict", spelled) == [{"evicted": 4}]
-    assert len(verb("lake", "materialize", spelled)) == 4
+    assert verb("data", "lake", "dedup", spelled, "--dry-run")[0]["linked"] == 0
+    assert verb("data", "lake", "evict", spelled) == [{"evicted": 4}]
+    assert len(verb("data", "lake", "materialize", spelled)) == 4
     assert files_of(evidence) == before
-    assert verb("lake", "check") == []
-    assert verb("query", _LANDED) == [
+    assert verb("data", "lake", "check") == []
+    assert verb("data", "query", _LANDED) == [
         {"project": "lab", "node": "law", "run": "", "landed": True},
         {"project": "lab", "node": "law", "run": "run1", "landed": True},
     ]
-    assert verb("query", _IMPORTS) == [
+    assert verb("data", "query", _IMPORTS) == [
         {"source": f"{node}/evidence", "destination": "evidence_log", "rows": rows}
         for rows in (4, 0)
     ]
@@ -92,7 +92,7 @@ def test_a_lake_verb_refuses_a_path_outside_the_workspace(
 ) -> None:
     stranger = tmp_path_factory.mktemp("stranger") / "file.bin"
     stranger.write_bytes(b"x")
-    ran = mb("lake", command, ".." if climbing else str(stranger))
+    ran = mb("data", "lake", command, ".." if climbing else str(stranger))
     assert ran.code == 1 and "lies outside the workspace" in ran.said
 
 
@@ -102,11 +102,11 @@ def test_dedup_links_settled_duplicates_to_one_copy(
     artifacts, data = duplicates
     name, folder = hashlib.sha256(data).hexdigest(), f"{node}/evidence"
     done = {"path": folder, "files": 5, "hashed": 4, "linked": 2, "damaged": 1}
-    assert verb("lake", "dedup", folder) == [{**done, "before": 25_000, "after": 15_000}]
+    assert verb("data", "lake", "dedup", folder) == [{**done, "before": 25_000, "after": 15_000}]
     assert len({(artifacts / f"run{run}" / "objects" / name).stat().st_ino for run in "123"}) == 1
     assert (artifacts / "run5" / "objects" / name).stat().st_nlink == 1
     assert (artifacts / "run4" / "objects" / name).read_bytes() == data[::-1]
-    [again] = verb("lake", "dedup", folder)
+    [again] = verb("data", "lake", "dedup", folder)
     assert (again["linked"], again["before"], again["after"]) == (0, 15_000, 15_000)
 
 
@@ -117,6 +117,6 @@ def test_check_finds_a_data_file_damaged_on_disk(mb, keeper: Evidence, evidence:
     middle = len(damaged) // 2
     damaged[middle : middle + 64] = bytes(byte ^ 0xFF for byte in damaged[middle : middle + 64])
     data.write_bytes(bytes(damaged))
-    ran = mb("lake", "check", "--json")
+    ran = mb("data", "lake", "check", "--json")
     assert ran.code == 1, ran.said
     assert {finding["kind"] for finding in json.loads(ran.out)} <= {"evidence", "unreadable"}

@@ -20,6 +20,7 @@
 # when nothing else was, so importing the tool never takes over a host application's logging.
 
 import logging
+import os
 import sys
 from collections.abc import Callable, Collection
 from enum import Enum
@@ -31,8 +32,8 @@ from patos import FrozenModel
 from structlog.processors import NAME_TO_LEVEL, CallsiteParameter
 from structlog.typing import EventDict, Processor
 
+from ..constants import SINK
 from ..core.project import Project
-from .constants import SINK
 
 sinks: dict[str, Callable[[EventDict], None]] = {}
 
@@ -139,12 +140,15 @@ def _line(_: SimpleNamespace, __: str, event: EventDict) -> str:
     return f"{'' if level in {'debug', 'info'} else level + ': '}{text}{fields}"
 
 
-def configure(level: str = "", *, output: str = "") -> None:
+def configure(level: str = "", *, output: str = "", colors: bool) -> None:
     """Configure structlog for this process at `level`, rendering as `output`.
 
     `output` is `console`, `json` or `line`; each is read from the environment when empty, else
     `info` and whatever stderr is (a terminal or not). `line` is what the CLI's own verbs print for
     an agent reading stderr: no timestamp, module or JSON braces.
+
+    `colors` colors the console renderer's levels. The CLI passes what its `Terminal` decided, so
+    an agent's log is never colored; on import it is a terminal on stderr unless `NO_COLOR` is set.
     """
     project = Project()
     level = (level or project.variable("LOG_LEVEL").read() or "info").lower()
@@ -171,7 +175,7 @@ def configure(level: str = "", *, output: str = "") -> None:
             structlog.processors.JSONRenderer(),
         ]
         if json
-        else [structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())]
+        else [structlog.dev.ConsoleRenderer(colors=colors)]
     )
     structlog.configure(
         processors=[*shared, *rendered],
@@ -182,6 +186,6 @@ def configure(level: str = "", *, output: str = "") -> None:
 
 
 if not structlog.is_configured():
-    configure()
+    configure(colors=sys.stderr.isatty() and not os.environ.get("NO_COLOR"))
 
 logger: Logger = structlog.get_logger()

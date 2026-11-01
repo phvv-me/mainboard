@@ -1,22 +1,16 @@
 """Every everyday verb, run for real in a fresh workspace: it answers, or says why it can't."""
 
 import json
-import os
-import pty
-import subprocess
 import sys
 import time
-from decimal import Decimal
 
-import duckdb
 import pytest
 
-from mainboard import MissionError, Results
-from mainboard.cli import build
+from mainboard.cli import Delimiter
 from mainboard.core import Section, Verdict
-from mainboard.state import records
-from mainboard.upkeep import machine as upkeep
-from mainboard.verbs.delimiter import Delimiter
+from mainboard.upkeep.machine import audit
+from mainboard.upkeep.managers import Manager
+from mainboard.verbs.constants import TREE
 
 from ..constants import MB
 
@@ -24,95 +18,75 @@ from ..constants import MB
 @pytest.mark.parametrize(
     "args",
     [
+        [],
         ["--help"],
+        ["-h"],
+        ["help", "data", "lake", "ingest"],
+        ["--help", "ingest", "evidence"],
         ["--version"],
+        ["--tree"],
+        ["--tree", "data", "--all"],
         ["host", "--help"],
         ["job", "--help"],
-        ["self", "--help"],
-        ["doctor"],
+        ["code"],
+        ["code", "doctor"],
         ["job", "list"],
         ["host", "list", "--facts"],
-        ["self", "update"],
+        ["host", "update"],
     ],
-    ids=lambda args: " ".join(args),
+    ids=lambda args: " ".join(args) or "the-bare-tool",
 )
 def test_a_verb_answers_in_a_fresh_workspace(mb, args: list[str]) -> None:
     assert mb(*args).code == 0
 
 
-def test_the_help_names_the_groups_and_pixis_environment_verbs(mb) -> None:
-    listed = {line.strip().split(":")[0] for line in mb("--help").out.splitlines()}
-    for verb in ("install", "lock", "add", "remove", "run", "shell", "host", "job", "git"):
-        assert verb in listed, verb
-    gone = {"activate", "check", "compute", "center", "jobs", "plot", "shell-hook", "submit"}
-    assert not gone & listed
+@pytest.mark.parametrize(
+    ("args", "rows"),
+    [
+        pytest.param([], 10, id="the-ten-roots"),
+        pytest.param(["code"], 8, id="a-group"),
+        pytest.param(["data", "lake"], 9, id="a-group-two-words-deep"),
+    ],
+)
+def test_a_bare_tool_or_group_lists_one_short_row_per_member(
+    mb, args: list[str], rows: int
+) -> None:
+    """A header, a row per shown member in TREE's order, the way further, each in 75 columns."""
+    lines = mb(*args, env={"MB_AGENT": "1"}).out.splitlines()
+    entries = TREE.node(" ".join(args)).entries()
+    members = [path[0] for path, entry in entries if len(path) == 1 and entry.show]
+    assert [line.split()[0].rstrip("/") for line in lines[1:-1]] == members
+    assert len(members) == rows
+    assert max(map(len, lines)) <= 75
+    assert lines[-1] == "mb <path> lists a group · add --help for arguments · mb --tree shows all"
+
+
+@pytest.mark.parametrize("agent", ["1", "0"], ids=["an-agent", "a-person"])
+def test_a_moved_command_is_refused_naming_its_new_path(mb, agent: str) -> None:
+    ran = mb("lint", env={"MB_AGENT": agent})
+    assert ran.code == 2
+    assert "did you mean `mb code lint`?" in ran.err and "Unknown command" not in ran.err
 
 
 def test_a_bad_query_is_said_without_a_traceback(mb) -> None:
-    ran = mb("query", "SELECT * FROM lake.nothing_here")
+    ran = mb("data", "query", "SELECT * FROM lake.nothing_here")
     assert ran.code == 1 and "nothing_here" in ran.err
 
 
 def test_the_lake_is_queryable_as_soon_as_the_workspace_exists(mb) -> None:
-    ran = mb("query", "SELECT count(*) AS n FROM lake.runs", "--json")
+    ran = mb("data", "query", "SELECT count(*) AS n FROM lake.runs", "--json")
     assert ran.code == 0
     assert json.loads(ran.out) == [{"n": 0}]
 
 
 def test_a_query_exports_through_duckdb(mb, workspace) -> None:
     target = workspace / "runs.csv"
-    assert mb("query", "SELECT 1 AS one", "--out", str(target)).code == 0
+    assert mb("data", "query", "SELECT 1 AS one", "--out", str(target)).code == 0
     assert target.read_text(encoding="utf-8").splitlines() == ["one", "1"]
 
 
-def test_relation_queries_preserve_types_without_pyarrow(workspace, monkeypatch) -> None:
-    monkeypatch.setitem(sys.modules, "pyarrow", None)
-    results = Results(workspace)
-    relation = results.query("""
-        SELECT i::TINYINT AS x,
-               CASE WHEN i = 2 THEN NULL ELSE i / 10 END::DECIMAL(4,2) AS y,
-               [struct_pack(n := i::SMALLINT)] AS nested
-        FROM range(4) t(i) ORDER BY i DESC
-    """)
-    assert [str(kind) for kind in relation.types] == [
-        "TINYINT",
-        "DECIMAL(4,2)",
-        "STRUCT(n SMALLINT)[]",
-    ]
-    # The query read everything in, so the relation outlives what it read.
-    assert records(relation) == [
-        {"x": i, "y": None if i == 2 else Decimal(i) / 10, "nested": [{"n": i}]}
-        for i in (3, 2, 1, 0)
-    ]
-    empty = results.query("""
-        SELECT NULL::SMALLINT AS x, []::STRUCT(n TINYINT)[] AS nested WHERE false
-    """)
-    assert empty.fetchall() == []
-    assert [str(kind) for kind in empty.types] == ["SMALLINT", "STRUCT(n TINYINT)[]"]
-    with pytest.raises(MissionError, match="not_a_column"):
-        results.query("SELECT not_a_column")
-    with pytest.raises(MissionError, match="Could not convert"):
-        results.query("SELECT CAST('bad' AS INTEGER)")
-    with pytest.raises(ValueError, match="one statement"):
-        results.query("SELECT 1; SELECT 2")
-
-
-def test_relation_queries_execute_exactly_once(workspace, monkeypatch) -> None:
-    results = Results(workspace)
-    original = results.views.load
-
-    def views(connection: duckdb.DuckDBPyConnection, project: str, *, sql: str) -> None:
-        connection.execute("CREATE SEQUENCE query_counter")
-        original(connection, project, sql=sql)
-
-    monkeypatch.setattr(results.views, "load", views)
-    relation = results.query("SELECT nextval('query_counter') AS n FROM range(4)")
-    assert relation.fetchall() == [(1,), (2,), (3,), (4,)]
-    assert relation.fetchall() == [(1,), (2,), (3,), (4,)]
-
-
 def test_an_environment_never_installed_is_named_not_crashed_on(mb) -> None:
-    ran = mb("shell", "--as-is")
+    ran = mb("dep", "shell", "--as-is")
     assert ran.code == 1
     assert "no default environment" in ran.err and "mb install" in ran.err
 
@@ -154,7 +128,7 @@ def test_a_bounded_command_keeps_its_own_options_and_delimiter(mb) -> None:
     ],
 )
 def test_the_delimiter_goes_where_the_command_starts(typed: str, placed: str) -> None:
-    assert Delimiter(build()).placed(typed.split()) == placed.split()
+    assert Delimiter(TREE.cli()).placed(typed.split()) == placed.split()
 
 
 def test_a_bounded_command_is_stopped_at_its_bound(mb) -> None:
@@ -164,28 +138,16 @@ def test_a_bounded_command_is_stopped_at_its_bound(mb) -> None:
 
 def test_a_workspace_is_required_and_said_to_be(mb, tmp_path_factory) -> None:
     elsewhere = tmp_path_factory.mktemp("nowhere")
-    ran = mb("doctor", cwd=elsewhere)
+    ran = mb("code", "doctor", cwd=elsewhere)
     assert ran.code != 0
     assert "mb.toml" in ran.said or "mainboard.toml" in ran.said
 
 
-def test_a_real_terminal_gets_the_same_answers(workspace) -> None:
+def test_a_real_terminal_gets_the_same_answers(at_a_terminal) -> None:
     """The console renderer runs only on a terminal; it crashed there once while pipes passed."""
-    primary, secondary = pty.openpty()
-    done = subprocess.run(
-        [MB, "job", "list"],
-        cwd=workspace,
-        stdin=secondary,
-        stdout=secondary,
-        stderr=secondary,
-        timeout=120,
-        check=False,
-    )
-    os.close(secondary)
-    said = os.read(primary, 65536).decode(errors="replace")
-    os.close(primary)
-    assert done.returncode == 0, said
-    assert "Traceback" not in said
+    ran = at_a_terminal([MB, "job", "list"])
+    assert ran.code == 0, ran.said
+    assert "Traceback" not in ran.said
 
 
 def test_the_audit_reads_this_machine_and_names_every_fix(mb) -> None:
@@ -196,15 +158,18 @@ def test_the_audit_reads_this_machine_and_names_every_fix(mb) -> None:
     assert all(row["fix"] for row in rows.values() if row["verdict"] == "warn")
 
 
-def test_a_manager_that_never_answers_is_unknown_instead_of_waited_for(monkeypatch) -> None:
+def test_a_manager_that_never_answers_is_unknown_instead_of_waited_for() -> None:
     """`snap` without snapd's socket retries for two minutes; the audit gives each manager 30 s."""
-    stuck = upkeep.Manager(
-        name="stuck", program="sleep", pending=("sleep", "60"), count=len, steps=("true",)
+    stuck = Manager(
+        name="stuck",
+        program="sleep",
+        pending=("sleep", "60"),
+        count=len,
+        steps=("true",),
+        timeout=0.5,
     )
-    monkeypatch.setattr(upkeep, "_MANAGERS", (stuck,))
-    monkeypatch.setattr(upkeep, "ASK_SECONDS", 0.5)
     started = time.monotonic()
-    rows = {row.section: row for row in upkeep.audit()}
+    rows = {row.section: row for row in audit(managers=(stuck,))}
     assert time.monotonic() - started < 30
     assert rows["stuck"] == Section(
         section="stuck", verdict=Verdict.WARN, detail="unknown, no answer in 0.5 s", fix="sleep 60"
@@ -214,11 +179,11 @@ def test_a_manager_that_never_answers_is_unknown_instead_of_waited_for(monkeypat
 def test_an_upgrade_dry_run_only_prints_its_steps(mb) -> None:
     ran = mb("host", "upgrade", "--dry-run")
     assert ran.code == 0
-    assert ran.out.startswith("$ ") and "self update" in ran.out
+    assert ran.out.startswith("$ ") and "host update" in ran.out
 
 
 def test_runs_are_queryable_by_project_without_reading_json(mb) -> None:
-    ran = mb("query", "SELECT project, name, verdict FROM lake.runs", "--json")
+    ran = mb("data", "query", "SELECT project, name, verdict FROM lake.runs", "--json")
     assert ran.code == 0, ran.said
     assert json.loads(ran.out) == []
 

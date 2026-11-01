@@ -1,12 +1,10 @@
-"""`check`, `compare`, `fix` and `test`: the engine's verbs over one project, and over every
-rule's examples."""
+"""`check`, `fix` and `test`: the engine's verbs over one project, and over every rule's
+examples."""
 
 import difflib
-import json
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the frozen mcmr CLI with fixed argv since=2026-10-13
 import tempfile
 import time
-from collections.abc import Mapping
+from itertools import pairwise
 from pathlib import Path
 
 from cyclopts import Parameter
@@ -16,10 +14,12 @@ from pydantic import ConfigDict
 from ....log import logger
 from ...catalog import Example, Rule
 from ...constants import FIXABLE
-from ...findings import Report, Seen
-from ..facts import listed, vendored
+from ...findings import Report
+from ..facts import Listing, listed
 from ..fixing import Fixpoint
-from .core import Lint, selected
+from .catalog import selected
+from .core import Lint
+from .seen import Seen
 
 
 @Parameter(name="*")
@@ -61,40 +61,23 @@ def check(
             what it found either way.
     """
     start = time.perf_counter()
-    with selection.lint(root, fixing=False) as lint:
+    with Listing(root), selection.lint(root, fixing=False) as lint:
+        cataloged = time.perf_counter()
         base = lint.facts(root)
         extracted = time.perf_counter()
         report = Report(found=lint.findings(base))
-    fresh = Seen(root).fresh(report, listed(root))
+        fresh = Seen(root).fresh(report, listed(root))
     report = fresh if new else report
     ran = time.perf_counter()
+    marks = {"start": start, "catalog": cataloged, **lint.marks, "install": extracted}
+    stages = ", ".join(
+        f"{stage} {ended - began:.2f}" for (_, began), (stage, ended) in pairwise(marks.items())
+    )
     logger.result(report.counts if counts else report.grouped)
     logger.result(
-        f"{report.total} findings; facts {extracted - start:.2f} s, rules {ran - extracted:.3f} s"
+        f"{report.total} findings; facts {extracted - start:.2f} s ({stages}), "
+        f"rules {ran - extracted:.3f} s"
     )
-
-
-def compare(root: Path, *, selection: Selection = _EVERY, baseline: Path | None = None) -> None:
-    """Each selected rule's findings against mcmr's (frozen): equal, missing, extra.
-
-    Args:
-        root: the project both engines analyze.
-        baseline: a stored full `mcmr check --format json` report; without it mcmr runs per rule.
-    """
-    report = json.loads(baseline.read_text()) if baseline else None
-    with selection.lint(root, fixing=False) as lint:
-        found = lint.findings(lint.facts(root))
-    for spec in lint.rules:
-        old = _baseline_findings(report, spec.id) if report else _old_findings(root, spec.id)
-        skipped = vendored(root, {finding[0] for finding in old})
-        old = {finding for finding in old if finding[0] not in skipped}
-        new = set(found.get(spec.id, []))
-        logger.result(
-            f"{spec.id}\t{old == new}\t{len(old)}\t{len(new)}\tmissing {len(old - new)}\t"
-            f"extra {len(new - old)}"
-        )
-        for sample in sorted(old ^ new, key=str)[:3]:
-            logger.result(f"    {'missing' if sample in old else 'extra'} {sample}")
 
 
 def fix(
@@ -122,46 +105,6 @@ def fix(
             logger.result(report)
 
 
-def _baseline_findings(report: Mapping, rule: str) -> set[tuple]:
-    """A rule's findings from a stored full mcmr report."""
-    return {
-        (f["span"]["path"], f["span"]["start_line"], f["span"]["start_column"], f["message"])
-        for failure in report["failures"]
-        if failure["rule"] == rule
-        for f in failure["findings"]
-    }
-
-
-def _old_findings(root: Path, rule: str) -> set[tuple]:
-    """mcmr's findings for one rule, run live.
-
-    A rule mcmr's deterministic lanes do not run (an external one) has none.
-    """
-    run = subprocess.run(
-        [
-            "mcmr",
-            "check",
-            str(root),
-            "--select",
-            rule,
-            "--format",
-            "json",
-            "--limit",
-            "1000000",
-            "--deterministic",
-            "--no-contextual",
-            "--no-external",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    try:
-        return _baseline_findings(json.loads(run.stdout), rule)
-    except json.JSONDecodeError:
-        return set()
-
-
 _SKIPPED = "skipped: it reads facts no SQL family derives"
 
 
@@ -169,7 +112,7 @@ def test(*, selection: Selection = _EVERY) -> None:
     """Run the selected rules' examples, every rule's when none is selected.
 
     Each `bad` must be flagged, the rule's fix must turn it into `good`, and `good` must not be
-    flagged.
+    flagged. A `good` equal to its `bad` states a refusal: the fix must leave the file as it was.
     """
     failed = 0
     for spec in selected(selection.rule):
@@ -210,14 +153,15 @@ def _example_path(language: str | None, text: str) -> str:
 def _fixed(example: Example, lint: Lint, root: Path, *, path: Path) -> str:
     """What the rule's fix made of `bad`: empty when it gives `good`, else the verdict.
 
-    A `None` good is the file's removal, which ends the trial there.
+    A `None` good is the file's removal, which ends the trial there; so does a `good` equal to
+    `bad`, a refusal the fix keeps by leaving the file as it was.
     """
     report = "\n".join(Fixpoint(lint, root, FIXABLE["review"]).run(write=True))
     if example.good is None:
         return "pass" if not path.exists() else f"the fix keeps the file\n{report}"
     fixed_text = path.read_text(encoding="utf-8")
     if fixed_text == example.good:
-        return ""
+        return "pass" if example.good == example.bad else ""
     diff = difflib.unified_diff(
         example.good.splitlines(keepends=True),
         fixed_text.splitlines(keepends=True),

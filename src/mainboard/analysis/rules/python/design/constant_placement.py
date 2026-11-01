@@ -1,6 +1,7 @@
 """Rules over module constants (mcmr's PY-CONS family)."""
 
 from ....catalog import Example, Relation, Rule
+from ....constants import INITIALIZER_PATH
 
 
 class PlacedSymbols(Relation):
@@ -40,7 +41,7 @@ class PublicModuleConstant(Rule, id="PY-CONS0001", applicability="review"):
     # entry, no `_NAME` already in the module. Names are matched project-wide (an upper bound on
     # importers), and a constant that other modules use is PY-CONS0002's to move, not renamed.
     # Review: strings and dynamic lookups (`getattr`, templates) cannot be seen.
-    fix = r"""
+    fix = rf"""
         WITH renamable AS (
           SELECT * FROM finding f
           WHERE f.reference_id IS NOT NULL AND f.reference_are_references_complete
@@ -48,7 +49,7 @@ class PublicModuleConstant(Rule, id="PY-CONS0001", applicability="review"):
                             WHERE i.imported_name = f.name OR i.name = f.name
                                OR (i.is_wildcard AND ends_with(
                                      regexp_replace(
-                                       regexp_replace(f.path, '(/__init__)?\.py$', ''),
+                                       regexp_replace(f.path, '{INITIALIZER_PATH}|\.pyi?$', ''),
                                        '/', '.', 'g'),
                                      ltrim(i.module, '.'))))
             AND NOT EXISTS (SELECT 1 FROM core_ref a
@@ -86,9 +87,12 @@ class PublicModuleConstant(Rule, id="PY-CONS0001", applicability="review"):
 
 class CrossModuleProjectConstantImport(Rule, id="PY-CONS0002", applicability="review"):
     """Project constants used outside their defining module, imported by name or reached through
-    the module (`schema.ALIAS`), unless that module is a `constants.py` or sits in a `constants/`
-    package, where every constant other modules share belongs. A capitalized name the project defines as a function or a
-    class (`PK`, `FK`) is a callable in the style of a column DSL, not a constant."""
+    the module (`schema.ALIAS`), unless that module is a `constants/` package, whose modules each
+    name a subject, or a `constants.py` that only its own folder reaches: a `constants.py` is
+    imported only from within the folder holding it, so a constant a module outside that folder
+    uses belongs in the `constants.py` of the lowest package its users share. A capitalized name
+    the project defines as a function or a class (`PK`, `FK`) is a callable in the style of a
+    column DSL, not a constant."""
 
     preferred_module: str = "constants"
 
@@ -117,9 +121,22 @@ class CrossModuleProjectConstantImport(Rule, id="PY-CONS0002", applicability="re
               JOIN core_node n ON n.file_id = i.file_id AND n.type = 'attribute'
                 AND n.name = i.name || '.' || c.name
               WHERE i.is_project_owned
+            ), uses AS (
+              SELECT * FROM imported UNION ALL SELECT * FROM reached
+            ), strayed AS (
+              SELECT DISTINCT u.module, u.name
+              FROM uses u
+              JOIN core_file d ON d.module = u.module
+                AND regexp_matches(d.path, '(^|/)' || $preferred_module || '\\.pyi?$')
+              JOIN core_file f ON f.path = u.path
+              WHERE array_to_string(list_slice(string_split(u.module, '.'), 1, -2), '.') <> ''
+                AND split_part(f.module, '.', 1) = split_part(u.module, '.', 1)
+                AND NOT starts_with(f.module || '.', array_to_string(
+                      list_slice(string_split(u.module, '.'), 1, -2), '.') || '.')
             )
-            SELECT * FROM (SELECT * FROM imported UNION ALL SELECT * FROM reached)
+            SELECT * FROM uses
             WHERE NOT list_contains(string_split(module, '.'), $preferred_module)
+               OR (module, name) IN (SELECT module, name FROM strayed)
         """
     message = (
         "`{name}` is a constant of `{module}` used in another module; a shared constant "
@@ -132,17 +149,19 @@ class CrossModuleProjectConstantImport(Rule, id="PY-CONS0002", applicability="re
     # `__init__.py`); a user in another top package (a test suite) imports it by its full name.
     # Each definition goes with the comments above it; every `from ... import NAME` is respelled
     # to the destination, relatively when it was relative, and every `module.NAME` reads
-    # `constants.NAME`; the old module imports back what it still reads. Left alone: a constant
-    # some use of which the facts did not count, a destination beside a `constants/` package, a
-    # module something star-imports, and what the operation refuses (a value that is no literal,
-    # a name the destination holds otherwise, an importer binding `constants` already).
+    # `constants.NAME`; the old module imports back what it still reads. A constant of any value
+    # moves, with the imports its value reads. Left alone: a constant some use of which the facts
+    # did not count, a destination beside a `constants/` package, a module something
+    # star-imports, and what the operation refuses (a value reading a name of its module that
+    # stays, a name the destination holds otherwise, an importer binding `constants` already, a
+    # cycle).
     fix = r"""
         WITH wanted AS (
           SELECT module, name, min(finding_key) AS finding_key, count(*) AS uses
           FROM finding GROUP BY module, name
         ), files AS (
           SELECT path, module,
-                 if(ends_with(path, '__init__.py'), string_split(module, '.'),
+                 if(is_initializer_path(path), string_split(module, '.'),
                     list_slice(string_split(module, '.'), 1, -2)) AS package
           FROM core_file WHERE regexp_matches(path, '\.py$')
         ), defined AS (
@@ -241,6 +260,18 @@ class CrossModuleProjectConstantImport(Rule, id="PY-CONS0002", applicability="re
                 "pkg/a/__init__.py": "",
                 "pkg/b/__init__.py": "",
                 "pkg/a/limits.py": "LIMIT = 3\n\n\ndef top():\n    return LIMIT\n",
+            },
+        ),
+        Example(
+            bad="from ..a.constants import LIMIT\n\n\ndef clamp(v):\n    return min(v, LIMIT)\n",
+            good="from ..constants import LIMIT\n\n\ndef clamp(v):\n    return min(v, LIMIT)\n",
+            path="pkg/b/use.py",
+            context={
+                "pkg/__init__.py": "",
+                "pkg/a/__init__.py": "",
+                "pkg/b/__init__.py": "",
+                "pkg/a/constants.py": "LIMIT = 3\n",
+                "pkg/a/inside.py": "from .constants import LIMIT\n\n\ndef top():\n    return LIMIT\n",
             },
         ),
     )

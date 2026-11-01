@@ -1,26 +1,11 @@
-import os
 import shutil
-from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
-from ....core import MissionError
+from ....core import MissionError, write_atomic
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
-
     from filelock import FileLock
-
-
-@contextmanager
-def _temporary_beside(path: Path) -> Generator[Path]:
-    """A fresh sibling of `path` for its replacement, removed on exit whether or not it moved."""
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    try:
-        yield temporary
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 class Writer:
@@ -71,11 +56,5 @@ class Writer:
             existing = None
         if existing == content:
             return
-        with _temporary_beside(path) as temporary:
-            with temporary.open("xb") as stream:
-                # Mode 0644 whatever the umask, so another process identity can read it.
-                os.fchmod(stream.fileno(), 0o644)
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(path)
+        # Mode 0644 whatever the umask, so another process identity can read it.
+        write_atomic(path, content, mode=0o644, durable=True)

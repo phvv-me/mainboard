@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.errors import MissionError
+from .enums import Kind
 from .layout import Aux, Section, Source, SyncTex
-from .log import Kind, Problem, TexLog
+from .log import Problem, TexLog
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence

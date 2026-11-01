@@ -1,56 +1,32 @@
 """The selected rules, configured for one project: its facts, findings and repairs."""
 
 import os
+from collections import defaultdict
 from collections.abc import Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from graphlib import TopologicalSorter
-from importlib import import_module
+from concurrent.futures import ThreadPoolExecutor
 from itertools import chain
 from pathlib import Path, PurePosixPath
+from time import perf_counter
 from typing import TYPE_CHECKING, Self
 
 import duckdb
 
-from ....core.execution.modules import submodules
 from ....log import logger
-from ...catalog import Family, Repair, Rule, define, install, needed
+from ...catalog import Family, Relation, Repair, Rule, define, needed
 from ...constants import DECLARED
 from ...project.config import ProjectConfig
 from ...project.consumers import Consumers
 from ...providers.ducks import Ducks
 from ...providers.external import Tool
 from ...rules.core import Core
-from ..facts import Budget, Facts, Query, listed, snake, vendored
-from .repairs import grouped, placed
-
-_DELETE_CONSUMED_FINDING_ROWS_SQL = (
-    "DELETE FROM finding_rows WHERE list_contains($keys, finding_key)"
-)
+from ..facts import Budget, Facts, Listing, Query, in_waves, listed, snake, vendored
+from .repairs import gathering, grouped, placed
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from types import TracebackType
 
     from duckdb import DuckDBPyConnection
-
-# The type checkers' lane: the hook runs ty as a step of its own and the fixpoint judges every fix
-# by ty's diagnostics, so no check reads them.
-_TYPE_CHECKED = "PY-TY0001"
-
-
-def load_catalog() -> None:
-    """Import every fact provider and rule module, registering its families, rules and relations.
-
-    A module that fails to import (one being written) is reported and skipped.
-    """
-    for name in [
-        *submodules("mainboard.analysis.providers"),
-        *submodules("mainboard.analysis.rules"),
-    ]:
-        try:
-            import_module(name)
-        except (SyntaxError, ImportError, NameError, AttributeError, TypeError) as error:
-            logger.result(f"skipped {name}: {type(error).__name__}: {error}")
 
 
 class Lint:
@@ -59,7 +35,7 @@ class Lint:
     @staticmethod
     def _adopt(base: Facts, family: type[Family], *, empty: bool) -> None:
         """Adopt one family on a cursor of its own."""
-        with base.db.cursor() as cursor:
+        with base.connection.cursor() as cursor:
             base.adopt(family.family, family.relations, empty=empty, cursor=cursor)
 
     @staticmethod
@@ -73,23 +49,13 @@ class Lint:
         if any("source_files" in query.views() for f in derived for query in f.queries()):
             db.ensure(Query(sql="SELECT path FROM source_files"))
         named = {family.family: family for family in derived}
-        order = TopologicalSorter(
+        in_waves(
             {
                 name: _families_read(f.queries()) & named.keys() - {name}
                 for name, f in named.items()
-            }
+            },
+            lambda name: Lint._adopt(db, named[name], empty=empty[name]),
         )
-        order.prepare()
-        with ThreadPoolExecutor(os.process_cpu_count()) as pool:
-            running: dict[Future[None], str] = {}
-            while order.is_active():
-                for name in order.get_ready():
-                    adopting = pool.submit(Lint._adopt, db, named[name], empty=empty[name])
-                    running[adopting] = name
-                finished, _ = wait(running, return_when=FIRST_COMPLETED)
-                for future in finished:
-                    future.result()
-                    order.done(running.pop(future))
 
     @staticmethod
     def _sql_of(name: str) -> list[Query]:
@@ -123,6 +89,7 @@ class Lint:
         self.root, self.budget, self.fixing = root, Budget(memory=memory), fixing
         self.consumers = Consumers(root)
         self.current: Facts | None = None
+        self.marks: dict[str, float] = {}
         self.derived = {
             name for name, family in Family.defined.items() if family.verified or name in families
         }
@@ -140,7 +107,7 @@ class Lint:
             for rule in (
                 cls(**self.project.rule(cls.id).settings)
                 for cls in rules
-                if cls.id != _TYPE_CHECKED and self.project.rule(cls.id).enabled
+                if self.project.rule(cls.id).enabled
             )
             if rule.language is None or rule.language in present
         ]
@@ -158,6 +125,7 @@ class Lint:
         """Read the syntax trees and compute the derived families, each after those it reads."""
         if self.reads_trees:
             self.ducks.register(base, root)
+            self.marks["parse"] = perf_counter()
         for family in derived:
             family.provide(base, root)
         define(
@@ -181,6 +149,38 @@ class Lint:
             found |= more
         return sorted(found)
 
+    def _installed(self, base: Facts) -> None:
+        """Create in `base` the shared functions and relations the applicable rules call.
+
+        A relation installs after those it calls and beside those it does not (see
+        `Facts.install`). A stored one's rows are computed in every language that reads it, or
+        built empty where the project lacks its evidence.
+        """
+        readers: defaultdict[type[Relation], set[str | None]] = defaultdict(set)
+        queries: list[Query] = []
+        rules = self.applicable(base)
+        for rule in rules:
+            queries += (mine := self._queries(rule))
+            for relation in needed(mine):
+                readers[relation].add(rule.language)
+        define(
+            base,
+            [*(rule.statement() for rule in rules), *(q.sql for q in queries)]
+            + [relation.query for relation in readers],
+        )
+        _ensured(base, queries)
+        in_waves(
+            {
+                relation: {
+                    Relation.defined[name]
+                    for name in Query(sql=relation.query).macros() & Relation.defined.keys()
+                }
+                - {relation}
+                for relation in readers
+            },
+            lambda relation: base.install(relation, languages=readers[relation]),
+        )
+
     def _planned(self) -> None:
         """Plan the derived families, the core relations and whether the syntax trees are read."""
         wanted = [*self.queries, *(Query(sql=r.query) for r in needed(self.queries))]
@@ -191,8 +191,9 @@ class Lint:
         self.reads_trees = bool(self.core) or any(view.startswith("ast_") for view in views)
 
     def _queries(self, rule: Rule) -> list[Query]:
-        """The SQL `rule` runs: its findings and, when fixing, its fix."""
-        return [query for query in (rule.rows(), rule.edits() if self.fixing else None) if query]
+        """The SQL `rule` runs: its findings and, when fixing, the fix of each part that fixes."""
+        fixers = rule.fixers.values() if self.fixing else ()
+        return [query for query in (rule.rows(), *(f.edits() for f in fixers)) if query]
 
     def _read_by(self, name: str) -> set[str]:
         """The families the derived family `name` reads, which must be derived too."""
@@ -208,7 +209,8 @@ class Lint:
         """`rule`'s repairs: the edits of each finding, one group per finding it fixes."""
         accepts = self.project.rule(rule.id).accepts
         cursor = base.cursor(rule.language)
-        cursor.execute(rule.finding_rows(), rule.rows().parameters)
+        for staged in rule.staged():
+            cursor.execute(staged.sql, staged.parameters)
         self._withheld(cursor, rule)
         places = {
             key: (path, line or 1, change)
@@ -251,17 +253,21 @@ class Lint:
     def _withheld(self, cursor: DuckDBPyConnection, rule: Rule) -> None:
         """Draw up no fix for a finding `findings` does not report.
 
-        That is dead code another repository of the workspace uses.
+        That is dead code another repository of the workspace uses, pruned from every table a fix
+        reads: `finding_rows`, or one per part of a bundle.
         """
         if rule.id not in DECLARED:
             return
-        named = f"SELECT finding_key, path, {DECLARED[rule.id]} FROM finding_rows"
-        consumed = [
-            key
-            for key, path, declared in cursor.execute(named).fetchall()
-            if self._consumed(rule, path, declared)
-        ]
-        cursor.execute(_DELETE_CONSUMED_FINDING_ROWS_SQL, {"keys": consumed})
+        for table in rule.fixers:
+            named = f"SELECT finding_key, path, {DECLARED[rule.id]} FROM {table}"
+            consumed = [
+                key
+                for key, path, declared in cursor.execute(named).fetchall()
+                if self._consumed(rule, path, declared)
+            ]
+            cursor.execute(
+                f"DELETE FROM {table} WHERE list_contains($keys, finding_key)", {"keys": consumed}
+            )
 
     def applicable(self, db: Facts) -> list[Rule]:
         """The rules whose language the project holds."""
@@ -270,21 +276,29 @@ class Lint:
         ]
 
     def facts(self, root: Path) -> Facts:
-        """The fact base of `root`, with every relation and empty view the rules need.
+        """The fact base of `root`, with every relation the rules need.
 
         The syntax trees are read and the derived families computed, each after those it reads. It
-        replaces the previous fact base, whose database is closed and deleted.
+        replaces the previous fact base, whose database is closed and deleted. `marks` stamps the
+        end of the parse and of the derive; the install of the rules' relations follows.
         """
         derived = [Family.defined[name] for name in self.families]
         if self.current:
             self.current.close()
         base = self.current = Facts(root, self.budget)
-        if derived or self.reads_trees:
-            self._derive(base, root, derived)
-        Tool.register_all(base, root, self.queries)
+        with Listing(root), Tool.alongside(base, root, self.queries):
+            if derived or self.reads_trees:
+                self._derive(base, root, derived)
+        self.marks["derive"] = perf_counter()
         self.rules = [rule for rule in self.rules if self._served(base, rule)]
-        install(base, self.applicable(base), fixes=self.fixing)
-        _ensured(base, [query for rule in self.rules for query in self._queries(rule)])
+        self._installed(base)
+        _ensured(
+            base,
+            [
+                *(query for rule in self.rules for query in self._queries(rule)),
+                *([gathering()] if self.fixing and self.reads_trees else []),
+            ],
+        )
         return base
 
     def findings(self, db: Facts) -> dict[str, list[tuple]]:
@@ -357,13 +371,6 @@ def _families_read(queries: Iterable[Query]) -> set[str]:
         for view in query.views()
         if any(view.startswith(f"{p}_") for p in known)
     }
-
-
-def selected(rule: Sequence[str]) -> list[type[Rule]]:
-    load_catalog()
-    if rule:
-        return [Rule.defined[r] for r in rule]
-    return [spec for name, spec in Rule.defined.items() if name != _TYPE_CHECKED]
 
 
 def _ensured(base: Facts, queries: Sequence[Query]) -> None:

@@ -1,6 +1,6 @@
 """Rules over the width of a type's surface (mcmr's ALL-CLAS shape family)."""
 
-from ....catalog import Rule
+from ....catalog import Part, Rule
 
 
 class PublicMethodCount(Rule, id="ALL-CLAS0003"):
@@ -24,7 +24,7 @@ class PublicMethodCount(Rule, id="ALL-CLAS0003"):
     message = "`{name}` declares {amount} public methods named `{method_names}`"
 
 
-class DeclaredFieldCount(Rule, id="ALL-CLAS0004"):
+class DeclaredFieldCount(Part):
     """The type of each module declaring the most fields, above the ceiling."""
 
     maximum: int = 64
@@ -50,7 +50,7 @@ class DeclaredFieldCount(Rule, id="ALL-CLAS0004"):
     message = "`{owner}` declares {width} fields named `{fields}`"
 
 
-class AncestorCount(Rule, id="ALL-CLAS0005"):
+class AncestorCount(Part):
     """Classes with more than `maximum` types above them in their inheritance chain."""
 
     maximum: int = 5

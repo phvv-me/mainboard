@@ -1,8 +1,9 @@
-from ...manifest.apps import Apps, PlacedApp, SuiteName
 from ...manifest.schema.services.app import Suite
-from ..base import Verbs
-from ..options import Output
+from ...render import Output
+from ..constants import TREE
+from ..session import Verbs
 from .apple import AppleVerbs
+from .placed import Apps, PlacedApp, SuiteName
 
 # The verbs' defaults: compact output.
 _COMPACT = Output()
@@ -49,7 +50,7 @@ class AppVerbs(Verbs):
         )
 
     def app_run(self, placed: PlacedApp, suite: Suite, device: str) -> int:
-        """Run `suite` of `placed` on each chosen device through `apple execute`.
+        """Run `suite` of `placed` on each chosen device through `code app execute`.
 
         The worst device's verdict is the run's.
         """
@@ -73,3 +74,18 @@ class AppVerbs(Verbs):
         """
         placed = Apps.at(self.session.workspace_root()).named(name)
         return self.app_run(placed, placed.suite(suite), device)
+
+
+_APPLE = AppleVerbs()
+_APPS = AppVerbs(apple=_APPLE)
+app = TREE.node("code app").app(
+    build=_APPS.app_build,
+    execute=_APPLE.apple_execute,
+    fonts=_APPLE.apple_font_previews,
+    inspect=_APPLE.apple_inspect,
+    launch=_APPLE.apple_launch,
+    list=_APPS.app_list,
+    simulators=_APPLE.apple_simulators,
+    test=_APPS.app_test,
+    toolchain=_APPLE.apple_toolchain,
+)

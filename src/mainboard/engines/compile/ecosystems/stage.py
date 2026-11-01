@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from ....core.errors import MissionError
 from ....core.execution.host import current_platform, platform_selectors
-from ....manifest.schema.compute.toolchain import Toolchain
+from ....manifest.schema.toolchain import Toolchain
 from ..pixi.paths import normalized
 from .base import Ecosystem
 
@@ -171,6 +171,6 @@ class SecondStage:
 
     def install(self, env: str, *, resolve: bool = False) -> None:
         """Install locked inputs; only an explicit resolve may choose new package versions."""
-        with self.pixi.activated(env):
+        with self.pixi.prefix(env).activated():
             for ecosystem in self.ecosystems(env):
                 ecosystem.sync(resolve=resolve)

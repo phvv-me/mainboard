@@ -1,6 +1,7 @@
 # One pass of fixes as a diff, before any proof: what the rules' fixes would write, to read.
 
 import difflib
+from collections import Counter
 from pathlib import Path
 
 from ....log import logger
@@ -23,7 +24,8 @@ def preview(
 
     Each finding's edits are taken unless they collide with ones already taken, as the fixer's
     first pass takes them; nothing is written and no proof runs, so a fix the fixer would withhold
-    shows here too.
+    shows here too. It ends with a line per fixable rule: its findings, the fixes written, the
+    findings its fix declined, and the fixes deferred on a collision.
 
     Args:
         root: the project whose fixes are planned.
@@ -32,13 +34,23 @@ def preview(
     """
     root = root.resolve()
     with selection.lint(root) as lint:
-        repairs = lint.repairs(lint.facts(root), FIXABLE["review" if unsafe else "safe"])
+        facts = lint.facts(root)
+        found = lint.findings(facts)
+        repairs = lint.repairs(facts, FIXABLE["review" if unsafe else "safe"])
     plan = Plan(root)
-    taken = sum(plan.add(repair) for group in repairs.values() for repair in group)
+    written = Counter(
+        rule for rule, groups in repairs.items() for edits in groups if plan.add(edits)
+    )
     for name, data in sorted(plan.written().items()):
         if only and name not in only:
             continue
         before = plan.source(name).data.decode().splitlines(keepends=True)
         after = data.decode().splitlines(keepends=True)
         logger.result("".join(difflib.unified_diff(before, after, f"a/{name}", f"b/{name}")))
-    logger.result(f"{taken} fixes planned, {plan.deferred} deferred on a collision")
+    for rule, groups in sorted(repairs.items()):
+        if hits := len(found.get(rule, [])):
+            logger.result(
+                f"{rule}: {hits} found, {written[rule]} written, "
+                f"{max(0, hits - len(groups))} declined, {len(groups) - written[rule]} deferred"
+            )
+    logger.result(f"{written.total()} fixes planned, {plan.deferred} deferred on a collision")

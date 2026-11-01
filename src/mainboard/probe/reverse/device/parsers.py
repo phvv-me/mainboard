@@ -4,7 +4,7 @@ from typing import Self
 
 from ....dispatch.jobs.arch import arch as architecture
 from ....dispatch.jobs.arch import sm
-from ..models import (
+from ..evidence import (
     ArchCoverage,
     Confidence,
     Coverage,

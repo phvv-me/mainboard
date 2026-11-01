@@ -8,7 +8,8 @@ import duckdb
 
 from ...core.errors import MissionError
 from ...log import logger
-from ..stamps import Ending, ResultHash, Stamp, Value, canonical, normalized
+from ..enums import Ending
+from ..stamps import ResultHash, Stamp, Value, canonical, normalized
 from .sinks import Rendered, Sink, Streamed, Window, Windowed
 
 _MAX_ROWS = 1000

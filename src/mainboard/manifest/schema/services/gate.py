@@ -3,8 +3,7 @@ from collections.abc import Mapping
 
 from pydantic import model_validator
 
-from ....core.base import Declared
-from ..spec import Json
+from ....core.base import Declared, Json
 
 
 class Gate(Declared):

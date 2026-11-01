@@ -5,20 +5,19 @@
 
 import re
 from collections import Counter
-from enum import StrEnum, auto
 from typing import TYPE_CHECKING
 
 from packaging.version import Version
 
-from ..center.readiness.workstation import abbreviated, install_command
-from ..constants import BYTES_PER_GB
+from ..core.constants.units import BYTES_PER_GB, JOB_HOST_DISK
 from ..core.errors import MissionError
 from ..core.execution.host import current_platform
-from ..core.section import Section, Verdict
+from ..core.section import Section, abbreviated, install_command
 from ..engines.compile.inputs.platforms import SystemFloors
 from ..engines.compile.pixi.lock import packages
 from ..engines.compile.pixi.lockfile import Lockfile
 from ..engines.compile.provisioner import Provisioner
+from ..enums import Role, Verdict
 from ..git.process import Git
 
 _MB_PER_GB = 1024
@@ -26,8 +25,8 @@ _MB_PER_GB = 1024
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ..manifest.root import Manifest
     from ..manifest.schema.compute.host import HostProfile
-    from ..manifest.schema.root import Manifest
     from ..probe.system import System
 
 # The CUDA a locked build was compiled against, as a PyPI wheel spells it (`+cu132`, `/cu132/`)
@@ -44,19 +43,12 @@ _KERNELS = ((Version("10.0"), Version("12.8")), (Version("8.9"), Version("11.8")
 _LOGIN_NODES = frozenset({"pbs", "slurm"})
 
 # Free bytes needed where the workspace lives: a center holds the whole tree and every
-# environment, a target one mirror.
-_DISK = {"center": 60 * 10**9, "target": 20 * 10**9}
+# environment, a target one mirror and the results its jobs write, which dispatch refuses below.
+_DISK = {"center": 60 * 10**9, "target": JOB_HOST_DISK}
 
 _CENTER_TOOLS = ("git", "git-lfs", "gh", "ssh")
 
 _DRIVERS = "install a newer NVIDIA driver (https://www.nvidia.com/Download/index.aspx)"
-
-
-class Role(StrEnum):
-    """What a machine is for: the center that holds the monorepo, or a target that runs jobs."""
-
-    CENTER = auto()
-    TARGET = auto()
 
 
 def _row(section: str, verdict: Verdict, detail: str, *, fix: str = "") -> Section:
@@ -100,7 +92,7 @@ class Fitness:
                 Verdict.FAIL,
                 f"compute capability {capability} needs CUDA {needed} builds, "
                 f"the lock holds CUDA {built}",
-                fix=f"raise the CUDA of the locked builds, then mb lock {environment}",
+                fix=f"raise the CUDA of the locked builds, then mb dep lock {environment}",
             )
         detail = f"CUDA {built} builds run on this driver and card"
         if driver is not None and driver < built:
@@ -215,7 +207,7 @@ class Fitness:
 
     def _lock(self, system: System, environment: str) -> Section:
         """Whether the lock this workspace solved holds builds for this machine's platform."""
-        install = f"mb lock {environment}"
+        install = f"mb dep lock {environment}"
         held = self._locked(environment)
         if held is None:
             return _row("lock", Verdict.WARN, f"{environment}: nothing solved yet", fix=install)
@@ -233,7 +225,7 @@ class Fitness:
         """
         if environment not in self.locks:
             committed = Lockfile(self.root).get(environment)
-            path = Provisioner(self.root, self.manifest).pixi_for(environment).lock
+            path = Provisioner(self.root, self.manifest).shard(environment).pixi.lock
             try:
                 text = committed.lock if committed else path.read_text(encoding="utf-8")
             except FileNotFoundError:
@@ -272,7 +264,7 @@ class Fitness:
             "platform",
             Verdict.FAIL,
             f"{system.platform} is not among the declared platforms {declared}",
-            fix=f'add "{system.platform}" to [workspace] platforms, then mainboard lock',
+            fix=f'add "{system.platform}" to [workspace] platforms, then mainboard dep lock',
         )
 
     def _shell(self, system: System) -> Section:

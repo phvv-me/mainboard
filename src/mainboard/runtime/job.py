@@ -11,12 +11,12 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from patos import FrozenModel
 from pydantic import Field
 
-from ..constants import SECONDS_PER_HOUR
-from ..core.project import Project
-from ..engines.compile.constants import ACTIVATION, STAMPED
+from ..core.constants.names import ACTIVATION, STAMPED
+from ..core.events.frames import FrameSpec
+from ..core.project import Marker
+from ..exceptions import Refusal
 from .activation import Runtime, prepended
 from .entry import activated
-from .exceptions import Refusal
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -53,7 +53,7 @@ class PrefixActivation(FrozenModel):
     def _stamped(prefix: Path) -> bool:
         try:
             return (
-                Project().marked(prefix, STAMPED).read_text(encoding="utf-8").strip()
+                Marker(suffix=STAMPED).at(prefix).read_text(encoding="utf-8").strip()
                 == prefix.name
             )
         except OSError:
@@ -125,6 +125,7 @@ class Job(FrozenModel):
     provide: builds the environment before it is entered, None when nothing has to.
     attestation: records the machine in the foreground right before the command, None for none.
     sampler: watches the machine beside the command until the command ends, None for none.
+    frames: where the runner spools the job's start, beats and settle, None for none.
     """
 
     command: str
@@ -138,6 +139,7 @@ class Job(FrozenModel):
     provide: ToolCall | None = None
     attestation: ToolCall | None = None
     sampler: ToolCall | None = None
+    frames: FrameSpec | None = None
 
     @classmethod
     def handed(cls, script: str) -> Job:
@@ -164,7 +166,7 @@ class Job(FrozenModel):
 def walltime_seconds(walltime: str) -> int:
     """A `HH:MM:SS` walltime as whole seconds."""
     hours, minutes, seconds = (int(part) for part in walltime.split(":"))
-    return hours * SECONDS_PER_HOUR + minutes * 60 + seconds
+    return (hours * 60 + minutes) * 60 + seconds
 
 
 def walltime(seconds: float) -> str:
@@ -172,5 +174,6 @@ def walltime(seconds: float) -> str:
 
     A clock format wrapped a 25-hour allocation to one hour (B28).
     """
-    hours, rest = divmod(int(seconds), SECONDS_PER_HOUR)
-    return f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"
+    minutes, rest = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}:{minutes:02d}:{rest:02d}"

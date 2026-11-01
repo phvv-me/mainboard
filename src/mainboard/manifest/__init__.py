@@ -1,9 +1,10 @@
-from .composing import composition
+from ..enums import Guardrail
+from .composing import composition, header
 from .loading import load, load_plot_config
-from .schema.compute.container import Container, Guardrail
+from .root import Manifest
+from .schema.compute.container import Container
 from .schema.compute.host import HostProfile, Sync
 from .schema.compute.queue import Defaults, QueuePolicy
-from .schema.compute.toolchain import Toolchain
 from .schema.environment import Env
 from .schema.figures.figure import FigureSpec
 from .schema.figures.layer import Layer
@@ -11,10 +12,10 @@ from .schema.figures.panel import Panel
 from .schema.figures.paper import Paper
 from .schema.project.lint import Lint, LintTool
 from .schema.project.workspace import Header
-from .schema.root import Manifest
 from .schema.scope import PlatformScope, Scope
 from .schema.services.tracking import Tracking
 from .schema.spec import Spec
+from .schema.toolchain import Toolchain
 
 __all__ = [
     "Container",
@@ -38,6 +39,7 @@ __all__ = [
     "Toolchain",
     "Tracking",
     "composition",
+    "header",
     "load",
     "load_plot_config",
 ]

@@ -92,14 +92,29 @@ class UnmatchedRuleExclude(Rule, id="ALL-CONF0002", applicability="safe"):
     examples = (
         Example(
             bad=(
-                """[tool.mcmr.rules."ALL-FUNC0001"]
+                """[tool.mcmr.rules."ALL-FILE0003"]
 exclude = [
   "src/kept.py",
   "src/gone.py",
 ]
 """
             ),
-            good='[tool.mcmr.rules."ALL-FUNC0001"]\nexclude = [\n  "src/kept.py",\n]\n',
+            good='[tool.mcmr.rules."ALL-FILE0003"]\nexclude = [\n  "src/kept.py",\n]\n',
+            path="pyproject.toml",
+            context={"src/kept.py": "VALUE = 1\n"},
+        ),
+        Example(
+            bad=(
+                """[tool.mcmr.rules."ALL-CEIL0001".module_members]
+exclude = [
+  "src/kept.py",
+  "src/gone.py",
+]
+"""
+            ),
+            good=(
+                '[tool.mcmr.rules."ALL-CEIL0001".module_members]\nexclude = [\n  "src/kept.py",\n]\n'
+            ),
             path="pyproject.toml",
             context={"src/kept.py": "VALUE = 1\n"},
         ),

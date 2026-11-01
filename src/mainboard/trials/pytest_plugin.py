@@ -32,16 +32,16 @@ from ..core.project import Project
 from ..jobs import declare
 from ..log import logger
 from ..state.evidence import EvidenceTree
+from .constants import DRIVERS, WORD
 from .contract import hookspecs
 from .contract.flags import held
-from .contract.vocabulary import Outcome
+from .enums import Outcome
 from .lanes.adaptive import driver
 from .running.lease import Busy
 from .running.lints import findings
 from .running.log import Log
 from .running.stage import Stage
 from .session import Session, Trial, lane_of, params_of
-from .store.constants import DRIVERS, WORD
 
 if TYPE_CHECKING:
     from .contract.declaration import Declaration
@@ -175,7 +175,7 @@ def _surveyed(session: Session, items: Sequence[pytest.Item]) -> tuple[LaneStatu
         cells[cell.key] = cell
         grids.setdefault((node, lane, cell.key), set()).add(key)
     return tuple(
-        session.declared.universe.dataset(node).status(lane, keys, cells[where])
+        session.declared.universe.dataset(node).coverage.status(lane, keys, cells[where])
         for (node, lane, where), keys in sorted(grids.items())
     )
 
@@ -336,7 +336,7 @@ def log(trial: Trial, request: pytest.FixtureRequest) -> Iterator[Log]:
     try:
         yield bound
     finally:
-        bound.close(passed=request.node.stash.get(_PASSED, False))
+        bound.stream.close(passed=request.node.stash.get(_PASSED, False))
 
 
 @pytest.fixture

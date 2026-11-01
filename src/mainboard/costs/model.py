@@ -1,8 +1,9 @@
 import math
+from typing import ClassVar
 
 from patos import FrozenModel
 
-from ..constants import SECONDS_PER_HOUR
+from ..core.constants.units import SECONDS_PER_HOUR
 
 
 class BillingModel(FrozenModel):
@@ -11,7 +12,12 @@ class BillingModel(FrozenModel):
     The dynamic half, how long setup and drain take, is fitted from observations rather than
     believed from marketing pages, since a per-second rate means little when provisioning costs
     minutes.
+
+    DEFAULT_SETUP_S: the provisioning seconds an offer is priced at until its provider was
+        measured, so the unmeasured pays a plausible setup rather than none.
     """
+
+    DEFAULT_SETUP_S: ClassVar[float] = 300.0
 
     provider: str
     gpu: str = ""

@@ -146,7 +146,10 @@ class AsyncRunnerAutoModeConflict(Rule, id="PY-TEST0006", applicability="review"
     query = """
         SELECT * FROM test_suite_facts WHERE anyio_mode = 'auto' AND asyncio_mode = 'auto'
     """
-    message = "`{fact_id}` satisfies async runner auto mode conflict"
+    message = (
+        "`{fact_id}` sets both anyio and asyncio to auto mode, so both runners claim every "
+        "async test"
+    )
     # Strict asyncio mode asks async tests for their own mark, so none is claimed by both runners.
     fix = pytest_option_fix("asyncio_mode", value='"strict"')
     examples = (
@@ -164,7 +167,7 @@ class CoverageWithoutBranchMeasurement(Rule, id="PY-TEST0007", applicability="re
         SELECT * FROM test_suite_facts
         WHERE is_coverage_configured AND NOT is_branch_coverage_enabled
     """
-    message = "`{fact_id}` satisfies coverage without branch measurement"
+    message = "`{fact_id}` configures coverage but leaves branch measurement off"
     # Written in the manifest's own coverage table (coverage.py reads no enclosing manifest);
     # branch coverage lowers the reported percentage, which a coverage gate may then fail.
     fix = """

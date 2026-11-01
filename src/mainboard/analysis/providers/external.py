@@ -1,5 +1,5 @@
 """Facts from the checkers mcmr leaves to their own tools: Ruff's diagnostics, each with the edits
-of its fix, and ty's type errors.
+of its fix.
 
 A tool runs once over the project and its output becomes one fact family: the view
 `<family>_diagnostics` (one row per diagnostic, placed like every fact) and, for a tool that
@@ -9,13 +9,12 @@ Tools run only when a rule's SQL names their views, and together when several ar
 """
 
 import ast
-import re
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs ruff and ty with fixed argv since=2026-10-13
-import sys
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs ruff with fixed argv since=2026-10-13
 import tomllib
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -161,6 +160,21 @@ class Tool(FrozenModel, ABC):
         """The tool's findings over `root` as relations, the identity relation first."""
 
     @classmethod
+    @contextmanager
+    def alongside(cls, facts: Facts, root: Path, queries: Iterable[Query]) -> Generator[None]:
+        """Run the tools `queries` read together beside the block, then register what each found.
+
+        A tool reads the files of `root`, not the facts, so it runs beside the block that derives
+        them.
+        """
+        tools = cls.read(queries)
+        with ThreadPoolExecutor(len(tools) or 1) as pool:
+            ran = pool.map(lambda tool: tool.run(root), tools)
+            yield
+            for tool, relations in zip(tools, ran, strict=True):
+                tool.register(facts, relations)
+
+    @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: str) -> None:
         if "family" in cls.__dict__:
             Tool.defined[cls.family] = cls
@@ -186,15 +200,6 @@ class Tool(FrozenModel, ABC):
                 tools.append(tool(extended=tuple(sorted(codes))))
         return tools
 
-    @classmethod
-    def register_all(cls, facts: Facts, root: Path, queries: Iterable[Query]) -> None:
-        """Run the tools `queries` read together, then register what each found."""
-        tools = cls.read(queries)
-        with ThreadPoolExecutor(len(tools) or 1) as pool:
-            ran = pool.map(lambda tool: tool.run(root), tools)
-            for tool, relations in zip(tools, ran, strict=True):
-                tool.register(facts, relations)
-
     def register(self, facts: Facts, relations: Mapping[str, Table]) -> None:
         """Register `relations` as this tool's family."""
         for relation, (types, rows) in relations.items():
@@ -202,7 +207,7 @@ class Tool(FrozenModel, ABC):
             select = ", ".join(
                 f"unnest(${name}::{sql}[]) AS {name}" for name, sql in types.items()
             )
-            facts.db.execute(
+            facts.connection.execute(
                 f'CREATE TABLE "{self.family}/{relation}/rows" AS SELECT {select}',
                 dict(zip(types, columns, strict=True)),
             )
@@ -211,7 +216,7 @@ class Tool(FrozenModel, ABC):
             {relation: f'SELECT * FROM "{self.family}/{relation}/rows"' for relation in relations},
         )
         for relation in relations:
-            facts.db.execute(f'DROP TABLE "{self.family}/{relation}/rows"')
+            facts.connection.execute(f'DROP TABLE "{self.family}/{relation}/rows"')
 
 
 class Ruff(Tool):
@@ -370,50 +375,7 @@ class Ruff(Tool):
         return diagnostics, edits
 
     def run(self, root: Path) -> dict[str, Table]:
-        files = [name for name in listed(root) if name.endswith((".py", ".pyi"))]
-        diagnostics, edits = self._rows(root, self._lane(root, files))
+        diagnostics, edits = self._rows(
+            root, self._lane(root, [n for n in listed(root) if n.endswith((".py", ".pyi"))])
+        )
         return {"diagnostics": (_RUFF_DIAGNOSTICS, diagnostics), "edits": (_EDITS, edits)}
-
-
-class Ty(Tool):
-    """ty's type diagnostics, resolving imports against the Python running this. Its concise
-    format places a diagnostic at its start only."""
-
-    family = "Ty"
-    pattern: ClassVar[re.Pattern[str]] = re.compile(
-        r"^(?P<path>.+?):(?P<line>\d+):(?P<column>\d+): (?P<severity>\w+)\[(?P<code>[\w-]+)\] "
-        r"(?P<message>.*)$"
-    )
-
-    def run(self, root: Path) -> dict[str, Table]:
-        output = subprocess.run(
-            ["ty", "check", "--python", sys.executable, "--project", ".", "--exit-zero"]
-            + ["--output-format", "concise", "."],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=self.seconds,
-        ).stdout
-        sources = Sources(root)
-        diagnostics: list[Row] = []
-        for line in output.splitlines():
-            if found := self.pattern.match(line):
-                point = Point(row=int(found["line"]), column=int(found["column"]))
-                diagnostics.append(
-                    (
-                        f"ty:{len(diagnostics)}",
-                        found["path"],
-                        "python",
-                        *sources.place(found["path"], point),
-                        None,
-                        None,
-                        found["code"],
-                        found["code"],
-                        found["message"],
-                        found["severity"],
-                        None,
-                        None,
-                    )
-                )
-        return {"diagnostics": (_DIAGNOSTICS, diagnostics)}

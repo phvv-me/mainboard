@@ -1,8 +1,11 @@
 import hashlib
+import re
 from collections.abc import Sequence
 
 import duckdb
 import pytest
+from hypothesis import HealthCheck, example, given, settings
+from hypothesis import strategies as st
 from patos import FrozenModel
 
 from mainboard.state import Lake
@@ -60,6 +63,18 @@ def _stage(lake: Lake, objects: dict[str, bytes]) -> Staged:
     )
 
 
+def _hand_rolled_runs(sizes: Sequence[int], limit: int) -> list[tuple[int, int]]:
+    """The loop that cut chunk runs before `constrained_batches`, as first and last positions."""
+    runs = []
+    start = size = 0
+    for position, chunk_size in enumerate(sizes):
+        if size and size + chunk_size > limit:
+            runs.append((start, position - 1))
+            start, size = position, 0
+        size += chunk_size
+    return [*runs, (start, len(sizes) - 1)]
+
+
 @pytest.fixture
 def chunk_bytes(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> int:
     """Chunks of the requested size, with a row group that holds four of them."""
@@ -110,3 +125,19 @@ def test_staged_objects_land_in_one_insert_of_bounded_row_groups(
     assert len(staged.inserts) == 1 and staged.inserts[0].count("UNION ALL") == unions
     assert len(staged.groups) > 1 and sum(staged.groups) == len(objects)
     assert max(staged.groups) <= _VECTOR_ROWS and staged.read == objects
+
+
+@pytest.mark.parametrize("chunk_bytes", [1000], indirect=True)
+@settings(max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(sizes=st.lists(st.integers(min_value=0, max_value=1000), max_size=40))
+@example(sizes=[1000] * 3)
+@example(sizes=[1000] * 4)
+def test_staged_chunks_are_cut_into_runs_where_the_loop_they_replaced_cut_them(
+    lake: Lake, chunk_bytes: int, sizes: list[int]
+) -> None:
+    objects = _objects([chunk_bytes, *sizes])
+    arms = re.findall(r"BETWEEN (\d+) AND (\d+)", _stage(lake, objects).inserts[-1])
+    chunks = [len(payload) for payload in objects.values()]
+    assert [(int(first), int(last)) for first, last in arms] == _hand_rolled_runs(
+        chunks, 4 * chunk_bytes
+    )

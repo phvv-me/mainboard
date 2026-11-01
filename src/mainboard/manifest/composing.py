@@ -7,8 +7,10 @@ lays the held machines over what it composes.
 from typing import TYPE_CHECKING
 
 from ..core.errors import MissionError
+from ..core.project import Project
 from .members import Composition
 from .parsing import rendered, validated
+from .schema.project.workspace import Header
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,3 +23,9 @@ def composition(path: Path) -> Composition:
     except FileNotFoundError:
         raise MissionError(f"no manifest at {path}") from None
     return Composition(path.parent, validated(path, tree))
+
+
+def header(root: Path) -> Header:
+    """The `[workspace]` table of the manifest at workspace `root`, its defaults without one."""
+    manifest = Project().manifest(root)
+    return composition(manifest).manifest.workspace if manifest.is_file() else Header(name="")

@@ -1,4 +1,4 @@
-from mainboard.dispatch.mirroring.sync import outermost
+from mainboard.dispatch.ignores import outermost
 
 
 def test_a_path_under_another_root_is_listed_once() -> None:

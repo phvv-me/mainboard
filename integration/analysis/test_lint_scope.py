@@ -17,18 +17,18 @@ from mainboard.analysis.edits import Delete
 from mainboard.analysis.engine.apply import Plan
 from mainboard.analysis.engine.facts import Budget, Facts
 from mainboard.analysis.providers.ducks import Ducks
+from mainboard.enums import Exit
 from mainboard.lint import Inventory, Linter
 from mainboard.lint.process import Outcome
 from mainboard.manifest import LintTool
 from mainboard.manifest.schema.project.git import GitPolicy
-from mainboard.proc import Exit
 
-from ..conftest import committed, git
+from ..builders import committed, git
 
 
-def test_a_pass_reads_owned_repositories_and_skips_an_uninitialized_one(
-    tracked: Path, tmp_path_factory
-) -> None:
+@pytest.fixture
+def submodules(tracked: Path, tmp_path_factory) -> None:
+    """Three submodules of `tracked`, an owned one, an uninitialized one and a foreign one."""
     # Beside the root's own remote is owned; anywhere else is someone else's.
     remote = Path(git(tracked, "remote", "get-url", "origin").stdout.strip())
     owned = committed(remote.parent / "owned")
@@ -39,6 +39,9 @@ def test_a_pass_reads_owned_repositories_and_skips_an_uninitialized_one(
     git(tracked, "commit", "--quiet", "-m", "three submodules")
     git(tracked, "submodule", "deinit", "--quiet", "--force", "absent")
 
+
+@pytest.mark.usefixtures("submodules")
+def test_a_pass_reads_owned_repositories_and_skips_an_uninitialized_one(tracked: Path) -> None:
     listed = Inventory(tracked, GitPolicy()).under([tracked])
 
     names = {path.relative_to(tracked).as_posix() for path in listed}
@@ -107,27 +110,41 @@ path-when-unconfigured = "."
     }
 
 
-def test_no_step_rewrites_a_file_a_registration_sealed(tracked: Path) -> None:
-    sealed = tracked / "experiments" / "registered"
-    drafted = tracked / "experiments" / "drafted"
-    sealed.mkdir(parents=True)
-    drafted.mkdir()
+@pytest.fixture
+def sealed_tree(tracked: Path) -> tuple[Path, Path, Path]:
+    """The pins and a nested note under a registration's seal, and the pins under an open draft."""
     node = "---\nregistration_sha256: {}\n---\n# Node\n"
-    (sealed / "node.md").write_text(node.format("ab" * 32), encoding="utf-8")
-    (drafted / "node.md").write_text(node.format("0" * 64), encoding="utf-8")
-    pins = sealed / "pins.json"
-    pins.write_bytes(b'{"shapes":{}}')
-    (sealed / "nested").mkdir()
+    sealed, drafted = tracked / "experiments" / "registered", tracked / "experiments" / "drafted"
+    for folder, digest in ((sealed, "ab" * 32), (drafted, "0" * 64)):
+        folder.mkdir(parents=True)
+        (folder / "node.md").write_text(node.format(digest), encoding="utf-8")
+        (folder / "pins.json").write_bytes(b'{"shapes":{}}')
     deeper = sealed / "nested" / "notes.txt"
+    deeper.parent.mkdir()
     deeper.write_bytes(b"trailing   \n")
-    open_draft = drafted / "pins.json"
-    open_draft.write_bytes(b'{"shapes":{}}')
+    return sealed / "pins.json", deeper, drafted / "pins.json"
+
+
+def test_no_step_rewrites_a_file_a_registration_sealed(
+    tracked: Path, sealed_tree: tuple[Path, Path, Path]
+) -> None:
+    pins, deeper, open_draft = sealed_tree
+    linter = Linter(tracked, load(Project().manifest(tracked)))
+
+    linter.lint([pins, deeper, open_draft])
+
+    assert pins.read_bytes() == b'{"shapes":{}}'
+    assert deeper.read_bytes() == b"trailing   \n"
+
+
+def test_a_pass_rewrites_the_open_draft_beside_the_files_a_registration_sealed(
+    tracked: Path, sealed_tree: tuple[Path, Path, Path]
+) -> None:
+    pins, deeper, open_draft = sealed_tree
     linter = Linter(tracked, load(Project().manifest(tracked)))
 
     report = linter.lint([pins, deeper, open_draft])
 
-    assert pins.read_bytes() == b'{"shapes":{}}'
-    assert deeper.read_bytes() == b"trailing   \n"
     assert open_draft.read_bytes() == b'{"shapes":{}}\n'
     assert report.rewritten == ("experiments/drafted/pins.json",)
 
@@ -161,10 +178,10 @@ def test_a_consumer_read_does_not_report_grammar_gaps_in_other_repositories(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reports: bool
 ) -> None:
     said: list[str] = []
-    monkeypatch.setattr(Ducks, "_attach", lambda self, db: False)
+    monkeypatch.setattr(Ducks, "attach", lambda self, db: False)
     monkeypatch.setattr(Ducks, "sources", lambda self, root: [])
     monkeypatch.setattr(Ducks, "parse", lambda self, db, root, sources: 0)
-    monkeypatch.setattr(Ducks, "_report_gaps", lambda self, facts, root: said.append("gaps"))
+    monkeypatch.setattr(Ducks, "publish_gaps", lambda self, facts, root: said.append("gaps"))
     monkeypatch.setattr(Facts, "adopt", lambda self, *args, **flags: None)
     facts = Facts(tmp_path, Budget(folder=tmp_path / "facts"))
 

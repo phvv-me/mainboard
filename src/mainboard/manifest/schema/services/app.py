@@ -5,8 +5,7 @@ from typing import Literal
 
 from pydantic import model_validator
 
-from ....core.base import Declared
-from ..spec import Json
+from ....core.base import Declared, Json
 
 type Action = Literal["build", "test", "build-for-testing", "resolve"]
 

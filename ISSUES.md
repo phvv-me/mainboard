@@ -4,6 +4,64 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found setting up a second workspace on a host, 2026-11-01
+
+A self-contained project manifest (`research/kernel-languages/mb.toml`, Python 3.15, its own lock) was onboarded on
+silo with `mb host setup silo`. Nothing is committed.
+
+All four are fixed 2026-11-01 (the guards are in the tree, uncommitted).
+
+1. **Two workspaces silently shared one host root.** A host's `root` defaults to `~/.mb-jobs`, so the second
+   workspace's setup and sync wrote its `mb.toml`, `mb.lock`, `scripts/` and `.mb/envs/default` over the first one's
+   mirror there, beside 161 GB of the first workspace's results, with no warning. Fixed for that project by giving it
+   `root = "/home/pedro/.mb-jobs-kl"` in its own `[hosts.silo]`, and by removing its four stray directories from the
+   shared root. Now `host setup` and `host sync` refuse a root whose mirrored manifest names another `[workspace]
+   name`, before mirroring (`dispatch/hosts/onboard/claim.py`). Open: silo's shared root still holds the second
+   workspace's `mb.toml`, so this workspace's sync to silo is refused until that file is removed there; dispatch's
+   own mirror (`job submit`) is not checked.
+2. **A nested workspace does not inherit the root's hosts**, so `mb host list silo` from it showed no host and
+   `host setup` failed with "nothing to sync". The error now names the manifest it read and says a nested workspace
+   does not inherit `[hosts]`.
+3. **`mb run <command>` from a subfolder runs at the workspace root**, not in the folder. A bare command now logs
+   where it runs (`engines/compile/provisioner.py`) and the verb's help says so; where it runs is unchanged.
+4. **A task named like a tool shadows the tool.** A task named like a program the environment installed now warns
+   once per process, when the manifest is compiled (in this monorepo: `aizk-eval` and `test`).
+
+## Found fixing ties in the fact base, 2026-11-01
+
+A `USING KEY` step keeps, of the rows it writes for one key in one iteration, whichever its join
+emits last, so a payload the key does not fix differs from run to run. Tie-broken with a
+`QUALIFY row_number()` and tested by permuting the input rows
+(`integration/analysis/rules/families/test_relation_order.py`): `CudaTypes`, `CudaDeviceWork`,
+`ImportsStartup` and `CudaCaptured`. Read and left alone, since the key and the iteration fix their
+payload: `CudaHot`, `CudaCollectiveSites` and the wait `reach` of `execution/timing.py`. Open:
+`CudaLevels` (`kernels/flows.py`), whose two branches can write one key in the same step; it was
+read, not run for a tie.
+
+## Found checking part exclude lines against git, 2026-10-31
+
+The SQL of `Part.kept` (the `exclude` lines of a bundle's parts) reads the lines in order, as
+pathspec's forward evaluation does: the last matching line decides, a `!` line matching only
+through a parent folder never overrules a line that matched the file itself, and any other line
+overrules everything before it. Real `git check-ignore --no-index` ignores both `src/pkg` under
+`["src", "!pkg", "src"]` and `src/x` under `["!src/**", "src"]`, and so does the SQL. Over 2,080,512
+(lines, path) pairs the SQL and that forward order never differ. Git itself differs from both in 519
+of 161,280 sampled pairs, for instance where a `!` line re-includes below an excluded parent
+(`["src", "!a"]` keeps `src/a`, git ignores it). Without the `hit.include OR` clause the SQL would
+differ from git in 799 of them.
+
+pathspec 1.1.1 offers that order in no public backend, and its two public ones disagree with it:
+the default (re2, wherever google-re2 is installed) breaks ties between matching lines in no
+guaranteed order (4,307 pairs differ from the SQL), and `simple` reads the lines in reverse (4,714).
+These Python sites build `GitIgnoreSpec.from_lines(...)` with the default backend, so a list with a
+`!` line followed by a positive folder line can be read one way here and another by the SQL:
+`lint/linter.py` (three specs), `analysis/engine/facts/files.py` (`lint_excludes`),
+`analysis/project/workspace.py`, `analysis/project/config.py`, `center/readiness/portable.py`,
+`dispatch/ignores.py`. No owner config has a `!` exclude line today, so no row or finding moves.
+Open, the lead's call: whether one adapter over pathspec's private `SimpleGiBackend(no_reverse=True)`
+(it needs a `PY-IMPO0007` fence) should serve every site. The property test of `Part.kept` reads the
+forward order through public API only (`integration/analysis/catalog/builders.py::gitignored`).
+
 ## Found planning rentals on hosts that drop or download slowly, 2026-10-27
 
 The owner's Vast and RunPod jobs ran on slow connections and nodes that dropped, losing the run.
@@ -67,11 +125,16 @@ Open:
   delivered share); what the owner's scorecard still needs is the tier (data-center or
   marketplace), ready time and bandwidth on the `costs` ledger's `Observation`, an offer snapshot
   table, and a ranking by requirement (walltime, region, card).
-- ALL-ARCH0003 stays on `backends/base.py` (root constants and `hosts.rentals`), `manifest/schema/
-  compute/queue.py` (root constants), `fleet/runs.py` and `verbs/options.py`: each edge needs a
-  shared definition moved into a more stable package. Moving the unit constants to `core/` touched
-  36 files and was undone, because every touched file then reports its older findings; it belongs
-  to the design pass listed under "Deferred after milestone M1".
+- The root and compile constants live in `core/constants/units.py` and `core/constants/names.py`,
+  below every layer, which cleared ALL-ARCH0003 on `manifest/schema/compute/queue.py` and the
+  root-constants edge of `backends/base.py`. 46 files still carry the rule (2026-10-30), each edge
+  needing a shared definition moved into a more stable package: `dispatch/backends/base.py` on
+  `dispatch.hosts` (`hosts.lease`, `hosts.rentals`), `dispatch/provenance.py` on `manifest` and
+  `state.lake`, `dispatch/hosts/landing.py` on `dispatch.dispatcher`, `hosts.onboard` and
+  `mirroring`, `dispatch/state/registry.py` on `dispatch.hosts`, `fleet/runs.py` on
+  `dispatch.dispatcher`, `verbs/options.py` on `batch` and `fleet.board`, and the `state/` modules
+  that import `manifest`, `observe` or `state.lake` (`views.py`, `telemetry.py`, `storage/blobs.py`,
+  `storage/database.py`, `lake/core.py`). `mainboard code rules check` lists every row.
 - Not built: Nebius and Crusoe (CLI route, see above) and Prime Intellect (an aggregator whose
   availability API carries `internetSpeed`, `security` and `provider`; worth reading for the
   scorecard before it is worth renting through).
@@ -2418,3 +2481,112 @@ is why a rename shows up as a fresh list.
   hosts before the first `mb host sync`; deploy the read-only lake endpoint; file the two upstream
   issues (duckdb-web, ruff) once the owner agrees; ingest `~/.aizk-pending/` into AIZK when it
   answers.
+- FIXED 2026-11-01 (not yet run on the root), `mb upgrade` crashed on the root workspace
+  (2026-10-31): `pixi list --json` lists an editable member of the workspace with `version: null`
+  and `Pixi.locked` required a string, so the command failed with a validation error and left
+  `mb.toml` and `mb.lock` untouched. `_Package.version` now allows null and `locked` reads it as the
+  empty version (`integration/engines/environments/compile/test_locked_versions.py`). Running
+  `mb upgrade` on the root now rewrites the lock, which the CVPR survey froze as `mb install` solved
+  it (sha256 in `experiments/multi_gpu_batch_survey/inputs.json`), so it waits for the relock window.
+- FIXED 2026-11-01, two test-side faults found by the regroup: (1) the naming tests answered a stub
+  `claude` but left `Namer` writing to `~/.cache/mainboard/analysis/names.json`, so a stub's names
+  (`row_count`) sat among the real model's answers; `integration/conftest.py` now gives every test
+  its own `model._CACHE`. (2) `pytest --collect-only` refused to list mainboard's own tests outside
+  the gate (M00-OS), so the collection check of the fixes (P3) could never judge them; a collect-only
+  run, which starts no test, is now allowed. Two `row_count` entries in the real cache were left in
+  place: no key tells a stub's answer from the model's, and a cache entry is re-asked on a miss.
+- FIXED in part 2026-11-01, the stream half of (1): a pass now fetches at most the smaller of 16 GiB
+  and a third of the disk free above 30 GB at its staging folder, the host stops its archive at that
+  allowance (`Center.allowance`, member `MORE`), the center keeps what came and refuses, so the job
+  stays unsettled and the next pass sends the rest; below the floor a pass asks for nothing. The
+  69 GB `acquisition-v1` pull had timed out at 600 s on every pass for lack of this. `.mb/tmp` is
+  now a symlink to PORTABLE, so the Mac's disk no longer stages (the unplugged drive makes a pass
+  fail at once). Items (2) to (4) are fixed below.
+- FIXED 2026-11-01, items (2) and (4) of the disks-fill entry. (2) `Transient`
+  (`upkeep/transient.py`) clears `collect-<pid>-*` and `fix-<pid>-*` folders of dead pids and first
+  ends any process holding a file in them (the leaked ssh); it runs at each new folder and at every
+  settlement pass. `SshTransport.__communicate` now ends its ssh tree on SIGINT and unwinds on
+  SIGHUP/SIGTERM, which tests showed all left the link running. SIGKILL (the pass's own watchdog)
+  is only reaped at the next pass. Still open: `feed()` and `machine()` sessions leave their ssh to
+  the OS when the caller dies. (4) `mb job monitor stop|start|status` (launchd and systemd); the
+  doctor's fix now names `mb job monitor start`.
+- PARTLY FIXED 2026-11-01, item (3): `mb host evict <host> <path>...` removes only host files whose
+  sha256 the lake indexes at that path and reads back intact; it never follows links, refuses the
+  workspace, any path outside it or through a link, removes only folders it emptied, and reports
+  each path with why. No job declares an output size (`Declaration`, `Resources`), so dispatch
+  refuses a job when `df -Pk` at the mirror is below `JOB_HOST_DISK` (20 GB). Open: settlement does
+  not evict on its own; `dispatch/collection/pack.py` is past the statement ceiling (226 of 200)
+  because the host runs it as one stdlib-only script; `_room` has no test (no double of a remote
+  machine).
+- FIXED 2026-11-01, disks-fill item (1) and the shared floor. The Mac filled about eight times from
+  different writers (gate roots in `/private/tmp`, scratch copies, build caches, git temp packs,
+  datasets in the tree, staging), so one rule now governs the large local writers: `Disk`
+  (`core/files/disk.py`, floor `DISK_FLOOR` 30 GiB) guards collection, fix and proof mirrors,
+  ingest, materialize, replicate, `Pixi.install` and the gate. The optional `[workspace] tmp` names
+  the bulk place (default `<out>/tmp`) through `Transient`, which reaps dead-pid folders every
+  settlement pass. `mb code doctor` reports free space, git temp files and dead gate roots, each
+  with the command that removes it (it found 24 git temp files, 4.1 GiB, and 9 dead gate roots on
+  11-01). Open: gate roots stay in `/tmp` (the PostgreSQL socket path must stay under macOS's 104
+  bytes) and are reported only; `JOB_HOST_DISK` (20 GB) is a second figure beside `DISK_FLOOR`; the
+  DuckDB analysis spill (2 GB cap) is not governed; the root `/mb.toml` does not yet set `tmp`
+  (`/Volumes/PORTABLE/mainboard-tmp` would replace the `.mb/tmp` symlink).
+- DECIDED and APPLIED, 2026-11-01 (owner): shared modules sit where their importers meet. A
+  `constants.py`, `enums.py` or `exceptions.py` is imported only from within the folder holding it,
+  and that folder is the lowest one holding the definition and every importer of its top package
+  (tests apart). PY-ENUM0003 now places each enum imported by another module in `<lowest shared
+  folder>/enums.py`, with no floors (it had three, which left most enums where they were); an
+  `enums/` package of one enum per file stays, and so does a `constants/` package, as subject
+  groups. PY-CONS0002 and PY-EXCE0003 now also move what already sits in a `constants.py` or
+  `exceptions.py` that an importer outside its folder reaches. Applied to the live package: 17 enums
+  went to the root `enums.py` (the ones used across top packages) and 28 more to 19 folder-level
+  `enums.py` files, the literals of `constants.py` modules used outside their folder to the root and
+  `trials/` `constants.py`, one exception to the root `exceptions.py`
+  (`~/.aizk-pending/mb-roadmap-2026-10-28/patches/py-enum0003-lca-applied-2026-11-01.patch` and
+  `constants-exceptions-lca-applied-2026-11-01.patch`). Three enums read private names of their
+  module, which no fix moves, and were moved by hand (`core/events` `Key`, `render` `Audience`,
+  `verbs/apps` `Kind`). Two conflicts with other rules were settled: the folder ceiling
+  (ALL-FILE0003) and the module member count (a part of ALL-CEIL0001) no longer count a
+  `constants.py`, `enums.py` or `exceptions.py`, since the placement above adds one to a folder and
+  a cross-cutting root module holds many definitions; `VOCABULARY_PATH` and `TEST_PATH` are in
+  `analysis/constants.py`. Open: the root `enums.py` and `constants.py` are grab bags by
+  construction (ALL-ARCH0003 grew by 5: `core` imports the root package). The constant fix did not
+  respell importers in the test suite by their full name
+  (`from mainboard.core.events.constants import EVENT_ID`), so the tests that named a moved
+  constant were edited by hand.
+- FIXED 2026-11-01: `MoveConstants` moved only literals ("nothing else is sure to mean the same in
+  another module"), which refused every `Project().variable(...)` name and the like; it now moves
+  a constant of any value with the imports its value reads, each one that can alone (`compact`
+  beside `literal` on `Relocation`). What it cannot see is an import cycle through the carried
+  imports: moving `verbs.constants.TREE` to the root `constants.py` made the root import
+  `verbs.node`, which reaches `render`, `log` and back to `constants`, and `mb --help` exited 1.
+  The fixer's proof (each changed module imported in a process of its own, then the suite) catches
+  that, `preview` plus `patch` does not, so apply fixes with `rules fix` or `trial`, never by
+  hand-applying a preview. `TREE` stays in `verbs/constants.py`.
+- ACCEPTED, 2026-11-01 (owner): the `PY-CONS0002` residue stays as written, 40 findings:
+  `verbs.constants.TREE` (the CLI declaration; importers `cli.py` and every verb module),
+  `policy.constants.ENFORCERS` and `serve.constants.SERVICES` (registries that read classes of
+  their module), and the host-shipped `dispatch/agent/program/constants.py` (`FILE`, `DIRECTORY`,
+  `LINK`; stdlib-only on purpose, so the center imports from it and never the reverse). The
+  owner's rule for hardcoded values in general: they are fine where they are, and become a
+  constant only when they carry little context or repeat twice or more.
+- DONE 2026-11-01 (owner): MCMR is retired. `packages/mcmr` holds a README that points to
+  mainboard and to the commit with the last tree. The root `mb.toml` lost the `mcmr` dependency,
+  `maturin` (which only built its kernel), its `lint-mcmr`/`typecheck-mcmr`/`test-mcmr`/`mcmr-*`
+  tasks and its mirror include; `manuscript-lint` runs the nine `ALL-MANU` rules through
+  `mb code rules check`. The relock changed 19 lines and dropped 113 (mcmr, maturin, tron-python).
+  The gate lost its `mcmr` lane and its `mcmr` version and finding counts in `baseline.json`.
+  The `[tool.mcmr...]` tables stay as the name of rule settings in every `pyproject.toml`.
+- FIXED 2026-11-01: `mb data lake evict` took 0.2 to 0.3 s per file whatever its size (a tree of
+  350,000 files would have taken a day), because it asked the lake about each object alone and
+  every read scans all data files. It now moves a batch of 256 files aside (`EVICTED_TOGETHER`),
+  asks the lake once for the batch, and removes the ones it holds whole. `mb code doctor` has a
+  `tree evidence` row (`Space.evidence`): the `datasets`/`evidence` folders and Parquet in the tree,
+  warning past 5 GiB with the `ingest` and `evict` commands for the biggest. `AGENTS.md` and the
+  `mainboard` skill say evidence goes produce, ingest, evict.
+- OPEN, 2026-11-01: `state/lake/core.py` `append` annotates its rows `Mapping[str, object]` (the
+  owner bans `object` annotations) and mypy rejects passing them to `insert` (expects JSON types);
+  the annotation is in the committed code.
+- OPEN, test tree (2026-10-30): `ALL-TEST0004` checks that the first folder under `integration/` is a
+  source package but not that the second folder mirrors the module that holds the code under test, so a
+  test file in the wrong subfolder (`integration/manifest/test_apps.py` testing `verbs/apps`) passes.
+  `ISSUES.md` and `refactor/bugs-ledger.md` still cite `test_held`, now `integration/dispatch/held/`.

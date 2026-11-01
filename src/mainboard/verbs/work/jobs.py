@@ -1,4 +1,3 @@
-import sys
 import time
 from contextlib import suppress
 from functools import partial
@@ -9,22 +8,22 @@ from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ConfigDict
 
+from ...constants import WAIT_SECONDS
 from ...core.errors import MissionError
 from ...core.project import Project
-from ...dispatch import constants
+from ...core.services import schedule
 from ...dispatch.jobs import vocabulary
 from ...dispatch.jobs.evidence import printed
 from ...dispatch.schedulers import HostUnreachable, standing
 from ...fleet.board import Board
 from ...log import logger
-from ...render import diverted, plain, progress
+from ...render import Output, Terminal, diverted, plain, progress
 from ...settling.digest import Digester
-from ...settling.durable import schedule
 from ...settling.events import Events
 from ...settling.listing import Listing
 from ...waiting.vigil import Patience
-from ..base import Verbs
-from ..options import Output, said
+from ..options import said
+from ..session import Verbs
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -40,7 +39,7 @@ class Waiting(Patience):
 
     wait: bool = False
     """block until the target settles."""
-    timeout: float = constants.WAIT_SECONDS
+    timeout: float = WAIT_SECONDS
     """with `--wait`, give up after this many seconds (exit 2); 0 waits forever."""
     quiet: Annotated[bool, Parameter(show=False)] = False
     """leave out the line naming what is waited on."""
@@ -271,7 +270,7 @@ class JobVerbs(Verbs):
             settled = self.session.board("local").verdicts().cancel(handle, host=on)
         return _settled(settled, output)
 
-    def collect(self, path: str, *, on: str, json: bool = False) -> None:
+    def collect(self, path: str, *, on: str, output: Output = _COMPACT) -> None:
         """Collect remote evidence for queries, including runs started directly on that node.
 
         Complete files are immutable. Conflicts preserve the local copy and fail collection.
@@ -284,14 +283,11 @@ class JobVerbs(Verbs):
                 setup has placed it yet. The host runs the exporter on its workspace
                 environment's Python, else on the uv-managed CPython its setup put there, never
                 on a system interpreter.
-            json: print a machine-readable collection summary.
         """
         workspace = self.session.board(on)
         root = workspace.plan(container="none").profile.root
         published = workspace.dispatcher.fetch_path(on, root=root, path=path)
-        Output(json_=json).print_record(
-            {"host": on, "path": path, "new_files": published}, title="collection"
-        )
+        output.print_record({"host": on, "path": path, "new_files": published}, title="collection")
 
     def digest(
         self,
@@ -415,18 +411,11 @@ class JobVerbs(Verbs):
         if not captured.strip():
             return JobVerbs._unprinted(workspace, handle, host=on)
         # A job that coloured its output for a terminal it never had leaves escape codes in
-        # the capture; a pipe or a file gets the plain text, a terminal gets the colours.
-        shown = captured if sys.stdout.isatty() else plain(captured)
+        # the capture; an agent, a pipe or a file gets the plain text, a person's terminal the
+        # colours.
+        shown = captured if Terminal.current().styled() else plain(captured)
         logger.result(shown, end="" if shown.endswith("\n") else "\n")
         return 0
-
-    def monitor(self, *, json: bool = False) -> None:
-        """The settling pass periodic runners installed before `job list --every` call.
-
-        Args:
-            json: print the listing and the sweep as JSON, what those runners read.
-        """
-        self.jobs(output=Output(json_=json))
 
     def show(
         self,

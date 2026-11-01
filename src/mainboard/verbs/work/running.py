@@ -5,14 +5,17 @@ from ...core.errors import MissionError
 from ...dispatch.jobs.vocabulary import Allocation
 from ...engines.compile.pixi.policy import Preparation
 from ...log import logger
-from ...render import progress, record
+from ...render import Output, progress
 from ...runtime.job import Job
-from ...runtime.runner import Runner
-from ..base import Verbs
+from ..constants import TREE
+from ..session import Verbs
+from .runner import Runner
 
-# The verbs' defaults: no allocation asked for, and the lock and environment as pixi brings them.
+# The verbs' defaults: no allocation asked for, the lock and environment as pixi brings them, and
+# compact output.
 _ALLOCATION = Allocation()
 _PREPARATION = Preparation()
+_COMPACT = Output()
 
 
 class RunningVerbs(Verbs):
@@ -51,7 +54,7 @@ class RunningVerbs(Verbs):
         return Runner(Job.read(record)).run()
 
     def provide(
-        self, env: str = "", *, source: str = "", expect: str = "", json: bool = False
+        self, env: str = "", *, source: str = "", expect: str = "", output: Output = _COMPACT
     ) -> None:
         """Build the immutable environment a dispatched job activates, and print where it is.
 
@@ -61,7 +64,8 @@ class RunningVerbs(Verbs):
         wave queued against it keeps it however often the workspace re-solves meanwhile.
 
         Building one that already exists touches nothing and prints the same path, which is
-        what lets every job of a wave ask and one of them build.
+        what lets every job of a wave ask and one of them build. The path prints bare, as JSON
+        under `--json`.
 
         Args:
             env: the environment to build, the host profile's own when empty.
@@ -69,14 +73,13 @@ class RunningVerbs(Verbs):
                 this workspace's own generated environment when empty.
             expect: the digest a dispatch pinned, refused when this machine reads the artifact as a
                 different environment rather than building one no queued job will activate.
-            json: print the path as canonical JSON instead of a bare line.
         """
         with progress(f"building the environment for {env or 'default'}"):
             built = self.session.board("local").provide(env, source=source, expect=expect)
-        if not json:
+        if output.json_:
+            output.print_record({"prefix": str(built)}, title="prefix")
+        else:
             logger.result(built.as_posix())
-            return
-        record({"prefix": str(built)}, mode="json", fields=(), title="prefix")
 
     def run(
         self,
@@ -95,6 +98,11 @@ class RunningVerbs(Verbs):
         file targets, and run collection and help locally. Plain remote diagnostic commands
         execute over SSH, on a cluster's login endpoint rather than in a batch allocation, in
         what that host's setup installed. The exit code is the command's own.
+
+        A local command runs at the workspace root, not in the folder it was typed in, so a
+        relative path in it resolves against the root; when the two differ it says where it runs.
+        A declared task runs from its own `dir`. A task named like a program the environment
+        installs (`ruff`) runs in its place, with the arguments appended; declaring one warns.
 
         Args:
             command: the command tokens, from the first token that is not an option of this verb,
@@ -179,3 +187,9 @@ class RunningVerbs(Verbs):
             self.session.board("local").shell(
                 env, policy=preparation.policy, install=preparation.installs
             )
+
+
+_RUNNING = RunningVerbs()
+mb = TREE.bind(_RUNNING.attest, _RUNNING.provide, _RUNNING.sample, execute=_RUNNING.job_)
+run = TREE.node("run").app(_RUNNING.run)
+shell = TREE.node("dep").bind(_RUNNING.shell)["shell"]

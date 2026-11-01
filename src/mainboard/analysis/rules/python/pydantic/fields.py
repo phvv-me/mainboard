@@ -45,8 +45,9 @@ class VariadicTupleModelField(Rule, id="PY-PYDA0007", applicability="review"):
 class Ranking(BaseModel):
     scores: tuple[float, ...]
 """,
-            good="""from pydantic import BaseModel
-from collections.abc import Sequence
+            good="""from collections.abc import Sequence
+
+from pydantic import BaseModel
 
 
 class Ranking(BaseModel):

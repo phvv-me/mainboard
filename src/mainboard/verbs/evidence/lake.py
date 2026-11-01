@@ -2,17 +2,17 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
-from ...constants import SECONDS_PER_HOUR
+from ...core.constants.units import SECONDS_PER_HOUR
 from ...core.project import Project
 from ...dispatch.collection.collector import Collector
 from ...dispatch.collection.linking import link
 from ...lint.files.git import nested_projects
 from ...log import logger
-from ...render import progress
+from ...render import Output, progress
 from ...state import DirectoryReplica, Evidence, Lake, Serving
 from ...state.evidence import within
-from ..base import Verbs
-from ..options import Output
+from ..constants import TREE
+from ..session import Verbs
 
 # The verbs' defaults: compact output, the lake served on Quack's own port.
 _COMPACT = Output()
@@ -74,6 +74,32 @@ class LakeVerbs(Verbs):
         with progress("evicting tree copies the lake keeps"):
             evicted = keeper.evict(keeper.finalize(paths))
         output.print_rows([{"evicted": len(evicted)}], title="lake evict", columns=("evicted",))
+
+    def host_evict(self, host: str, *paths: str, output: Output = _COMPACT) -> None:
+        """Remove a host's copies of evidence the center's lake holds, to give its disk back.
+
+        A file under each path on the host goes only when the lake indexes that very path with
+        the same bytes and reads its object back whole; anything else stays, and so does every
+        link, which is never followed. Of the folders, only those the removals emptied go. One
+        row per path says what became of it, and why a file stayed. Naming a path says no job
+        there writes or reads it any more; `collect` first brings home what the lake lacks.
+
+        Args:
+            host: the declared ssh host holding the copies.
+            paths: workspace-relative evidence files or directories, with forward slashes on
+                every OS; never the workspace itself, nor a path outside it or through a link.
+        """
+        workspace = self.session.board(host)
+        root = workspace.plan(container="none").profile.root
+        with progress(f"evicting from {host} what the lake holds"):
+            evictions = [
+                workspace.dispatcher.evict_path(host, root=root, path=path) for path in paths
+            ]
+        output.print_rows(
+            [row for eviction in evictions for row in eviction.rows],
+            title="host evict",
+            columns=("path", "outcome", "bytes", "why"),
+        )
 
     def ingest(self, *paths: Path, output: Output = _COMPACT) -> None:
         """Keep evidence files in the lake byte for byte, so they can leave version control.
@@ -177,7 +203,7 @@ class LakeVerbs(Verbs):
         `MB_LAKE=quack:localhost:<port>` with `MB_LAKE_TOKEN` for appends, and
         `MB_LAKE_READ=quack:localhost:<port+1>` with `MB_LAKE_READ_TOKEN` for reads. Commands
         here keep using the lake's files. Both ends must run the same DuckDB release
-        (`mb self version` names it).
+        (`mb --version` names it).
         """
         lake_ = Lake.at(self.session.workspace_root())
         with lake_.serving(served) as (uri, _):
@@ -190,3 +216,18 @@ class LakeVerbs(Verbs):
             with suppress(KeyboardInterrupt):
                 while True:
                     time.sleep(SECONDS_PER_HOUR)
+
+
+_LAKE = LakeVerbs()
+lake = TREE.node("data lake").app(
+    _LAKE.compact,
+    _LAKE.dedup,
+    _LAKE.evict,
+    _LAKE.ingest,
+    _LAKE.materialize,
+    _LAKE.replicate,
+    _LAKE.serve,
+    check=_LAKE.lake_check,
+    upgrade=_LAKE.lake_upgrade,
+)
+evict = TREE.node("host").bind(evict=_LAKE.host_evict)["evict"]

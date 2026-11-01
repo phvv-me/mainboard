@@ -34,20 +34,23 @@ _VERSION = re.compile(r"\d+(?:\.\d+)+")
 _DRIVER = re.compile(r"(?:Driver|KMD) Version:\s*(\d+(?:\.\d+)+)")
 _DRIVER_CUDA = re.compile(r"CUDA (?:UMD )?Version:\s*(\d+(?:\.\d+)+)")
 
+# The flag every tool here answers its version to.
+_VERSION_FLAG = "--version"
+
 # Every tool a report names, with the argv that makes it say its version. `git lfs` is asked
 # through git, the way every checkout reaches it.
 _TOOLS: dict[str, tuple[str, ...]] = {
-    "git": ("git", "--version"),
+    "git": ("git", _VERSION_FLAG),
     "git-lfs": ("git", "lfs", "version"),
-    "gh": ("gh", "--version"),
+    "gh": ("gh", _VERSION_FLAG),
     "ssh": ("ssh", "-V"),
-    "uv": ("uv", "--version"),
-    "pixi": ("pixi", "--version"),
-    "tectonic": ("tectonic", "--version"),
-    "node": ("node", "--version"),
-    "cargo": ("cargo", "--version"),
-    "nvcc": ("nvcc", "--version"),
-    "nvidia-smi": ("nvidia-smi", "--version"),
+    "uv": ("uv", _VERSION_FLAG),
+    "pixi": ("pixi", _VERSION_FLAG),
+    "tectonic": ("tectonic", _VERSION_FLAG),
+    "node": ("node", _VERSION_FLAG),
+    "cargo": ("cargo", _VERSION_FLAG),
+    "nvcc": ("nvcc", _VERSION_FLAG),
+    "nvidia-smi": ("nvidia-smi", _VERSION_FLAG),
 }
 
 # The shells an agent or a person may run commands through, by the name each is known as.

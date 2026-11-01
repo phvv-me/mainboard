@@ -14,17 +14,12 @@ from patos import FrozenModel
 
 from ...core.errors import MissionError
 from ...core.project import Project
+from ...enums import Status
 from ...jobs.targets.pins import stage
 from ...jobs.targets.target import Target
-from ..constants import (
-    CLOSURE_VAR,
-    COMMIT_VAR,
-    DEFERRED_VAR,
-    DIGEST_VAR,
-    FIRST_PARTY_VAR,
-    SOURCE_VAR,
-)
-from ..provenance import Row, Source, SourceTree, Status, blob_of, listing, registered
+from ..constants import COMMIT_VAR
+from ..provenance import Row, Source, SourceTree, blob_of, listing, registered
+from ...constants import CLOSURE_VAR, DEFERRED_VAR, DIGEST_VAR, FIRST_PARTY_VAR, SOURCE_VAR
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

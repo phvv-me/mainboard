@@ -74,7 +74,7 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
     def held(self: Settlement, record: RunRecord) -> None:
         made.append(("held", record.target, record.handle))
 
-    monkeypatch.setattr(Job, "states", staticmethod(states))
+    monkeypatch.setattr(Job, "states", states)
     monkeypatch.setattr(Job, "transcript", transcript)
     monkeypatch.setattr(
         Job, "pull", lambda self: made.append(("pull", self.handle.host, self.handle.id))
@@ -87,26 +87,29 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
 def test_only_the_requested_submission_is_settled(board: Board, calls, wait: bool) -> None:
     (board.root / "7").mkdir()
     verdicts = board.verdicts()
-    assert verdicts.of("7", host="box").code == 2
-    assert calls == []
+    assert (verdicts.of("7", host="box").code, calls) == (2, [])
     result = (
         verdicts.wait("7", host="box", patience=Patience(timeout=5, stall=0))
         if wait
         else verdicts.refresh("7", host="box")
     )
-    assert result.code == 0
-    assert calls == [("poll", "box", "7"), ("pull", "box", "7"), ("transcript", "box", "7")]
+    assert (result.code, calls) == (
+        0,
+        [("poll", "box", "7"), ("pull", "box", "7"), ("transcript", "box", "7")],
+    )
     cache = board.dispatcher.cache
-    assert cache.run("7", "box").reported == "ok"
-    assert cache.run("8", "box").reported is None
-    assert cache.run("7", "other").reported is None
-    assert cache.run("held", "box").verdict == "held"
-    assert verdicts.refresh("7", host="box").code == 0
-    assert len(calls) == 3
+    assert (
+        cache.run("7", "box").reported,
+        cache.run("8", "box").reported,
+        cache.run("7", "other").reported,
+        cache.run("held", "box").verdict,
+    ) == ("ok", None, None, "held")
+    assert (verdicts.refresh("7", host="box").code, len(calls)) == (0, 3)
 
 
-@pytest.mark.parametrize("wait", [False, True])
-def test_a_batch_refreshes_all_its_submissions_only(board: Board, calls, wait: bool) -> None:
+@pytest.fixture
+def cohort(board: Board) -> None:
+    """The batch `cohort`, whose submissions 7 and 9 on box are recorded and published."""
     (board.root / "cohort").mkdir()
     cache = board.dispatcher.cache
     for handle in ("7", "9"):
@@ -121,6 +124,12 @@ def test_a_batch_refreshes_all_its_submissions_only(board: Board, calls, wait: b
             job=f"cell-{handle}",
             data={"handle": handle, "target": "box", "kind": "ssh"},
         )
+
+
+@pytest.mark.usefixtures("cohort")
+@pytest.mark.parametrize("wait", [False, True])
+def test_a_batch_refreshes_all_its_submissions_only(board: Board, calls, wait: bool) -> None:
+    cache = board.dispatcher.cache
     verdicts = board.verdicts()
     result = (
         verdicts.wait("cohort", patience=Patience(timeout=5, stall=0))
@@ -133,21 +142,32 @@ def test_a_batch_refreshes_all_its_submissions_only(board: Board, calls, wait: b
     assert cache.run("8", "box").reported is None
 
 
-def test_local_receipt_files_and_stores_stay_offline(
-    board: Board, calls, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def local_receipts(board: Board, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """An empty receipt file and directory, where any settlement attempt fails the test."""
+
     def unexpected(self: Monitor, **kwargs) -> None:
         pytest.fail("a local receipt read attempted settlement")
 
     monkeypatch.setattr(Monitor, "once", unexpected)
     path = board.root / "receipts.jsonl"
     path.write_text("", encoding="utf-8")
+    directory = board.root / "receipt-directory"
+    directory.mkdir()
+    return path, directory
+
+
+def test_local_receipt_files_and_stores_stay_offline(
+    board: Board,
+    calls,
+    local_receipts: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, directory = local_receipts
     assert board.verdicts().refresh(str(path)).trials == ()
     assert board.verdicts().wait(str(path)).trials == ()
     stored = StreamVerdict(stream="stored", trials=())
     monkeypatch.setattr(Verdicts, "stored", lambda *args, **kwargs: stored)
-    directory = board.root / "receipt-directory"
-    directory.mkdir()
     assert board.verdicts().refresh(str(directory)) == stored
     assert board.verdicts().wait(str(directory), run="selected") == stored
     assert calls == []

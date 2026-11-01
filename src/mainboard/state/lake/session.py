@@ -12,7 +12,7 @@ from sqlalchemy import ClauseElement, Table
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
 from ...runtime.tree import FileBudget
-from .attachment import Access
+from ..enums import Access
 from .staging import insert
 
 if TYPE_CHECKING:

@@ -1,9 +1,10 @@
 from typing import TYPE_CHECKING
 
 from ...core.project import Project
-from .. import repo as repo_module
+from ..constants import REMOTE
+from ..enums import Outcome
 from ..process import said
-from ..report import Outcome, Step
+from ..report import Step
 
 if TYPE_CHECKING:
     from ..repo import Repo
@@ -41,31 +42,31 @@ class Push:
 
 def _pushed(repo: Repo) -> Step:
     """Push one repository's branch, or say why it stayed."""
-    branch = repo.branch()
+    branch = repo.tracking.branch()
     if not branch:
         return _detached(repo)
     if missing := _unserved(repo):
         detail = f"records {missing}, which its remote does not hold"
         return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
-    upstream = repo.upstream()
-    ahead, behind = repo.counts(upstream)
+    upstream = repo.tracking.upstream()
+    ahead, behind = repo.commits.counts(upstream)
     if upstream and not ahead:
         detail = f"{branch} level with {upstream}"
         return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
     if behind:
         detail = f"diverged from {upstream}: {ahead} ahead, {behind} behind; pull first"
         return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
-    target = upstream.removeprefix(f"{repo_module.Repo.REMOTE}/") if upstream else branch
+    target = upstream.removeprefix(f"{REMOTE}/") if upstream else branch
     return _delivered(repo, branch, target=target, tracked=bool(upstream))
 
 
 def _detached(repo: Repo) -> Step:
     """A detached HEAD, current when a remote branch already holds it, else held."""
-    head = repo.head()
-    if homes := repo.homes(head):
-        detail = f"detached at {repo.short(head)}, already on {homes[0]}"
+    head = repo.commits.head()
+    if homes := repo.remote.homes(head):
+        detail = f"detached at {repo.commits.short(head)}, already on {homes[0]}"
         return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
-    detail = f"detached at {repo.short(head)}, which no remote branch holds; commit first"
+    detail = f"detached at {repo.commits.short(head)}, which no remote branch holds; commit first"
     return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
 
 
@@ -74,27 +75,23 @@ def _delivered(repo: Repo, branch: str, *, target: str, tracked: bool) -> Step:
 
     A commit already waiting on the fallback branch is not pushed again.
     """
-    head = repo.head()
-    if f"{repo_module.Repo.REMOTE}/{_FALLBACK}/{target}" in repo.homes(head):
-        detail = f"{target} is protected; {repo.short(head)} waits on {_FALLBACK}/{target}"
+    head = repo.commits.head()
+    if f"{REMOTE}/{_FALLBACK}/{target}" in repo.remote.homes(head):
+        detail = f"{target} is protected; {repo.commits.short(head)} waits on {_FALLBACK}/{target}"
         return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
     if (
-        repo.lfs()
-        and not (
-            uploaded := repo.git.run("lfs", "push", repo_module.Repo.REMOTE, branch, network=True)
-        ).succeeded
+        repo.worktree.lfs()
+        and (uploaded := repo.git.run("lfs", "push", REMOTE, branch, network=True)).returncode
     ):
         detail = f"git-lfs could not upload: {said(uploaded)}"
         return Step(repo=repo.name, outcome=Outcome.FAILED, detail=detail)
     tracking = () if tracked else ("--set-upstream",)
-    pushed = repo.git.run(
-        "push", "--quiet", *tracking, repo_module.Repo.REMOTE, f"{branch}:{target}", network=True
-    )
-    if pushed.succeeded:
+    pushed = repo.git.run("push", "--quiet", *tracking, REMOTE, f"{branch}:{target}", network=True)
+    if not pushed.returncode:
         return Step(
             repo=repo.name,
             outcome=Outcome.DONE,
-            detail=f"{repo.short('HEAD')} to {repo_module.Repo.REMOTE}/{target}",
+            detail=f"{repo.commits.short('HEAD')} to {REMOTE}/{target}",
         )
     if not any(marker in pushed.stderr.casefold() for marker in _PROTECTED):
         return Step(repo=repo.name, outcome=Outcome.FAILED, detail=said(pushed))
@@ -104,13 +101,12 @@ def _delivered(repo: Repo, branch: str, *, target: str, tracked: bool) -> Step:
 def _diverted(repo: Repo, *, target: str) -> Step:
     """Push HEAD to the fallback branch of protected `target`, for a pull request to take on."""
     fallback = f"{_FALLBACK}/{target}"
-    diverted = repo.git.run(
-        "push", "--quiet", repo_module.Repo.REMOTE, f"HEAD:refs/heads/{fallback}", network=True
-    )
-    if not diverted.succeeded:
+    diverted = repo.git.run("push", "--quiet", REMOTE, f"HEAD:refs/heads/{fallback}", network=True)
+    if diverted.returncode:
         return Step(repo=repo.name, outcome=Outcome.FAILED, detail=said(diverted))
     detail = (
-        f"{target} is protected; pushed {repo.short('HEAD')} to {fallback}, open a pull request"
+        f"{target} is protected; pushed {repo.commits.short('HEAD')} to {fallback}, "
+        "open a pull request"
     )
     return Step(repo=repo.name, outcome=Outcome.DONE, detail=detail)
 
@@ -126,9 +122,9 @@ def _unserved(repo: Repo) -> str:
     recorded = repo.pointers()
     for child in repo.children:
         commit = recorded.get(repo.relative(child), "")
-        if not (commit and child.initialized) or child.homes(commit):
+        if not (commit and child.initialized) or child.remote.homes(commit):
             continue
-        child.fetch()
-        if not child.serves(commit):
+        child.remote.fetch()
+        if not child.remote.serves(commit):
             return f"{child.name}@{commit[:7]}"
     return ""

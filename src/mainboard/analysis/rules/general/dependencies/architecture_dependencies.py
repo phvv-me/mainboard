@@ -1,13 +1,15 @@
 """Rules over how modules depend on each other (mcmr's ALL-ARCH dependencies family)."""
 
 from ....catalog import Example, Rule
+from ....constants import INITIALIZER_PATH, TEST_PATH
 
-_PACKAGE_MODULE = r"(__init__\.py|mod\.rs)$"
-_TEST_PATH = r"(^|/)(tests?|specs?)(/|$)|(^|[._-])(test|spec)\.[^.]+$"
+_PACKAGE_MODULE = rf"{INITIALIZER_PATH}|mod\.rs$"
 
 
 class DependencyOnALessStableModule(Rule, id="ALL-ARCH0003"):
-    """Package imports pointing at a package less stable than the importer."""
+    """Package imports pointing at a package less stable than the importer. Test code (a `test`,
+    `tests`, `spec`, `specs` or `integration` folder, a `*_test.*` or `*.spec.*` file) importing
+    non-test code is not counted, since a test exists to depend on what it exercises."""
 
     tolerance: float = 0.0
 
@@ -49,7 +51,49 @@ class DependencyOnALessStableModule(Rule, id="ALL-ARCH0003"):
         WHERE d.value > s.value + $tolerance
     """
 
-    constants = {"package_module": _PACKAGE_MODULE, "test_path": _TEST_PATH}
+    constants = {"package_module": _PACKAGE_MODULE, "test_path": TEST_PATH}
+
+    # Example 1's `good` keeps `integration/x/helpers.py`, which a sibling test imports and which
+    # imports the unstable `pkg.high`, so only the test exemption leaves it unreported. Example 2's
+    # `good` keeps `low/__init__.pyi` importing `pkg.high`: a stub initializer is a package marker
+    # like `__init__.py`, so its imports are no edge.
+    examples = (
+        Example(
+            bad="from pkg.high.mod import top\n\nvalue = top\n",
+            good="value = 1\n",
+            path="src/pkg/low/mod.py",
+            context={
+                "pyproject.toml": '[project]\nname = "pkg"\nversion = "0"\n',
+                "src/pkg/__init__.py": '"""The package."""\n',
+                "src/pkg/high/mod.py": (
+                    "from pkg.leaf_a.mod import a\nfrom pkg.leaf_b.mod import b\n\ntop = a + b\n"
+                ),
+                "src/pkg/leaf_a/mod.py": "a = 1\n",
+                "src/pkg/leaf_b/mod.py": "b = 1\n",
+                "src/pkg/user_a/mod.py": "from pkg.low.mod import value\n",
+                "src/pkg/user_b/mod.py": "from pkg.low.mod import value\n",
+                "integration/x/helpers.py": "from pkg.high.mod import top\n\nshared = top\n",
+                "integration/y/test_helpers.py": "from integration.x.helpers import shared\n",
+            },
+        ),
+        Example(
+            bad="from pkg.high.mod import top\n\nvalue = top\n",
+            good="value = 1\n",
+            path="src/pkg/low/mod.py",
+            context={
+                "pyproject.toml": '[project]\nname = "pkg"\nversion = "0"\n',
+                "src/pkg/__init__.py": '"""The package."""\n',
+                "src/pkg/low/__init__.pyi": "from pkg.high.mod import top\n\nvalue = top\n",
+                "src/pkg/high/mod.py": (
+                    "from pkg.leaf_a.mod import a\nfrom pkg.leaf_b.mod import b\n\ntop = a + b\n"
+                ),
+                "src/pkg/leaf_a/mod.py": "a = 1\n",
+                "src/pkg/leaf_b/mod.py": "b = 1\n",
+                "src/pkg/user_a/mod.py": "from pkg.low import value\n",
+                "src/pkg/user_b/mod.py": "from pkg.low import value\n",
+            },
+        ),
+    )
 
 
 class AbstractionNothingDependsOn(Rule, id="ALL-ARCH0005", applicability="review"):
@@ -71,7 +115,7 @@ class AbstractionNothingDependsOn(Rule, id="ALL-ARCH0005", applicability="review
                           WHERE i.importer_module <> m.module
                             AND (i.source_module = m.module OR i.target = m.module))
     """
-    message = "`{fact_id}` satisfies abstraction nothing depends on"
+    message = "`{fact_id}` is a module of abstract declarations that no other module imports"
     # The file goes. Package markers and entry points are never imported by name yet are not
     # dead, so they stay (`__init__`, `__main__`, `conftest`, `mod`, `main`, `lib`, `index`).
     fix = r"""
@@ -102,7 +146,7 @@ class ImportCycles(Rule, id="ALL-ARCH0002"):
         WITH cycles AS (
           SELECT * FROM dependency_component_import_edges
           WHERE source_component = target_component
-            AND NOT (source = target AND regexp_matches(path, '(^|/)__init__\.pyi?$'))
+            AND NOT (source = target AND is_initializer_path(path))
         ), members AS (
           SELECT fact_id, source_component, count(*) AS size,
                  string_agg(member, '`, `' ORDER BY member) AS names

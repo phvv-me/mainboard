@@ -22,13 +22,27 @@ class Edit(FrozenModel, ABC):
         """The project path the edit changes."""
 
 
-class Replace(Edit):
-    kind: Literal["replace"] = "replace"
+class SpanEdit(Edit):
+    """An edit of the source under `span`."""
+
     span: Span
-    text: str
 
     def file(self) -> str:
         return self.span.path
+
+
+class PathEdit(Edit):
+    """An edit of the file or directory at `path`."""
+
+    path: str
+
+    def file(self) -> str:
+        return self.path
+
+
+class Replace(SpanEdit):
+    kind: Literal["replace"] = "replace"
+    text: str
 
 
 class Insert(Edit):
@@ -47,29 +61,17 @@ class Insert(Edit):
         return self.anchor().path
 
 
-class Delete(Edit):
+class Delete(SpanEdit):
     kind: Literal["delete"] = "delete"
-    span: Span
-
-    def file(self) -> str:
-        return self.span.path
 
 
-class Move(Edit):
+class Move(SpanEdit):
     kind: Literal["move"] = "move"
-    span: Span
     before: Span | None = None
     after: Span | None = None
 
-    def file(self) -> str:
-        return self.span.path
 
-
-def replace(span: Span, text: str) -> Replace:
-    return Replace(span=span, text=text)
-
-
-class Append(Edit):
+class Append(PathEdit):
     """Add `text` at the end of the file at `path`, creating it when missing.
 
     Appends to one file stack in the order the plan takes them, so several fixes may each add a
@@ -77,58 +79,34 @@ class Append(Edit):
     """
 
     kind: Literal["append"] = "append"
-    path: str
     text: str
 
-    def file(self) -> str:
-        return self.path
 
-
-class Create(Edit):
+class Create(PathEdit):
     """Write a new file at `path` holding `text`, refused when something already stands there."""
 
     kind: Literal["create"] = "create"
-    path: str
     text: str
 
-    def file(self) -> str:
-        return self.path
 
-
-class Remove(Edit):
+class Remove(PathEdit):
     """Delete a file or an empty directory."""
 
     kind: Literal["remove"] = "remove"
-    path: str
-
-    def file(self) -> str:
-        return self.path
 
 
-class Rename(Edit):
+class Rename(PathEdit):
     """Move a file or directory to `target`, a path not yet taken."""
 
     kind: Literal["rename"] = "rename"
-    path: str
     target: str
 
-    def file(self) -> str:
-        return self.path
 
-
-def rename(path: str, *, target: str) -> Rename:
-    return Rename(path=path, target=target)
-
-
-class Import(Edit):
+class Import(PathEdit):
     """Make `statement` (`from functools import cache`) available in a Python file: added once
     after its imports, however many fixes ask, and not at all when the file already holds it. A
     statement that is no import (`logger = logging.getLogger(__name__)`) is added the same way,
     after the imports it may use."""
 
     kind: Literal["import"] = "import"
-    path: str
     statement: str
-
-    def file(self) -> str:
-        return self.path

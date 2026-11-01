@@ -5,6 +5,8 @@
 
 from ...catalog import Example, Relation, Rule
 
+_SCALE = "__global__ void scale(float* values) {\n    values[threadIdx.x] *= 2.0f;\n}\n\n"
+
 
 class CudaCallNodes(Relation):
     """CUDA call records placed at their call node."""
@@ -99,11 +101,112 @@ __global__ void scale(float* values) {
     )
 
 
-class DefaultStreamKernelLaunch(Rule, id="CU-LAUN0002"):
+class DefaultStreamKernelLaunch(Rule, id="CU-LAUN0002", applicability="review"):
     """Kernel launches on the default stream in a unit that otherwise uses streams."""
 
     query = """
             SELECT * FROM kernel_launch_facts
             WHERE unit_uses_streams AND stream IN ('', '0', 'NULL', 'nullptr', 'cudaStreamDefault')
         """
-    message = "`{fact_id}` satisfies default stream kernel launch"
+    message = (
+        "`{fact_id}` launches a kernel on the default stream in a unit that otherwise uses streams"
+    )
+    # The launch's configuration takes the unit's one `cudaStream_t` as its stream, after a dynamic
+    # shared memory size of `0` when it names none. Left alone: a unit declaring several streams
+    # (or one in a container, as a pointer or an array), one declared after the launch or in
+    # another function, and a launch that names the default stream outright. The CUDA grammar
+    # of tree-sitter reads the configuration as a template argument list, so a launch whose
+    # configuration holds `<` or `>` operators of its own is read wrongly and fixed no better.
+    fix = r"""
+        WITH configured AS (
+          SELECT l.path, l.start_line, l.start_column, o.node_id AS launch, g.node_id AS node,
+                 list(it.node_id ORDER BY it.sibling_index) AS items
+          FROM finding l
+          JOIN ast_nodes o ON o.path = l.path AND o.type = 'binary_expression'
+            AND (o.start_line, o.start_column, o.end_line, o.end_column)
+              = (l.start_line, l.start_column, l.end_line, l.end_column)
+          JOIN ast_nodes i ON i.path = o.path AND i.parent_id = o.node_id AND i.sibling_index = 0
+            AND i.type = 'binary_expression'
+          JOIN ast_nodes t ON t.path = o.path AND t.parent_id = i.node_id
+            AND t.type = 'template_function'
+          JOIN ast_nodes g ON g.path = o.path AND g.parent_id = t.node_id
+            AND g.type = 'template_argument_list'
+          JOIN ast_nodes it ON it.path = o.path AND it.parent_id = g.node_id
+            AND it.type NOT IN ('<', '>', ',')
+          GROUP BY ALL
+          HAVING bool_and(it.semantic_type <> 'METADATA_COMMENT')
+        ), kinds AS (
+          SELECT path, node_id, parent_id, count(*) OVER (PARTITION BY path) AS held
+          FROM ast_nodes WHERE type = 'type_identifier' AND name = 'cudaStream_t'
+        ), declarators AS (
+          SELECT k.path, d.node_id AS declaration, d.type AS kind, c.type AS declarator, c.name,
+                 (SELECT max(f.node_id) FROM ast_nodes f
+                  WHERE f.path = k.path AND f.type = 'function_definition'
+                    AND d.node_id BETWEEN f.node_id AND f.node_id + f.descendant_count) AS home
+          FROM kinds k
+          JOIN ast_nodes d ON d.path = k.path AND d.node_id = k.parent_id
+            AND d.type IN ('declaration', 'parameter_declaration')
+          JOIN ast_nodes c ON c.path = k.path AND c.parent_id = d.node_id
+            AND c.node_id <> k.node_id AND (c.type = 'identifier' OR c.type LIKE '%declarator')
+          WHERE k.held = 1
+        ), declared AS (
+          SELECT x.path, x.declaration, any_value(x.name) AS name, any_value(x.home) AS home,
+                 any_value(h.node_id + h.descendant_count) AS home_end
+          FROM declarators x
+          LEFT JOIN ast_nodes h ON h.path = x.path AND h.node_id = x.home
+          GROUP BY x.path, x.declaration
+          HAVING count(*) = 1 AND bool_and(x.declarator IN ('identifier', 'init_declarator'))
+             AND regexp_matches(any_value(x.name), '^[A-Za-z_][A-Za-z0-9_]*$')
+             AND (any_value(x.kind) = 'declaration' OR any_value(x.home) IS NOT NULL)
+        ), placed AS (
+          SELECT c.path, c.start_line, c.start_column, c.node, c.items, s.name
+          FROM configured c
+          JOIN declared s ON s.path = c.path AND s.declaration < c.launch
+            AND (s.home IS NULL OR c.launch BETWEEN s.home AND s.home_end)
+          WHERE len(c.items) IN (2, 3)
+        )
+        SELECT f.finding_key, 'rewrite-node' AS operation, p.path, p.node,
+               MAP {'CFG': p.items} AS captures,
+               '<$$$CFG, ' || if(len(p.items) = 2, '0, ', '') || p.name || '>' AS template
+        FROM finding f
+        JOIN placed p ON p.path = f.path AND p.start_line = f.start_line
+          AND p.start_column = f.start_column
+    """
+    examples = (
+        Example(
+            bad=_SCALE
+            + "void run(float* d) {\n    cudaStream_t s;\n    cudaStreamCreate(&s);\n    scale<<<1, 32>>>(d);\n}\n",
+            good=_SCALE
+            + "void run(float* d) {\n    cudaStream_t s;\n    cudaStreamCreate(&s);\n    scale<<<1, 32, 0, s>>>(d);\n}\n",
+        ),
+        Example(
+            bad=_SCALE
+            + "void run(float* d, cudaStream_t s) {\n    scale<<<4, 128, 16>>>(d);\n}\n",
+            good=_SCALE
+            + "void run(float* d, cudaStream_t s) {\n    scale<<<4, 128, 16, s>>>(d);\n}\n",
+        ),
+        Example(
+            bad=_SCALE
+            + "void run(float* d) {\n    cudaStream_t a, b;\n    cudaStreamCreate(&a);\n    scale<<<1, 32>>>(d);\n}\n",
+            good=_SCALE
+            + "void run(float* d) {\n    cudaStream_t a, b;\n    cudaStreamCreate(&a);\n    scale<<<1, 32>>>(d);\n}\n",
+        ),
+        Example(
+            bad=_SCALE
+            + "void run(float* d, cudaStream_t s) {\n    scale<<<1, 32, 0, 0>>>(d);\n}\n",
+            good=_SCALE
+            + "void run(float* d, cudaStream_t s) {\n    scale<<<1, 32, 0, 0>>>(d);\n}\n",
+        ),
+        Example(
+            bad=_SCALE
+            + "void run(float* d, cudaStream_t s) {\n    scale<<<1, /* block */ 32>>>(d);\n}\n",
+            good=_SCALE
+            + "void run(float* d, cudaStream_t s) {\n    scale<<<1, /* block */ 32>>>(d);\n}\n",
+        ),
+        Example(
+            bad=_SCALE
+            + "void make() {\n    cudaStream_t s;\n    cudaStreamCreate(&s);\n}\n\nvoid run(float* d) {\n    scale<<<1, 32>>>(d);\n}\n",
+            good=_SCALE
+            + "void make() {\n    cudaStream_t s;\n    cudaStreamCreate(&s);\n}\n\nvoid run(float* d) {\n    scale<<<1, 32>>>(d);\n}\n",
+        ),
+    )

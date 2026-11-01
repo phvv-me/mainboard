@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import psutil
 from patos import FrozenModel, FrozenOpenModel
 
-from ...constants import BYTES_PER_GB, SECONDS_PER_HOUR
+from ...core.constants.units import BYTES_PER_GB, SECONDS_PER_HOUR
 from ..machine import Machine
 
 if TYPE_CHECKING:

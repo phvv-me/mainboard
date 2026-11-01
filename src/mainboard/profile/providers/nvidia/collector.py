@@ -6,31 +6,38 @@ import threading
 from collections import deque
 from contextlib import ExitStack
 from ctypes import addressof, c_size_t
-from importlib import import_module
 from itertools import islice
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from ...trace import Activity, ActivityRecord, KernelTrace, MemcpyTrace, TraceCollector
-from .bindings import cuda_runtime, cupti, loaded, synchronize
+from ...enums import Activity
+from ...trace import ActivityRecord, KernelTrace, MemcpyTrace, TraceCollector
+from . import bindings
 from .constants import CUPTI_KIND
 from .delivery import Delivery, RawGeneric, Record
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from .bindings import CudaDriver
-
 _MAX_RECORDS = 262_144
 
 
 def _disable(kinds: Sequence[int]) -> None:
     """Disable exactly the native activity kinds enabled for one capture."""
-    api = loaded()
+    api = bindings.cupti
     cleanup = ExitStack()
     for kind in kinds:
         cleanup.callback(api.activity_disable, kind)
     # An inner ``with`` would hide the active work/start error from this stack.
     cleanup.__exit__(*sys.exc_info())
+
+
+def _synchronize() -> None:
+    """Synchronize the device so all kernels land in the CUPTI buffer before a flush."""
+    if not bindings.has_cuda:
+        raise RuntimeError("CUDA runtime binding is required to synchronize activity capture")
+    (status,) = bindings.runtime.cudaDeviceSynchronize()
+    if status != bindings.runtime.cudaError_t.cudaSuccess:  # asynchronous errors surface here too
+        raise RuntimeError(f"cudaDeviceSynchronize failed with CUDA status {status}")
 
 
 class CuptiCollector(TraceCollector):
@@ -57,7 +64,7 @@ class CuptiCollector(TraceCollector):
         ``kinds`` is already reconciled against :func:`_supported`, so every kind here is
         known to enable; an error would be a real bug, not an unsupported device.
         """
-        api = loaded()
+        api = bindings.cupti
         enabled: list[int] = []
         with ExitStack() as rollback:
             rollback.callback(_disable, enabled)
@@ -79,23 +86,22 @@ class CuptiCollector(TraceCollector):
         cupti-python takes the address of a size_t output, not an integer result.
         """
         dropped = c_size_t()
-        loaded().activity_get_num_dropped_records(0, 0, addressof(dropped))
+        bindings.cupti.activity_get_num_dropped_records(0, 0, addressof(dropped))
         return dropped.value
 
     @staticmethod
     def _scope() -> tuple[int, int, int]:
         """Actual visible ordinal, CUPTI device ID, and CUPTI context ID; no substitution."""
-        runtime = cuda_runtime()
-        if runtime is None:
+        if not bindings.has_cuda:
             raise RuntimeError("CUDA runtime is required to identify an activity window")
-        status, device = runtime.cudaGetDevice()
+        status, device = bindings.runtime.cudaGetDevice()
         if status != 0:
             raise RuntimeError(f"cudaGetDevice failed with CUDA status {status}")
-        driver = cast("CudaDriver", import_module("cuda.bindings.driver"))
-        status, context = driver.cuCtxGetCurrent()
-        if status != 0 or not int(context):
-            raise RuntimeError(f"cuCtxGetCurrent failed or returned no context: {status}")
-        return device, loaded().get_device_id(int(context)), loaded().get_context_id(int(context))
+        result, context = bindings.driver.cuCtxGetCurrent()
+        if result != 0 or not int(context):
+            raise RuntimeError(f"cuCtxGetCurrent failed or returned no context: {result}")
+        cupti = bindings.cupti
+        return device, cupti.get_device_id(int(context)), cupti.get_context_id(int(context))
 
     @staticmethod
     def activity_name(record: RawGeneric) -> str:
@@ -103,8 +109,8 @@ class CuptiCollector(TraceCollector):
         if record.name:
             return record.name
         domain = Delivery.domains.get(record.kind_id)
-        if record.cbid is not None and domain is not None and cupti is not None:
-            return cupti.get_callback_name(domain, record.cbid)
+        if record.cbid is not None and domain is not None and bindings.has_cupti:
+            return bindings.cupti.get_callback_name(domain, record.cbid)
         return record.kind
 
     def __enter__(self) -> CuptiCollector:
@@ -115,9 +121,9 @@ class CuptiCollector(TraceCollector):
         self.owner_thread = threading.get_ident()
         with ExitStack() as undo:
             undo.callback(self._settle)
-            synchronize()
+            _synchronize()
             self.scope = self._scope()
-            loaded().activity_flush_all(1)  # drain prior records before capture starts
+            bindings.cupti.activity_flush_all(1)  # drain prior records before capture starts
             CuptiCollector._native_drops()  # reset the global count from before this capture
             Delivery.active.append(self)
             self.running = True
@@ -221,7 +227,7 @@ class CuptiCollector(TraceCollector):
             raise RuntimeError("activity checkpoints require a running collector")
         enabled = Activity(0)
         for flag, name in CUPTI_KIND.items():
-            if getattr(loaded().ActivityKind, name) in self.enabled_kinds:
+            if getattr(bindings.cupti.ActivityKind, name) in self.enabled_kinds:
                 enabled |= flag
         if activities & ~enabled:
             raise RuntimeError("activity window requested kinds not actually enabled")
@@ -239,8 +245,8 @@ class CuptiCollector(TraceCollector):
             threading.get_ident() != self.owner_thread or self._scope() != self.scope
         ):
             raise RuntimeError("activity capture changed its issuing thread or CUDA context")
-        synchronize()
-        loaded().activity_flush_all(1)
+        _synchronize()
+        bindings.cupti.activity_flush_all(1)
         dropped = CuptiCollector._native_drops()
         with self.lock:
             self.native_dropped_records += dropped

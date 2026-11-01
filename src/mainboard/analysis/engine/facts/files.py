@@ -3,8 +3,9 @@
 
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=lists the project's files with git's fixed argv since=2026-10-13
-from functools import cache
-from typing import TYPE_CHECKING
+import threading
+from functools import cache, wraps
+from typing import TYPE_CHECKING, ClassVar
 
 from pathspec import GitIgnoreSpec
 
@@ -15,10 +16,71 @@ from ....manifest.loading import load
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
     from pathlib import Path
+    from types import TracebackType
 
 _ANALYSIS_TOOL = "mb"
 
+type Lister = Callable[[Path], list[str]]
 
+
+class Listing:
+    """The files of one project, listed once while its fact base is derived.
+
+    Providers, tools and rules each ask what the project holds. `listed` and `project_files`
+    answer from the listing open for their root, so the whole derivation costs one `git ls-files`
+    pair and one `git check-attr`. A listing lives only for the derivation: a fix writes new files
+    between one fact base and the next. A verb that writes nothing opens one around its whole run,
+    and the derivation inside joins it, so the findings and the files it records cost no more git.
+    """
+
+    active: ClassVar[dict[Path, Listing]] = {}
+
+    @classmethod
+    def of(cls, root: Path) -> Listing | None:
+        """The listing open for `root`, if any."""
+        return cls.active.get(root.resolve())
+
+    def __enter__(self) -> Listing:
+        """The listing open for the root: this one, or the one this joins."""
+        current = Listing.active.setdefault(self.root, self)
+        self.opened = current is self
+        return current
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        raised: BaseException | None,
+        trace: TracebackType | None,
+    ) -> None:
+        if self.opened:
+            del Listing.active[self.root]
+            self.opened = False
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self.answers: dict[Lister, list[str]] = {}
+        self.lock = threading.RLock()
+        self.opened = False
+
+    def answer(self, lister: Lister) -> list[str]:
+        """What `lister` says of the root, asked once, a copy for each caller."""
+        with self.lock:
+            if lister not in self.answers:
+                self.answers[lister] = lister(self.root)
+            return list(self.answers[lister])
+
+
+def _shared(lister: Lister) -> Lister:
+    """`lister` answering from the listing open for its root, when there is one."""
+
+    @wraps(lister)
+    def answer(root: Path) -> list[str]:
+        return current.answer(lister) if (current := Listing.of(root)) else lister(root)
+
+    return answer
+
+
+@_shared
 def listed(root: Path) -> list[str]:
     """The project's files git does not ignore, relative to `root`, submodules' included.
 
@@ -31,6 +93,7 @@ def listed(root: Path) -> list[str]:
     return [name for name in present if name not in skipped and not excluded(name)]
 
 
+@_shared
 def project_files(root: Path) -> list[str]:
     """The same source listing before the lint and vendor exclusions.
 

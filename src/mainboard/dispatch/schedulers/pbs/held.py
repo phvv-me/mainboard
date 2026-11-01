@@ -18,9 +18,10 @@ from patos import FrozenModel
 from ....core.errors import MissionError
 from ....core.project import Project
 from ....runtime.job import walltime_seconds
+from ...enums import Fence
 from ...jobs import vocabulary
 from ...jobs.vocabulary import JobState, Resources
-from ...mirroring.spool import Claim, Fence, LineSpec, Remote, Submission, spool_path
+from ...mirroring.spool import Claim, LineSpec, Remote, Submission, spool_path
 from ...mirroring.spool import handle as new_handle
 from ...transport.core import HostUnreachable
 from ..base import login_ask

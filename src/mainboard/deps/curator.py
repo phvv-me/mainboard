@@ -178,7 +178,7 @@ class Dependencies:
         installed = env or _DEFAULT
         changes: list[Change] = []
         for target in [env] if env else [_DEFAULT, *manifest.envs]:
-            pixi = provisioner.pixi_for(target)
+            pixi = provisioner.shard(target).pixi
             before = pixi.locked(target)
             provisioner.provision(target, update=update, install=install and target == installed)
             after = pixi.locked(target)

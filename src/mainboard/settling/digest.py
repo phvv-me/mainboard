@@ -10,13 +10,16 @@
 # transfers never slows it.
 
 from collections import Counter
+from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
 from ..dispatch.jobs import vocabulary
-from ..fleet.board import Board
 from ..waiting.diagnosis import tail
 from .listing import JobRow, Listing
+
+if TYPE_CHECKING:
+    from ..fleet.board import Board
 
 # The states a settled run can end in that were not a success nor somebody's decision.
 _FAILURES = frozenset({vocabulary.Word.FAILED, vocabulary.Word.TIMEOUT, vocabulary.Word.VANISHED})

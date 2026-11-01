@@ -18,19 +18,18 @@ from functools import partial
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING
 
-from ...core import MissionError, Project
+from ...core import Marker, MissionError, Project
+from ...core.constants.names import ACTIVATION, LOCK, MANIFEST, STAMPED
 from ...core.execution.retention import RetentionPins
 from .backend import Pixi
 from .compiler import Compiler
-from .constants import ACTIVATION, LOCK, MANIFEST, STAMPED
 from .ecosystems import SecondStage
-from .generated import GeneratedFiles
+from .generated import GeneratedFiles, SyncState
 from .generated.activation import write
 from .pixi.lock import canonical
 from .pixi.manifest import selected_manifest
 from .pixi.paths import anchored, normalized
 from .provisioner import environment_shard
-from .state import SyncState
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -172,7 +171,7 @@ class Prefixes:
         """Whether the environment `digest` names is finished and safe to activate."""
         target = self.path(digest)
         try:
-            stamped = Project().marked(target, STAMPED).read_text(encoding="utf-8").strip()
+            stamped = Marker(suffix=STAMPED).at(target).read_text(encoding="utf-8").strip()
         except FileNotFoundError:
             return False
         return stamped == digest and all(

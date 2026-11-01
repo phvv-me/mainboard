@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Collection, Iterator, Sequence
 from pathlib import Path
 
-from ...core.errors import MissionError
+from ...core import MissionError, replacing, write_atomic
 from .models import Located
 
 
@@ -24,24 +24,19 @@ class DirectoryReplica:
 
     def index(self, rows: Sequence[Located]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        partial = self.root / "index.jsonl.partial"
-        partial.write_text(
-            "".join(f"{row.model_dump_json()}\n" for row in rows), encoding="utf-8", newline="\n"
+        write_atomic(
+            self.root / "index.jsonl", "".join(f"{row.model_dump_json()}\n" for row in rows)
         )
-        partial.replace(self.root / "index.jsonl")
 
     def put(self, digest: str, chunks: Iterator[bytes]) -> None:
         target = self._object(digest)
         target.parent.mkdir(parents=True, exist_ok=True)
-        partial = target.with_suffix(".partial")
         hasher = hashlib.sha256()
-        with partial.open("wb") as sink:
+        with replacing(target) as partial, partial.open("wb") as sink:
             for chunk in chunks:
                 hasher.update(chunk)
                 sink.write(chunk)
-        if hasher.hexdigest() != digest:
-            partial.unlink()
-            raise MissionError(
-                f"object {digest} read back as {hasher.hexdigest()}; not replicated"
-            )
-        partial.replace(target)
+            if hasher.hexdigest() != digest:
+                raise MissionError(
+                    f"object {digest} read back as {hasher.hexdigest()}; not replicated"
+                )

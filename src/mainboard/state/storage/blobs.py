@@ -36,12 +36,13 @@ from pathlib import Path
 from typing import IO, ClassVar
 
 import duckdb
+from more_itertools import constrained_batches
 from patos import FrozenModel
 from sqlalchemy import func, select
 
+from ...constants import ALIAS
 from ...core.errors import MissionError
 from .. import schema
-from ..constants import ALIAS
 from ..lake import Lake, staged
 from .owned import OwnedFile
 
@@ -309,14 +310,10 @@ class _Batch:
 
         A chunk heavier than a row group alone forms its own run.
         """
-        sources = []
-        start = size = 0
-        for position, chunk_size in enumerate(sizes):
-            if size and size + chunk_size > _ROW_GROUP_BYTES:
-                sources.append(f"{source} WHERE position >= {start} AND position < {position}")
-                start, size = position, 0
-            size += chunk_size
-        return [*sources, f"{source} WHERE position >= {start}"]
+        runs = constrained_batches(
+            range(len(sizes)), _ROW_GROUP_BYTES, get_len=sizes.__getitem__, strict=False
+        )
+        return [f"{source} WHERE position BETWEEN {run[0]} AND {run[-1]}" for run in runs]
 
     @staticmethod
     def _pieces(source: bytes | Path) -> Iterator[bytes]:

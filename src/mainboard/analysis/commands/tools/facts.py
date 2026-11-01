@@ -3,9 +3,11 @@
 import json
 from pathlib import Path
 
-from ....log import logger
+from ....render import Output, rows
 from ...engine.facts import Query
 from ...engine.lint import Lint, selected
+
+_COMPACT = Output()
 
 
 def sql(
@@ -13,19 +15,19 @@ def sql(
     root: Path = Path(),
     *,
     language: str | None = None,
-    as_json: bool = False,
     limit: int = 200,
+    output: Output = _COMPACT,
 ) -> None:
-    """Rows of QUERY over ROOT's fact views, tab-separated under a header line.
+    """Rows of QUERY over ROOT's fact views, under a header line of the selected columns.
 
     Every rule's families are derived, so any view a rule or its fix reads answers: `core_import`,
-    `core_def`, `placed_symbols()`, `source_files` and the rest.
+    `core_def`, `placed_symbols()`, `source_files` and the rest. Every selected column is
+    printed, an empty one too.
 
     Args:
         query: one DuckDB SELECT over the fact views.
         root: the project whose facts are read.
         language: read through that language's narrowed views (`python`); every fact when unset.
-        as_json: one JSON record per row instead.
         limit: the most rows printed.
     """
     root = root.resolve()
@@ -34,12 +36,10 @@ def sql(
         facts.ensure(Query(sql=query))
         result = facts.cursor(language).execute(query)
         columns = [column for column, *_ in result.description]
-        rows = result.fetchmany(limit)
-    if as_json:
-        logger.result(
-            "\n".join(
-                json.dumps(dict(zip(columns, row, strict=True)), default=str) for row in rows
-            )
-        )
-        return
-    logger.result("\n".join(["\t".join(columns), *("\t".join(map(str, row)) for row in rows)]))
+        fetched = result.fetchmany(limit)
+    # A cell JSON cannot hold, a date or a decimal, prints as its text.
+    payloads = [
+        json.loads(json.dumps(dict(zip(columns, row, strict=True)), default=str))
+        for row in fetched
+    ]
+    rows(payloads, mode=output.mode, fields=output.projection(columns), title="sql")

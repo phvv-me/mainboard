@@ -16,9 +16,10 @@ import csv
 import json
 from typing import TYPE_CHECKING
 
-from ...dispatch.constants import RECEIPTS_VAR
+from ...core import replacing
+from ...constants import RECEIPTS_VAR
 from ...state.relations import Relations, write_parquet
-from .constants import NESTED
+from ..constants import NESTED
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -118,9 +119,8 @@ class TrialReceipts:
         parts = self.parts
         if len(parts) < 2:
             return
-        staged = self.directory / "compacting.tmp"
-        write_parquet(Relations().files(parts), staged, level=_COMPACTED)
-        staged.replace(parts[0])
+        with replacing(parts[0]) as staged:
+            write_parquet(Relations().files(parts), staged, level=_COMPACTED)
         for part in parts[1:]:
             part.unlink()
         self.written = 1
@@ -131,9 +131,8 @@ class TrialReceipts:
         flat = {
             key: json.dumps(value) if key in self.nested else value for key, value in row.items()
         }
-        staged = self.directory / f"part-{self.written:05d}.parquet.tmp"
-        write_parquet(Relations().rows([flat]), staged)
-        staged.replace(staged.with_suffix(""))
+        with replacing(self.directory / f"part-{self.written:05d}.parquet") as staged:
+            write_parquet(Relations().rows([flat]), staged)
         self.written += 1
         if self.framed:
             with open(self.framed, "a", encoding="utf-8", newline="\n") as handle:

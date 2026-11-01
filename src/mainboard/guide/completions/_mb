@@ -1,0 +1,1657 @@
+#compdef mb
+
+_cyclopts_mb() {
+  local line state
+
+  _arguments -C \
+    '1: :->cmds' \
+    '*::arg:->args'
+
+  case $state in
+    cmds)
+      local -a commands
+      commands=(
+        'run:Run a command or a file\:\:job through the host'\''s plan.'
+        'dep:Declare, solve and install environments; pixi'\''s verbs mean what pixi'\''s mean.'
+        'job:Dispatch jobs to hosts and follow them until they settle.'
+        'host:Set up, list, inspect and reach the machines jobs run on.'
+        'proc:Kill a process tree, bound a command, wait for a file or port, on every system.'
+        'code:Check, fix and move the code; build its apps and its agents'\'' configuration.'
+        'git:Operate the workspace repository and its owned submodules as one tree.'
+        'data:Query, keep and publish the workspace'\''s evidence\: results, lake, papers.'
+        'memory:Find and keep what AIZK remembers; a keep made while it is down waits.'
+        'serve:Start every service; one supervisor this machine keeps alive runs them.'
+      )
+      _describe -t commands 'command' commands
+      ;;
+    args)
+      case $words[1] in
+        run)
+          _arguments \
+            '*:the command tokens, from the first token that is not an option of this verb, pa…' \
+            '*--on[the host alias, local for this machine.]:on' \
+            '*--env[an environment name overriding the profile'\''s choice.]:env' \
+            '*--container[a container override, none forcing bare.]:container' \
+            '--locked[refuse a lock that no longer answers the manifest.]' \
+            '--frozen[take the lock as it stands, never comparing it with the manifest.]' \
+            '--no-install[leave the environment as it is installed.]' \
+            '--as-is[--frozen and --no-install together\: run what is installed, as it is.]'
+
+          ;;
+        dep)
+          _arguments -C \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'install:Install an environment, solving the lock first when it no longer answers the ma…'
+                'add:Declare a dependency in the manifest, re-lock and install, as pixi add does.'
+                'remove:Drop a dependency from the manifest, re-lock and install, as pixi remove does.'
+                'update:Move the lock to the newest releases the manifest allows, as pixi update does.'
+                'upgrade:Raise requirements to their newest releases, re-lock and install, as pixi upgra…'
+                'lock:Solve the lock where it no longer answers the manifest, installing nothing.'
+                'list:List the packages installed in an environment, through pixi list.'
+                'tree:Show an environment'\''s dependency tree, through pixi tree.'
+                'shell:Open an interactive shell in this workspace'\''s environment, here or on a host.'
+                'binary:Install and find the executables a manifest pins by release archive and hash.'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                install)
+                  _arguments \
+                    '1:the environment name, this machine'\''s declared profile choice when omitted.' \
+                    '*--env[the environment name, this machine'\''s declared profile choice when omitted.]:env' \
+                    '--all[install every declared environment.]' \
+                    '-a[install every declared environment.]' \
+                    '--locked[refuse a lock that no longer answers the manifest.]' \
+                    '--frozen[take the lock as it stands, never comparing it with the manifest.]' \
+                    '*--profile[the declared host profile describing this machine, so the environment'\''s activat…]:profile'
+
+                  ;;
+                add)
+                  _arguments \
+                    '1:--spec' \
+                    '*--spec[--spec]:spec' \
+                    '*--lang[only this ecosystem'\''s tables (python, conda, nodejs, ...); a new requirement is…]:lang' \
+                    '*-l[only this ecosystem'\''s tables (python, conda, nodejs, ...); a new requirement is…]:l' \
+                    '*--env[only this environment'\''s tables, the workspace-wide ones when empty.]:env' \
+                    '--dev[only the development-only tables.]' \
+                    '--no-install[re-lock without installing.]' \
+                    '--frozen[edit the manifest alone, leaving the lock as it stands, to solve several edits …]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                remove)
+                  _arguments \
+                    '1:the dependency to drop.' \
+                    '*--name[the dependency to drop.]:name' \
+                    '*--lang[only this ecosystem'\''s tables (python, conda, nodejs, ...); a new requirement is…]:lang' \
+                    '*-l[only this ecosystem'\''s tables (python, conda, nodejs, ...); a new requirement is…]:l' \
+                    '*--env[only this environment'\''s tables, the workspace-wide ones when empty.]:env' \
+                    '--dev[only the development-only tables.]' \
+                    '--no-install[re-lock without installing.]' \
+                    '--frozen[edit the manifest alone, leaving the lock as it stands, to solve several edits …]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                update)
+                  _arguments \
+                    '*:the packages to move, every one when none is named.' \
+                    '*--env[only this environment'\''s lock.]:env' \
+                    '--no-install[re-lock without installing.]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                upgrade)
+                  _arguments \
+                    '*:the requirements to raise, every declared one when none is named.' \
+                    '*--lang[only this ecosystem'\''s tables (python, conda, nodejs, ...); a new requirement is…]:lang' \
+                    '*-l[only this ecosystem'\''s tables (python, conda, nodejs, ...); a new requirement is…]:l' \
+                    '*--env[only this environment'\''s tables, the workspace-wide ones when empty.]:env' \
+                    '--dev[only the development-only tables.]' \
+                    '--no-install[re-lock without installing.]' \
+                    '--frozen[edit the manifest alone, leaving the lock as it stands, to solve several edits …]' \
+                    '*--exclude[a requirement to leave as written when raising every one, repeatable.]:exclude' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                lock)
+                  _arguments \
+                    '1:the environment to lock, every declared one when omitted.' \
+                    '*--env[the environment to lock, every declared one when omitted.]:env' \
+                    '--check[exit nonzero when the lock had to change, the gate for a commit or CI.]'
+
+                  ;;
+                list)
+                  _arguments \
+                    '*:pixi'\''s own arguments, a package regex first (mb dep list torch --json).' \
+                    '*--env[the environment name.]:env'
+
+                  ;;
+                tree)
+                  _arguments \
+                    '*:pixi'\''s own arguments, a package regex first (mb dep tree numpy --invert).' \
+                    '*--env[the environment name.]:env'
+
+                  ;;
+                shell)
+                  _arguments \
+                    '*:on a host, a command to run instead of handing over the terminal, from the firs…' \
+                    '*--on[the host alias, local for this machine.]:on' \
+                    '*--env[the environment name, the profile'\''s declared choice when omitted.]:env' \
+                    '*--queue[on a queued host, the queue the allocation targets, the profile'\''s when omitted.]:queue' \
+                    '*--walltime[on a queued host, the session'\''s wall-clock limit, the profile'\''s when omitted.]:walltime' \
+                    '*--nodes[on a queued host, how many compute nodes the allocation spans; a held session o…]:nodes' \
+                    '--keep[on a host, hold the session in tmux on the far side so a dropped terminal leave…]' \
+                    '--locked[refuse a lock that no longer answers the manifest.]' \
+                    '--frozen[take the lock as it stands, never comparing it with the manifest.]' \
+                    '--no-install[leave the environment as it is installed.]' \
+                    '--as-is[--frozen and --no-install together\: run what is installed, as it is.]'
+
+                  ;;
+                binary)
+                  _arguments -C \
+                    '*--env[the environment whose tool directory is installed.]:env' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields' \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'list:Judge each pinned binary tool\: the version found and where, or what is wrong.'
+                        'path:Print the path of the executable name\: a pinned tool'\''s install, else bin/ or PA…'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        list)
+                          _arguments \
+                            '*--env[the environment whose tool directory is read.]:env' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        path)
+                          _arguments \
+                            '1:the executable, pinned in the manifest or shipped by conda-forge.' \
+                            '*--name[the executable, pinned in the manifest or shipped by conda-forge.]:name' \
+                            '*--env[the environment whose tool directory is read.]:env'
+
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+        job)
+          _arguments -C \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'submit:Dispatch one job, a batch, or a test lane split over hosts, and print the handl…'
+                'list:Settle every job that ended, then list the live ones and the newest settled one…'
+                'show:Refresh one job or batch, print its recorded outcome, and exit with it.'
+                'logs:Print only what a dispatched job printed, whether or not its host still exists.'
+                'cancel:Stop a dispatched job on whatever took it and settle its record in the same pas…'
+                'digest:Fold one experiment'\''s runs\: counts by state, each failure with its log tail, li…'
+                'monitor:Start, stop and inspect the periodic pass that settles jobs unattended.'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                submit)
+                  _arguments \
+                    '*:the command tokens, from the first token that is not an option of this verb, or…' \
+                    '*--on[the host alias; comma-separated for a lane.]:on' \
+                    '*--resume[a failed or cancelled run to continue, by handle or name, as its next attempt.]:resume' \
+                    '*--name[the run'\''s label, or the batch'\''s name for a --job batch.]:name' \
+                    '*--attempt[the 1-based try number feeding expression defaults.]:attempt' \
+                    '*--split[a lane'\''s parametrize name; each of its values becomes one job.]:split' \
+                    '*--per-job[a lane'\''s cells per job when no name groups them, 0 for all in one.]:per-job' \
+                    '*--cell-timeout[seconds one lane cell may take before its process is killed.]:cell-timeout' \
+                    '--estimate[price the plan and print it; dispatch nothing.]' \
+                    '--wait[block until every submitted job settles; exit 0 clean, 1 failed, 2 timeout.]' \
+                    '--yes[dispatch without asking, what a script passes.]' \
+                    '*--queue[a queued host'\''s queue, the profile'\''s default when empty.]:queue' \
+                    '*--walltime[the wall-clock limit, HH\:MM\:SS, the profile'\''s default when empty.]:walltime' \
+                    '*--mem-gb[system memory to ask the scheduler for, the profile'\''s default when 0.]:mem-gb' \
+                    '*--gpus[cards per job, the profile'\''s default when 0.]:gpus' \
+                    '*--gpu-name[the GPU type to rent, for a metered provider host.]:gpu-name' \
+                    '*--arch[rent the cheapest card of these compute capabilities (sm_120, sm_90+, hopper) i…]:arch' \
+                    '*--max-usd[the spend cap a provider host refuses to submit without.]:max-usd' \
+                    '--spot[rent interruptible capacity; a job taken back reads vanished, and --resume <nam…]' \
+                    '--datacenter[rent only from data-center hosts, for a provider that also lists individually r…]' \
+                    '*--fetch[a results path recorded for later collection, the node'\''s evidence directory whe…]:fetch' \
+                    '*--node[the ledger slug this run serves, carried into its record and receipts.]:node' \
+                    '*--needs[a workspace-relative data path the job reads on the host, repeatable.]:needs' \
+                    '*--env[the environment the job enters, the host profile'\''s own when empty.]:env' \
+                    '*--container[a container override, none forcing bare.]:container' \
+                    '*--batch[a batch spec file, relative to the workspace root.]:batch' \
+                    '*--job[a target\:command job, repeatable, for a batch declared without a file.]:job' \
+                    '*--only[the plan'\''s jobs to act on, names or kind-* globs, comma-separated; all when uns…]:only' \
+                    '*--set[a name=value filling one of the spec file'\''s \[vars\], repeatable.]:set' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                list)
+                  _arguments \
+                    '*--limit[how many settled runs to show behind the live ones, newest first.]:limit' \
+                    '*--project[only the runs dispatched from this project (its directory under research/ or pa…]:project' \
+                    '*--batch[one batch'\''s jobs instead, as submit --batch printed its id.]:batch' \
+                    '*--watch[repeat every this many seconds until interrupted.]:watch' \
+                    '*--every[install the settling pass into this machine'\''s service manager at this period (2…]:every' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                show)
+                  _arguments \
+                    '1:a handle or name as submit/list print it, a batch id, a receipts stream id, dir…' \
+                    '*--target[a handle or name as submit/list print it, a batch id, a receipts stream id, dir…]:target' \
+                    '*--on[the host alias narrowing a handle recorded on several hosts.]:on' \
+                    '*--run[which run of a receipts store to score, its newest when unset.]:run' \
+                    '*--timeout[with --wait, give up after this many seconds (exit 2); 0 waits forever.]:timeout' \
+                    '*--stall[with --wait, seconds a running job may print nothing on an idle card before the…]:stall' \
+                    '--wait[block until the target settles.]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                logs)
+                  _arguments \
+                    '1:the job to read, as submit printed it or by the name jobs prints.' \
+                    '*--handle[the job to read, as submit printed it or by the name jobs prints.]:handle' \
+                    '*--on[the host alias narrowing a handle recorded on several hosts.]:on'
+
+                  ;;
+                cancel)
+                  _arguments \
+                    '1:the job to cancel, as submit printed it or by the name jobs prints.' \
+                    '*--handle[the job to cancel, as submit printed it or by the name jobs prints.]:handle' \
+                    '*--on[the host alias narrowing a handle recorded on several hosts.]:on' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                digest)
+                  _arguments \
+                    '*--node[the ledger slug the runs serve (a batch spec'\''s node); every run when empty.]:node' \
+                    '*--project[only the runs dispatched from this project.]:project' \
+                    '*--limit[how many settled runs to read behind the live ones.]:limit' \
+                    '*--tail[how many closing lines of each failed run'\''s log to print.]:tail' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                monitor)
+                  _arguments -C \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields' \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'start:Arm the installed settling pass again after stop; one already armed is left alo…'
+                        'status:Say whether the settling pass is installed and armed, when it last ran, and the…'
+                        'stop:Unload the settling pass but keep it installed, so no pass runs until start.'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        start)
+                          ;;
+                        status)
+                          ;;
+                        stop)
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+        host)
+          _arguments -C \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'list:List every compute path this workspace can reach; flags add detail per host.'
+                'setup:Onboard a host until it can run jobs, then show what it became and what that me…'
+                'sync:Re-mirror a host already set up and re-provision it from the shipped lock.'
+                'evict:Remove a host'\''s copies of evidence the center'\''s lake holds, to give its disk ba…'
+                'update:Reinstall this tool from its source when the source moved, as uv self update do…'
+                'upgrade:Bring this machine or a host up to date in one pass, printing each step as it r…'
+                'pack:Build an environment into files a machine runs without installing anything.'
+                'offers:Every cloud'\''s GPU offers, best useful hour first, and whether this tool can ren…'
+                'hold:Rent a machine and keep it as an ssh host until a deadline, set up and ready fo…'
+                'release:End a held machine now\: stop its billing, settle its record and drop its alias.'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                list)
+                  _arguments \
+                    '*:narrow the listing to these aliases, local for this machine.' \
+                    '--facts[each host'\''s probed hardware and software, then what they mean for this workspac…]' \
+                    '--gpus[who holds each card now\: utilization, memory and the processes on it.]' \
+                    '--audit[what each host could and should update, read-only; host upgrade applies it. Exi…]' \
+                    '--plan[the execution plan each host resolves to\: root, environment, container, schedul…]' \
+                    '*--env[with --plan, an environment overriding the host profile'\''s own.]:env' \
+                    '--reliability[how often each host or provider ran what was dispatched to it, from the run reg…]' \
+                    '*--days[with --reliability, how far back the registry is read.]:days' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                setup)
+                  _arguments \
+                    '1:--host' \
+                    '*--host[--host]:host' \
+                    '*--env[an environment name overriding the host profile'\''s own.]:env' \
+                    '--resolve[let the host solve for itself (install there) instead of installing the shipped…]' \
+                    '--dotfiles[also apply the workspace'\''s dotfiles (zsh, lvim, herdr and the toolbox their mb.…]' \
+                    '--center[make this host the workspace'\''s center instead of a job host.]' \
+                    '*--root[with --center, where the workspace goes there, ~/projects when omitted.]:root' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                sync)
+                  _arguments \
+                    '1:--host' \
+                    '*--host[--host]:host' \
+                    '*--env[an environment name overriding the host profile'\''s own.]:env' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                evict)
+                  _arguments \
+                    '1:the declared ssh host holding the copies.' \
+                    '*:workspace-relative evidence files or directories, with forward slashes on every…' \
+                    '*--host[the declared ssh host holding the copies.]:host' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                update)
+                  ;;
+                upgrade)
+                  _arguments \
+                    '1:the host alias, local for this machine.' \
+                    '*--on[the host alias, local for this machine.]:on' \
+                    '--dry-run[print the steps without running them.]'
+
+                  ;;
+                pack)
+                  _arguments \
+                    '1:the environment, installed on that machine already (host setup --env).' \
+                    '*--env[the environment, installed on that machine already (host setup --env).]:env' \
+                    '*--on[the host to build on, local for this machine (Linux or macOS).]:on' \
+                    '--image[also build an OCI image (docker).]' \
+                    '--sif[also build an Apptainer SIF from the image.]' \
+                    '*--push[also push the image to this repository, ghcr.io/OWNER/NAME, tagged by digest.]:push' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                offers)
+                  case ${words[CURRENT]} in
+                    --pricing=*)
+                      compset -P '--pricing='
+                      compadd -- 'any' 'on-demand' 'spot'
+                      return
+                      ;;
+                  esac
+                  _arguments \
+                    '1:the card, as any catalog spells it (B200, RTX 4090, H100).' \
+                    '*--gpu[the card, as any catalog spells it (B200, RTX 4090, H100).]:gpu' \
+                    '*--arch[only cards of these compute capabilities\: sm_120, sm_100, sm_90+ (that or newer…]:arch' \
+                    '*--count[cards per machine.]:count' \
+                    '*--max-usd-hr[the most an hour may cost, 0 for any.]:max-usd-hr' \
+                    "*--pricing[any offer, only spot (interruptible) or only on-demand ones.]:pricing:(any on-demand spot)" \
+                    '*--provider[only these catalogs (vastai, runpod, lambdalabs, aws...).]:provider' \
+                    '*--limit[how many rows, best first.]:limit' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                hold)
+                  _arguments \
+                    '1:the provider host to rent through, vast say, or a PBS host to keep.' \
+                    '*--provider[the provider host to rent through, vast say, or a PBS host to keep.]:provider' \
+                    '*--for[how long to keep it once it is ready, 3h, 90m or 1h30m.]:for' \
+                    '*--as[the alias to reach it by, PROVIDER-CARD when omitted.]:as' \
+                    '*--max-usd[the spend cap over the whole hold, landing included, the provider'\''s default whe…]:max-usd' \
+                    '*--walltime[on a PBS host, how long each allocation lasts, HH\:MM\:SS; the queue'\''s ceiling wh…]:walltime' \
+                    '*--gpu-name[the card to rent, in the provider'\''s own spelling.]:gpu-name' \
+                    '*--arch[rent the cheapest card of these compute capabilities instead of a named one\: sm…]:arch' \
+                    '*--gpus[cards per machine, the provider profile'\''s default when 0.]:gpus' \
+                    '--spot[rent interruptible capacity, cheaper and taken back at the provider'\''s will; a m…]' \
+                    '*--env[the environment to set up, the provider profile'\''s own when omitted.]:env' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                release)
+                  _arguments \
+                    '1:the held machine'\''s alias, as hold printed it, or the PBS host.' \
+                    '*--alias[the held machine'\''s alias, as hold printed it, or the PBS host.]:alias' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+        proc)
+          _arguments -C \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'timeout:Run a command with a hard limit, stopping its whole tree when the limit passes.'
+                'wait:Block until a file exists, a port accepts, and a process has exited, whichever …'
+                'kill:Stop each process and everything it started, children first, on any system.'
+                'list:List processes, started by this tool or not\: pid, parent, user, cpu, memory, ag…'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                timeout)
+                  _arguments \
+                    '1:--seconds' \
+                    '*:the program and its arguments, from the first token after the limit.' \
+                    '*--seconds[--seconds]:seconds'
+
+                  ;;
+                wait)
+                  case ${words[CURRENT]} in
+                    --file=*)
+                      compset -P '--file='
+                      _files
+                      return
+                      ;;
+                  esac
+                  _arguments \
+                    '*--file[--file]:file:_files' \
+                    '*--port[a host\:port that must accept a TCP connection.]:port' \
+                    '*--pid[a process that must have exited.]:pid' \
+                    '*--timeout[seconds to wait at most, 0 for as long as it takes.]:timeout'
+
+                  ;;
+                kill)
+                  _arguments \
+                    '*:the processes to stop.' \
+                    '*--pids[the processes to stop.]:pids' \
+                    '*--match[also stop every process whose command line contains this (see proc list).]:match' \
+                    '*--on[the host alias, local for this machine; a host runs its own copy.]:on' \
+                    '--force[kill at once instead of asking each process to terminate first.]'
+
+                  ;;
+                list)
+                  _arguments \
+                    '1:a substring of the command line (train.py, vllm); your own processes when empty…' \
+                    '*--pattern[a substring of the command line (train.py, vllm); your own processes when empty…]:pattern' \
+                    '*--on[the host alias, local for this machine; a host answers with its own copy.]:on' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+        code)
+          _arguments -C \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'lint:Fix what can be fixed, then check, over the changed files or everything under P…'
+                'ci:Run the gate \[tool.mainboard.ci\] declares, exactly as the package'\''s CI job runs…'
+                'doctor:Say whether this workspace is fit to work in, and exit nonzero when it is not.'
+                'new:Scaffold a project from one of this workspace'\''s declared templates.'
+                'rules:Judge a project by the rules and fix it; explain, test and query them.'
+                'refactor:Move and prove code, and map its uses, impact and Swift inventory.'
+                'app:Build, test and launch the apps a manifest declares, and their Xcode.'
+                'agents:Configure every coding agent alike from .agents\: files, links, servers, release…'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                lint)
+                  _arguments \
+                    '*:files or directories, relative to the working directory.:_files' \
+                    '--check[write nothing\: run each tool'\''s read-only check command and report what the text…]' \
+                    '*--only[the steps to run, comma-separated tool names with text for the built-in hygiene…]:only' \
+                    '--staged[read the files in the index of the root and of each owned submodule, what a com…]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                ci)
+                  case ${words[CURRENT]} in
+                    --package=*)
+                      compset -P '--package='
+                      _files
+                      return
+                      ;;
+                  esac
+                  _arguments \
+                    '1:a directory inside the package, the working directory when omitted.:_files' \
+                    '*--package[a directory inside the package, the working directory when omitted.]:package:_files' \
+                    '--matrix[also run on one declared host per other platform, the check before a push.]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                doctor)
+                  _arguments \
+                    '1:the environment to examine, the local profile'\''s own when omitted.' \
+                    '*--env[the environment to examine, the local profile'\''s own when omitted.]:env' \
+                    '--center[also judge this machine as the workspace'\''s center\: git tooling (lfs, symlinks, …]' \
+                    '--members[also check every \[workspace\] members project works cloned alone\: no import, pat…]' \
+                    '--fix[first repair the CUDA library clashes the libraries rows name, as a manifest ed…]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                new)
+                  _arguments \
+                    '1:the project name, which becomes its slug, its package and its task prefix.' \
+                    '*--name[the project name, which becomes its slug, its package and its task prefix.]:name' \
+                    '*--template[a declared template name or any location copier accepts.]:template' \
+                    '*--description[the one sentence the README and the task rows carry.]:description' \
+                    '*--dest[where to render it, under the template'\''s own declared home when omitted.]:dest' \
+                    '*--answer[a further question=value for the template, repeatable.]:answer' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                rules)
+                  _arguments -C \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'check:Every finding of the selected rules (all when none), grouped by rule, and the s…'
+                        'fix:Fix every fixable finding, pass after pass, until nothing fixable is left.'
+                        'preview:Print the diff one pass of the selected rules'\'' fixes would write in ROOT, unpro…'
+                        'trial:Fix a scratch copy of ROOT and report what the fixes change, ROOT itself untouc…'
+                        'gate:Report the findings in FILES, repairing their safe ones first with --fix.'
+                        'explain:Explain RULE, its repair policy and remediation references, or list every rule …'
+                        'test:Run the selected rules'\'' examples, every rule'\''s when none is selected.'
+                        'sql:Rows of QUERY over ROOT'\''s fact views, under a header line of the selected colum…'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        check)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:the project to check.:_files' \
+                            '*--root[the project to check.]:root:_files' \
+                            '*--rule[rule ids, every SQL rule (every fixable one, for a fix) when empty.]:rule' \
+                            '*--memory[a DuckDB memory limit such as 4GB.]:memory' \
+                            '*--family[mcmr families to derive in SQL though not yet verified (CallFact).]:family' \
+                            '--counts[one line per rule with its number of findings instead, most first.]' \
+                            '--new[only the findings each file gained since it was last checked; every check recor…]'
+
+                          ;;
+                        fix)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:the project to fix.:_files' \
+                            '*--root[the project to fix.]:root:_files' \
+                            '*--rule[rule ids, every SQL rule (every fixable one, for a fix) when empty.]:rule' \
+                            '*--memory[a DuckDB memory limit such as 4GB.]:memory' \
+                            '*--family[mcmr families to derive in SQL though not yet verified (CallFact).]:family' \
+                            '--write[write the last proven state into the project; without it the run only reports.]' \
+                            '--unsafe[include fixes marked for review, not only safe ones.]' \
+                            '*--passes[the most passes before stopping.]:passes'
+
+                          ;;
+                        preview)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:the project whose fixes are planned.:_files' \
+                            '*--root[the project whose fixes are planned.]:root:_files' \
+                            '*--rule[rule ids, every SQL rule (every fixable one, for a fix) when empty.]:rule' \
+                            '*--memory[a DuckDB memory limit such as 4GB.]:memory' \
+                            '*--family[mcmr families to derive in SQL though not yet verified (CallFact).]:family' \
+                            '--unsafe[include fixes marked for review, not only safe ones.]' \
+                            '*--only[print only these files (paths relative to ROOT).]:only'
+
+                          ;;
+                        trial)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                            --patch=*)
+                              compset -P '--patch='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:the project to try the fixes on.:_files' \
+                            '*--root[the project to try the fixes on.]:root:_files' \
+                            '*--rule[rule ids, every SQL rule (every fixable one, for a fix) when empty.]:rule' \
+                            '*--memory[a DuckDB memory limit such as 4GB.]:memory' \
+                            '*--family[mcmr families to derive in SQL though not yet verified (CallFact).]:family' \
+                            '--unsafe[include fixes marked for review, not only safe ones.]' \
+                            '*--passes[the most passes before stopping.]:passes' \
+                            '*--patch[write the fixes as a patch here, to apply with git apply.]:patch:_files'
+
+                          ;;
+                        gate)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '*:the pass'\''s files, relative to ROOT.:_files' \
+                            '*--root[the project to analyze, the working directory by default (mb code lint runs the…]:root:_files' \
+                            '--fix[apply the engine'\''s safe fixes to FILES; a review fix is never applied.]' \
+                            '*--skip[rule ids left out of the pass.]:skip' \
+                            '*--rule[only these rule ids; the whole catalog when empty.]:rule' \
+                            '*--memory[a DuckDB memory limit such as 4GB.]:memory' \
+                            '--new[report only the findings FILES gained since they were last checked; every pass …]'
+
+                          ;;
+                        explain)
+                          _arguments \
+                            '1:--rule' \
+                            '*--rule[--rule]:rule' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        test)
+                          _arguments \
+                            '*--rule[rule ids, every SQL rule (every fixable one, for a fix) when empty.]:rule' \
+                            '*--memory[a DuckDB memory limit such as 4GB.]:memory' \
+                            '*--family[mcmr families to derive in SQL though not yet verified (CallFact).]:family'
+
+                          ;;
+                        sql)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:one DuckDB SELECT over the fact views.' \
+                            '2:the project whose facts are read.:_files' \
+                            '*--query[one DuckDB SELECT over the fact views.]:query' \
+                            '*--root[the project whose facts are read.]:root:_files' \
+                            '*--language[read through that language'\''s narrowed views (python); every fact when unset.]:language' \
+                            '*--limit[the most rows printed.]:limit' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+                refactor)
+                  _arguments -C \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'move:Move the top-level definitions NAMES (path.py\:\:Name, one module) into the modul…'
+                        'proof:Run ROOT'\''s proof (\[tool.mcmr\] proof) over a copy of the project as it stands.'
+                        'uses:Where a function, class, method or constant is defined and who imports or calls…'
+                        'impact:The files, experiments, trials and paper sections a source change reaches.'
+                        'diagram:A Mermaid diagram of a package'\''s dependencies or of its classes and their bases.'
+                        'matrix:The import design structure matrix of a package, by subpackage or module, with …'
+                        'swift-inventory:Per-file Swift/Objective-C size, imports and migration boundaries in the lint s…'
+                        'swift-compare:Compare two saved Swift inventories without Xcode, source edits or test executi…'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        move)
+                          case ${words[CURRENT]} in
+                            --to=*)
+                              compset -P '--to='
+                              _files
+                              return
+                              ;;
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '*:the definitions, src/pkg/module.py\:\:Name, all from one module.' \
+                            '*--names[the definitions, src/pkg/module.py\:\:Name, all from one module.]:names' \
+                            '*--to[the module they move to, created when missing.]:to:_files' \
+                            '*--root[the project holding both.]:root:_files' \
+                            '--write[write the change instead of printing it.]'
+
+                          ;;
+                        proof)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:the project whose proof runs.:_files' \
+                            '*--root[the project whose proof runs.]:root:_files'
+
+                          ;;
+                        uses)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:--symbol' \
+                            '*--symbol[--symbol]:symbol' \
+                            '*--root[--root]:root:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields' \
+                            '*--memory[--memory]:memory'
+
+                          ;;
+                        impact)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '*:FILES:_files' \
+                            '*--since[--since]:since' \
+                            '*--root[--root]:root:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields' \
+                            '*--memory[--memory]:memory'
+
+                          ;;
+                        diagram)
+                          case ${words[CURRENT]} in
+                            --path=*)
+                              compset -P '--path='
+                              _files
+                              return
+                              ;;
+                            --kind=*)
+                              compset -P '--kind='
+                              compadd -- 'packages' 'classes'
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:--path:_files' \
+                            '*--path[--path]:path:_files' \
+                            "*--kind[--kind]:kind:(packages classes)" \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields' \
+                            '*--memory[--memory]:memory'
+
+                          ;;
+                        matrix)
+                          case ${words[CURRENT]} in
+                            --path=*)
+                              compset -P '--path='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:--path:_files' \
+                            '*--path[--path]:path:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields' \
+                            '*--memory[--memory]:memory'
+
+                          ;;
+                        swift-inventory)
+                          case ${words[CURRENT]} in
+                            --path=*)
+                              compset -P '--path='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:--path:_files' \
+                            '*--path[--path]:path:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields' \
+                            '*--memory[--memory]:memory'
+
+                          ;;
+                        swift-compare)
+                          case ${words[CURRENT]} in
+                            --baseline=*)
+                              compset -P '--baseline='
+                              _files
+                              return
+                              ;;
+                            --current=*)
+                              compset -P '--current='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:--baseline:_files' \
+                            '2:--current:_files' \
+                            '*--baseline[--baseline]:baseline:_files' \
+                            '*--current[--current]:current:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+                app)
+                  _arguments -C \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'list:Every app in the workspace and its nested projects, with its devices and suites.'
+                        'build:Build an app'\''s scheme for a device, and retain the build'\''s diagnostics.'
+                        'test:Run an app'\''s suite, or its scheme'\''s whole test action when none is named.'
+                        'launch:Install a built app and show its selected simulator in Xcode 27 Device Hub.'
+                        'execute:Run Xcode on a project/workspace/package; retain fresh evidence and its verdict.'
+                        'inspect:Read what a built bundle or a result bundle holds, by the path'\''s kind.'
+                        'simulators:List available simulator names, runtime identifiers, UDIDs and current states.'
+                        'toolchain:Report Xcode and Swift selected by DEVELOPER_DIR or xcode-select; change neithe…'
+                        'fonts:Render transparent PNG previews with installed Apple text APIs, without an app.'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        list)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        build)
+                          _arguments \
+                            '1:the app, as app list shows it.' \
+                            '*--name[the app, as app list shows it.]:name' \
+                            '*--device[one of its devices, all for every one; its first when omitted.]:device' \
+                            '*--configuration[Debug or Release.]:configuration' \
+                            '*--timeout[hard limit in seconds per device.]:timeout'
+
+                          ;;
+                        test)
+                          _arguments \
+                            '1:the app, as app list shows it.' \
+                            '2:one of its \[apps.<name>.suites\].' \
+                            '*--name[the app, as app list shows it.]:name' \
+                            '*--suite[one of its \[apps.<name>.suites\].]:suite' \
+                            '*--device[one of its devices, all for every one; the suite'\''s when omitted.]:device'
+
+                          ;;
+                        launch)
+                          case ${words[CURRENT]} in
+                            --path=*)
+                              compset -P '--path='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:--path:_files' \
+                            '*--path[--path]:path:_files' \
+                            '*--simulator[--simulator]:simulator' \
+                            '*--os-version[--os-version]:os-version' \
+                            '*--timeout[--timeout]:timeout' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        execute)
+                          case ${words[CURRENT]} in
+                            --project=*)
+                              compset -P '--project='
+                              _files
+                              return
+                              ;;
+                            --action=*)
+                              compset -P '--action='
+                              compadd -- 'build' 'test' 'build-for-testing' 'resolve'
+                              return
+                              ;;
+                            --derived-data=*)
+                              compset -P '--derived-data='
+                              _files
+                              return
+                              ;;
+                            --url-test=*)
+                              compset -P '--url-test='
+                              _files
+                              return
+                              ;;
+                            --results=*)
+                              compset -P '--results='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:an .xcworkspace, .xcodeproj or Swift package directory.:_files' \
+                            '*--project[an .xcworkspace, .xcodeproj or Swift package directory.]:project:_files' \
+                            '*--scheme[the shared Xcode scheme to build/test.]:scheme' \
+                            "*--action[build, test, build-for-testing or resolve.]:action:(build test build-for-testing resolve)" \
+                            '*--destination[native Xcode destination, including exact simulator runtime.]:destination' \
+                            '*--configuration[build configuration, normally Debug or Release.]:configuration' \
+                            '*--derived-data[reusable generated build directory.]:derived-data:_files' \
+                            '*--only-testing[repeatable native test identifiers to include.]:only-testing' \
+                            '*--skip-testing[repeatable native test identifiers to exclude.]:skip-testing' \
+                            '*--setting[repeatable literal KEY=VALUE Xcode build settings.]:setting' \
+                            '*--timeout[hard limit in seconds, including descendant processes.]:timeout' \
+                            '*--url-test[JSON runner bundle, relative marker and explicit custom-scheme routes.]:url-test:_files' \
+                            '*--results[parent for a new, unique .xcresult bundle on every invocation.]:results:_files'
+
+                          ;;
+                        inspect)
+                          case ${words[CURRENT]} in
+                            --path=*)
+                              compset -P '--path='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:a built app bundle (including its embedded products), an exact .xcresult bundle…:_files' \
+                            '*--path[a built app bundle (including its embedded products), an exact .xcresult bundle…]:path:_files' \
+                            '*--forbid-symbol[repeatable case-insensitive regex over nm/otool stdout and stderr.]:forbid-symbol' \
+                            '*--forbid-resource[repeatable relative glob; ** also matches zero directories.]:forbid-resource' \
+                            '*--expect-info[repeatable dotted Info.plist KEY=VALUE string expectations.]:expect-info' \
+                            '*--require-info[repeatable dotted Info.plist keys requiring nonempty text.]:require-info' \
+                            '*--expect-name[repeatable LOCALE=VALUE display names in InfoPlist.strings.]:expect-name' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        simulators)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        toolchain)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        fonts)
+                          case ${words[CURRENT]} in
+                            --paths=*)
+                              compset -P '--paths='
+                              _files
+                              return
+                              ;;
+                            --results=*)
+                              compset -P '--results='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '*:font files or directories.:_files' \
+                            '*--paths[font files or directories.]:paths:_files' \
+                            '*--text[preview text; whitespace alone is invalid.]:text' \
+                            '*--width[logical width in points.]:width' \
+                            '*--size[font size in points.]:size' \
+                            '*--scale[pixels per point.]:scale' \
+                            '*--results[parent for a fresh font-preview directory.]:results:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+                agents)
+                  _arguments -C \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'check:Judge what an agent started here meets, each row with its fix; 1 when one faile…'
+                        'sync:Render each harness'\''s files from .agents, remove stale ones and make the links.'
+                        'update:Install every missing harness and bring every present one to its latest release.'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        check)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        sync)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        update)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+        git)
+          _arguments -C \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'status:Show every owned repository in the tree on one table, without touching the netw…'
+                'commit:Commit the named paths, or what each owned repository has staged, submodules fi…'
+                'push:Push every owned repository, submodules before the parents that point at them.'
+                'pull:Bring every owned repository level with its upstream and submodule checkouts al…'
+                'check:Verify the tree is safe to clone and push, and exit 1 when anything fails.'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                status)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                commit)
+                  _arguments \
+                    '*:files or directories to commit, relative to the working directory.:_files' \
+                    '*--message[TEXT for every repository, or REPO=TEXT for one, repeated as needed.]:message' \
+                    '*-m[TEXT for every repository, or REPO=TEXT for one, repeated as needed.]:m' \
+                    '--all[commit every change in every owned repository.]' \
+                    '-a[commit every change in every owned repository.]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                push)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                pull)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                check)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+        data)
+          _arguments -C \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'query:Explore collected results across servers; each query sees newly arrived files.'
+                'probe:Inspect CUDA device code and append its evidence to the workspace lake.'
+                'lake:Keep the workspace'\''s state lake and the evidence it holds.'
+                'paper:Build a declared manuscript, plot its figures, audit what it rests on.'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                query)
+                  case ${words[CURRENT]} in
+                    --file=*)
+                      compset -P '--file='
+                      _files
+                      return
+                      ;;
+                    --out=*)
+                      compset -P '--out='
+                      _files
+                      return
+                      ;;
+                  esac
+                  _arguments \
+                    '1:one DuckDB statement; defaults to SELECT * FROM runs. Use unique column aliases…' \
+                    '*--sql[one DuckDB statement; defaults to SELECT * FROM runs. Use unique column aliases…]:sql' \
+                    '*--file[read SQL from a UTF-8 file instead of the positional statement. Both the file a…]:file:_files' \
+                    '*--project[restrict scientific rows to this research project.]:project' \
+                    '*--max-rows[displayed row limit, 1000 by default; 0 or -1 removes the limit.]:max-rows' \
+                    '*--max-bytes[encoded data-row byte limit, 10000 by default; 0 or -1 removes the limit. After…]:max-bytes' \
+                    '*--timeout[DuckDB execution limit in seconds, 10 by default; 0 disables it. Timeouts fail …]:timeout' \
+                    '--json[print JSON when no output file is requested. Its row-count/hash/snapshot footer…]' \
+                    '*--out[export a complete new .csv, .parquet, or .json file; display caps and output mo…]:out:_files'
+
+                  ;;
+                probe)
+                  case ${words[CURRENT]} in
+                    --library=*)
+                      compset -P '--library='
+                      _files
+                      return
+                      ;;
+                    --operation=*)
+                      compset -P '--operation='
+                      compadd -- 'inventory' 'sass' 'arch' 'resource' 'compare'
+                      return
+                      ;;
+                  esac
+                  _arguments \
+                    '1:a native library, fatbin, cubin or PTX artifact.:_files' \
+                    "2:the finding to collect; compare reports inventory metadata changes.:(inventory sass arch resource compare)" \
+                    '*--library[a native library, fatbin, cubin or PTX artifact.]:library:_files' \
+                    "*--operation[the finding to collect; compare reports inventory metadata changes.]:operation:(inventory sass arch resource compare)" \
+                    '*--arch[one exact CUDA target, such as sm_90a.]:arch' \
+                    '*--function[one mangled kernel name.]:function' \
+                    '*--against[the newer library for compare, with library as the baseline.]:against' \
+                    '*--on[local only until device analysis is wired into job dispatch.]:on' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                lake)
+                  _arguments -C \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'ingest:Keep evidence files in the lake byte for byte, so they can leave version contro…'
+                        'materialize:Write evidence the lake keeps back to where it stood in the tree.'
+                        'collect:Collect remote evidence for queries, including runs started directly on that no…'
+                        'check:Compare what the lake'\''s catalog references with what is on disk; exit 1 on a lo…'
+                        'compact:Compact the lake\: inlined rows to Parquet, small files merged, old snapshots ex…'
+                        'dedup:Hard-link identical evidence files to one copy, to give a host'\''s disk back.'
+                        'evict:Delete tree copies of evidence the lake keeps, to give the disk back.'
+                        'replicate:Copy every evidence object the lake keeps, and its path index, to a second disk.'
+                        'upgrade:Migrate this workspace'\''s lake catalogs to the newest DuckLake spec DuckDB write…'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        ingest)
+                          _arguments \
+                            '*:evidence files or directories inside this workspace.:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        materialize)
+                          _arguments \
+                            '*:indexed evidence files or directories, as they stood in this workspace.:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        collect)
+                          _arguments \
+                            '1:workspace-relative results file or directory, using forward slashes on every OS.' \
+                            '*--path[workspace-relative results file or directory, using forward slashes on every OS.]:path' \
+                            '*--on[declared SSH host; its profile gives the root, a ~ root expanded there when no …]:on' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        check)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        compact)
+                          ;;
+                        dedup)
+                          _arguments \
+                            '*:evidence directories or files inside this workspace, on one filesystem.:_files' \
+                            '--dry-run[count what would be linked, linking nothing.]' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        evict)
+                          _arguments \
+                            '*:evidence files or directories inside this workspace, no longer written.:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        replicate)
+                          case ${words[CURRENT]} in
+                            --directory=*)
+                              compset -P '--directory='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:the replica'\''s root on another disk, created when missing.:_files' \
+                            '2:print canonical JSON instead of the compact rows.' \
+                            '3:a comma-separated projection over the printed fields.' \
+                            '*--directory[the replica'\''s root on another disk, created when missing.]:directory:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        upgrade)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+                paper)
+                  _arguments -C \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'build:Build a declared manuscript and report everything wrong with it, exiting 1 on a…'
+                        'plot:Plot a local SELECT using Seaborn and Matplotlib, without implicit aggregation.'
+                        'evidence:What each paper cites and where the evidence is weak\: unsettled, missing, uncit…'
+                        'prose:The narrative paragraphs of a paper with file and line, math, floats and comman…'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        build)
+                          _arguments \
+                            '1:the \[papers.<name>\] manuscript.' \
+                            '*--name[the \[papers.<name>\] manuscript.]:name' \
+                            '*--show[a phrase from the manuscript, repeatable; the page it appears on is rendered to…]:show' \
+                            '*--dpi[the resolution a shown page renders at.]:dpi' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                        plot)
+                          case ${words[CURRENT]} in
+                            --kind=*)
+                              compset -P '--kind='
+                              compadd -- 'scatter' 'line' 'bar'
+                              return
+                              ;;
+                            --file=*)
+                              compset -P '--file='
+                              _files
+                              return
+                              ;;
+                            --config=*)
+                              compset -P '--config='
+                              _files
+                              return
+                              ;;
+                            --out=*)
+                              compset -P '--out='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:define the table, including any filtering, grouping, and ordering.' \
+                            '*--sql[define the table, including any filtering, grouping, and ordering.]:sql' \
+                            '*--x[the column on the x axis.]:x' \
+                            '*--y[the numeric column on the y axis.]:y' \
+                            '*--hue[the column splitting the series; omit it for one series.]:hue' \
+                            "*--kind[the marks; bar requires one row per x/hue group.]:kind:(scatter line bar)" \
+                            '*--title[the chart title, including the measurement scope when appropriate.]:title' \
+                            '*--file[read a UTF-8 SQL file instead of the positional statement. Both the file and pa…]:file:_files' \
+                            '*--config[overlay project styles and figures from this manifest-format TOML file. It does…]:config:_files' \
+                            '*--figure[render a named \[figures.NAME\] specification; omit SQL, x, and y. Panels use nat…]:figure' \
+                            '*--out[a new output path; repeat for multiple formats, such as .pdf and .png.]:out:_files' \
+                            '*--project[restrict scientific rows to this research project.]:project' \
+                            '*--style[a named \[plots.NAME\] entry; defaults to paper when declared.]:style' \
+                            '*--dpi[raster resolution, overriding the style'\''s DPI when supplied.]:dpi'
+
+                          ;;
+                        evidence)
+                          case ${words[CURRENT]} in
+                            --root=*)
+                              compset -P '--root='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '*--root[--root]:root:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields' \
+                            '*--memory[--memory]:memory'
+
+                          ;;
+                        prose)
+                          case ${words[CURRENT]} in
+                            --paper=*)
+                              compset -P '--paper='
+                              _files
+                              return
+                              ;;
+                          esac
+                          _arguments \
+                            '1:--paper:_files' \
+                            '*--paper[--paper]:paper:_files' \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+        memory)
+          _arguments -C \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'find:Answer a question from memory, with its sources, after delivering what waits.'
+                'keep:Keep text, files or URIs in memory; they wait and replay while AIZK is down.'
+                'status:Show the upstream, the login, what waits in the spool and what AIZK counts.'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                find)
+                  _arguments \
+                    '1:what to ask, in words.' \
+                    '*--question[what to ask, in words.]:question' \
+                    '*--budget[the most tokens the answer may take, the server'\''s default when unset.]:budget' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                keep)
+                  _arguments \
+                    '*:text, the path of a file, or a URI.' \
+                    '*--note[companion text kept with each item, such as what an image shows.]:note' \
+                    '*--scope[the AIZK scope to keep them in, the caller'\''s default when unset.]:scope' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                status)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+        serve)
+          _arguments -C \
+            '--json[print canonical JSON instead of the compact rows.]' \
+            '*--fields[a comma-separated projection over the printed fields.]:fields' \
+            '1: :->cmds' \
+            '*::arg:->args'
+
+          case $state in
+            cmds)
+              local -a commands
+              commands=(
+                'status:Show the supervisor and each declared service\: running, scheduled, failed or of…'
+                'stop:Stop every service and remove the unit, waiting until none of its processes is …'
+                'sessions:Show the agent sessions of the last days, or one session'\''s turns.'
+                'usage:Show what the agents used\: the last 5 hours and 7 days, then each day.'
+                'asks:Show the asks waiting for the owner'\''s answer, oldest first.'
+                'answer:Answer one waiting ask\: grant exactly its act and target for some hours, or dec…'
+                'grant:Grant one act within one scope for some hours, end such grants, or list those i…'
+                'pending:Show the spool lines no pass has delivered to the sink yet, by file.'
+                'agents:Point the coding agents'\'' user-level telemetry at this workspace'\''s sink.'
+              )
+              _describe -t commands 'command' commands
+              ;;
+            args)
+              case $words[1] in
+                status)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                stop)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                sessions)
+                  _arguments \
+                    '1:a session as <harness>\:<id> to list its turns instead.' \
+                    '*--session[a session as <harness>\:<id> to list its turns instead.]:session' \
+                    '*--days[how many days back the listing reaches.]:days' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                usage)
+                  _arguments \
+                    '*--days[how many UTC days the daily rows reach back.]:days' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                asks)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                answer)
+                  _arguments \
+                    '1:the ask'\''s id, or its first characters as serve asks shows them.' \
+                    '*--ask[the ask'\''s id, or its first characters as serve asks shows them.]:ask' \
+                    '*--hours[how long the grant lasts.]:hours' \
+                    '--decline[say no instead of granting.]' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                grant)
+                  case ${words[CURRENT]} in
+                    --act=*)
+                      compset -P '--act='
+                      compadd -- 'card' 'launch' 'push' 'rent'
+                      return
+                      ;;
+                  esac
+                  _arguments \
+                    "1:what is granted; with none, the grants in force are listed.:(card launch push rent)" \
+                    '2:what it covers\: one target (owner/repo\:mb/save, vast), or every target below a …' \
+                    "*--act[what is granted; with none, the grants in force are listed.]:act:(card launch push rent)" \
+                    '*--scope[what it covers\: one target (owner/repo\:mb/save, vast), or every target below a …]:scope' \
+                    '*--hours[how long the grant lasts.]:hours' \
+                    '--revoke[end now every grant in force of exactly this act and scope instead.]' \
+                    '*--usd[for card, the limit of the card paying the provider.]:usd' \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                pending)
+                  _arguments \
+                    '--json[print canonical JSON instead of the compact rows.]' \
+                    '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                  ;;
+                agents)
+                  _arguments -C \
+                    '1: :->cmds' \
+                    '*::arg:->args'
+
+                  case $state in
+                    cmds)
+                      local -a commands
+                      commands=(
+                        'sync:Point Claude Code and Codex at this workspace'\''s telemetry sink, logs only.'
+                      )
+                      _describe -t commands 'command' commands
+                      ;;
+                    args)
+                      case $words[1] in
+                        sync)
+                          _arguments \
+                            '--json[print canonical JSON instead of the compact rows.]' \
+                            '*--fields[a comma-separated projection over the printed fields.]:fields'
+
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+}
+
+

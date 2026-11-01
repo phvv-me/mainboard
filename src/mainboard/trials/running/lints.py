@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ...state.relations import records
-from ..contract.vocabulary import Outcome, Stance
+from ..enums import Outcome, Stance
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence

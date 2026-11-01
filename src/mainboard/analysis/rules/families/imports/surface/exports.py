@@ -58,7 +58,7 @@ _IMPORTED = """
            i.start_line, i.start_column, b.start_line AS binding_line,
            b.start_column AS binding_column,
            import_expression(i.declaration_text, i.relative_level, i.module, i.imported_name,
-                             i.importer_module, ends_with(i.path, '__init__.py')) AS expression,
+                             i.importer_module, is_initializer_path(i.path)) AS expression,
            count(*) OVER (PARTITION BY i.path, i.declaration_id) AS binding_count
     FROM import_binding_facts i
     JOIN import_binding_nodes b ON b.path = i.path AND b.node_id = i.binding_id

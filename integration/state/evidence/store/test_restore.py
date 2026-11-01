@@ -1,3 +1,4 @@
+import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import IO
@@ -6,10 +7,13 @@ import duckdb
 import pytest
 
 from mainboard import MissionError
+from mainboard.core.constants.units import DISK_FLOOR
 from mainboard.dispatch import SourceTree
 from mainboard.dispatch.provenance import listing
 from mainboard.state import Evidence
 from mainboard.state.storage.blobs import Audit
+
+from ....fakes import disks
 
 
 @pytest.fixture
@@ -75,6 +79,17 @@ def test_materialize_writes_only_what_is_missing_into_any_root(
     elsewhere = tmp_path / "restore" / "here"
     assert kept.materialize([same], into=elsewhere) == [elsewhere / "t/same.txt"]
     assert (elsewhere / "t/same.txt").read_bytes() == b"same"
+
+
+def test_materialize_whose_files_would_cross_the_disk_floor_writes_nothing(
+    kept: Evidence, stored: Callable[[str, bytes], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = stored("t/gone.txt", b"settled and then evicted")
+    gone.unlink()
+    monkeypatch.setattr(shutil, "disk_usage", disks(DISK_FLOOR + 1))
+    with pytest.raises(MissionError, match="writing 1 file"):
+        kept.materialize([kept.root / "t"])
+    assert not gone.exists()
 
 
 @pytest.mark.parametrize("link", ["folder", "file"])

@@ -1,12 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
+from .enums import Outcome
 from .operations.check import Check
 from .operations.commit import Commit
 from .operations.pull import Pull
 from .operations.push import Push
 from .repo import Repo
-from .report import Outcome, RepoState, Step
+from .repo.remote import Remote
+from .report import RepoState, Step
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -48,17 +50,17 @@ class Tree:
         return self.policy.owns(owner, root_owner=self.root.owner)
 
     def _state(self, repo: Repo) -> RepoState:
-        head = repo.head()
-        upstream = repo.upstream()
-        ahead, behind = repo.counts(upstream)
-        changes = repo.changes(self.policy.outside)
-        homes = repo.homes(head)
+        head = repo.commits.head()
+        upstream = repo.tracking.upstream()
+        ahead, behind = repo.commits.counts(upstream)
+        changes = repo.worktree.changes(self.policy.outside)
+        homes = repo.remote.homes(head)
         untracked = sum(change.untracked for change in changes)
         return RepoState(
             repo=repo.name,
             owner=repo.owner,
-            branch=repo.branch() or "detached",
-            head=repo.short(head),
+            branch=repo.tracking.branch() or "detached",
+            head=repo.commits.short(head),
             upstream=upstream,
             ahead=ahead,
             behind=behind,
@@ -88,7 +90,7 @@ class Tree:
         A fetch writes only remote-tracking refs, so a foreign checkout is left as it was.
         """
         with ThreadPoolExecutor(max_workers=_FETCHERS) as pool:
-            complaints = list(pool.map(Repo.fetch, repos))
+            complaints = list(pool.map(Remote.fetch, [repo.remote for repo in repos]))
         return {
             repo.name: complaint
             for repo, complaint in zip(repos, complaints, strict=True)

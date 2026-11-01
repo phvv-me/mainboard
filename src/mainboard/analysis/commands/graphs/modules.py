@@ -7,6 +7,7 @@ directories, so `experiments/x/y.py` under a package `experiments` is `experimen
 """
 
 from ...catalog import Relation
+from ...constants import INITIALIZER_PATH
 
 
 def _qualname(node: str) -> str:
@@ -17,19 +18,21 @@ def _qualname(node: str) -> str:
 class ModuleFiles(Relation):
     """Each Python file with its module name, its package and the import root it sits under.
 
+    A stub (`.pyi`) is no module of the runtime graph, and its initializer makes no package.
+
     packaged: the file lies in a package chain, so any file may import it by name; a script
         (False) is importable only from the files of its own directory.
     """
 
     stored = True
-    query = r"""
+    query = rf"""
         WITH sources AS (
           SELECT path, regexp_extract(path, '^(.*)/[^/]*$', 1) AS dir,
-                 regexp_extract(path, '[^/]*$') AS name
+                 regexp_matches(path, '{INITIALIZER_PATH}') AS initializer
           FROM python.ast_files
           WHERE path LIKE '%.py'
         ), initializers AS (
-          SELECT DISTINCT dir FROM sources WHERE name = '__init__.py'
+          SELECT DISTINCT dir FROM sources WHERE initializer
         ), levels AS (
           SELECT s.path, u.i, array_to_string(s.parts[1:u.i], '/') AS prefix,
                  regexp_full_match(s.parts[u.i], '[A-Za-z_][A-Za-z0-9_]*') AS identifier
@@ -44,7 +47,7 @@ class ModuleFiles(Relation):
           WHERE l.i > b.stop
           GROUP BY l.path
         ), homes AS (
-          SELECT s.path, s.dir, s.name, o.level IS NOT NULL AS packaged,
+          SELECT s.path, s.dir, s.initializer, o.level IS NOT NULL AS packaged,
                  CASE WHEN o.level IS NULL THEN s.dir
                       ELSE array_to_string(string_split(s.dir, '/')[1:o.level - 1], '/')
                  END AS home
@@ -57,8 +60,8 @@ class ModuleFiles(Relation):
                       '(^|\.)__init__$', '') AS module
           FROM homes
         )
-        SELECT path, dir, home, module, packaged, name = '__init__.py' AS initializer,
-               CASE WHEN name = '__init__.py' THEN module
+        SELECT path, dir, home, module, packaged, initializer,
+               CASE WHEN initializer THEN module
                     ELSE regexp_replace(module, '\.?[^.]*$', '') END AS package
         FROM named
     """

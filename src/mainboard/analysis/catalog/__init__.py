@@ -25,22 +25,27 @@ file `operation`. A fix the facts cannot compute in SQL is a method `repair(self
 edits instead. `Relation`s are the shared building blocks: `class PlacedSymbols(Relation)` is the
 table macro `placed_symbols()`, whose views resolve in the calling rule's language and whose
 fields are its parameters.
+
+A `Bundle` is one rule whose findings are those of its `Part`s, each a rule written as above but
+with no id: `class Ceiling(Bundle, id="ALL-CEIL0001")` holds one `Part` field per measure, so a
+project configures a part as `[tool.mcmr.rules."ALL-CEIL0001".module_line_count]`.
 """
 
-from .relations import Evidenced, Family, Function, Relation, define, install, needed
-from .rules import Applicability, Example, Repair, Rule, RuleProvenance
+from .relations import Evidenced, Family, Function, Relation, define, needed
+from .rules import Applicability, Bundle, Example, Part, Repair, Rule, RuleProvenance
 
 __all__ = [
     "Applicability",
+    "Bundle",
     "Evidenced",
     "Example",
     "Family",
     "Function",
+    "Part",
     "Relation",
     "Repair",
     "Rule",
     "RuleProvenance",
     "define",
-    "install",
     "needed",
 ]

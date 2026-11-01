@@ -311,17 +311,19 @@ let status = sqlite3_exec(db, "SELECT 1", nil, nil, nil)
 def test_a_selected_persistence_review_refuses_a_missing_native_parser(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def missing(runner: Runner) -> Path:
-        raise MissionError("Swift analysis requires the selected Xcode Swift toolchain")
+    class Missing:
+        @classmethod
+        def native_helper(cls, runner: Runner) -> Path:
+            raise MissionError("Swift analysis requires the selected Xcode Swift toolchain")
 
-    monkeypatch.setattr(SwiftSource, "_helper", staticmethod(missing))
+    monkeypatch.setattr(SwiftSource, "native_helper", Missing.native_helper)
     with pytest.raises(MissionError, match="Swift analysis requires"):
         _find(tmp_path, {"Store.swift": "import SwiftData\nlet context = ModelContext(container)"})
 
 
-def test_persistence_query_contracts_are_portable_over_normalized_syntax_facts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def normalized_facts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`SwiftSource.run` answers with the facts of one `Store.swift`, so no parser executes."""
     place = ("swift:Store.swift", "Store.swift", "swift", 4, 10)
     relations: dict[str, Table] = {name: (columns, []) for name, columns in TABLES.items()}
     relations["facts"][1].append((*place, 0, ""))
@@ -343,6 +345,12 @@ def test_persistence_query_contracts_are_portable_over_normalized_syntax_facts(
         ]
     )
     monkeypatch.setattr(SwiftSource, "run", lambda self, root: relations)
+
+
+@pytest.mark.usefixtures("normalized_facts")
+def test_persistence_query_contracts_are_portable_over_normalized_syntax_facts(
+    tmp_path: Path,
+) -> None:
     found = _find(tmp_path, {"Store.swift": "// portable normalized-fact rule query test"})
     assert len(found[OpaqueModelAttribute.id]) == 1
     assert len(found[PersistenceConstruction.id]) == 2

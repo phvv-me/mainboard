@@ -8,8 +8,8 @@ from ....core import MissionError
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ....manifest.schema.compute.toolchain import Toolchain
     from ....manifest.schema.spec import Spec
+    from ....manifest.schema.toolchain import Toolchain
     from ..backend import Pixi
     from ..generated import Writer
 

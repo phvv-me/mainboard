@@ -6,20 +6,11 @@
 # different cells. A cell may also owe several samples (a program whose subject is variance), read
 # across runs, so a re-run of a partial cell adds fragments rather than replaying it.
 
-from enum import StrEnum, auto
 
 from patos import FrozenModel
 
-from ..store.constants import PROBED
-
-
-class Probed(StrEnum):
-    """Why one axis of a cell reads what it reads, recorded beside the value itself."""
-
-    FOUND = auto()
-    ABSENT = auto()
-    FAILED = auto()
-    UNASKED = auto()
+from ..constants import PROBED
+from ..enums import Probed
 
 
 class Cell(FrozenModel):

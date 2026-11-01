@@ -1,6 +1,8 @@
 from patos import FrozenModel
 from pydantic import ConfigDict
 
+type Json = str | int | float | bool | None | list["Json"] | dict[str, "Json"]
+
 
 def kebab(name: str) -> str:
     """The TOML spelling of a field name, underscores becoming hyphens."""

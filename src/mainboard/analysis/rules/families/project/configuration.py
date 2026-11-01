@@ -25,7 +25,7 @@ from patos import FrozenModel
 from .....core.project import Project
 from ....catalog import Family, Function
 from ....engine.facts import Facts, project_files
-from ....project.config import ProjectConfig
+from ....project.config import ProjectConfig, RuleConfig
 
 _MANIFEST_REQUIREMENTS_EXISTS_SQL = (
     "SELECT 1 FROM duckdb_tables() WHERE table_name = 'manifest_requirements'"
@@ -57,7 +57,7 @@ class ProjectManifest(FrozenModel):
                 "path VARCHAR, line INTEGER, rule VARCHAR, pattern VARCHAR",
             ),
         ):
-            facts.db.execute(f"CREATE TABLE {name} ({columns})")
+            facts.connection.execute(f"CREATE TABLE {name} ({columns})")
 
     @staticmethod
     def _declaration(target: Sequence[TomlValue], inherited: str | None) -> str | None:
@@ -69,6 +69,19 @@ class ProjectManifest(FrozenModel):
                 return declaration
             case _:
                 return None
+
+    @staticmethod
+    def _excludes(rule: str, config: RuleConfig) -> Iterator[tuple[str, str]]:
+        """Each exclude of `rule`'s table and of its part tables, as (label, pattern).
+
+        A part's label is `rule.part`, as its table header reads.
+        """
+        yield from ((rule, pattern) for pattern in config.exclude)
+        for part, table in config.settings.items():
+            if isinstance(table, Mapping) and isinstance(patterns := table.get("exclude"), list):
+                yield from (
+                    (f"{rule}.{part}", pattern) for pattern in patterns if isinstance(pattern, str)
+                )
 
     @staticmethod
     def _file_targets(tools: Mapping) -> list[tuple[str, str]]:
@@ -85,11 +98,14 @@ class ProjectManifest(FrozenModel):
     ) -> tuple[str, int]:
         """Where `rule`'s exclude of `pattern` is written, as a manifest and a line.
 
-        That is the line quoting it inside the rule's own table, else the first line of any
-        manifest quoting it, else the first line of `pyproject.toml`.
+        That is the line quoting it inside the rule's own table (a part's, for `rule.part`), else
+        the first line of any manifest quoting it, else the first line of `pyproject.toml`.
         """
         quoted = f'"{pattern}"'
-        header = re.compile(rf'\[tool\.mcmr\.rules\.(?:"{re.escape(rule)}"|{re.escape(rule)})\]')
+        identity, _, part = rule.partition(".")
+        named = rf'(?:"{re.escape(identity)}"|{re.escape(identity)})'
+        suffix = rf"\.{re.escape(part)}" if part else ""
+        header = re.compile(rf"\[tool\.mcmr\.rules\.{named}{suffix}\]")
         owned = (
             (name, number)
             for name, lines in manifests
@@ -159,13 +175,13 @@ class ProjectManifest(FrozenModel):
         tools = manifest.get("tool")
         tools = tools if isinstance(tools, dict) else {}
         inherited = None if "project" in manifest else requires
-        facts.db.execute(_MANIFEST_REQUIREMENTS_INSERT_SQL, [requires])
+        facts.connection.execute(_MANIFEST_REQUIREMENTS_INSERT_SQL, [requires])
         for table, rows in (
             ("manifest_tools", self._tools(tools, inherited)),
             ("manifest_file_targets", self._file_targets(tools)),
         ):
             if rows:
-                facts.db.executemany(f"INSERT INTO {table} VALUES (?, ?)", rows)
+                facts.connection.executemany(f"INSERT INTO {table} VALUES (?, ?)", rows)
 
     def _project(self, manifest: Mapping) -> dict | None:
         """The `project` table in force: the manifest's own, else the nearest ancestor's."""
@@ -191,9 +207,9 @@ class ProjectManifest(FrozenModel):
             if path.is_file() and path.is_relative_to(self.root)
         ]
         return [
-            (*ProjectManifest._place(manifests, rule=rule, pattern=pattern), rule, pattern)
+            (*ProjectManifest._place(manifests, rule=label, pattern=pattern), label, pattern)
             for rule, config in sorted(ProjectConfig.of(self.root).rules.items())
-            for pattern in config.exclude
+            for label, pattern in ProjectManifest._excludes(rule, config)
             if next(iter(GitIgnoreSpec.from_lines([pattern]).match_files(files)), None) is None
         ]
 
@@ -205,11 +221,11 @@ class ProjectManifest(FrozenModel):
         declaration) and `manifest_rule_excludes` (path, line, rule, pattern: the rule excludes
         matching no file).
         """
-        if facts.db.execute(_MANIFEST_REQUIREMENTS_EXISTS_SQL).fetchone():
+        if facts.connection.execute(_MANIFEST_REQUIREMENTS_EXISTS_SQL).fetchone():
             return
         self._create_tables(facts)
         if unmatched := self._unmatched():
-            facts.db.executemany(_MANIFEST_RULE_EXCLUDES_INSERT_SQL, unmatched)
+            facts.connection.executemany(_MANIFEST_RULE_EXCLUDES_INSERT_SQL, unmatched)
         try:
             manifest = self._read(self.root / "pyproject.toml")
         except FileNotFoundError:

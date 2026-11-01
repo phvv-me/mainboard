@@ -11,8 +11,9 @@ if TYPE_CHECKING:
 
 # The values a compact record leaves out: they say nothing an absent field does not.
 
-from ..base import Verbs
-from ..options import Output
+from ...render import Output
+from ..constants import TREE
+from ..session import Verbs
 
 # The verbs' default output and batch declaration.
 _COMPACT = Output()
@@ -97,3 +98,12 @@ class ProcVerbs(Verbs):
             timeout: seconds to wait at most, 0 for as long as it takes.
         """
         return 0 if Processes().wait(file=file, port=port, pid=pid, seconds=timeout) else 1
+
+
+_PROCS = ProcVerbs()
+proc = TREE.node("proc").app(
+    kill=_PROCS.proc_kill,
+    list=_PROCS.proc_list,
+    timeout=_PROCS.proc_timeout,
+    wait=_PROCS.proc_wait,
+)

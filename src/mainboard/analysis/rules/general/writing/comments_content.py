@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from ....catalog import Example, Relation, Rule
+from ....catalog import Example, Part, Relation, Rule
 
 _SIZE = {"tokens": "token_count", "characters": "character_count", "lines": "line_count"}
 
@@ -18,7 +18,7 @@ class CommentsGroups(Relation):
 """
 
 
-class CommentLength(Rule, id="ALL-COMM0001"):
+class CommentLength(Part):
     """The longest implementation comment of a file, when it takes too much of the maximum."""
 
     maximum: float = 20
@@ -78,6 +78,18 @@ class CommentedOutCode(Rule, id="ALL-COMM0002"):
 """
             ),
             good="int scale(int value) {\n    // tripled, so the margin survives\n    return value * 3;\n}\n",
+        ),
+        Example(
+            path="scale.cpp",
+            bad=(
+                """int scale(int value) {
+    // int doubled = value * 2;
+    // return doubled + offset(value);
+    return value * 3;  // the margin survives; see notes
+}
+"""
+            ),
+            good="int scale(int value) {\n    return value * 3;  // the margin survives; see notes\n}\n",
         ),
         Example(
             path="src/lib.rs",

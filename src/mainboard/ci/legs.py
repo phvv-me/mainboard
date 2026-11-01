@@ -14,7 +14,6 @@ import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
-from enum import StrEnum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,8 +27,8 @@ from ..dispatch.transport.shells import Dialect
 from ..dispatch.transport.targets import rooted
 from ..engines.compile.backend import PixiEngine
 from ..lint.process import Invocation
-from ..proc import Exit
 from .definition import Family, family_of
+from .enums import Verdict
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -53,28 +52,6 @@ _INHERITED_VENV = "VIRTUAL_ENV"
 # told the step's interpreter outright (`_PYO3_PYTHON`), which it reads before this.
 _CONDA_PREFIX = "CONDA_PREFIX"
 _PYO3_PYTHON = "PYO3_PYTHON"
-
-
-class Verdict(StrEnum):
-    """How one step ended on one leg.
-
-    `ok` passed, `failed` exited nonzero, `timed out` outlived its deadline, `missing` found no
-    such program, `unreachable` never reached the host, and `not run` followed a failure.
-    """
-
-    OK = auto()
-    FAILED = auto()
-    TIMED_OUT = "timed out"
-    MISSING = auto()
-    UNREACHABLE = auto()
-    NOT_RUN = "not run"
-
-    @classmethod
-    def of(cls, code: int) -> Verdict:
-        """The verdict an exit code states, with the shell's words for a deadline and a miss."""
-        return {0: cls.OK, Exit.TIMED_OUT: cls.TIMED_OUT, Exit.MISSING: cls.MISSING}.get(
-            code, cls.FAILED
-        )
 
 
 class Result(FrozenModel):

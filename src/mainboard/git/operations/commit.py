@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ...core.errors import MissionError
 from ...core.project import Project
+from ..enums import Outcome
 from ..process import said
-from ..report import Outcome, Step
+from ..report import Step
 from .intake import Intake
 
 if TYPE_CHECKING:
@@ -98,17 +99,17 @@ class Commit:
     @staticmethod
     def _is_tracked(repo: Repo, path: str) -> bool:
         """Whether the index or HEAD names `path`; a `git rm` deletion is in HEAD alone."""
-        tree = ("--with-tree=HEAD",) if repo.exists("HEAD") else ()
+        tree = ("--with-tree=HEAD",) if repo.commits.exists("HEAD") else ()
         return bool(repo.git.out("ls-files", "-z", *tree, "--", path))
 
     @staticmethod
     def _merged(repo: Repo) -> str:
         """Merge the upstream a freshly committed repository is behind, saying how that went."""
-        upstream = repo.upstream()
-        _, behind = repo.counts(upstream)
+        upstream = repo.tracking.upstream()
+        _, behind = repo.commits.counts(upstream)
         if not behind:
             return ""
-        if stopped := repo.merge(upstream):
+        if stopped := repo.tracking.merge(upstream):
             return f"merging {upstream} stopped on {stopped}; resolve with `git merge {upstream}`"
         return f"merged {behind} from {upstream}"
 
@@ -191,14 +192,14 @@ class Commit:
             return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
         message = self._message(repo)
         committed = repo.git.run("commit", "-q", "-m", message, *only, stdin="\0".join(specs))
-        if not committed.succeeded:
+        if committed.returncode:
             return Step(repo=repo.name, outcome=Outcome.FAILED, detail=said(committed))
-        done = [f"{repo.short('HEAD')} on {repo.branch()}", *notes]
+        done = [f"{repo.commits.short('HEAD')} on {repo.tracking.branch()}", *notes]
         return Step(repo=repo.name, outcome=Outcome.DONE, detail="; ".join(filter(None, done)))
 
     def _given(self, repo: Repo, paths: Sequence[str]) -> Step:
         """Commit `paths` alone, refusing them all when any must stay out."""
-        changes = repo.changes(within=paths)
+        changes = repo.worktree.changes(within=paths)
         if refused := Intake(repo, self.tree.policy, named=paths).withheld(changes):
             detail = _named("refused", refused) + ", which a commit may not take"
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
@@ -226,10 +227,10 @@ class Commit:
 
     def _swept(self, repo: Repo) -> Step:
         """Commit every change in `repo` but what has to stay out, then merge its upstream."""
-        relinked = [path for path in repo.unlinked() if repo.faithful(path)]
+        relinked = [path for path in repo.worktree.unlinked() if repo.worktree.faithful(path)]
         _stage(repo, relinked, "checkout")
         notes = [_named("relinked", set(relinked))]
-        if not (changes := repo.changes(self.tree.policy.outside)):
+        if not (changes := repo.worktree.changes(self.tree.policy.outside)):
             return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=notes[0] or "clean")
         if held := _unready(repo):
             return held
@@ -281,10 +282,12 @@ class Commit:
 
 def _unready(repo: Repo) -> Step | None:
     """The hold for a repository that cannot commit yet: no author, or a HEAD off every branch."""
-    if not repo.identified():
+    if not repo.worktree.identified():
         return Step(repo=repo.name, outcome=Outcome.HELD, detail=Commit.NO_IDENTITY)
-    if not repo.branch() and not repo.attach():
-        detail = f"detached at {repo.short('HEAD')}, off the line of {repo.trunk()}"
+    if not repo.tracking.branch() and not repo.tracking.attach():
+        detail = (
+            f"detached at {repo.commits.short('HEAD')}, off the line of {repo.tracking.trunk()}"
+        )
         return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
     return None
 

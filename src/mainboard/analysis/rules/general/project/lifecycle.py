@@ -1,6 +1,6 @@
 """Rules over repeatable project work and temporary controls (mcmr's ALL-LIFE family)."""
 
-from ....catalog import Rule
+from ....catalog import Example, Rule
 
 _SPACE = " \t\n\r\x0b\x0c"
 
@@ -19,4 +19,19 @@ class ProjectAutomation(Rule, id="ALL-LIFE0001"):
           GROUP BY fact_id) c USING (fact_id)
         WHERE coalesce(c.canonical, 0) < len(list_distinct($required_tasks::VARCHAR[]))
     """
-    message = "`{fact_id}` satisfies project automation"
+    message = "`{fact_id}` lacks one repository-owned, unattended command for each required action"
+    examples = (
+        Example(
+            bad='[tasks]\ntest = "pytest"\n',
+            good=(
+                """[tasks]
+setup = "mb install"
+lint = "mb lint"
+typecheck = "ty check"
+test = "pytest"
+build = "mb build"
+"""
+            ),
+            path="mb.toml",
+        ),
+    )

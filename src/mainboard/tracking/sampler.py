@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 
 import psutil
 
-from ..batch.receipts import Topic, publish
+from ..batch.receipts import publish
+from ..enums import Topic
 from ..probe.machine import Machine
 from ..runtime.job import ToolCall
 

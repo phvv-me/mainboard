@@ -1,19 +1,13 @@
 """What the engine reports and hands to fixes: findings placed by a span, and each whole row."""
 
-import json
-import os
 import re
-from collections import Counter
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 from pydantic import ConfigDict
 
-from ..core.project import Project
-
 if TYPE_CHECKING:
     from collections.abc import Collection
-    from pathlib import Path
 
 _PLACE = ("path", "start_line", "start_column")
 _ENDS = ("end_line", "end_column")
@@ -74,6 +68,11 @@ class Hit(FrozenModel):
 # What varies between two findings of one message: a backticked name, or a number standing alone.
 _SLOT = re.compile(r"(https?://[^\s`]+)|`([^`]*)`|(?<![\w.])(\d+(?:\.\d+)?)(?![\w.])")
 _HOLE = "_"
+# A list of holes, which a finding's template keeps as one, so a list grown by a name is the same.
+_LISTED = re.compile(r"_(?:(?:, |, and | and |\|)_)+")
+
+# One finding as a report holds it: path, line (0 for none), column, message.
+type Row = tuple[str, int, int, str]
 
 
 class Report(FrozenModel):
@@ -84,7 +83,7 @@ class Report(FrozenModel):
     message is lost, and the prose a rule repeats a thousand times is read once.
     """
 
-    found: dict[str, list[tuple[str, int, int, str]]]
+    found: dict[str, list[Row]]
 
     @property
     def counts(self) -> str:
@@ -99,7 +98,7 @@ class Report(FrozenModel):
         sites: dict[tuple[str, str], dict[str, list[tuple[int, list[str]]]]] = {}
         for rule, rows in sorted(self.found.items()):
             for path, line, _, message in rows:
-                template, values = Report._split(message)
+                template, values = _split(message)
                 sites.setdefault((rule, template), {}).setdefault(path, []).append((line, values))
         lines: list[str] = []
         for (rule, template), files in sites.items():
@@ -116,72 +115,26 @@ class Report(FrozenModel):
     def total(self) -> int:
         return sum(len(rows) for rows in self.found.values())
 
-    @staticmethod
-    def _split(message: str) -> tuple[str, list[str]]:
-        """`message` as its template and the values filling the template's holes."""
-        values = [named or number for url, named, number in _SLOT.findall(message) if not url]
-        return _SLOT.sub(lambda match: match[1] or _HOLE, message), values
-
-
-class Seen:
-    """The findings each file held when it was last checked, kept beside the project's state.
-
-    A finding counts by its rule and message, so one whose message changed (a statement count, a
-    name) counts as a new one. Every check records what it saw, whether or not it reports only
-    what is new. A session (`MB_REFACTOR_SESSION`, an agent's Stop hook) keeps a record of its own,
-    started from the project's, so sessions editing one tree at once never take each other's
-    findings as seen.
-    """
-
-    @staticmethod
-    def _loaded(path: Path) -> dict[str, dict[str, int]]:
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError, json.JSONDecodeError:
-            return {}
-
-    def __init__(self, root: Path) -> None:
-        folder = Project().out(root) / "refactor"
-        session = Project().variable("REFACTOR_SESSION").read()
-        self.path = folder / "sessions" / f"{session}.json" if session else folder / "seen.json"
-        self.held = Seen._loaded(self.path) or Seen._loaded(folder / "seen.json")
-
-    def fresh(self, report: Report, files: Collection[str]) -> Report:
-        """The findings of `files` beyond what each held when last recorded, recording them now.
-
-        The first check of a project records without reporting; after it, a file it never recorded
-        is a new one, all of whose findings are new. Only the rules `report` ran are recorded, so a
-        check of a few rules leaves what the others last saw.
-        """
-        now: dict[str, Counter[str]] = {path: Counter() for path in files}
-        for rule, rows in report.found.items():
-            for path, _, _, message in rows:
-                now.setdefault(path, Counter())[f"{rule}\t{message}"] += 1
-        grown = {
-            path: {key for key, count in counts.items() if count > held.get(key, 0)}
-            for path, counts in now.items()
-            for held in [self.held.get(path, {})]
-            if self.held
-        }
-        ran = set(report.found)
-        self.held.update(
-            {
-                path: {
-                    key: count
-                    for key, count in self.held.get(path, {}).items()
-                    if key.partition("\t")[0] not in ran
-                }
-                | dict(counts)
-                for path, counts in now.items()
-            }
-        )
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        staged = self.path.with_suffix(f".{os.getpid()}.tmp")
-        staged.write_text(json.dumps(self.held, sort_keys=True))
-        os.replace(staged, self.path)
+    def within(self, files: Collection[str]) -> Report:
+        """The findings in `files`."""
         return Report(
             found={
-                rule: [row for row in rows if f"{rule}\t{row[3]}" in grown.get(row[0], set())]
-                for rule, rows in report.found.items()
+                rule: [row for row in rows if row[0] in files] for rule, rows in self.found.items()
             }
         )
+
+
+def quoted(message: str) -> list[str]:
+    """The names `message` quotes in backticks, in order."""
+    return [named for _, named, _ in _SLOT.findall(message) if named]
+
+
+def shape(message: str) -> str:
+    """`message`'s template with each list of holes as one hole; the report keeps every hole."""
+    return _LISTED.sub(_HOLE, _split(message)[0])
+
+
+def _split(message: str) -> tuple[str, list[str]]:
+    """`message` as its template and the values filling the template's holes."""
+    values = [named or number for url, named, number in _SLOT.findall(message) if not url]
+    return _SLOT.sub(lambda match: match[1] or _HOLE, message), values

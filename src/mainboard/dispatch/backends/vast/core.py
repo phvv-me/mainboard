@@ -15,8 +15,9 @@ from urllib.error import HTTPError
 
 from ....core.errors import MissionError
 from ....costs.imports import from_vast
+from ....enums import Bound
 from ....log import logger
-from ...hosts.lease import Lease
+from ...hosts.lease import Cap, Lease
 from ...hosts.rentals import Identity, Rental, identity, reachable, seeded, waiting
 from ...jobs.arch import arch
 from ...jobs.evidence import framing, staging
@@ -90,6 +91,8 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     rental wrote to is destroyed with it, hence `Delivery` in `lacks`.
     """
 
+    # Vast rents on spendable credit bought in advance (`credit` in `standing`).
+    bound = Bound.PREPAID
     name = "vast"
 
     lacks = {
@@ -273,7 +276,9 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             }
         )
         setup = 0 if plan.containerized else Rental.LANDING_SECONDS
-        allocation.begin(lease=Lease.priced(accepted, resources, setup_s=setup))
+        # A prepaid bound reads no card limit, so this is the very cap `admit` checked.
+        lease = Lease.priced(accepted, resources, cap=self.cap(card_usd=0.0), setup_s=setup)
+        allocation.begin(lease=lease)
         try:
             payload = self.api.created(offer, body)
         except HTTPError as refused:
@@ -321,13 +326,15 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     def logs(self, handle: str) -> str:
         return self.api.logs(handle)
 
-    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
+    def rent(
+        self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation, cap: Cap
+    ) -> Rental:
         """Rent a machine whose entrypoint seeds the key and waits for a landing.
 
         The landing minutes are billed, so they sit inside the ceiling the search filters on. A
         rental that cannot be opened is ended before the error leaves.
         """
-        self.admit(plan, resources)
+        self.admit(plan, resources, cap=cap)
         self.market.spot = self.market.spot or resources.spot
         key = identity(plan.profile.vars.get("ssh-key", ""))
         script = f"{seeded(key.public)}\n{waiting()}\necho {_EXIT_SENTINEL}$status\nexit $status\n"
@@ -411,10 +418,16 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         )
 
     def submit(
-        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+        self,
+        plan: ExecutionPlan,
+        command: str,
+        resources: Resources,
+        *,
+        allocation: Allocation,
+        cap: Cap,
     ) -> str:
         """Run `command` as the container's entrypoint, for a plan that brings its own image."""
-        self.admit(plan, resources)
+        self.admit(plan, resources, cap=cap)
         self.market.spot = self.market.spot or resources.spot
         offer = self.market.pick(self.__ask(plan, resources, landing=0))
         # Receipts are staged before the command and framed after it, because the log is all that

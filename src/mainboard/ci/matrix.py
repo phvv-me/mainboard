@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from ..core.errors import MissionError
+from ..dispatch.ignores import patterns
 from ..dispatch.mirroring.mirror import Mirror
-from ..dispatch.mirroring.sync import patterns
 from .legs import Leg, LocalLeg, RemoteLeg
 
 if TYPE_CHECKING:

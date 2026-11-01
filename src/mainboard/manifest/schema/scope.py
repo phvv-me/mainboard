@@ -3,8 +3,8 @@ from typing import Self
 from patos import FlexModel
 from pydantic import ConfigDict
 
-from .compute.toolchain import Toolchain
 from .spec import Spec
+from .toolchain import Toolchain
 
 
 class Scope(FlexModel):
@@ -36,13 +36,6 @@ class Scope(FlexModel):
             if key not in merged_chains
         }
         return type(self).model_validate({"deps": deps, **landed, **plain})
-
-    def path_deps(self) -> dict[str, Spec]:
-        """Every local path requirement across conda and all ecosystems."""
-        found = {name: spec for name, spec in self.deps.items() if spec.is_path}
-        for chain in self.toolchains().values():
-            found |= {name: spec for name, spec in chain.all_deps().items() if spec.is_path}
-        return found
 
     def requirement(self, name: str) -> Spec | None:
         """The requirement for `name` in conda, else in the first ecosystem declaring it."""

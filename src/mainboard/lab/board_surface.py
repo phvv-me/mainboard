@@ -10,7 +10,8 @@ from pydantic import JsonValue
 
 from ..core.project import Project
 from .constants import RECEIPT
-from .declarations.gates import GateStatus, GateVerdict
+from .declarations.gates import GateVerdict
+from .enums import GateStatus
 from .experiment import Experiment
 from .run import Run
 
@@ -132,6 +133,7 @@ def experiment(
                 if default is not inspect.Parameter.empty:
                     namespace[name] = default
 
+        # cast: `types.new_class` makes the class at run time, a construct no checker can follow.
         return cast(
             "type[Experiment]", types.new_class(fn.__name__, (Experiment,), exec_body=body)
         )

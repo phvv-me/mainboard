@@ -4,9 +4,8 @@ import ast
 from collections.abc import Iterable, Sequence
 from itertools import chain, takewhile
 
-from .... import edits
 from ....catalog import Example, Relation, Rule
-from ....edits import Edit
+from ....edits import Edit, Replace
 from ....findings import Hit, Span
 
 
@@ -131,7 +130,7 @@ __all__ = [
         Example(
             bad='from .errors import Refused\n\n__all__ = ["Refused"]\n',
             good=(
-                """from .errors import Refused, MissionError
+                """from .errors import MissionError, Refused
 
 __all__ = [
     "MissionError",
@@ -188,7 +187,7 @@ from .errors import MissionError as MissionError
             comments = len(list(takewhile(lambda text: text.startswith("#"), lines)))
             trailing = "\n" if comments < len(lines) else ""
             line, fresh = comments + 1, ("\n" + fresh + trailing if comments else fresh)
-        return edits.replace(Span(path=path, start_line=line, end_line=line), fresh)
+        return Replace(span=Span(path=path, start_line=line, end_line=line), text=fresh)
 
     @staticmethod
     def _exported(hit: Hit) -> dict[str, list[str]]:
@@ -206,9 +205,9 @@ from .errors import MissionError as MissionError
             for alias in node.names
         ]
         spelled = [*kept, *UnexportedPackageSurface._spelled(names, listed=listed)]
-        return edits.replace(
-            UnexportedPackageSurface._span(path, node),
-            f"from .{node.module} import {', '.join(spelled)}",
+        return Replace(
+            span=UnexportedPackageSurface._span(path, node),
+            text=f"from .{node.module} import {', '.join(spelled)}",
         )
 
     @staticmethod
@@ -231,7 +230,7 @@ from .errors import MissionError as MissionError
             if isinstance(item, ast.Constant) and isinstance(item.value, str)
         }
         body = "".join(f'    "{name}",\n' for name in sorted(listed | set(names)))
-        return edits.replace(UnexportedPackageSurface._span(path, listing), f"[\n{body}]")
+        return Replace(span=UnexportedPackageSurface._span(path, listing), text=f"[\n{body}]")
 
     @staticmethod
     def _span(path: str, node: ast.stmt | ast.expr) -> Span:

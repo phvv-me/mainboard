@@ -3,6 +3,8 @@ a follower that never rereads a line nor reads half of one."""
 
 from pathlib import Path
 
+import pytest
+
 from mainboard.dispatch import now
 from mainboard.dispatch.state import (
     Cache,
@@ -17,7 +19,14 @@ from mainboard.settling.events import Events, Kind
 from mainboard.state import Lake
 
 
-def _cache(workspace: Path) -> Cache:
+@pytest.fixture
+def events(workspace: Path) -> Events:
+    """The workspace's event stream, still empty."""
+    return Events(workspace)
+
+
+@pytest.fixture
+def dispatch_cache(workspace: Path) -> Cache:
     """The workspace's dispatch cache, knowing one run."""
     cache = Cache(Lake.at(workspace))
     cache.record(
@@ -35,17 +44,21 @@ def _cache(workspace: Path) -> Cache:
     return cache
 
 
-def test_a_sweep_appends_each_moved_job_and_a_follower_reads_it_once(workspace: Path) -> None:
-    events = Events(workspace)
-    cache = _cache(workspace)
-    report = MonitorReport(
+@pytest.fixture
+def monitor_report() -> MonitorReport:
+    """A sweep that resumed job 9, held h1, finished job 7 and failed job 8."""
+    return MonitorReport(
         resumed=[Resumed(handle="9", target="miyabi-g", name="wave-2")],
         held=[Held(handle="h1", target="miyabi-g", reason="queue full")],
         finished=[Finished(handle="7", target="gold", pulled_path="evidence/run7")],
         failed=[Failed(handle="8", target="purple", reason="exit 1")],
     )
 
-    recorded = events.record(cache, report)
+
+def test_a_sweep_appends_each_moved_job_and_a_follower_reads_it_once(
+    events: Events, dispatch_cache: Cache, monitor_report: MonitorReport
+) -> None:
+    recorded = events.record(dispatch_cache, monitor_report)
 
     assert [(event.kind, event.handle) for event in recorded] == [
         (Kind.DISPATCHED, "9"),
@@ -63,4 +76,4 @@ def test_a_sweep_appends_each_moved_job_and_a_follower_reads_it_once(workspace: 
     with events.path.open("a", encoding="utf-8") as stream:
         stream.write('{"at": "half a line')
     assert events.since(cursor) == ([], cursor)
-    assert events.record(cache, MonitorReport()) == []
+    assert events.record(dispatch_cache, MonitorReport()) == []

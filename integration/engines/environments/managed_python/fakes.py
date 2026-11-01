@@ -21,7 +21,7 @@ class Recorded(HostShell):
     def __init__(self, *absent: str, replies: Mapping[str, str] | None = None) -> None:
         super().__init__(local, PLAN, ROOT)
         self.absent = absent
-        self.replies = replies or {}
+        self.replies = dict(replies or {})
         self.commands: list[str] = []
         self.written: dict[str, str] = {}
 

@@ -13,7 +13,7 @@ from _pytest import assertion
 from _pytest.assertion.rewrite import AssertionRewritingHook
 from _pytest.config import Config
 
-from ...dispatch.constants import RECEIPTS_VAR
+from ...constants import RECEIPTS_VAR
 from ..constants import NESTED
 from . import beacon
 from .beacon import say

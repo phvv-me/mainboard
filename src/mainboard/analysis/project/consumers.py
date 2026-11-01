@@ -327,8 +327,8 @@ class Consumers:
                     budget=budget, cache=self._cache(), exclusive=True, report_gaps=False
                 )
                 ducks.register(facts, mirror)
-                pairs = facts.db.execute(_PAIRS).fetchall()
-                chains = facts.db.execute(_CHAINS).fetchall()
+                pairs = facts.connection.execute(_PAIRS).fetchall()
+                chains = facts.connection.execute(_CHAINS).fetchall()
         for module, name, consumer in (row for row in pairs if _owned(row[0], packages)):
             index.add_import(module, name=name, consumer=consumer)
         for chain, consumer in (row for row in chains if _owned(row[0], packages)):

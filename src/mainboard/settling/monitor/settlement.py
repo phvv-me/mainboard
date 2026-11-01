@@ -10,16 +10,19 @@ from typing import TYPE_CHECKING
 
 from plumbum.commands.processes import ProcessExecutionError
 
-from ...batch.receipts import SettlementReceipts, Topic
+from ...batch.receipts import SettlementReceipts
 from ...core.errors import MissionError
 from ...dispatch.jobs import vocabulary
 from ...dispatch.jobs.evidence import covered_in, receipts_in
 from ...dispatch.schedulers import HostUnreachable, is_quota_refusal
 from ...dispatch.state import Failed, Held, Resumed
 from ...dispatch.state.captured import Captured
+from ...enums import Topic
 from ...log import logger
+from ...state.telemetry import TelemetryLake
 from ...tracking import is_batched, streamed
 from ...trials.artifacts import Artifacts
+from ..frames import FrameRelay
 
 if TYPE_CHECKING:
     from pydantic import JsonValue
@@ -48,6 +51,7 @@ class Settlement:
     fetched: what this pass collected, by host, root and path: the runs of one experiment share
         its folder, and a pass collected it once per run (a dozen scans of 190,000 files on
         miyabi's Lustre, 2026-10-09).
+    frames: moves a settled run's start, beats and settle into the telemetry spool.
     """
 
     @staticmethod
@@ -84,6 +88,7 @@ class Settlement:
         self.board = board
         self.cache = board.dispatcher.cache
         self.captured = Captured(self.cache.session)
+        self.frames = FrameRelay(TelemetryLake(root=board.root))
         self.streams: dict[str, SettlementReceipts] = {}
         self.quiet: dict[str, str] = {}
         self.fetched: dict[tuple[str, str, str], str | None] = {}

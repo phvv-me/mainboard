@@ -22,7 +22,10 @@ class FutureAnnotationsImport(Rule, id="PY-TYPE0001", applicability="review"):
           AND (SELECT coalesce(min(python_target_project_minimum_minor), 14)
                FROM project_configuration_facts) >= 14
     """
-    message = "`{fact_id}` satisfies future annotations import"
+    message = (
+        "`{fact_id}` imports annotations from __future__ although the project's target Python "
+        "no longer needs it"
+    )
     # The statement's line goes, with the blank line after it when a blank line (or the top of
     # the file) already precedes it, so no double gap is left. An import that shares its line
     # with another statement or names other features stays for a human.
@@ -61,7 +64,11 @@ class NullableBooleanAnnotation(Rule, id="PY-TYPE0002"):
         WITH spelled AS (
           SELECT a.*, syntax_slice(s.content, a.start_line, a.start_column, a.end_line,
                                    a.end_column) AS node_text
-          FROM core_annotation a JOIN source_files s USING (path)
+          FROM (SELECT * FROM core_annotation u
+                WHERE EXISTS (SELECT 1 FROM core_node x
+                              WHERE x.file_id = u.file_id AND x.parent_id = u.body
+                                AND x.type IN ('binary_operator', 'union_type'))) a
+          JOIN source_files s USING (path)
         )
         SELECT path, start_line, start_column, node_text
         FROM spelled a
@@ -73,6 +80,12 @@ class NullableBooleanAnnotation(Rule, id="PY-TYPE0002"):
                                  AND regexp_extract(d.name, '[^.]*$') IN ('command', 'callback')))
     """
     message = "nullable Boolean annotation `{node_text}`"
+    examples = (
+        Example(
+            bad="def toggle(flag: bool | None = None) -> None:\n    return None\n",
+            good="def toggle(flag: bool = False) -> None:\n    return None\n",
+        ),
+    )
 
 
 class TypeCheckingPythonTargetEdits(Relation):

@@ -5,23 +5,19 @@ import json
 from collections import Counter
 from contextlib import contextmanager
 from copy import copy
-from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import duckdb
-from structlog.contextvars import bind_contextvars, reset_contextvars
 
-from ...log import EventDict, logger, sinks
-from ...log.constants import SINK
-from ...observe.frames import Frame, Kind
-from ...observe.spool import Spool
+from ...constants import SINK
+from ...enums import Kind
 from ...profile.profiler import Collection, Profiler
 from ...state.relations import ArrowStream, Relations, parquet_bytes
 from ..artifacts import Artifact, pinned
-from ..contract.vocabulary import Outcome
 from ..session import params_of
+from .stream import TrialStream
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Mapping, Sequence
@@ -33,9 +29,7 @@ if TYPE_CHECKING:
 
 _LEVELS = frozenset(("debug", "info", "warning", "error", "critical", "exception"))
 _IDENTITY = frozenset(("project", "node", "trial", "run", "params", SINK))
-# What every event carries that is the logger's envelope rather than the caller's metadata.
-_ENVELOPE = frozenset(("event", "level", "timestamp", "exc_info", "stack_info"))
-# The media types an attached image or video is recorded under, by its file's suffix.
+# The media types an attached image is recorded under, by its file's suffix.
 _IMAGES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -44,11 +38,13 @@ _IMAGES = {
     ".webp": "image/webp",
     ".svg": "image/svg+xml",
 }
-_VIDEOS = {".mp4": "video/mp4", ".webm": "video/webm"}
 
 
 class Log:
-    """A trial-scoped logger; identity and artifact paths come from pytest, never retyped."""
+    """A trial-scoped logger; identity and artifact paths come from pytest, never retyped.
+
+    Every `bind` copy shares the one `stream`, which the pytest fixture closes with the trial.
+    """
 
     @contextmanager
     def _profile_evidence(
@@ -87,10 +83,10 @@ class Log:
         self.counts: Counter[str] = Counter()
         self.metadata: dict[str, JsonValue] = {}
         node, key, manifest = self._locate()
-        self.identity = f"{trial.session.run}/{key}"
-        self._open(node, key)
+        self.artifacts = trial.session.store(node)
         self.context = self._context(node, manifest)
-        self._start()
+        self.stream = TrialStream(trial, self.context, node=node, key=key)
+        self.logger = self.stream.logger
 
     def _context(self, node: str, manifest: Artifact | None) -> dict[str, JsonValue]:
         """The provenance every event of this trial carries, read from its session and item."""
@@ -111,30 +107,7 @@ class Log:
     def _event(
         self, topic: str, payload: Mapping[str, JsonValue], *, kind: Kind = Kind.line
     ) -> None:
-        self.spool.append(
-            Frame(
-                job=self.identity,
-                kind=kind,
-                at=datetime.now(UTC),
-                payload={
-                    "topic": topic,
-                    "trial": self.trial.item.nodeid,
-                    "metadata": self.metadata,
-                    "data": dict(payload),
-                },
-            )
-        )
-
-    def _finish(self, *, passed: bool) -> None:
-        """Record the end of the trial's stream, refusing a settled trial whose artifacts moved."""
-        self._event("ended", {"passed": passed, "verdict": self.trial.settled}, kind=Kind.ended)
-        if self.trial.settled and self.trial.artifacts != self.trial.recorded_artifacts:
-            reason = (
-                "Artifacts changed after the last receipt was settled; "
-                "settle only after output checks and cleanup evidence are attached"
-            )
-            self.trial.record("", reason=reason, measured={}, outcome=Outcome.FAILED)
-            raise RuntimeError(reason)
+        self.stream.event(topic, payload, metadata=self.metadata, kind=kind)
 
     def _locate(self) -> tuple[str, str, Artifact | None]:
         """The node and key that place this trial, with its run manifest recorded on it if any."""
@@ -147,28 +120,9 @@ class Log:
         key = hashlib.sha256(self.trial.item.nodeid.encode()).hexdigest()
         return node, key, manifest
 
-    def _message(self, event: EventDict) -> None:
-        self._event(
-            "message",
-            {
-                "text": str(event["event"]),
-                "level": event["level"],
-                "metadata": {key: value for key, value in event.items() if key not in _ENVELOPE},
-            },
-        )
-
     def _name(self, kind: str) -> str:
         self.counts[kind] += 1
         return f"{kind}-{self.counts[kind]}"
-
-    def _open(self, node: str, key: str) -> None:
-        """Open this trial's spool beside its node's store and name the spool on the trial."""
-        session = self.trial.session
-        universe = session.declared.universe
-        directory = universe.dataset(node).root.parent / "artifacts" / session.run / key
-        self.artifacts = session.store(node)
-        self.spool = Spool(directory, "events")
-        self.trial.artifacts["events"] = self.spool.dir.relative_to(self.artifacts.root).as_posix()
 
     def _record_profile(
         self, profiler: Profiler, name: str, policy: Collection, *, completed: bool
@@ -183,15 +137,6 @@ class Log:
             "profile",
             {"completed": completed, "collection": json.loads(policy.model_dump_json())},
         )
-
-    def _start(self) -> None:
-        """Route the logger's lines into this trial's spool and emit the started event."""
-        # Every line logged while the trial runs is kept with it, whichever library logged it;
-        # the trial's own methods name the sink explicitly, so they are kept from any thread.
-        sinks[self.identity] = self._message
-        self.bound = bind_contextvars(**{SINK: self.identity})
-        self.logger = logger.bind(**{SINK: self.identity})
-        self._event("started", self.context, kind=Kind.started)
 
     def artifact(
         self,
@@ -227,19 +172,6 @@ class Log:
         bound.metadata = {**self.metadata, **metadata}
         bound.logger = self.logger.bind(**metadata)
         return bound
-
-    def close(self, *, passed: bool) -> None:
-        """Flush the trial stream and remove only this logger's handler."""
-        try:
-            self._finish(passed=passed)
-        finally:
-            sinks.pop(self.identity, None)
-            reset_contextvars(**self.bound)
-            self.spool.close()
-
-    def gate(self, registration: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
-        """Read a gate through the same registration digest used by existing trials."""
-        return self.trial.gate(registration)
 
     def image(self, path: Path, *, name: str = "") -> Artifact:
         """Attach a rendered PNG, JPEG, AVIF, WebP or SVG without importing a plotting library."""
@@ -301,10 +233,4 @@ class Log:
             name=name or self._name("table"),
             media_type="application/vnd.apache.parquet",
             schema_name=schema_name,
-        )
-
-    def video(self, path: Path, *, name: str = "") -> Artifact:
-        """Attach an encoded MP4 or WebM, AV1 or otherwise, as the bytes the encoder wrote."""
-        return self.artifact(
-            path, name=name or self._name("video"), media_type=_VIDEOS[path.suffix.lower()]
         )

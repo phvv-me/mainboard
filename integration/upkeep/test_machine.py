@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from mainboard.upkeep.machine import _pixi_home
+from mainboard.upkeep.managers import _pixi_home
 
 _ARCH = f".pixi/{platform.machine()}"
 

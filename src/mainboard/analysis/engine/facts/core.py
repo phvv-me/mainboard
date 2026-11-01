@@ -10,6 +10,7 @@ Python facts with the same SQL. Shared helpers are table macros, which resolve v
 caller's language.
 """
 
+import copy
 import threading
 from collections.abc import Iterator, Mapping
 from functools import cached_property
@@ -47,10 +48,10 @@ _CATALOG_OBJECT_NAMES_SQL = (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Set
     from pathlib import Path
 
-    from ...catalog import Function
+    from ...catalog import Function, Relation
 
 
 # A key column naming its parent's column of another name.
@@ -161,7 +162,7 @@ class Facts:
     @cached_property
     def held(self) -> frozenset[str]:
         """The languages `ast_files` lists a file of."""
-        rows = self.db.execute("SELECT DISTINCT language FROM ast_files").fetchall()
+        rows = self.connection.execute("SELECT DISTINCT language FROM ast_files").fetchall()
         return frozenset(language for (language,) in rows)
 
     @cached_property
@@ -171,7 +172,7 @@ class Facts:
         Both `import a.b` and `from a.b import c` count. A name `from m import n as x` binds is
         counted too, so the set holds every module imported and possibly more.
         """
-        rows = self.db.execute(_ABSOLUTE_IMPORT_FROM_NAMES_SQL).fetchall()
+        rows = self.connection.execute(_ABSOLUTE_IMPORT_FROM_NAMES_SQL).fetchall()
         return frozenset(name for (name,) in rows)
 
     @cached_property
@@ -189,9 +190,8 @@ class Facts:
     def __init__(self, root: Path | None = None, budget: Budget | None = None) -> None:
         self.budget = budget or Budget()
         self.file = self.budget.folder / f"facts-{uuid4().hex[:12]}.duckdb"
-        self.db = self.budget.connect(self.file)
+        self.connection = self.budget.connect(self.file)
         self.root = root
-        self.families: dict[str, str] = {}
         self.identities: list[str] = []
         self.languages: set[str] = set()
         self.known: set[str] = set()
@@ -200,16 +200,15 @@ class Facts:
         self.lock = threading.RLock()
 
     def _identify(self, family: str, tables: dict[str, str]) -> None:
-        """Record the family and its identity relation, then narrow each relation per language.
+        """Record the family's identity relation, then narrow each relation per language.
 
         The identity is `facts`, else the first relation. Naming it lets a derived identity come
         after the relations it reads.
         """
         prefix = snake(family)
-        self.families[prefix] = family
         identity = tables.get("facts", tables[next(iter(tables))])
         self.identities.append(identity)
-        if self.db.execute(
+        if self.connection.execute(
             f"SELECT 1 FROM (DESCRIBE {identity}) WHERE column_name = 'language'"
         ).fetchone():
             self._narrow(prefix, identity=identity, tables=tables)
@@ -222,7 +221,7 @@ class Facts:
         `function_id` ...). A family holding one language and no unlabeled fact needs no narrowing
         at all.
         """
-        present = self.db.execute(
+        present = self.connection.execute(
             f"SELECT language, list_distinct(list(lower(regexp_extract(path, '\\.[^./]+$')))) "
             f"FROM {identity} GROUP BY language"
         ).fetchall()
@@ -235,14 +234,14 @@ class Facts:
         columns = {
             relation: frozenset(
                 c
-                for (c,) in self.db.execute(
+                for (c,) in self.connection.execute(
                     f"SELECT column_name FROM (DESCRIBE {table})"
                 ).fetchall()
             )
             for relation, table in tables.items()
         }
         for language in [language for language, _ in present if language is not None]:
-            self.db.execute(f"CREATE SCHEMA IF NOT EXISTS {language}")
+            self.connection.execute(f"CREATE SCHEMA IF NOT EXISTS {language}")
             narrowing = _Narrowing(
                 language=language,
                 prefix=prefix,
@@ -251,7 +250,7 @@ class Facts:
                 columns=columns,
             )
             for relation, table, clause in narrowing.views(tables):
-                self.db.execute(
+                self.connection.execute(
                     f"CREATE VIEW {language}.{prefix}_{snake(relation)} "
                     f"AS SELECT * FROM {table} {clause}"
                 )
@@ -263,18 +262,18 @@ class Facts:
         """
         if self.root is None:
             raise ValueError("these facts were registered without a root to read sources from")
-        columns = self.db.execute(_PATH_COLUMN_TABLES_SQL).fetchall()
+        columns = self.connection.execute(_PATH_COLUMN_TABLES_SQL).fetchall()
         named = " UNION ".join(
             f'SELECT "{column}" AS path FROM "{table}"' for table, column in columns
         )
         paths = sorted(
             path
-            for (path,) in self.db.execute(
+            for (path,) in self.connection.execute(
                 f"SELECT DISTINCT path FROM ({named}) WHERE path IS NOT NULL"
             ).fetchall()
             if (self.root / path).is_file()
         )
-        self.db.execute(
+        self.connection.execute(
             _SOURCE_FILES_TABLE_SQL,
             {"paths": paths, "files": [str(self.root / path) for path in paths]},
         )
@@ -282,7 +281,7 @@ class Facts:
     def _view(self, family: str, *, relation: str, table: str) -> None:
         """Name `table` `<family>_<relation>`."""
         view = f"{snake(family)}_{snake(relation)}"
-        self.db.execute(f"CREATE VIEW main.{view} AS SELECT * FROM {table}")
+        self.connection.execute(f"CREATE VIEW main.{view} AS SELECT * FROM {table}")
         self.known.add(view)
 
     def adopt(
@@ -306,7 +305,7 @@ class Facts:
                 self.ensure(Query(sql=select))
             tables[name] = f'"{family}/{name}"'
             body = f"SELECT * FROM ({select}) WHERE false" if empty else select
-            (cursor or self.db).execute(f"CREATE TABLE {tables[name]} AS {body}")
+            (cursor or self.connection).execute(f"CREATE TABLE {tables[name]} AS {body}")
             with self.lock:
                 self._view(family, relation=name, table=tables[name])
         with self.lock:
@@ -314,39 +313,34 @@ class Facts:
 
     def close(self) -> None:
         """Close the database and delete its file."""
-        self.db.close()
+        self.connection.close()
         for file in (self.file, self.file.with_suffix(".duckdb.wal")):
             file.unlink(missing_ok=True)
 
     def cursor(self, language: str | None) -> duckdb.DuckDBPyConnection:
         """A cursor reading `language`'s facts through the plain view names, all facts for None."""
-        cursor = self.db.cursor()
+        cursor = self.connection.cursor()
         if language is not None:
             cursor.execute(f"SET search_path = '{language},main'")
         return cursor
 
     def ensure(self, query: Query) -> None:
-        """Create, empty, every view `query` names that no fact filled in this project.
+        """Make sure the fact base holds every view `query` names.
 
         `source_files` is read when the query names it. Names are only ever added to the fact base,
-        so the catalog is listed again only when a query names one the last listing lacked.
+        so the catalog is listed again only when a query names one the last listing lacked. A view
+        no family derived in this project raises ValueError each time a query names it.
         """
         wanted = query.views()
         if wanted <= self.known:
             return
-        self.known = {name for (name,) in self.db.execute(_CATALOG_OBJECT_NAMES_SQL).fetchall()}
-        for view in wanted - self.known:
-            self.known.add(view)
-            if view == "source_files":
-                self._read_sources()
-                continue
-            prefixes = [p for p in self.families if view.startswith(f"{p}_")]
-            if not prefixes:
-                raise ValueError(f"`{view}` is no view of a registered fact family")
-            self.db.execute(
-                f"CREATE VIEW main.{view} AS SELECT * EXCLUDE (relation) "
-                f'FROM "{self.families[max(prefixes, key=len)]}/records" WHERE false'
-            )
+        rows = self.connection.execute(_CATALOG_OBJECT_NAMES_SQL).fetchall()
+        self.known = {name for (name,) in rows}
+        if "source_files" in wanted - self.known:
+            self._read_sources()
+            self.known.add("source_files")
+        if absent := wanted - self.known:
+            raise ValueError(f"`{min(absent)}` is no view of a registered fact family")
 
     def imports(self, modules: Iterable[str]) -> bool:
         """Whether the project imports one of `modules` or a submodule of one."""
@@ -355,3 +349,17 @@ class Facts:
             for module in modules
             for name in self.imported
         )
+
+    def install(self, relation: type[Relation], *, languages: Set[str | None]) -> None:
+        """Install `relation` on a cursor of its own, beside relations it does not wait for.
+
+        A connection refuses a second call while one runs. The copy that installs shares the
+        catalog bookkeeping and the lock with these facts, and the answers the relation's evidence
+        reads (`held`, `imported`), which are read here, on the connection, before the copy.
+        """
+        with self.lock:
+            relation.grounded(self)
+            view = copy.copy(self)
+            view.connection = self.connection.cursor()
+        with view.connection:
+            relation.install(view, languages=languages)

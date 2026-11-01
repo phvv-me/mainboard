@@ -14,7 +14,7 @@ from pathlib import Path
 from tempfile import mkstemp
 from typing import TYPE_CHECKING
 
-from .exceptions import Refusal
+from ..exceptions import Refusal
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping

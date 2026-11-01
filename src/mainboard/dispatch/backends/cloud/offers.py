@@ -11,9 +11,9 @@ import gpuhunt
 from gpuhunt._internal.catalog import OFFLINE_PROVIDERS
 
 from ....costs.catalog import Offer
+from ....enums import Pricing
 from ....log import logger
 from ...jobs.arch import capability, card
-from ...jobs.vocabulary import Pricing
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

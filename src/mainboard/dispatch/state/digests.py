@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from ...state import schema
 from ...state.lake import Lake
-from ..agent import Digests
+from ..agent.program import Digests
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -22,18 +22,17 @@ _FIELDS = ("size", "inode", "mtime_ns", "ctime_ns", "sha256")
 class KeptDigests(Digests):
     """One kind of digest memory (`mirror`, `collection`) of the workspace at `root`."""
 
-    def __init__(self, root: Path, kind: str) -> None:  # noqa: PLW0231 - no file to read
+    def __init__(self, root: Path, kind: str) -> None:
+        # The base reads a JSON file and starts empty where it finds none, as at a directory.
+        super().__init__(str(root))
         self.session = Lake.at(root).session()
         self.kind = kind
         kept = schema.digests
         current = schema.latest(kept, "path", where=(kept.c.kind == kind,)).subquery()
         rows = self.session.rows(select(current.c.path, *(current.c[name] for name in _FIELDS)))
         # A row an older release wrote without the inode or change time is simply rehashed.
-        self.held: dict[str, list[int | str]] = {
-            path: list(kept) for path, *kept in rows if None not in kept
-        }
+        self.held = {path: list(kept) for path, *kept in rows if None not in kept}
         self.kept = dict(self.held)
-        self.seen: set[str] = set()
 
     def save(self, *, prune: bool = False) -> None:
         """Append what changed since the last save.

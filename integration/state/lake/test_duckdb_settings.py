@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 
 from mainboard import MissionError, Project, load
 from mainboard.state import Lake, schema
-from mainboard.state.storage.database import connect, settings
+from mainboard.state.storage.database import cache_home, connect, settings
 
 _NAMES = st.text(st.characters(blacklist_characters="=\0", blacklist_categories=["Cs"]))
 
@@ -44,6 +44,41 @@ def test_every_connection_takes_the_settings_with_the_environment_winning(
 ) -> None:
     with patch.dict(os.environ, environment):
         assert {name: _setting(name) for name in expected} == expected
+
+
+@pytest.mark.parametrize(
+    ("platform", "environ", "expected"),
+    [
+        pytest.param("darwin", {}, "home/Library/Caches", id="macos-keeps-it-in-the-library"),
+        pytest.param(
+            "darwin", {"XDG_CACHE_HOME": "/xdg"}, "home/Library/Caches", id="macos-ignores-xdg"
+        ),
+        pytest.param("linux", {}, "home/.cache", id="linux-defaults-to-the-dot-cache-folder"),
+        pytest.param("linux", {"XDG_CACHE_HOME": "/xdg"}, "/xdg", id="linux-follows-xdg"),
+    ],
+)
+def test_the_user_cache_follows_the_platform_and_the_xdg_variable(
+    platform: str, environ: dict[str, str], expected: str
+) -> None:
+    assert cache_home(platform, environ, Path("home")) == Path(expected)
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        pytest.param('MB_DUCKDB_TIMEZONE="Asia/Tokyo"', "Asia/Tokyo", id="a-double-quoted-pair"),
+        pytest.param("export MB_DUCKDB_TIMEZONE='Asia/Tokyo'", "Asia/Tokyo", id="a-single-pair"),
+        pytest.param("MB_DUCKDB_TIMEZONE=\"Asia/Tokyo'", "\"Asia/Tokyo'", id="a-mismatched-pair"),
+        pytest.param('MB_DUCKDB_TIMEZONE=Asia/Tokyo"', 'Asia/Tokyo"', id="a-lone-closing-quote"),
+    ],
+)
+def test_the_workspace_dotenv_takes_one_matching_pair_of_quotes_off_a_value(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, line: str, expected: str
+) -> None:
+    (workspace / ".env").write_text(f"{line}\n", encoding="utf-8")
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("MB_DUCKDB_TIMEZONE", raising=False)
+    assert settings()["timezone"] == expected
 
 
 @tuned(max_examples=100)

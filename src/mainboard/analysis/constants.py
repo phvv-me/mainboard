@@ -10,6 +10,22 @@ LANGUAGES = {
     "SW": "swift",
 }
 
+# The path of a package initializer, `__init__.py` or its stub `__init__.pyi`: the one definition
+# the rules' SQL (`is_initializer_path`) and the fixes' Python read.
+INITIALIZER_PATH = r"(^|/)__init__\.pyi?$"
+
+# The file stem of a package initializer, for the Python that spells the file out.
+INITIALIZER_STEM = "__init__"
+
+# The path of a shared vocabulary module, the `constants.py`, `enums.py` or `exceptions.py` that
+# holds what the modules of its folder share. It is a place for definitions, so a folder's ceiling
+# of modules does not count it.
+VOCABULARY_PATH = r"(^|/)(constants|enums|exceptions)\.[^/.]+$"
+
+# The path of test code: a `test`, `tests`, `spec`, `specs` or `integration` folder, or a
+# `*_test.*` or `*.spec.*` file.
+TEST_PATH = r"(^|/)(tests?|specs?|integration)(/|$)|(^|[._-])(test|spec)\.[^.]+$"
+
 # The SQL naming what a finding declares, for each rule that calls a name dead, a unit redundant
 # or a constant a private file detail: the name a consumer would import (a module's stem for the
 # rules in MODULES).

@@ -1,3 +1,4 @@
+import inspect
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -7,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 
 from mainboard.probe.reverse import CuobjdumpProvider, Evidence, EvidenceStore, ReverseProvider
-from mainboard.probe.reverse.models import (
+from mainboard.probe.reverse.evidence import (
     ArchCoverage,
     ArtifactKind,
     DeviceResult,
@@ -41,13 +42,18 @@ def lake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Lake]:
     found.session().close()
 
 
-def test_store_roundtrip_and_duplicate_ingest_is_a_noop(lake: Lake) -> None:
-    store = EvidenceStore(lake)
+@pytest.fixture
+def store(lake: Lake) -> Iterator[EvidenceStore]:
+    """An evidence store over the lake, whose session closes at teardown."""
+    found = EvidenceStore(lake)
+    yield found
+    found.session.close()
+
+
+def test_store_roundtrip_and_duplicate_ingest_is_a_noop(store: EvidenceStore) -> None:
     original = evidence({"nested": {"z": 1, "a": 2}})
     key = store.ingest(original)
-    assert key == original.key()
-    assert store.read(key) == original
-    assert store.ingest(original) == key
+    assert (key, store.read(key), store.ingest(original)) == (original.key(), original, key)
     assert store.session.rows(select(func.count()).select_from(schema.re_evidence)) == [(1,)]
     assert store.query(artifact_sha256=original.artifact.sha256, operation="inventory") == (
         original,
@@ -56,13 +62,11 @@ def test_store_roundtrip_and_duplicate_ingest_is_a_noop(lake: Lake) -> None:
     assert store.read("absent") == NotFound(evidence_id="absent")
     stored_result = store.session.rows(select(schema.re_evidence.c.result_json))[0][0]
     assert original.result.model_validate_json(stored_result) == original.result
-    store.session.close()
 
 
-def test_version_seven_evolves_through_the_existing_schema_loop(
-    lake: Lake,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.fixture
+def version_seven(lake: Lake, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Create the lake as version 7 did, with no evidence table or view."""
     with monkeypatch.context() as old:
         old.setattr(lake_module, "VERSION", 7)
         old.setattr(
@@ -76,20 +80,29 @@ def test_version_seven_evolves_through_the_existing_schema_loop(
             tuple(view for view in schema.views if view.table is not schema.re_evidence_current),
         )
         lake.create()
+
+
+@pytest.mark.usefixtures("version_seven")
+def test_version_seven_evolves_through_the_existing_schema_loop(lake: Lake) -> None:
     assert lake.query(select(func.max(schema.schema_log.c.version))) == [(7,)]
     lake.current()
-    assert lake.query(select(func.max(schema.schema_log.c.version))) == [(8,)]
+    assert lake.query(select(func.max(schema.schema_log.c.version))) == [(lake_module.VERSION,)]
     store = EvidenceStore(lake)
     original = evidence()
     assert store.read(store.ingest(original)) == original
     store.session.close()
 
 
-def test_current_view_follows_append_order_and_keeps_file_evidence_separate(lake: Lake) -> None:
-    store = EvidenceStore(lake)
-    original = evidence()
-    key = store.ingest(original)
-    replacement = original.model_copy(update={"raw": "latest"})
+@pytest.fixture
+def key(store: EvidenceStore) -> str:
+    """The cache address of the default evidence, once ingested."""
+    return store.ingest(evidence())
+
+
+def test_current_view_follows_append_order_and_keeps_file_evidence_separate(
+    store: EvidenceStore, key: str
+) -> None:
+    replacement = evidence().model_copy(update={"raw": "latest"})
     store.session.append(
         schema.re_evidence,
         [
@@ -110,38 +123,53 @@ def test_current_view_follows_append_order_and_keeps_file_evidence_separate(lake
     assert store.session.rows(select(func.count()).select_from(schema.evidence)) == [(0,)]
     store.session.append(schema.re_evidence, [{"evidence_id": key, "dropped": True}])
     assert store.read(key) == NotFound(evidence_id=key)
-    store.session.close()
 
 
-def test_all_device_result_shapes_survive_json() -> None:
-    original = evidence()
-    inventory = KernelInventory(kernels=(), arches=())
-    for result in (
-        original.result,
+_INVENTORY = KernelInventory(kernels=(), arches=())
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        evidence().result,
         ArchCoverage(arches=()),
         SassResult(listings=()),
-        inventory.diff(inventory),
-    ):
-        record = Evidence[DeviceResult].model_validate({**original.model_dump(), "result": result})
-        restored = Evidence[DeviceResult].model_validate_json(record.model_dump_json())
-        assert restored.result == result
+        _INVENTORY.diff(_INVENTORY),
+    ],
+    ids=["evidence", "arch-coverage", "sass", "inventory-diff"],
+)
+def test_all_device_result_shapes_survive_json(result: DeviceResult) -> None:
+    original = evidence()
+    record = Evidence[DeviceResult].model_validate({**original.model_dump(), "result": result})
+    restored = Evidence[DeviceResult].model_validate_json(record.model_dump_json())
+    assert restored.result == result
 
 
-def test_compare_collects_and_stores_its_source_inventories(
-    lake: Lake,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def supporting(
-        cls: type[ReverseProvider], kind: str, artifact: ArtifactKind, operation: str
-    ) -> ReverseProvider:
-        return CuobjdumpProvider(FixtureRunner())
+@pytest.fixture
+def libraries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """Two ELF libraries of different bytes, whose every operation the fixture runner answers."""
 
-    monkeypatch.setattr(ReverseProvider, "supporting", classmethod(supporting))
+    class Supporter:
+        @classmethod
+        def supporting(
+            cls: type[Supporter], kind: str, artifact: ArtifactKind, operation: str
+        ) -> ReverseProvider:
+            return CuobjdumpProvider(FixtureRunner())
+
+    monkeypatch.setattr(
+        ReverseProvider, "supporting", inspect.getattr_static(Supporter, "supporting")
+    )
     baseline, newer = tmp_path / "13.4.so", tmp_path / "13.8.so"
     header = b"\x7fELF\x02\x01" + bytes(58)
     baseline.write_bytes(header + b"older")
     newer.write_bytes(header + b"newer")
+    return baseline, newer
+
+
+def test_compare_collects_and_stores_its_source_inventories(
+    lake: Lake, libraries: tuple[Path, Path]
+) -> None:
+    baseline, newer = libraries
     probe = DeviceProbe(lake)
     found = probe.run(baseline, "compare", against=str(newer))
     match found.result:

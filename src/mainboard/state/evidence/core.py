@@ -3,15 +3,17 @@
 import logging
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from functools import partial
+from itertools import batched
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import duckdb
 
+from ...core import Disk
 from ...core.errors import MissionError
-from ..constants import READERS, WINDOW_BYTES
+from ..constants import EVICTED_TOGETHER, READERS, WINDOW_BYTES
 from ..lake import Finding
 from ..storage.blobs import Audit
 from ..storage.owned import OwnedFile
@@ -57,17 +59,13 @@ class Evidence(Keeping):
         """Put the object `digest` into `replica`, a chunk at a time from this lake."""
         replica.put(digest, self.blobs.chunks(connection, digest))
 
-    def _evict(self, item: Inventory, closed: Identity) -> bool:
-        """Remove `item`'s tree copy if it is still the closed file, False if it is not."""
-        try:
-            return self._vacated(item, closed)
-        except FileNotFoundError:
-            return False
+    def _indexed_audits(self, prefix: str = "") -> tuple[list[Located], dict[str, Audit]]:
+        """Each file indexed at or under `prefix`, all when empty, and its object's audit.
 
-    def _indexed_audits(self) -> tuple[list[Located], dict[str, Audit]]:
-        """Every indexed file with the audits of the objects, on a fresh read-only attach."""
+        Read on a fresh read-only attach.
+        """
         with self.lake.open() as connection:
-            rows = located(self.lake.execute(connection, listing()).fetchall())
+            rows = located(self.lake.execute(connection, listing(prefix)).fetchall())
             return rows, self._audited(connection, {row.sha256: row.size for row in rows})
 
     def _observed(self, row: Located) -> tuple[str, Literal["missing", "identical", "changed"]]:
@@ -89,26 +87,40 @@ class Evidence(Keeping):
             with suppress(OSError):
                 (self.root / folder).rmdir()
 
-    def _vacated(self, item: Inventory, closed: Identity) -> bool:
-        owned = OwnedFile(self.root / item.path, root=self.root)
-        with owned.quarantine() as isolated:
-            if (
-                identity_of(owned.stat_at(isolated)) != closed
-                or owned.digest_at(isolated) != item.sha256
-            ):
-                logger.warning("%s changed since its producer closed it; kept", item.path)
-                return False
-            audit = self.session.run(
-                lambda connection: self.blobs.inspect(connection, item.sha256)
-            )
-            if fault := audit.fault(item.size):
-                logger.warning("%s kept: the lake's copy has %s", item.path, fault)
-                return False
-            if identity_of(owned.stat_at(isolated)) != closed:
-                logger.warning("%s changed while the lake was checked; kept", item.path)
-                return False
-            owned.unlink_at(isolated)
-        return True
+    def _vacated(self, batch: Sequence[tuple[Inventory, Identity]]) -> list[Path]:
+        """Remove the tree copies of `batch` that are still the closed files and that the lake
+        holds whole, returning them.
+
+        Each file is moved aside and matched with its identity and digest, then the lake is asked
+        about all their objects in one read, since a digest says nothing about which data file
+        holds it and each read scans them all. Whatever is not removed goes back to its name.
+        """
+        removed: list[Path] = []
+        with ExitStack() as custody:
+            held: list[tuple[Inventory, Identity, OwnedFile, int]] = []
+            for item, closed in batch:
+                owned = OwnedFile(self.root / item.path, root=self.root)
+                with suppress(FileNotFoundError):
+                    isolated = custody.enter_context(owned.quarantine())
+                    if (
+                        identity_of(owned.stat_at(isolated)) == closed
+                        and owned.digest_at(isolated) == item.sha256
+                    ):
+                        held.append((item, closed, owned, isolated))
+                    else:
+                        logger.warning("%s changed since its producer closed it; kept", item.path)
+            sizes = {item.sha256: item.size for item, *_ in held}
+            audits = self.session.run(lambda connection: self._audited(connection, sizes))
+            for item, closed, owned, isolated in held:
+                audit = audits.get(item.sha256)
+                if fault := "no copy" if audit is None else audit.fault(item.size):
+                    logger.warning("%s kept: the lake's copy has %s", item.path, fault)
+                elif identity_of(owned.stat_at(isolated)) != closed:
+                    logger.warning("%s changed while the lake was checked; kept", item.path)
+                else:
+                    owned.unlink_at(isolated)
+                    removed.append(self.root / item.path)
+        return removed
 
     def _write(self, row: Located, *, root: Path, replace: bool = False) -> None:
         """Write `row`'s object to its path under `root`, refusing when the lake lost it."""
@@ -151,14 +163,34 @@ class Evidence(Keeping):
         }
         if parts := len(finalized.files) - len(closed):
             logger.warning("%d archive files stay: readers open them by path", parts)
-        evicted: list[Path] = []
-        for item in self.inventory(list(closed)):
-            source = self.root / item.path
-            if item.evictable and self._evict(item, closed[source]):
-                evicted.append(source)
+        candidates = [
+            (item, closed[self.root / item.path])
+            for item in self.inventory(list(closed))
+            if item.evictable
+        ]
+        evicted = [
+            source
+            for batch in batched(candidates, EVICTED_TOGETHER, strict=False)
+            for source in self._vacated(batch)
+        ]
         for source in evicted:
             self._prune_folders(source)
         return evicted
+
+    def intact(self, prefix: str) -> dict[str, str]:
+        """The digest of each path indexed at or under `prefix` whose object the lake holds whole.
+
+        Every object is read back through the blob verifier first, as `verify` reads it, since
+        another copy of these files may go once the lake answers for them.
+        """
+        if not self.lake.exists():
+            return {}
+        rows, audits = self._indexed_audits(prefix)
+        return {
+            row.path: row.sha256
+            for row in rows
+            if self._condition(audits.get(row.sha256), row.size) == "intact"
+        }
 
     def inventory(self, paths: Sequence[Path]) -> list[Inventory]:
         """Where every indexed file at or under `paths` stands, its tree copy against the lake.
@@ -196,7 +228,8 @@ class Evidence(Keeping):
         such conflict stands.
 
         Raises MissionError when a path indexes nothing, the lake lost an object, a link stands in
-        the way, or a changed file does, naming each such path with both digests.
+        the way, or a changed file does, naming each such path with both digests, and when the
+        files would leave the disk below its floor (`Disk.require`).
         """
         root = into or self.root
         wanted: dict[str, Located] = {}
@@ -213,6 +246,10 @@ class Evidence(Keeping):
         ]:
             raise MissionError("refusing to overwrite changed files\n" + "\n".join(conflicts))
         missing = [row for row, found in standing if found is None]
+        Disk(path=root).require(
+            sum(row.size for row in missing),
+            doing=f"writing {len(missing)} file(s) back from the lake",
+        )
         for row in missing:
             self._write(row, root=root)
         return [root / row.path for row in missing]
@@ -240,7 +277,8 @@ class Evidence(Keeping):
     def replicate(self, replica: DirectoryReplica) -> int:
         """Copy every indexed object `replica` lacks into it, then the whole index.
 
-        It answers how many objects were copied.
+        It answers how many objects were copied, and refuses when they would leave the replica's
+        disk below its floor (`Disk.require`).
 
         The missing objects are read in windows of at most `WINDOW_BYTES`, one scan of `blobs`
         each, since a query per object pays its planning every time (nine objects a second
@@ -250,6 +288,10 @@ class Evidence(Keeping):
         rows = self.indexed()
         sizes = {row.sha256: row.size for row in rows}
         missing = sorted(set(sizes) - replica.holds(sizes))
+        Disk(path=replica.root).require(
+            sum(sizes[digest] for digest in missing),
+            doing=f"copying {len(missing)} object(s) to the replica",
+        )
         alone = [digest for digest in missing if sizes[digest] > WINDOW_BYTES]
         windowed = [digest for digest in missing if sizes[digest] <= WINDOW_BYTES]
         for window in windows(windowed, sizes.__getitem__, WINDOW_BYTES):

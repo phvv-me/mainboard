@@ -17,9 +17,10 @@ from cyclopts import Parameter
 from patos import FrozenModel
 from pydantic import ConfigDict
 
-from ..constants import SECONDS_PER_HOUR
+from ..core.constants.units import SECONDS_PER_HOUR
 from ..core.errors import MissionError
 from ..costs.catalog import Offer
+from ..costs.ledger import Ledger
 from ..dispatch.backends.base import Rentable, route
 from ..dispatch.dispatcher import Order
 from ..dispatch.hosts.landing import renter
@@ -34,6 +35,7 @@ from ..dispatch.wrapping import connection
 from ..engines.compile.provisioner import Provisioner
 from ..log import logger
 from ..manifest.schema.compute.queue import Defaults
+from ..policy.warden import Warden
 from ..runtime.job import walltime
 from ..state.storage.holds import Held, Holdings
 
@@ -211,15 +213,17 @@ class Holds:
         self._reload()
 
     def _relet(self, record: RunRecord, ready: Held, *, kind: str) -> None:
-        """Move the rental's lease to the hold's deadline, so the sweep releases it then."""
-        offer = record.lease.offer if record.lease is not None else None
+        """Move the rental's lease to the hold's deadline, so the sweep releases it then.
+
+        The rental's lease keeps its budget and cap; a rental that recorded none gets a bare one.
+        """
+        lease = record.lease or Lease(
+            offer=Offer(provider=kind, gpu=ready.gpu, rate_usd_hr=0.0), release_by=ready.deadline
+        )
         cache = self.board.dispatcher.cache
         cache.relet(
             cache.delivery(record, "pending"),
-            Lease(
-                offer=offer or Offer(provider=kind, gpu=ready.gpu, rate_usd_hr=0.0),
-                release_by=ready.deadline,
-            ),
+            lease.model_copy(update={"release_by": ready.deadline}),
         )
 
     def _reload(self) -> None:
@@ -236,7 +240,15 @@ class Holds:
         name: str,
         duration: str,
     ) -> Rental:
-        """Register the hold in the run registry, then rent the machine it describes."""
+        """Pass the warden, register the hold in the run registry, then rent the machine.
+
+        The rent is handed the very cap the warden let it through under.
+        """
+        cap = Warden(self.board.root, self.board.manifest.policy).rent(
+            plan.profile,
+            max_usd=resources.max_usd,
+            ledger=Ledger(self.board.dispatcher.cache.session),
+        )
         shipment = Shipment.of_command(
             f"hold {name} for {duration}", source=self.board.dispatcher.source(), imports=()
         )
@@ -246,7 +258,7 @@ class Holds:
         )
         with ExitStack() as undo:
             undo.callback(allocation.interrupted)
-            rental = backend.rent(plan, resources, allocation=allocation)
+            rental = backend.rent(plan, resources, allocation=allocation, cap=cap)
             undo.pop_all()
         return rental
 
@@ -298,7 +310,7 @@ class Holds:
         plan = rented.plan(env=env, container="none")
         name = self._named(provider, holding, cards, plan)
         resources = rented.resources(holding.asked(cards), plan=plan)
-        Provisioner(self.board.root, self.board.manifest).compiler_for(plan.env).vouch()
+        Provisioner(self.board.root, self.board.manifest).shard(plan.env).compiler.vouch()
         rental = self._rent(_rentable(plan), plan, resources, name=name, duration=holding.duration)
         with ExitStack() as undo:
             undo.callback(self._abandon, name, rental, provider)

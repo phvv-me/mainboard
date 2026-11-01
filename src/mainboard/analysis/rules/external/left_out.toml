@@ -20,6 +20,7 @@ ALL-SECU0003 = "S311"
 ALL-SECU0004 = "S105 S106 S107"
 ALL-SECU0005 = "S602 S604 S605"
 PY-CACH0002 = "B019"
+PY-COLL0004 = "C409"
 PY-IMPO0003 = "F401 PLC0414"
 
 # mcmr's own coverage table claims the code as native or adapted: the key is the rule.
@@ -41,7 +42,6 @@ PY-CLAS0008 = "PLR0202 PLR0203"
 ALL-FUNC0008 = "C901"
 ALL-CONT0004 = "PLR1702"
 PY-EXCE0002 = "PLW0717"
-PY-COLL0004 = "C409"
 
 # The code asks for what an mcmr rule rejects, or repairs into what it flags.
 [contradicts]

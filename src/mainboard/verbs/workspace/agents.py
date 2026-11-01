@@ -1,22 +1,10 @@
-from typing import TYPE_CHECKING
-
 from ...agents import Agents
-from ...engines.compile.ecosystems import Binary
-from ...engines.compile.generated import GeneratedFiles
-from ...engines.compile.provisioner import Provisioner
-from ...manifest.loading import load
-from ...render import progress
+from ...render import Output, progress
+from ..constants import TREE
+from ..options import sectioned
+from ..session import Verbs
 
-if TYPE_CHECKING:
-    pass
-
-
-# The values a compact record leaves out: they say nothing an absent field does not.
-
-from ..base import Verbs
-from ..options import Output, sectioned
-
-# The verbs' default output and batch declaration.
+# The verbs' default output.
 _COMPACT = Output()
 
 
@@ -34,7 +22,7 @@ class AgentVerbs(Verbs):
         """
         with progress("checking the agents"):
             sections = Agents.at(self.session.workspace_root()).sections()
-        return sectioned(sections, output, title="agents check")
+        return sectioned(sections, output, title="code agents check")
 
     def agents_sync(self, *, output: Output = _COMPACT) -> None:
         """Render each harness's files from `.agents`, remove stale ones and make the links.
@@ -50,7 +38,7 @@ class AgentVerbs(Verbs):
         Args:
         """
         changed = Agents.at(self.session.workspace_root()).sync()
-        output.print_rows([{"changed": path} for path in changed], title="agents sync")
+        output.print_rows([{"changed": path} for path in changed], title="code agents sync")
 
     def agents_update(self, *, output: Output = _COMPACT) -> int:
         """Install every missing harness and bring every present one to its latest release.
@@ -61,27 +49,11 @@ class AgentVerbs(Verbs):
         Args:
         """
         return sectioned(
-            Agents.at(self.session.workspace_root()).update(), output, title="agents update"
+            Agents.at(self.session.workspace_root()).update(), output, title="code agents update"
         )
 
-    def binary_sync(self, *, env: str = "default", output: Output = _COMPACT) -> None:
-        """Install declared binary tools without solving or reinstalling other ecosystems.
 
-        The active platform's [binary.deps] and [binary.dev] ZIP coordinates require an
-        HTTPS URL, exact archive SHA-256 and named executable member. No install runs from
-        lint; a missing executable is a failed check until this explicit setup succeeds.
-
-        Args:
-            env: the environment whose tool directory is installed.
-        """
-        root = self.session.workspace_root()
-        provisioner = Provisioner(root, load(self.session.project.manifest(root)))
-        stage = provisioner.stage_for(env)
-        with GeneratedFiles(directory=provisioner.out).locked():
-            for ecosystem in stage.ecosystems(env):
-                if isinstance(ecosystem, Binary):
-                    ecosystem.sync()
-                    output.print_record(
-                        {name: spec.version for name, spec in ecosystem.deps.items()},
-                        title="Binary tools",
-                    )
+_AGENTS = AgentVerbs()
+agents = TREE.node("code agents").app(
+    check=_AGENTS.agents_check, sync=_AGENTS.agents_sync, update=_AGENTS.agents_update
+)

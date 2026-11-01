@@ -14,7 +14,7 @@ def test_cli_help_does_not_import_pytest(tmp_path: Path) -> None:
             sys.executable,
             "-c",
             "import sys; sys.modules['pytest'] = None; "
-            "from mainboard.cli import build; build()(['app', '--help'])",
+            "from mainboard.verbs.constants import TREE; TREE.cli()(['code', 'app', '--help'])",
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -23,7 +23,7 @@ def test_cli_help_does_not_import_pytest(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Build and test" in result.stdout
+    assert "Build, test and launch" in result.stdout
 
 
 def test_workspace_collector_emits_cells_without_running_them(tmp_path: Path) -> None:

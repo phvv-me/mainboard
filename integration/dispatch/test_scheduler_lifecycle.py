@@ -1,19 +1,16 @@
-"""Cancellation, release and waiting states say only what a scheduler confirmed.
+"""Cancellation and release say only what a scheduler confirmed.
 
 Each cancel is judged by what it requested, what the scheduler acknowledged and what is observed
-after: a refused `qdel`, a spool write that failed, a lost connection or a state the table does
-not know never reads as a cancelled job. A line's release lets a running job finish, and a pueue
-task that has not started is waiting, never failed. Everything runs on this machine: the login
-node is a local bash, `qdel` is a stub, `pueue` a fake, and the allocation is faked as in
-`test_held`.
+after: a refused `qdel`, a spool write that failed or a lost connection never reads as a cancelled
+job. A line's release lets a running job finish. Everything runs on this machine: the login node is
+a local bash, `qdel` is a stub, and the allocation is faked as in `held/test_serve`.
 """
 
-import json
 import os
 import shlex
 import threading
 import time
-from collections.abc import Generator, Mapping
+from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from unittest.mock import Mock
@@ -25,19 +22,14 @@ from mainboard import Board, Job, MissionError
 from mainboard.dispatch import HostUnreachable, Spool, now
 from mainboard.dispatch.jobs import vocabulary
 from mainboard.dispatch.mirroring.spool import Claim
-from mainboard.dispatch.schedulers import Held, Pbs, Pueue, pueue
+from mainboard.dispatch.schedulers import Held, Pbs
 from mainboard.dispatch.schedulers.pbs import held as held_module
 from mainboard.dispatch.state import RunRecord
 from mainboard.holding import line as line_module
 from mainboard.holding.line import Line
 from mainboard.settling.monitor import Settlement
 
-from . import test_held
-from .test_held import entry, pbs_board, script, serve, until
-
-# The fixtures of the held-line tests: a host root, its open spool, a faked allocation, and the
-# scheduler with PBS itself absent.
-root, spool, node, held = test_held.root, test_held.spool, test_held.node, test_held.held
+from .held.builders import entry, pbs_board, script, serve, until
 
 _HOST = "deadbox"
 
@@ -219,92 +211,6 @@ def test_a_line_frees_its_allocation_through_the_same_checked_qdel(
     with qdel_says(tmp_path / "late", code=35, text="qdel: Job has finished 7.opbs") as calls:
         line.release()
     assert asked(calls) == ["7.opbs"]
-
-
-class FakePueue:
-    """A `pueue` first on this machine's PATH whose daemon lists `tasks` and records every verb it
-    is asked but `status`, one line each."""
-
-    @contextmanager
-    def first(self) -> Generator[None]:
-        """This `pueue` ahead of any other on the local machine's PATH."""
-        with local.env(PATH=f"{self.folder}{os.pathsep}{local.env['PATH']}"):
-            yield
-
-    @property
-    def verbs(self) -> list[list[str]]:
-        try:
-            said = (self.folder / "verbs").read_text()
-        except FileNotFoundError:
-            return []
-        return [line.split() for line in said.splitlines()]
-
-    def __init__(self, folder: Path, *tasks: Mapping[str, object]) -> None:
-        self.folder = folder
-        listing = json.dumps({"tasks": {str(task["id"]): task for task in tasks}})
-        (folder / "listing.json").write_text(listing)
-        program = folder / "pueue"
-        program.write_text(
-            "#!/bin/sh\n"
-            f'if [ "$1" = status ]; then cat {shlex.quote(str(folder / "listing.json"))}; '
-            f'else echo "$*" >> {shlex.quote(str(folder / "verbs"))}; fi\n'
-        )
-        program.chmod(0o755)
-
-
-_DONE = {"enqueued_at": "t", "start": "t", "end": "t"}
-_HOLD, _GO = {"enqueued_at": "t", "start": "t"}, ("running", "running", False)
-_WAIT, _STAY = ("running", "queued", False), ("running", "", False)
-_OVER, _FAIL = ("ok", "", True), ("failed", "", True)
-
-# A status pueue prints, its (verdict, stage, settled), and how a cancel reaches it (None leaves
-# it alone, "raises" refuses a state this tool cannot place).
-_VARIANTS = [
-    pytest.param({"Locked": {"previous_status": "Queued"}}, _WAIT, "remove", id="locked"),
-    pytest.param("Locked", _WAIT, "remove", id="locked-bare"),
-    pytest.param({"Stashed": {"enqueue_at": None}}, _WAIT, "remove", id="stashed"),
-    pytest.param({"Queued": {"enqueued_at": "t"}}, _WAIT, "remove", id="queued"),
-    pytest.param({"Running": _HOLD}, _GO, "kill", id="running"),
-    pytest.param({"Paused": _HOLD}, _STAY, "kill", id="paused"),
-    pytest.param({"Done": {**_DONE, "result": "Success"}}, _OVER, None, id="done-success"),
-    pytest.param({"Done": {**_DONE, "result": {"Failed": 3}}}, _FAIL, None, id="done-3"),
-    pytest.param({"Done": {**_DONE, "result": "Killed"}}, _FAIL, None, id="done-killed"),
-    pytest.param({"Frozen": {}}, _STAY, "raises", id="unknown"),
-    pytest.param("Frozen", _STAY, "raises", id="unknown-bare"),
-    pytest.param(None, ("vanished", "", True), None, id="forgotten"),
-]
-
-
-def test_the_pueue_table_names_every_state_pueue_has() -> None:
-    tags: set[str] = set()
-    for case in _VARIANTS:
-        match case.values[0]:
-            case str() as tag:
-                tags.add(tag)
-            case Mapping() as tagged:
-                tags.update(tagged)
-    assert {state.value for state in pueue.PueueState} <= tags
-
-
-@pytest.mark.parametrize(("status", "meaning", "stop"), _VARIANTS)
-def test_every_pueue_state_has_one_meaning_for_listing_settling_and_cancelling(
-    status: str | Mapping[str, object] | None,
-    meaning: tuple[str, str, bool],
-    stop: str | None,
-    tmp_path: Path,
-) -> None:
-    task = [] if status is None else [{"id": 7, "label": "job", "status": status}]
-    host = FakePueue(tmp_path, *task)
-    with host.first():
-        found = Pueue().states(local, "/fake-root", ["7"])["7"]
-        assert (found.verdict, found.stage, found.verdict in vocabulary.Word.settled()) == meaning
-        if stop == "raises":
-            with pytest.raises(MissionError, match="pueue task 7"):
-                Pueue().cancel(local, "/fake-root", handle="7")
-            assert host.verbs == [], "a state this tool cannot place is not stopped by a guess"
-        else:
-            Pueue().cancel(local, "/fake-root", handle="7")
-            assert host.verbs == ([[stop, "7"]] if stop else [])
 
 
 @pytest.fixture

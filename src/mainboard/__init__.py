@@ -1,5 +1,25 @@
 # The library facade: `from mainboard import Board` and the rest of the flat namespace.
 
+__lazy_modules__ = [
+    "mainboard.context",
+    "mainboard.core",
+    "mainboard.core.execution.shell",
+    "mainboard.experiments.data",
+    "mainboard.fleet.board",
+    "mainboard.fleet.compute",
+    "mainboard.log",
+    "mainboard.manifest",
+    "mainboard.probe.machine",
+    "mainboard.probe.readings.gating",
+    "mainboard.probe.readings.snapshot",
+    "mainboard.profile.health.meter",
+    "mainboard.profile.profiler",
+    "mainboard.profile.result",
+    "mainboard.profile.spans",
+    "mainboard.profile.studies.study",
+    "mainboard.results",
+]
+
 from importlib.metadata import PackageNotFoundError, version
 
 from .context import ExecutionPlan, Resolver

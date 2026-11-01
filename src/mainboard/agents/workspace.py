@@ -14,16 +14,15 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..core.errors import MissionError
-from ..core.project import Project
-from ..core.section import Section, Verdict
+from ..core import MissionError, Project, Section, Verdict, captured
+from ..core.environ import Dotenv
 from .harness import Harness, claude_key
 from .source import Server, Source
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
 
-    from .harness import Which
+    from .channels import Which
 
 # The launcher that loads the workspace `.env` itself, under any of its names, so a server it
 # starts needs nothing else.
@@ -53,7 +52,7 @@ class Agents:
             root,
             home=home or Path.home(),
             environment=os.environ,
-            dotenv=Project().dotenv(root),
+            dotenv=Dotenv.at(root).values,
             which=shutil.which,
         )
 
@@ -84,7 +83,7 @@ class Agents:
                 section="agents: files",
                 verdict=Verdict.WARN,
                 detail=f"out of step with {Source.FOLDER}: {', '.join(drifted)}",
-                fix=f"{Project().name} agents sync",
+                fix=f"{Project().name} code agents sync",
             )
         return Section(
             section="agents: files",
@@ -104,7 +103,7 @@ class Agents:
                         section=section,
                         verdict=Verdict.WARN,
                         detail=f"{harness.binary} is not installed",
-                        fix=f"{Project().name} agents update",
+                        fix=f"{Project().name} code agents update",
                     )
                 )
                 continue
@@ -184,7 +183,7 @@ class Agents:
                 section="agents: links",
                 verdict=Verdict.WARN,
                 detail=f"not links: {', '.join(missing)}",
-                fix=f"{Project().name} agents sync",
+                fix=f"{Project().name} code agents sync",
             )
         return Section(section="agents: links", verdict=Verdict.PASS, detail="every link resolves")
 
@@ -278,15 +277,7 @@ class Agents:
         if path is None:
             return ""
         try:
-            done = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=a found binary and a fixed flag since=2026-10-07
-                [path, "--version"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=_VERSION_SECONDS,
-                check=False,
-            )
+            done = captured([path, "--version"], timeout=_VERSION_SECONDS)
         except subprocess.TimeoutExpired:
             return f"{path} (no version within {_VERSION_SECONDS} s)"
         return next(iter(done.stdout.splitlines()), "").strip() or path

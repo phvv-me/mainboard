@@ -17,12 +17,15 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from ..constants import INITIALIZER_STEM
 from ..providers.ducks import Ducks
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from .apply import Plan, Spot
+
+_SUFFIXES = (".py", ".pyi")
 
 
 class Syntax:
@@ -152,9 +155,10 @@ class Types:
 def imported(root: Path, path: str) -> set[str]:
     """The project files a Python file's import statements name, existing or not.
 
-    A fix may have removed or renamed the one it imports. Each module counts as `<name>.py` and
-    `<name>/__init__.py`, at the root, under `src/`, and beside the file or in a folder above it (a
-    script that puts its own folder on `sys.path` imports its siblings).
+    A fix may have removed or renamed the one it imports. Each module counts as a module file and
+    as a package initializer, each as source and as stub, at the root, under `src/`, and beside the
+    file or in a folder above it (a script that puts its own folder on `sys.path` imports its
+    siblings).
     """
     try:
         tree = ast.parse((root / path).read_bytes())
@@ -165,12 +169,19 @@ def imported(root: Path, path: str) -> set[str]:
     for node in ast.walk(tree):
         names |= _names_of(node, package)
     prefixes = (PurePosixPath("src"), package, *package.parents)
-    found: set[str] = set()
-    for name in names:
-        for prefix in prefixes:
-            found.add(str(prefix / f"{name}.py"))
-            found.add(str(prefix / name / "__init__.py"))
-    return found
+    return set[str]().union(*(_files(prefix, name=name) for name in names for prefix in prefixes))
+
+
+def _files(prefix: PurePosixPath, *, name: PurePosixPath) -> set[str]:
+    """The files the module `name` could be under `prefix`, as source or as stub.
+
+    That is a module file or a package's initializer.
+    """
+    return {
+        str(file)
+        for suffix in _SUFFIXES
+        for file in (prefix / f"{name}{suffix}", prefix / name / f"{INITIALIZER_STEM}{suffix}")
+    }
 
 
 def _names_of(node: ast.AST, package: PurePosixPath) -> set[PurePosixPath]:

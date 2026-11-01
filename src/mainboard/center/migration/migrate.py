@@ -8,8 +8,6 @@
 # environment from the lock this center solved, the machine findings from the same census and judge
 # `facts` uses, and the final word from the destination running `doctor --center` on itself.
 
-import re
-import subprocess
 from contextlib import suppress
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -20,17 +18,20 @@ from pydantic import TypeAdapter
 
 from ...core.errors import MissionError
 from ...core.project import Project
-from ...core.section import Section, Verdict, staged
+from ...core.section import Section, staged
 from ...dispatch.hosts.onboard import Bootstrap, Onboarding
 from ...dispatch.shared import announce
 from ...dispatch.transport.core import HostUnreachable, SshTransport
 from ...dispatch.transport.shells import Dialect, open_shell
 from ...dispatch.transport.targets import probe_capabilities
 from ...engines.compile.pixi.lockfile import Lockfile
-from ...fleet.fitness import Fitness, Role
+from ...enums import Role, Verdict
+from ...fleet.fitness import Fitness
 from ...probe.system import System
 from .carrier import Carrier
 from .state import Carried, Destination, Parcel, packed
+from .steps.cloning import Cloning
+from .steps.credentials import Credentials
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -39,8 +40,6 @@ if TYPE_CHECKING:
     from ...dispatch.shared import Watcher
     from ...dispatch.transport.targets import Facts
     from ...fleet.board import Board
-    from ...git.repo import Repo
-    from ...git.tree import Tree
 
 # What the owner types, and what the destination runs: the script every release installs, since
 # the destination may still carry an older one.
@@ -60,9 +59,6 @@ _EXTRAS = {"plot": "matplotlib"}
 # target, holds the human checkout, and the destination expands the `~` in its own spelling.
 _CHECKOUT = "~/projects"
 
-# A remote reached over ssh at GitHub, `git@github.com:owner/name` or `ssh://git@github.com/...`.
-_GITHUB_SSH = re.compile(r"(ssh://)?([^@/:]+@)?github\.com[:/]")
-
 # How long the destination's own `doctor --center` may run, a torch and CUDA smoke and every lint
 # tool's probe included, and the silence its ssh rides out while that smoke loads the machine:
 # the default 45 s dropped it with `Timeout, server not responding` (pedro-home, 2026-09-26).
@@ -73,38 +69,10 @@ _PATIENT = {"server_alive_interval": 30.0, "server_alive_count": 10}
 _SECTIONS = TypeAdapter(list[Section])
 
 
-class Signed(FrozenModel):
-    """What the destination's gh said to the login it was handed."""
-
-    signed: bool
-    detail: str = ""
-
-
 class Written(FrozenModel):
     """How many shipped files changed bytes on the destination."""
 
     written: int
-
-
-class Trusted(FrozenModel):
-    """How many ssh host blocks and known host lines the destination took."""
-
-    blocks: int
-    keys: int
-
-
-class Merged(FrozenModel):
-    """How many entries a JSON merge changed."""
-
-    changed: int
-
-
-class Cloned(FrozenModel):
-    """One repository's line from the destination's clone."""
-
-    repo: str
-    outcome: str
-    detail: str = ""
 
 
 class _Landing(NamedTuple):
@@ -152,67 +120,8 @@ class Migration:
         self.transport = SshTransport()
         self.watch = watch or announce
         self.home = Path.home()
-
-    def _claude(self, carrier: Carrier, carried: Carried) -> Section:
-        """This workspace's Claude Code project settings, merged in under the new path."""
-        entries = carried.claude_project()
-        if not entries:
-            return Section(
-                section="carry claude project", verdict=Verdict.PASS, detail="nothing to carry"
-            )
-        answer = carrier.call(
-            "merge", {"path": ".claude.json", "key": "projects", "entries": entries}, Merged
-        )
-        return Section(
-            section="carry claude project",
-            verdict=Verdict.PASS,
-            detail=f"trust and tool settings under the new path, {answer.changed} changed",
-        )
-
-    def _clone(self, carrier: Carrier, place: Destination) -> list[Section]:
-        """The root at this HEAD and each owned submodule at its pointer, then the foreign rest."""
-        tree = self.board.git()
-        submodules = [
-            [parent.name, parent.relative(child), child.declared]
-            for parent, child in _submodules(tree)
-        ]
-        foreign = [
-            child.name
-            for parent in tree.owned()
-            for child in parent.children
-            if child.initialized and not child.owned
-        ]
-        steps = carrier.call(
-            "clone",
-            {
-                "root": place.root,
-                "url": tree.root.url,
-                "branch": tree.root.branch(),
-                "commit": tree.root.head(),
-                "submodules": submodules,
-            },
-            list[Cloned],
-        )
-        again = f"{_NAME} host setup {self.destination} --center --root <an empty directory>"
-        rows = [
-            Section(
-                section=f"clone {step.repo}",
-                verdict=Verdict.PASS if step.outcome == "done" else Verdict.FAIL,
-                detail=step.detail,
-                fix="" if step.outcome == "done" else again,
-            )
-            for step in steps
-        ]
-        if foreign:
-            rows.append(
-                Section(
-                    section="clone references",
-                    verdict=Verdict.PASS,
-                    detail=f"{len(foreign)} foreign submodules left to fetch on demand",
-                    fix=f"git submodule update --init -- {foreign[0]}",
-                )
-            )
-        return rows
+        self.cloning = Cloning(board, destination)
+        self.credentials = Credentials(destination)
 
     def _install(self, plan: ExecutionPlan, root: str) -> list[Section]:
         """The tool from the cloned source, the fleet's pixi, and the environment from the lock."""
@@ -269,18 +178,18 @@ class Migration:
         carried = Carried(self.board.root, self.board.manifest, place, home=self.home)
         self.watch(f"signing {self.destination} in to GitHub")
         report = [
-            self._sign_in(carrier),
+            self.credentials.sign_in(carrier),
             self._ship(carrier, place, "ssh", carried.ssh()),
-            self._trust(carrier, carried),
+            self.credentials.trust(carrier, carried, self.cloning.urls()),
         ]
         self.watch(f"cloning the workspace to {self.destination}:{place.root}")
-        report += (cloned := self._clone(carrier, place))
+        report += (cloned := self.cloning.run(carrier, place))
         if any(row.verdict is Verdict.FAIL for row in cloned):
             return report
         report += [
             self._ship(carrier, place, "workspace", carried.workspace()),
             self._ship(carrier, place, "agents", carried.agents()),
-            self._claude(carrier, carried),
+            self.credentials.claude(carrier, carried),
         ]
         plan = self._plan(landing.facts, place.root)
         return [
@@ -299,7 +208,9 @@ class Migration:
     def _preflight(self) -> list[Section]:
         """Whether every owned repository's HEAD can be fetched, and what stays behind unsaved."""
         tree = self.board.git()
-        unserved = {repo.name for repo in tree.owned() if not repo.serves(repo.head())}
+        unserved = {
+            repo.name for repo in tree.owned() if not repo.remote.serves(repo.commits.head())
+        }
         rows: list[Section] = []
         for state in tree.status():
             if state.repo in unserved:
@@ -368,56 +279,6 @@ class Migration:
             detail=f"{len(parcels)} files, {written} written, {kept} already there",
         )
 
-    def _sign_in(self, carrier: Carrier) -> Section:
-        """Hand this machine's GitHub login to gh there, which git then uses for https."""
-        # Read into memory for the one call that hands it on over ssh's stdin, never printed.
-        token = _gh("auth", "token")
-        if not token:
-            return Section(
-                section="github",
-                verdict=Verdict.WARN,
-                detail="no gh login here to carry",
-                fix=f"gh auth login && gh auth setup-git (on {self.destination})",
-            )
-        answer = carrier.call("login", {"token": token}, Signed)
-        if answer.signed:
-            return Section(
-                section="github", verdict=Verdict.PASS, detail="gh signed in, git uses it"
-            )
-        return Section(
-            section="github",
-            verdict=Verdict.FAIL,
-            detail=f"gh did not take the login: {answer.detail}",
-            fix="install gh there (winget install --id GitHub.cli -e), then migrate again",
-        )
-
-    def _trust(self, carrier: Carrier, carried: Carried) -> Section:
-        """The ssh host blocks and known host lines the destination lacks, added beside its own.
-
-        GitHub's host keys come from GitHub's API over the gh login when a clone reaches GitHub
-        over ssh and this machine never recorded them, since a first connection must not be what
-        vouches for them.
-        """
-        tree = self.board.git()
-        known = carried.known_hosts()
-        urls = [tree.root.url, *(child.declared for _, child in _submodules(tree))]
-        wanted = any(_GITHUB_SSH.match(url) for url in urls) and not any(
-            Carried.GITHUB in line.split()[0].split(",") for line in known
-        )
-        # GitHub's ssh host keys as its API publishes them, none when unreachable.
-        fetched = _gh("api", "meta", "--jq", ".ssh_keys[]").splitlines() if wanted else []
-        known += [f"{Carried.GITHUB} {key}" for key in fetched]
-        added = carrier.call("ssh", {"blocks": carried.ssh_config(), "known": known}, Trusted)
-        detail = f"{added.blocks} host blocks and {added.keys} known host lines added"
-        if wanted and not fetched:
-            return Section(
-                section="carry ssh config",
-                verdict=Verdict.WARN,
-                detail=f"{detail}; GitHub's host keys unknown here and gh could not fetch them",
-                fix=f"gh auth login, then {_NAME} host setup {self.destination} --center",
-            )
-        return Section(section="carry ssh config", verdict=Verdict.PASS, detail=detail)
-
     def _verify(self, plan: ExecutionPlan, root: str) -> list[Section]:
         """The destination's own `doctor --center`, which is the readiness suite run there.
 
@@ -463,30 +324,3 @@ class Migration:
         ):
             return report
         return report + self._moved(landing)
-
-
-def _submodules(tree: Tree) -> list[tuple[Repo, Repo]]:
-    """Each checked-out owned submodule with its parent, parents first."""
-    return [
-        (parent, child)
-        for parent in tree.owned()
-        for child in parent.children
-        if child.initialized and child.owned
-    ]
-
-
-def _gh(*arguments: str) -> str:
-    """What `gh arguments` prints, empty when gh is absent or refuses."""
-    try:
-        done = subprocess.run(
-            ["gh", *arguments],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=30,
-        )
-    except OSError, subprocess.SubprocessError:
-        return ""
-    return done.stdout.strip() if done.returncode == 0 else ""

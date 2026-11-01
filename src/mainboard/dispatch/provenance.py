@@ -8,21 +8,21 @@ the workspace's repositories a file belongs to and whether or not it was ever co
 import hashlib
 import re
 from datetime import UTC, datetime
-from enum import StrEnum, auto
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 from sqlalchemy import select
 
+from ..constants import DATA
 from ..core.errors import MissionError
 from ..core.project import Project
+from ..enums import Status
 from ..manifest.loading import load
-from ..manifest.schema.constants import DATA
 from ..state import schema
 from ..state.lake import Lake, insert
 from ..state.storage.blobs import Blobs
-from .mirroring.sync import GitignoreFilter
+from .ignores import GitignoreFilter
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -30,18 +30,6 @@ if TYPE_CHECKING:
     import duckdb
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-class Status(StrEnum):
-    """File kind; historical version-control labels remain readable, never gate execution."""
-
-    SOURCE = auto()
-    BUILT = auto()
-    CLEAN = auto()
-    MODIFIED = auto()
-    UNTRACKED = auto()
-    IGNORED = auto()
-    UNVERSIONED = auto()
 
 
 class Source(FrozenModel):

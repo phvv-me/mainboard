@@ -21,10 +21,12 @@ from urllib.request import urlopen
 
 from patos import Registry, Singleton
 
-from ...constants import SECONDS_PER_HOUR
-from ...core.errors import MissionError
+from ...core.constants.units import SECONDS_PER_HOUR
+from ...core.environ import Dotenv
+from ...core.errors import MissionError, NoWorkspace
 from ...core.project import Project
-from ...runtime.job import walltime_seconds
+from ...enums import Bound
+from ..hosts.lease import Cap
 from ..hosts.rentals import Rental
 from .capabilities import Capability
 
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
     from urllib.request import Request
 
     from ...context.plan import ExecutionPlan
+    from ...costs.catalog import Offer
     from ..hosts.allocation import Allocation
     from ..jobs.vocabulary import JobState, Resources
     from ..transport.core import Endpoint
@@ -46,7 +49,6 @@ _SSH_FAMILY_KINDS = frozenset({"auto", "held", "local", "pbs", "slurm", "ssh"})
 # A provider that stops answering costs one slow row rather than a wedged command: enough for a
 # cold offer search, short enough that a fleet survey finishes while someone watches.
 _TIMEOUT_S = 10.0
-_ENV_FILE = ".env"
 # A CUDA version as `nvidia/cuda:13.3.1-devel-ubuntu24.04`, `vastai/base-image:cuda-13.3.1-auto`
 # and `pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime` spell it. Only major and minor are read,
 # since a patch level never decides whether an image loads on a driver.
@@ -59,8 +61,7 @@ class Credentials(Singleton):
     Every backend refusal names a variable to set there, and while nothing read the file a survey
     called a provider unkeyed whose keys sat at the workspace root; every backend crosses this
     seam before looking a key up. The environment always wins, so a stale line never shadows an
-    exported key. The file is data, never shell: `NAME=value` lines, blanks and `#` comments
-    skipped, one matching pair of surrounding quotes off, nothing expanded or executed. Only the
+    exported key. The file is read as `Dotenv` reads it, as data and never as shell. Only the
     names defined are returned, never a value, and nothing is logged.
     """
 
@@ -96,20 +97,13 @@ class Credentials(Singleton):
     def merged(self) -> tuple[str, ...]:
         """Read the workspace `.env` and define what it declares, returning the names."""
         try:
-            text = (self.project.find_root(Path.cwd()) / _ENV_FILE).read_text(encoding="utf-8")
-        except OSError:
+            root = self.project.find_root(Path.cwd())
+        except NoWorkspace:
             return ()
-        defined: list[str] = []
-        for line in text.splitlines():
-            entry = line.strip().removeprefix("export ").strip()
-            name, assigned, value = entry.partition("=")
-            name = name.strip()
-            if entry.startswith("#") or not name or not assigned or name in os.environ:
-                continue
-            value = value.strip()
-            quoted = len(value) > 1 and value[0] == value[-1] and value[0] in "\"'"
-            os.environ[name] = value[1:-1] if quoted else value
-            defined.append(name)
+        defined = {
+            name: value for name, value in Dotenv.at(root).values.items() if name not in os.environ
+        }
+        os.environ.update(defined)
         return tuple(defined)
 
 
@@ -130,12 +124,16 @@ class Rentable(Capability, abc.ABC):
         """Reconnect to a rental, including after the submitting process has exited."""
 
     @abc.abstractmethod
-    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
+    def rent(
+        self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation, cap: Cap
+    ) -> Rental:
         """Rent a machine for one job and return it once ssh answers on it.
 
         The job is not started: the entrypoint waits for the landing's launch script, so a caller
         that never lands must cancel the handle or the rental bills until the entrypoint gives up.
         A rental that cannot be opened is ended before this raises, as nothing else holds it yet.
+
+        cap: the provider's bound the warden let the rental through under (`Warden.rent`).
         """
 
 
@@ -150,6 +148,10 @@ class ProviderBackend(Registry, abc.ABC):
     # What this backend cannot do, and the line to print instead, keyed by the contract it does
     # not inherit. `{handle}` and `{path}` are filled in where the refusal is raised.
     lacks: ClassVar[Mapping[type[Capability], str]] = {}
+
+    # What stops this provider billing when nothing here is left to release its machine. Every
+    # concrete backend names one, so a rental is created only behind a cap (`cap`).
+    bound: ClassVar[Bound]
 
     # The CUDA version this house builds, measures and rents on, a floor rather than a pin (a
     # 13.3 driver runs a 13.0 image, a 12.6 one neither). A rented machine is the one place
@@ -175,6 +177,11 @@ class ProviderBackend(Registry, abc.ABC):
     # `inet_down`, runpod's `minDownloadMbps`) filter on it before renting.
     DOWNLOAD_FLOOR_MBPS: ClassVar[float] = 500.0
 
+    # The seconds a machine of this provider bills at least, whatever its job used, which no
+    # catalog row carries (Hot Aisle bills 30 minutes). A five-minute job on a 60-minute minimum
+    # costs an hour, so the leases and the scorecard read it from here.
+    BILLED_MINIMUM_S: ClassVar[int] = 0
+
     @abc.abstractmethod
     def cancel(self, handle: str) -> None:
         """End `handle` on the provider, tolerating one it already forgot.
@@ -190,18 +197,65 @@ class ProviderBackend(Registry, abc.ABC):
 
     @abc.abstractmethod
     def submit(
-        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+        self,
+        plan: ExecutionPlan,
+        command: str,
+        resources: Resources,
+        *,
+        allocation: Allocation,
+        cap: Cap,
     ) -> str:
-        """Launch `command` under `resources`; return the provider's opaque handle id."""
+        """Launch `command` under `resources`; return the provider's opaque handle id.
 
-    def admit(self, plan: ExecutionPlan, resources: Resources) -> None:
-        """Every refusal a metered dispatch owes before it reaches a provider's API at all.
+        cap: the provider's bound the warden let the run through under (`Warden.rent`).
+        """
+
+    @classmethod
+    def billed(cls, offer: Offer) -> Offer:
+        """`offer` with the billing terms this provider adds to its catalog row."""
+        return offer.model_copy(update={"minimum_s": cls.BILLED_MINIMUM_S})
+
+    @classmethod
+    def cap(cls, *, card_usd: float) -> Cap:
+        """What bounds this provider's bill outside this process, refusing a provider with none.
+
+        Pure (the backend's `bound` and the card limit given, no provider call), so the warden
+        resolves it once and hands the rent the very cap it checked.
+
+        card_usd: the limit the owner declared for the card paying this provider (`Grants.card`),
+            0 while none; read only for a `CARD` bound.
+        """
+        if cls.bound is not Bound.CARD:
+            return Cap(provider=cls.name, bound=cls.bound)
+        if not card_usd:
+            raise MissionError(
+                f"{cls.name} bills a card after the fact, and that card's limit is the only cap "
+                f"on the bill: the owner declares it with `{_declaring(cls.name)}` from a "
+                "terminal, or rent from a prepaid or threshold-capped provider"
+            )
+        return Cap(provider=cls.name, bound=Bound.CARD, limit_usd=card_usd)
+
+    @classmethod
+    def carded(cls) -> list[str]:
+        """The kinds whose bill only the limit of the card paying them caps, sorted."""
+        return sorted(name for name in cls.names() if cls.find(name).bound is Bound.CARD)
+
+    def admit(self, plan: ExecutionPlan, resources: Resources, *, cap: Cap) -> None:
+        """Every refusal a metered dispatch owes before it reaches a provider's API.
 
         Every `submit` and `rent` opens with it, so a house rule on what may be rented is one
         edit. Each refusal is free here and otherwise costs a whole rental, billed from the boot.
+
+        cap: the bound the warden resolved for this rental, which a budget may not exceed.
         """
         if not resources.max_usd:
             raise MissionError("provider dispatch needs an explicit max-usd budget")
+        if (left := cap.remaining()) is not None and resources.max_usd > left:
+            raise MissionError(
+                f"max-usd ${resources.max_usd:.2f} is more than the ${left:.2f} {cap.bound} cap "
+                f"on {self.name}; lower max-usd, or the owner raises the card's limit with "
+                f"`{_declaring(self.name)}` from a terminal"
+            )
         container = plan.container
         if container is None:
             return
@@ -223,6 +277,11 @@ class ProviderBackend(Registry, abc.ABC):
         return advice.format(**facts)
 
 
+def _declaring(provider: str) -> str:
+    """The owner's words declaring the limit of the card paying `provider` (`Grants.card`)."""
+    return f"{Project().name} serve grant card {provider} --usd N"
+
+
 def forgotten(error: HTTPError) -> dict:
     """An empty row for the 404 a gone instance answers, re-raising every other refusal."""
     if error.status != 404:
@@ -239,7 +298,7 @@ def hourly_cap(resources: Resources, *, landing: int = 0) -> float:
     landing: seconds billed before the job starts (mirror, tool install, environment), 0 for
         a prebuilt container that runs the command the moment it boots.
     """
-    seconds = walltime_seconds(resources.walltime) if resources.walltime else 0
+    seconds = resources.walltime_s
     return resources.max_usd * SECONDS_PER_HOUR / (seconds + landing) if seconds else 0.0
 
 

@@ -14,7 +14,9 @@ exist for Go, TOML, shell and the HTML comments of Markdown. They are never comm
 
 Differences from the kernel, kept on purpose: a group does not state `preceding_source` and
 `following_source`, which no rule reads; CUDA bodies are parsed as C++ (a commented-out kernel
-launch `<<<...>>>` does not parse).
+launch `<<<...>>>` does not parse); a comment that shares its lines with code (`return v;  // c`)
+annotates that code and stands alone, where the kernel joins it to the comment-only lines beside
+it, so a group's lines are comments and nothing else.
 """
 
 import ast
@@ -190,7 +192,15 @@ class Comment(Family):
                                                THEN c.start_column + 1 ELSE 1 END,
                                           CASE WHEN l.line = c.end_line
                                                THEN c.end_column ELSE strlen(l.text) END)),
-                       chr(10) ORDER BY l.line) AS cut_text
+                       chr(10) ORDER BY l.line) AS cut_text,
+                     bool_or(CASE WHEN l.line = c.start_line
+                                  THEN regexp_matches(
+                                    decode(array_slice(encode(l.text), 1, c.start_column)), '\S')
+                                  ELSE false END
+                             OR CASE WHEN l.line = c.end_line AND c.end_column > 0
+                                     THEN regexp_matches(decode(array_slice(
+                                       encode(l.text), c.end_column + 1, strlen(l.text))), '\S')
+                                     ELSE false END) AS is_inline
               FROM found c JOIN comment_lines l ON l.fact_id = c.fact_id
                                                AND l.line BETWEEN c.start_line AND c.end_line
               GROUP BY ALL
@@ -206,7 +216,7 @@ class Comment(Family):
                           ELSE p.start_column + strlen(p.text) END AS end_column,
                      comment_body(p.text, d.style) AS body,
                      d.documents AND regexp_matches(p.text, '^(///|//!|/\*\*|/\*!)')
-                       AS is_documentation
+                       AS is_documentation, p.is_inline
               FROM placed p JOIN dialects d USING (language)
             )
             SELECT fact_order, fact_id, path, language, style, punctuation, text, body,
@@ -214,7 +224,7 @@ class Comment(Family):
                    end_line - start_line + 1 AS line_count,
                    len(list_filter(markers, lambda m: starts_with(lower(body), m))) > 0
                      AS is_directive,
-                   is_documentation,
+                   is_documentation, is_inline,
                    row_number() OVER (PARTITION BY fact_id ORDER BY start_line, start_column) - 1
                      AS position
             FROM measured
@@ -223,12 +233,14 @@ class Comment(Family):
             WITH ordered AS (
               SELECT *, lag(end_line) OVER ahead AS previous_end,
                      lag(is_directive) OVER ahead AS previous_directive,
-                     lag(is_documentation) OVER ahead AS previous_documentation
+                     lag(is_documentation) OVER ahead AS previous_documentation,
+                     lag(is_inline) OVER ahead AS previous_inline
               FROM comment_comments WINDOW ahead AS (PARTITION BY fact_id ORDER BY position)
             ), numbered AS (
               SELECT *, sum(CASE WHEN previous_end IS NULL OR previous_end + 1 <> start_line
                                       OR previous_directive <> is_directive
                                       OR previous_documentation <> is_documentation
+                                      OR is_inline OR previous_inline
                                  THEN 1 ELSE 0 END)
                           OVER (PARTITION BY fact_id ORDER BY position) - 1 AS ordinal
               FROM ordered

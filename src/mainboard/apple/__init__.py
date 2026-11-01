@@ -1,5 +1,13 @@
 """Read Apple's installed toolchain and test evidence without launching the IDE."""
 
+__lazy_modules__ = [
+    "mainboard.apple.bundle.core",
+    "mainboard.apple.evidence",
+    "mainboard.apple.fonts",
+    "mainboard.apple.toolchain",
+    "mainboard.apple.xcode",
+]
+
 from .bundle.core import BundleChecks, BundleReport
 from .evidence import BuildReport, TestReport
 from .fonts import Preview

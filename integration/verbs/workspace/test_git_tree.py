@@ -15,32 +15,28 @@ from pathlib import Path
 
 import pytest
 
-from ...conftest import committed, git
+from ...builders import (
+    committed,
+    committed_links,
+    diverged,
+    git,
+    nesting_library,
+    replaced_by_files,
+    unreadable,
+    vendored,
+)
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+_STAGED = "staged.txt"
 
 
 @pytest.fixture
 def broken(workspace: Path, tmp_path_factory) -> Path:
     """The workspace as a repository whose foreign submodule holds an unreadable nested one."""
     remotes = tmp_path_factory.mktemp("remotes")
-    nested = committed(remotes / "other" / "nested")
-    library = committed(remotes / "other" / "library")
-    git(library, "submodule", "add", "--quiet", nested.as_posix(), "deps/nested")
-    git(library, "commit", "--quiet", "-m", "nest")
-    git(workspace, "init", "--quiet", "--initial-branch=main")
-    git(workspace, "config", "user.name", "it")
-    git(workspace, "config", "user.email", "it@example.invalid")
-    git(workspace, "remote", "add", "origin", (remotes / "me" / "root.git").as_posix())
-    git(workspace, "submodule", "add", "--quiet", library.as_posix(), "vendor/library")
-    git(workspace / "vendor" / "library", "submodule", "update", "--init", "--quiet")
-    git(workspace, "add", "-A")
-    git(workspace, "commit", "--quiet", "-m", "vendor")
-    assert git(workspace, "status", "--porcelain").returncode == 0
-    pointer = workspace / "vendor" / "library" / "deps" / "nested" / ".git"
-    pointer.unlink()
-    pointer.write_text("gitdir: ../../../../.git/modules/gone\n", encoding="utf-8", newline="\n")
-    assert git(workspace, "status", "--porcelain").returncode != 0
+    vendored(workspace, library=nesting_library(remotes), origin=remotes / "me" / "root.git")
+    unreadable(workspace)
     return workspace
 
 
@@ -69,23 +65,17 @@ def test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one(
     mb, tracked: Path, makes_links: str
 ) -> None:
     git(tracked, "config", "core.symlinks", makes_links)
-    (tracked / "target.txt").write_text("kept\n", encoding="utf-8", newline="\n")
-    links = ["copied", "spelled", "edited"]
-    try:
-        for name in links:
-            (tracked / name).symlink_to("target.txt")
-    except OSError:
-        pytest.skip("this machine cannot make symbolic links")
-    git(tracked, "add", "-A")
-    git(tracked, "commit", "--quiet", "-m", "links")
+    committed_links(tracked, "copied", "spelled", "edited")
     head = git(tracked, "rev-parse", "HEAD").stdout
-    for name in links:
-        (tracked / name).unlink()
-    (tracked / "copied").write_bytes((tracked / "target.txt").read_bytes())
-    (tracked / "spelled").write_text("target.txt", encoding="utf-8", newline="")
-    (tracked / "edited").write_text("changed through the copy\n", encoding="utf-8")
-    ran = mb("git", "commit", "-m", "nothing to take", "--all", "--json")
-    detail = steps(ran)["."]["detail"]
+    replaced_by_files(
+        tracked,
+        {
+            "copied": (tracked / "target.txt").read_text(encoding="utf-8"),
+            "spelled": "target.txt",
+            "edited": "changed through the copy\n",
+        },
+    )
+    detail = steps(mb("git", "commit", "-m", "nothing to take", "--all", "--json"))["."]["detail"]
     # Without links git reads `spelled` as the link itself, so only the copy needs putting back.
     relinked = "copied, spelled" if makes_links == "true" else "copied"
     assert f"relinked {relinked};" in detail and "withheld edited" in detail
@@ -98,18 +88,8 @@ def test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one(
 def test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict(
     mb, tracked: Path, tmp_path_factory, verb: str, edited: str
 ) -> None:
-    remote = git(tracked, "remote", "get-url", "origin").stdout.strip()
-    other = tmp_path_factory.mktemp("other") / "root"
-    git(tracked, "clone", "--quiet", remote, other.as_posix())
-    (other / "shared.txt").write_text("theirs\n", encoding="utf-8", newline="\n")
-    git(other, "add", "-A")
-    git(other, "commit", "--quiet", "-m", "theirs")
-    git(other, "push", "--quiet")
-    git(tracked, "fetch", "--quiet")
-    (tracked / edited).write_text("mine\n", encoding="utf-8", newline="\n")
-    if verb == "pull":
-        git(tracked, "add", "-A")
-        git(tracked, "commit", "--quiet", "-m", "mine")
+    clone = tmp_path_factory.mktemp("other") / "root"
+    diverged(tracked, edited, clone=clone, commit_edit=verb == "pull")
     root = steps(
         mb("git", verb, "--json", *(("-m", "mine", "--all") if verb == "commit" else ()))
     )["."]
@@ -135,9 +115,9 @@ def test_commit_withholds_a_nested_repository_gitmodules_does_not_declare(
 
 
 def test_commit_takes_only_the_named_paths_and_leaves_the_index_alone(mb, tracked: Path) -> None:
-    for name in ("mine.txt", "theirs.txt", "staged.txt"):
+    for name in ("mine.txt", "theirs.txt", _STAGED):
         (tracked / name).write_text(f"{name}\n", encoding="utf-8", newline="\n")
-    git(tracked, "add", "staged.txt")
+    git(tracked, "add", _STAGED)
     root = steps(mb("git", "commit", "-m", "mine", "mine.txt", "--json"))["."]
     assert root["outcome"] == "done", root
     assert git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split() == ["mine.txt"]
@@ -162,18 +142,8 @@ def test_commit_takes_a_named_file_that_replaced_a_link_and_refuses_a_flattened_
     mb, tracked: Path
 ) -> None:
     git(tracked, "config", "core.symlinks", "true")
-    (tracked / "target.txt").write_text("kept\n", encoding="utf-8", newline="\n")
-    try:
-        for name in ("rendered", "flattened"):
-            (tracked / name).symlink_to("target.txt")
-    except OSError:
-        pytest.skip("this machine cannot make symbolic links")
-    git(tracked, "add", "-A")
-    git(tracked, "commit", "--quiet", "-m", "links")
-    for name in ("rendered", "flattened"):
-        (tracked / name).unlink()
-    (tracked / "rendered").write_text("rendered on purpose\n", encoding="utf-8", newline="\n")
-    (tracked / "flattened").write_text("target.txt", encoding="utf-8", newline="")
+    committed_links(tracked, "rendered", "flattened")
+    replaced_by_files(tracked, {"rendered": "rendered on purpose\n", "flattened": "target.txt"})
 
     refused = steps(mb("git", "commit", "-m", "flat", "flattened", "--json"))["."]
     taken = steps(mb("git", "commit", "-m", "render", "rendered", "--json"))["."]
@@ -189,13 +159,11 @@ def test_commit_without_paths_commits_the_index_and_refuses_an_empty_one(
     (tracked / "loose.txt").write_text("loose\n", encoding="utf-8", newline="\n")
     refused = mb("git", "commit", "-m", "nothing")
     assert refused.code != 0 and "--all" in refused.said
-    (tracked / "staged.txt").write_text("staged\n", encoding="utf-8", newline="\n")
-    git(tracked, "add", "staged.txt")
+    (tracked / _STAGED).write_text("staged\n", encoding="utf-8", newline="\n")
+    git(tracked, "add", _STAGED)
     root = steps(mb("git", "commit", "-m", "staged", "--json"))["."]
     assert root["outcome"] == "done", root
-    assert git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split() == [
-        "staged.txt"
-    ]
+    assert git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split() == [_STAGED]
     assert "?? loose.txt" in git(tracked, "status", "--porcelain").stdout
 
 
@@ -245,12 +213,14 @@ def test_commit_records_the_pointer_of_a_submodule_that_committed(mb, tracked: P
 
 def test_commit_without_paths_takes_the_parents_index_with_the_pointer(mb, tracked: Path) -> None:
     git(owned_submodule(tracked), "add", "change.txt")
-    (tracked / "staged.txt").write_text("staged\n", encoding="utf-8", newline="\n")
-    git(tracked, "add", "staged.txt")
+    (tracked / _STAGED).write_text("staged\n", encoding="utf-8", newline="\n")
+    git(tracked, "add", _STAGED)
     ran = steps(mb("git", "commit", "-m", "both", "--json"))
     assert ran["library"]["outcome"] == "done" and ran["."]["outcome"] == "done", ran
-    taken = git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split()
-    assert sorted(taken) == ["library", "staged.txt"]
+    assert sorted(git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split()) == [
+        "library",
+        _STAGED,
+    ]
     assert not git(tracked, "diff", "--cached", "--name-only").stdout
 
 

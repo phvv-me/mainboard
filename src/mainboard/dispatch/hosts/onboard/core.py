@@ -16,12 +16,12 @@ from tenacity import (
     wait_fixed,
 )
 
-from ....constants import BYTES_PER_KIBIBYTE
+from ....core.constants.units import BYTES_PER_KIBIBYTE
 from ....core.errors import MissionError
 from ....core.project import Project
 from ....engines.compile import backend
 from ....engines.compile.backend.process import Process
-from ....engines.compile.pixi.policy import LockPolicy
+from ....enums import LockPolicy
 from ....log import logger
 from ...schedulers.pueue import Pueue
 from ...schedulers.registry import pick
@@ -29,6 +29,7 @@ from ...shared import Watcher, announce
 from ...transport.shells import HostShell, open_shell
 from ...transport.targets import Facts, probe_capabilities, resolve, rooted
 from .bootstrap import Bootstrap, reported
+from .claim import Claim
 from .constants import TOOL
 from .record import HostSetup, facts_command, read_facts
 
@@ -191,12 +192,16 @@ class Onboarding:
         )
 
     def _prepared(self, shell: HostShell, *, host: str, root: str) -> Bootstrap:
-        """The bootstrap of `host`, uv's CPython put there and the workspace mirrored to it."""
+        """The bootstrap of `host`, uv's CPython put there and the workspace mirrored to it.
+
+        A root another workspace holds is refused before anything is mirrored into it.
+        """
         bootstrap = Bootstrap(
             shell, workspace=self.dispatcher.root, policy=self.policy, floor=self.floor
         )
         self.watch(f"putting uv's CPython on {host}")
         bootstrap.python()
+        Claim(shell, self.dispatcher.root).check()
         self._mirror(host, root=root)
         return bootstrap
 

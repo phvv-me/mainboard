@@ -15,6 +15,13 @@ class Observation(FrozenModel):
 
     Timestamps are epoch seconds; `billed_usd` stays zero until a provider API reports the real
     charge, letting fits calibrate against truth instead of inference.
+
+    tier: how the provider sells the machine (Vast datacenter or marketplace, RunPod secure or
+        community).
+    datacenter: the host or site id.
+    verdict: how the landing ended (landed, slow, wrong-card, unreachable, refused or failed).
+    ready_s: seconds from create to ssh answering.
+    probe_mbps: the landing download probe's speed.
     """
 
     provider: str
@@ -24,6 +31,11 @@ class Observation(FrozenModel):
     t_running: float = 0.0
     t_ended: float = 0.0
     billed_usd: float = 0.0
+    tier: str = ""
+    datacenter: str = ""
+    verdict: str = ""
+    ready_s: float = 0.0
+    probe_mbps: float = 0.0
 
     @property
     def run_s(self) -> float:

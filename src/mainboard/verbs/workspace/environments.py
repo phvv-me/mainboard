@@ -2,14 +2,20 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 
 from cyclopts import Parameter
 
+from ...core.project import Project
 from ...deps import Edit
 from ...engines.compile import Lockfile
+from ...engines.compile.ecosystems import Binary
 from ...engines.compile.generated.files import GeneratedFiles
 from ...engines.compile.pixi.policy import Locking
+from ...engines.compile.provisioner import Provisioner
 from ...engines.pack import Formats
-from ...render import progress
-from ..base import Verbs
-from ..options import Output
+from ...log import logger
+from ...manifest.loading import load
+from ...render import Output, progress
+from ..constants import TREE
+from ..options import sectioned
+from ..session import Verbs
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,6 +37,65 @@ def _changed(changes: Sequence[Change], output: Output, *, title: str) -> None:
     manifest table's requirement from the lock's pins the solve dragged along.
     """
     output.print_rows([change.model_dump() for change in changes], title=title)
+
+
+class BinaryVerbs(Verbs):
+    """The `binary` verbs: the executables a manifest pins for this platform."""
+
+    def _provisioner(self) -> Provisioner:
+        root = self.session.workspace_root()
+        return Provisioner(root, load(self.session.project.manifest(root)))
+
+    def binary_list(self, *, env: str = "default", output: Output = _COMPACT) -> int:
+        """Judge each pinned binary tool: the version found and where, or what is wrong.
+
+        Exits 1 when a tool is missing, altered since its install, or off its pin.
+
+        Args:
+            env: the environment whose tool directory is read.
+        """
+        binary = Binary.of(self._provisioner().shard(env).stage, env)
+        rows = binary.resolver().rows(binary.declared(), fix=f"{Project().name} dep binary")
+        return sectioned(rows, output, title="binary list")
+
+    def binary_path(self, name: str, *, env: str = "default") -> None:
+        """Print the path of the executable `name`: a pinned tool's install, else `bin/` or PATH.
+
+        Fails when none is found, the one found is altered or off its pin, or a pinned tool is
+        found only as a twin outside its install.
+
+        Args:
+            name: the executable, pinned in the manifest or shipped by conda-forge.
+            env: the environment whose tool directory is read.
+        """
+        binary = Binary.of(self._provisioner().shard(env).stage, env)
+        resolver, declared = binary.resolver(), binary.declared()
+        found = (
+            resolver.pinned(name, wanted=declared[name])
+            if name in declared
+            else resolver.check(name)
+        )
+        logger.result(found.path.as_posix())
+
+    def binary_sync(self, *, env: str = "default", output: Output = _COMPACT) -> None:
+        """Install declared binary tools without solving or reinstalling other ecosystems.
+
+        The active platform's [binary.deps] and [binary.dev] coordinates, ZIP or tar.gz,
+        require an HTTPS URL, exact archive SHA-256 and named executable member. The archive
+        is read only after its hash matches. No install runs from lint; a missing executable
+        is a failed check until this explicit setup succeeds.
+
+        Args:
+            env: the environment whose tool directory is installed.
+        """
+        provisioner = self._provisioner()
+        binary = Binary.of(provisioner.shard(env).stage, env)
+        with (
+            progress("installing the binary tools"),
+            GeneratedFiles(directory=provisioner.out).locked(),
+        ):
+            binary.sync()
+        output.print_record(binary.declared(), title="Binary tools")
 
 
 class EnvironmentVerbs(Verbs):
@@ -85,7 +150,7 @@ class EnvironmentVerbs(Verbs):
         """List the packages installed in an environment, through `pixi list`.
 
         Args:
-            command: pixi's own arguments, a package regex first (`mb list torch --json`).
+            command: pixi's own arguments, a package regex first (`mb dep list torch --json`).
             env: the environment name.
         """
         self.session.pixi_verb("list", command, env=env)
@@ -163,7 +228,7 @@ class EnvironmentVerbs(Verbs):
         """Show an environment's dependency tree, through `pixi tree`.
 
         Args:
-            command: pixi's own arguments, a package regex first (`mb tree numpy --invert`).
+            command: pixi's own arguments, a package regex first (`mb dep tree numpy --invert`).
             env: the environment name.
         """
         self.session.pixi_verb("tree", command, env=env)
@@ -210,3 +275,21 @@ class EnvironmentVerbs(Verbs):
         with progress(f"upgrading {', '.join(names) or 'every requirement'}"):
             changes = self.session.board("local").deps().upgrade(names, edit=edit, exclude=exclude)
         _changed(changes, output, title="upgrade")
+
+
+_ENVIRONMENTS = EnvironmentVerbs()
+dep = TREE.node("dep").app(
+    _ENVIRONMENTS.add,
+    _ENVIRONMENTS.install,
+    _ENVIRONMENTS.lock,
+    _ENVIRONMENTS.remove,
+    _ENVIRONMENTS.tree,
+    _ENVIRONMENTS.upgrade,
+    list=_ENVIRONMENTS.list_,
+    update=_ENVIRONMENTS.update_lock,
+)
+pack = TREE.node("host").bind(pack=_ENVIRONMENTS.pack_)["pack"]
+_BINARY = BinaryVerbs()
+binary = TREE.node("dep binary").app(
+    list=_BINARY.binary_list, path=_BINARY.binary_path, sync=_BINARY.binary_sync
+)

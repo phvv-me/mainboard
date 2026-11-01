@@ -1,5 +1,6 @@
 """The repositories next to a project, where the consumers of its names live."""
 
+import re
 import tomllib
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
@@ -8,10 +9,12 @@ from pathspec import GitIgnoreSpec
 
 from ...core.project import Project
 from ...lint.files.git import topmost
+from ..constants import INITIALIZER_PATH
 from ..engine.facts import listed, vendored
 
 _SCRIPTS = frozenset({"conftest", "setup", "__main__", "__init__"})
 _ROOTS = ((), ("src",))
+_SUFFIXES = (".py", ".pyi")
 
 
 def module_key(path: str) -> str:
@@ -24,19 +27,22 @@ class Workspace:
     """The repositories next to a project: where its consumers live.
 
     root: the project; its workspace is the topmost working tree that holds it.
+    files: the project's files, listed once when the workspace is built.
     """
 
     @staticmethod
     def _defines(owner: Path, packages: Sequence[str]) -> bool:
+        folders = [owner / prefix / package for package in packages for prefix in ("", "src")]
         return any(
-            (owner / prefix / package / "__init__.py").is_file()
-            for package in packages
-            for prefix in ("", "src")
+            re.search(INITIALIZER_PATH, entry.name)
+            for folder in folders
+            for entry in folder.glob("*")
         )
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self.top = topmost(self.root)
+        self.files = listed(self.root)
 
     def _related(self, owner: Path) -> bool:
         """Whether `owner` is the project or sits inside it.
@@ -77,22 +83,24 @@ class Workspace:
     def packages(self) -> list[str]:
         """The top-level packages and modules the project defines.
 
-        Packages are directories holding an `__init__.py`, at its root or in `src/`, and modules
-        are the files lying there.
+        Packages are directories holding a package initializer, at its root or in `src/`, and
+        modules are the files lying there; a stub counts as its source does.
         """
-        files = [PurePosixPath(name) for name in listed(self.root) if name.endswith(".py")]
-        names = {
-            file.parent.name if file.name == "__init__.py" else file.stem
+        files = [PurePosixPath(name) for name in self.files if name.endswith(_SUFFIXES)]
+        modules = {
+            file.stem
             for file in files
-            if file.parent.parts in _ROOTS
-            and file.stem not in _SCRIPTS
-            or file.name == "__init__.py"
-            and file.parent.parent.parts in _ROOTS
+            if file.parent.parts in _ROOTS and file.stem not in _SCRIPTS
         }
-        return sorted(name for name in names if name.isidentifier())
+        initialized = {
+            file.parent.name
+            for file in files
+            if re.search(INITIALIZER_PATH, file.name) and file.parent.parent.parts in _ROOTS
+        }
+        return sorted(name for name in modules | initialized if name.isidentifier())
 
     def submodules(self) -> frozenset[str]:
         """Every trailing part of the paths of the project's Python modules."""
-        names = [name for name in listed(self.root) if name.endswith((".py", ".pyi"))]
+        names = [name for name in self.files if name.endswith(_SUFFIXES)]
         keys = [module_key(name).split("/") for name in names]
         return frozenset("/".join(parts[start:]) for parts in keys for start in range(len(parts)))

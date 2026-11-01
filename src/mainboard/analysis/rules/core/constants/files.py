@@ -8,7 +8,7 @@ FILE = f"""
     WITH {MODULE_NAMES},
     {python_files("parsed")}
     SELECT (row_number() OVER (ORDER BY f.path))::INTEGER AS file_id, f.fact_id, f.path,
-           f.language, m.module, regexp_matches(f.path, '(^|/)__init__\\.pyi?$') AS is_package,
+           f.language, m.module, is_initializer_path(f.path) AS is_package,
            ends_with(f.path, '.pyi') AS is_stub,
            f.language <> 'python' OR f.fact_id IN (SELECT fact_id FROM parsed) AS parses
     FROM ast_files f LEFT JOIN module_names m USING (fact_id)

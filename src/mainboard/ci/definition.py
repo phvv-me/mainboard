@@ -121,7 +121,10 @@ class Package(Declared):
         for directory in (start, *start.parents):
             with suppress(FileNotFoundError):
                 text = (directory / _PYPROJECT).read_text(encoding="utf-8")
-                table = (Project().table(tomllib.loads(text).get("tool", {})) or {}).get("ci")
+                tool = tomllib.loads(text).get("tool", {})
+                # This tool's table under the primary name, else under a legacy one.
+                tables = (tool[name] for name in Project().names if name in tool)
+                table = (next(tables, None) or {}).get("ci")
                 if table is not None:
                     return cls(root=directory, definition=Definition.model_validate(table))
         raise MissionError(

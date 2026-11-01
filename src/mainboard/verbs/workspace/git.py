@@ -3,8 +3,8 @@ from typing import TYPE_CHECKING, Annotated
 
 from cyclopts import Parameter
 
-from ...core.section import Verdict
-from ...render import progress
+from ...enums import Verdict
+from ...render import Output, progress
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 # The values a compact record leaves out: they say nothing an absent field does not.
 
-from ..base import Verbs
-from ..options import Output
+from ..constants import TREE
+from ..session import Verbs
 
 # The verbs' default output and batch declaration.
 _COMPACT = Output()
@@ -162,3 +162,13 @@ class GitVerbs(Verbs):
             title="git status",
             columns=_GIT_STATUS_COLUMNS,
         )
+
+
+_GIT = GitVerbs()
+git = TREE.node("git").app(
+    check=_GIT.git_check,
+    commit=_GIT.git_commit,
+    pull=_GIT.git_pull,
+    push=_GIT.git_push,
+    status=_GIT.git_status,
+)

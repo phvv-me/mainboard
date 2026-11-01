@@ -8,15 +8,16 @@ from typing import TYPE_CHECKING, Final
 from filelock import Timeout
 from patos import FrozenModel
 
-from ...batch.receipts import Topic
 from ...core.errors import MissionError
 from ...dispatch.jobs import vocabulary
 from ...dispatch.jobs.evidence import receipts_in
 from ...dispatch.schedulers import short_reason
 from ...dispatch.state import DownHost, Failed, Finished, Held, MonitorReport, Resumed
 from ...dispatch.state.monitor import SettlementBusy
+from ...enums import Topic
 from ...log import logger
 from ...tracking import streamed
+from ...upkeep.disk.transient import Transient
 from ..events import Events
 from .constants import COPIED
 from .deadlines import Deadlines, bounded_pass
@@ -88,6 +89,7 @@ class Monitor:
         self.settlement.answering(job)
         harvested = self.settlement.capture(record, job)
         transcript = self.settlement.captured.transcript(stream, handle=record.handle) or ""
+        self.settlement.frames.pull(job.handle, transcript)
         return Collected(harvested=harvested, pulled=pulled, transcript=transcript)
 
     def _concluded(
@@ -211,6 +213,19 @@ class Monitor:
         logger.error("{} on {}: {}", record.handle, record.target, detail)
         return failure(record, detail)
 
+    def _reaped(self) -> None:
+        """Clear the transient folders killed processes left, which no writer has to run to do.
+
+        A pass that cannot read those folders still settles: they are the janitor's.
+        """
+        try:
+            cleared = Transient(self.board.root).reap()
+        except OSError as fault:
+            logger.warning("transient folders left as they were: {}", fault)
+            return
+        if cleared:
+            logger.info("cleared {} transient folder(s) a killed process left", len(cleared))
+
     def _recovered(
         self, record: RunRecord, job: Run, *, stream: str, previous: Event | None
     ) -> Collected:
@@ -242,6 +257,7 @@ class Monitor:
     ) -> MonitorReport:
         """Run one pass under the claimed settlement lock and mark the lock's work done."""
         self.cache.settlement.phase("settling", deadline=deadline)
+        self._reaped()
         report = self._once(scope)
         self.cache.settlement.succeeded()
         return report

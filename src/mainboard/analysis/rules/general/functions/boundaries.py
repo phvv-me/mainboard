@@ -16,11 +16,11 @@ class TransparentUnaryWrapper(Rule, id="ALL-FUNC0005", applicability="review"):
           AND NOT EXISTS (SELECT 1 FROM function_decorators d
                           WHERE d.function_id = f.entity_id AND d.decorator <> 'staticmethod')
     """
-    message = "`{fact_id}` satisfies transparent unary wrapper"
+    message = "`{fact_id}` is a public function that only passes its one argument to another call"
     examples = (
         Example(
             bad="from math import sqrt\n\n\ndef root(value):\n    return sqrt(value)\n",
-            good="from math import sqrt\n\n\nroot = sqrt\n",
+            good="from math import sqrt\n\nroot = sqrt\n",
         ),
     )
     # The definition becomes the alias `name = callee`, its docstring kept as comment lines. Only
@@ -62,7 +62,8 @@ class TransparentUnaryWrapper(Rule, id="ALL-FUNC0005", applicability="review"):
 
 
 class ReflectiveScopeRead(Rule, id="ALL-FUNC0011"):
-    """Places one callable reads or rewrites its own scope reflectively."""
+    """Places one callable reads or rewrites its own scope reflectively. `vars(obj)` reads the
+    attributes of another object; only the call with no argument is the scope."""
 
     reflections: tuple[str, ...] = ("locals", "vars", "globals", "eval", "exec")
 
@@ -70,5 +71,14 @@ class ReflectiveScopeRead(Rule, id="ALL-FUNC0011"):
         SELECT c.path, c.start_line, c.start_column, c.callee AS name, d.qualname
         FROM core_call c JOIN core_def d ON d.file_id = c.file_id AND d.def_id = c.function_id
         WHERE c.parses AND list_contains($reflections::VARCHAR[], c.callee)
+          AND NOT (c.callee = 'vars' AND EXISTS (SELECT 1 FROM core_call_arg a
+                                                 WHERE a.file_id = c.file_id
+                                                   AND a.call_id = c.call_id))
     """
     message = "`{name}` reflectively exposes the scope of `{qualname}`"
+    examples = (
+        Example(
+            bad="def snapshot():\n    return vars()\n",
+            good="def snapshot(holder):\n    return vars(holder)\n",
+        ),
+    )

@@ -14,6 +14,8 @@ class TextEdit(FrozenModel):
     """Replace bytes `[start, end)` of one file with `text`.
 
     stacks: an append, which may share its point with other appends.
+    claims: a range held for one finding's group: it changes no byte, and only another claim
+        overlapping it collides.
     """
 
     path: str
@@ -21,6 +23,7 @@ class TextEdit(FrozenModel):
     end: int
     text: bytes
     stacks: bool = False
+    claims: bool = False
 
 
 class Source:
@@ -32,6 +35,16 @@ class Source:
         self.starts = [0, *(match.end() for match in re.finditer(b"\n", data))]
         if self.starts[-1] != len(data):
             self.starts.append(len(data))
+
+    def covers(self, span: Span) -> tuple[int, int]:
+        """The bytes `[start, end)` of `span`.
+
+        A missing end line reads as the start line and a missing end column as zero.
+        """
+        return (
+            self.offset(span.start_line, column=span.start_column),
+            self.offset(span.end_line or span.start_line, column=span.end_column or 0),
+        )
 
     def encode(self, text: str) -> bytes:
         """`text` as this file's bytes, in its line ending."""

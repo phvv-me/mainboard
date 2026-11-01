@@ -40,6 +40,8 @@ _FORMATTED = reduce(
     "replace(replace(replace(text, '{', '{{'), '}', '}}'), '%%', chr(1))",
 )
 _PRINTF_SPEC = r"%-?0?\d*(?:\.\d+)?[sridfeEgGxXo]"
+# A print of several values, which the fix of PY-LOGG0002 refuses to rewrite.
+_SEVERAL_VALUES = 'import sys\n\nprint("args", sys.argv)\n'
 
 
 class LoggingBracedMessage(Function):
@@ -83,11 +85,11 @@ class LoggerBoundaryBypassCount(Rule, id="PY-LOGG0001", applicability="review"):
     examples = (
         Example(
             bad='import logging\n\nlogger = logging.getLogger(__name__)\nlogger.info("started")\n',
-            good='import logging\nfrom mb import logger\n\nlogger.info("started")\n',
+            good='from mb import logger\n\nlogger.info("started")\n',
         ),
         Example(
             bad='import logging\n\nlogging.getLogger("gpuhunt").setLevel(logging.ERROR)\nlogging.info("started")\n',
-            good='import logging\nfrom mb import logger\n\nlogging.getLogger("gpuhunt").setLevel(logging.ERROR)\nlogger.info("started")\n',
+            good='import logging\n\nfrom mb import logger\n\nlogging.getLogger("gpuhunt").setLevel(logging.ERROR)\nlogger.info("started")\n',
         ),
     )
     # Only the shapes that move to the project logger (`from mb import logger`, structlog under
@@ -261,8 +263,7 @@ print(name, file=sys.stderr)
 print(f"{name}!", end="")
 sys.stdout.write("raw\\n")
 """,
-            good="""import sys
-from mb import logger
+            good="""from mb import logger
 
 name = "Ada"
 logger.result("hello")
@@ -271,6 +272,7 @@ logger.result(f"{name}!", end="")
 logger.result("raw\\n", end="")
 """,
         ),
+        Example(bad=_SEVERAL_VALUES, good=_SEVERAL_VALUES),
     )
     fix = r"""
         WITH keywords AS (

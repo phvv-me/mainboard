@@ -6,30 +6,17 @@
 import socket
 import subprocess
 import time
-from enum import IntEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import psutil
 
-from .core.errors import MissionError
-from .dispatch.transport.core import terminate_process_tree
+from .core import MissionError, ProcessTree
+from .enums import Exit
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from typing import IO
-
-
-class Exit(IntEnum):
-    """The exit statuses a command did not choose, spelled as the shell spells them.
-
-    TIMED_OUT: GNU `timeout`'s status for a command it had to stop, so scripts branching on it
-        still work.
-    MISSING: the shell's status for a command it could not find.
-    """
-
-    TIMED_OUT = 124
-    MISSING = 127
 
 
 # Seconds a stopped tree gets to exit on its own before it is killed outright.
@@ -77,13 +64,7 @@ class Processes:
 
         force: kill at once instead of asking each process to terminate.
         """
-        gone = []
-        for pid in pids:
-            try:
-                terminate_process_tree(pid, force=force)
-            except psutil.NoSuchProcess:
-                gone.append(pid)
-        return gone
+        return [pid for pid in pids if not ProcessTree.end(pid, force=force)]
 
     def matching(self, pattern: str) -> list[dict[str, str | int | float]]:
         """Every process whose command line contains `pattern`, started by this tool or not.
@@ -147,13 +128,8 @@ class Processes:
         try:
             return process.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
-            terminate_process_tree(process.pid)
-        try:
-            process.wait(timeout=_GRACE)
-        except subprocess.TimeoutExpired:
-            terminate_process_tree(process.pid, force=True)
-            process.wait()
-        return Exit.TIMED_OUT
+            ProcessTree(process, grace=_GRACE).stop()
+            return Exit.TIMED_OUT
 
     def wait(
         self, *, file: Path | None = None, port: str = "", pid: int = 0, seconds: float = 0.0

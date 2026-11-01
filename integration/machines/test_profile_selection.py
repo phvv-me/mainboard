@@ -1,7 +1,9 @@
 """Automatic spans follow owned function bodies without importing shared wrappers."""
 
+import importlib
 import sys
 from collections import Counter
+from pathlib import Path
 from types import CodeType, ModuleType
 
 import pytest
@@ -10,12 +12,7 @@ from mainboard.profile import Profiler
 from mainboard.profile.bottleneck import annotate
 from mainboard.profile.bottleneck.owned import module_codes, owned_codes
 
-
-@pytest.fixture
-def modules(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
-    foreign = ModuleType("_profile_foreign")
-    exec(
-        """
+_FOREIGN = """
 from mainboard.profile.spans import span
 
 @span("manual_foreign")
@@ -25,13 +22,10 @@ def unrelated():
 class Foreign:
     def inherited(self):
         return 8
-""",
-        vars(foreign),
-    )
-    owned = ModuleType("_profile_owned")
-    vars(owned)["foreign"] = foreign
-    exec(
-        """
+"""
+
+_OWNED = """
+import _profile_foreign as foreign
 from mainboard.profile.spans import span
 
 foreign_alias = foreign.unrelated
@@ -79,11 +73,18 @@ def nested():
         yield 1
         yield 2
     return sum((lambda value: value)(value) for value in values())
-""",
-        vars(owned),
-    )
-    monkeypatch.setitem(sys.modules, owned.__name__, owned)
-    return owned, foreign
+"""
+
+
+@pytest.fixture
+def modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
+    (tmp_path / "_profile_foreign.py").write_text(_FOREIGN, encoding="utf-8")
+    (tmp_path / "_profile_owned.py").write_text(_OWNED, encoding="utf-8")
+    monkeypatch.syspath_prepend(tmp_path)
+    for name in ("_profile_foreign", "_profile_owned"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    owned = importlib.import_module("_profile_owned")
+    return owned, owned.foreign
 
 
 def test_owned_bodies_descriptors_and_foreign_wrappers(modules: tuple[ModuleType, ModuleType]):
@@ -106,15 +107,17 @@ def test_owned_bodies_descriptors_and_foreign_wrappers(modules: tuple[ModuleType
 def test_automatic_spans_preserve_explicit_labels(modules: tuple[ModuleType, ModuleType]):
     owned, foreign = modules
     with Profiler(features=Profiler.Feature.SPANS, auto=(owned.__name__,)) as profiler:
-        assert owned.plain() == 1
-        assert owned.first() == 2
-        assert owned.second() == 3
-        assert owned.Worker().regular() == 4
-        assert owned.Worker.static() == 5
-        assert owned.Worker.classed() == 6
-        assert foreign.unrelated() == 7
-        assert owned.Worker().inherited() == 8
-        assert owned.unlabelled() == 9
+        assert [
+            owned.plain(),
+            owned.first(),
+            owned.second(),
+            owned.Worker().regular(),
+            owned.Worker.static(),
+            owned.Worker.classed(),
+            foreign.unrelated(),
+            owned.Worker().inherited(),
+            owned.unlabelled(),
+        ] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert Counter(row.name for row in profiler.result().summaries) == Counter(
         {
             "plain": 1,
@@ -133,7 +136,7 @@ def test_automatic_spans_preserve_explicit_labels(modules: tuple[ModuleType, Mod
         }
     )
     assert not annotate.enabled_codes()
-    assert not profiler.frames
+    assert not profiler.spans.frames
     assert profiler.result().dropped_spans == 0
 
 

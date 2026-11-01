@@ -23,15 +23,19 @@ _HERE = Cell(values={"card": "h100"}, probing={"card": Probed.FOUND})
 
 
 def _receipt(
-    key: str, ms: int, *, passed: bool = True, admissible: bool = True
+    key: str,
+    ms: int,
+    *,
+    outcome: Outcome = Outcome.PASSED,
+    admissibility: Admissibility = Admissibility.ADMISSIBLE,
 ) -> dict[str, JsonValue]:
     return {
         "lane": "speed",
         "key": key,
         "card": "h100",
         "card_probed": str(Probed.FOUND),
-        "outcome": Outcome.PASSED if passed else Outcome.FAILED,
-        "admissibility": Admissibility.ADMISSIBLE if admissible else Admissibility.DIRTY,
+        "outcome": outcome,
+        "admissibility": admissibility,
         "measured": {"ms": ms},
     }
 
@@ -49,8 +53,8 @@ def store(tmp_path: Path) -> Dataset:
     older.write(_receipt("b", 4))
     newer = dataset.writer(NEWER, {"opened_at_ns": 2})
     newer.write(_receipt("a", 2))
-    newer.write(_receipt("b", 9, passed=False))
-    newer.write(_receipt("c", 1, admissible=False))
+    newer.write(_receipt("b", 9, outcome=Outcome.FAILED))
+    newer.write(_receipt("c", 1, admissibility=Admissibility.DIRTY))
     return dataset
 
 
@@ -58,7 +62,7 @@ def test_runs_order_by_their_creation_coordinate(store: Dataset) -> None:
     assert store.runs == (OLDER, NEWER)
     assert store.newest == NEWER
     assert store.stored == {OLDER, NEWER}
-    assert store.lanes() == {"speed"}
+    assert store.coverage.lanes() == {"speed"}
 
 
 def test_passing_takes_each_cell_from_its_newest_admissible_run(store: Dataset) -> None:
@@ -67,10 +71,10 @@ def test_passing_takes_each_cell_from_its_newest_admissible_run(store: Dataset) 
 
 
 def test_status_counts_admissible_passes_at_the_cell(store: Dataset) -> None:
-    status = store.status("speed", ["a", "b", "c"], _HERE)
+    status = store.coverage.status("speed", ["a", "b", "c"], _HERE)
     assert (status.want, status.have, status.missing, status.run) == (3, 2, ("c",), NEWER)
     elsewhere = Cell(values={"card": "a100"}, probing={"card": Probed.FOUND})
-    assert store.status("speed", ["a"], elsewhere).have == 0
+    assert store.coverage.status("speed", ["a"], elsewhere).have == 0
 
 
 def test_rows_read_the_newest_run_in_the_order_written(store: Dataset) -> None:
@@ -91,7 +95,7 @@ def test_an_unwritten_store_reads_empty(tmp_path: Path) -> None:
     empty = Dataset(tmp_path / "none", axes=("card",))
     assert empty.runs == ()
     assert records(empty.passing()) == []
-    assert empty.status("speed", ["a"], _HERE).have == 0
+    assert empty.coverage.status("speed", ["a"], _HERE).have == 0
 
 
 def test_runs_opened_at_one_instant_are_refused(tmp_path: Path) -> None:
@@ -102,7 +106,9 @@ def test_runs_opened_at_one_instant_are_refused(tmp_path: Path) -> None:
         _ = tied.runs
 
 
-def test_tables_read_every_matching_artifact_with_its_provenance(tmp_path: Path) -> None:
+@pytest.fixture
+def archived(tmp_path: Path) -> Dataset:
+    """One receipt whose artifact `t` is a parquet table of `x` = 1, 2 stored under `tmp_path`."""
     data = parquet_bytes(Relations().rows([{"x": 1}, {"x": 2}]))
     digest = hashlib.sha256(data).hexdigest()
     (tmp_path / "objects").mkdir()
@@ -120,10 +126,16 @@ def test_tables_read_every_matching_artifact_with_its_provenance(tmp_path: Path)
         "artifacts": {"t": reference.model_dump()},
     }
     dataset.writer(OLDER, {"opened_at_ns": 1}).write(receipt)
-    read = records(dataset.tables(tmp_path, schema_name="demo"))
+    return dataset
+
+
+def test_tables_read_every_matching_artifact_with_its_provenance(
+    archived: Dataset, tmp_path: Path
+) -> None:
+    read = records(archived.tables(tmp_path, schema_name="demo"))
     assert [row["x"] for row in read] == [1, 2]
     assert json.loads(str(read[0]["_trial"]))["artifact_name"] == "t"
-    none = dataset.tables(tmp_path, schema_name="other")
+    none = archived.tables(tmp_path, schema_name="other")
     assert none.columns == ["_trial"] and none.fetchall() == []
 
 

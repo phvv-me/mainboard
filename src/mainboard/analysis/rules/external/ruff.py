@@ -257,6 +257,7 @@ class RuffReview(RuffDiagnostics, id="PY-RUFF0002", applicability="review"):
             bad='"""Module."""\n\n\ndef run(host):\n    print("started", host)\n    return 1\n',
             good=(
                 '''"""Module."""
+
 from mb import logger
 
 
@@ -268,12 +269,13 @@ def run(host):
         ),
         Example(
             bad='import sys\n\n\ndef run():\n    print("started", file=sys.stderr, flush=True)\n',
-            good='import sys\nfrom mb import logger\n\n\ndef run():\n    logger.info("started")\n',
+            good='from mb import logger\n\n\ndef run():\n    logger.info("started")\n',
         ),
         Example(
             bad='"""Module."""\n\n\ndef run(host):\n    print("started", host)\n    return 1\n',
             good=(
                 '''"""Module."""
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -322,5 +324,10 @@ def run(host):
 """
             ),
             context={"pyproject.toml": '[project]\nname = "lab"\nversion = "0"\n'},
+        ),
+        Example(
+            bad='def names():\n    return tuple(["a", "b"])\n',
+            good='def names():\n    return ("a", "b")\n',
+            context={"pyproject.toml": '[tool.ruff.lint]\nselect = ["F"]\n'},
         ),
     )

@@ -14,13 +14,13 @@ _BINDINGS = """
 """
 
 _MODULES = r"""
-    SELECT path, importer_module AS module, ends_with(path, '__init__.py') AS is_package
+    SELECT path, importer_module AS module, is_initializer_path(path) AS is_package
     FROM (SELECT DISTINCT path, importer_module FROM import_binding_facts
           WHERE language = 'python')
     UNION ALL
     SELECT f.path, regexp_replace(replace(regexp_replace(f.path, '^src/', ''), '/', '.'),
                                   '(\.__init__)?\.pyi?$', '') AS module,
-           ends_with(f.path, '__init__.py') AS is_package
+           is_initializer_path(f.path) AS is_package
     FROM class_files f
     WHERE f.path NOT IN (SELECT path FROM import_binding_facts WHERE language = 'python')
 """
@@ -47,7 +47,7 @@ _FROM_IMPORTS = r"""
                              len(parts) - cut), '.'), ''), nullif(i.module, '')) END AS target,
                  i.is_wildcard
           FROM (SELECT *, string_split(importer_module, '.') AS parts,
-                       relative_level - ends_with(path, '__init__.py')::INT AS cut
+                       relative_level - is_initializer_path(path)::INT AS cut
                 FROM import_binding_facts
                 WHERE language = 'python' AND starts_with(ltrim(declaration_text), 'from')) i)
     WHERE NOT is_wildcard

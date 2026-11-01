@@ -16,6 +16,7 @@ from filelock import FileLock
 from patos import FrozenModel
 from pydantic import Field
 
+from ...core import write_atomic
 from ..shared import now, since
 
 # Written beside `settlement.lock`: its holder's record, and when a pass last ran to its end.
@@ -131,11 +132,11 @@ class SettlementLock(FileLock):
                 "deadline": deadline or self.owner.deadline,
             }
         )
-        _replace(Path(self.lock_file).with_name(_OWNER), self.owner.model_dump_json())
+        write_atomic(Path(self.lock_file).with_name(_OWNER), self.owner.model_dump_json())
 
     def succeeded(self) -> None:
         """Stamp that a pass ran to its end, whatever it found."""
-        _replace(Path(self.lock_file).with_name(_SUCCESS), now())
+        write_atomic(Path(self.lock_file).with_name(_SUCCESS), now())
 
 
 def last_settlement(run: Path) -> str:
@@ -147,13 +148,6 @@ def last_settlement(run: Path) -> str:
         return (run / _SUCCESS).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
-
-
-def _replace(path: Path, text: str) -> None:
-    """Write `text` so a reader finds the old file or the new one, never half of it."""
-    staged = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    staged.write_text(text, encoding="utf-8")
-    staged.replace(path)
 
 
 class Finished(FrozenModel):

@@ -11,12 +11,12 @@ from typing import TYPE_CHECKING
 from pathspec import GitIgnoreSpec
 from plumbum import local
 
-from ..constants import BYTES_PER_KIBIBYTE
+from ..core.constants.units import BYTES_PER_KIBIBYTE
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.provisioner import Provisioner
+from ..enums import Exit
 from ..manifest.schema.project import lint as lint_module
-from ..proc import Exit
 from .files import text
 from .files.inventory import Attributes, Inventory
 from .owners import Owners
@@ -28,14 +28,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence, Set
     from pathlib import Path
 
-    from ..manifest.schema.root import Manifest
+    from ..manifest.root import Manifest
 
 # Characters of file arguments one command carries, well inside every kernel's argument limit,
 # and the same budget everywhere keeps a run's batching identical on every machine.
 _BATCH = 24_000
 
 # Where a finding line points, `path:line` as every check prints it (ruff, ty's concise and
-# pyrefly's min-text formats, mcmr's concise one, vulture, vale): relative to the owner the
+# pyrefly's min-text formats, vulture, vale): relative to the owner the
 # check ran in, or absolute.
 _LOCATION = re.compile(r"(?:^|\s)(?P<path>[^\s:]+\.\w+):\d+")
 
@@ -49,7 +49,7 @@ class Linter:
     then every read-only check at once. Each tool runs once per owner of the files it matches,
     inside that owner, under its environment's PATH.
 
-    A check that reads its whole owner (a type checker, mcmr) answers for every file there, so
+    A check that reads its whole owner (a type checker) answers for every file there, so
     its verdict is narrowed to the files this pass reads: a finding naming another file is
     dropped, and the check passes when none is left. Output naming no file at all is a tool
     that broke, and keeps its failure. A pass over a few files is red only for those files.
