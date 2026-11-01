@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from ...state import schema
-from ...state.lake import Lake
+from ...state.lake import Cell, Lake
 from ..agent.program import Digests
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ class KeptDigests(Digests):
         if prune:
             self.held = {key: value for key, value in self.held.items() if key in self.seen}
         stamp = datetime.now(UTC)
-        changed = [
+        changed: list[dict[str, Cell]] = [
             {
                 "ts": stamp,
                 "kind": self.kind,
@@ -52,7 +52,7 @@ class KeptDigests(Digests):
             for path, value in self.held.items()
             if self.kept.get(path) != value
         ]
-        gone = [
+        gone: list[dict[str, Cell]] = [
             {"ts": stamp, "kind": self.kind, "path": path, "dropped": True}
             for path in self.kept
             if path not in self.held

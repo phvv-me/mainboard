@@ -14,9 +14,9 @@ from contextlib import contextmanager
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from ....constants import RECEIPTS_VAR
 from ....core import ProcessTree, Project
 from ....core.events.frames import JobFrames
-from ....constants import RECEIPTS_VAR
 from ....enums import Stop
 from ....exceptions import Refusal
 from ....runtime.job import walltime_seconds

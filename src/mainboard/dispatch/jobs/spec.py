@@ -6,6 +6,7 @@ import shlex
 
 from patos import FrozenModel
 
+from ...constants import CLOSURE_VAR, DEFERRED_VAR, DIGEST_VAR, FIRST_PARTY_VAR, SOURCE_VAR
 from ...context.plan import ExecutionPlan
 from ...core.events.frames import FrameSpec
 from ...core.project import Project
@@ -14,7 +15,6 @@ from .. import wrapping
 from ..constants import ATTEMPT_VAR, CHECKPOINT_VAR, COMMIT_VAR
 from ..shared import state_dir
 from ..wrapping import absent, activation, missing
-from ...constants import CLOSURE_VAR, DEFERRED_VAR, DIGEST_VAR, FIRST_PARTY_VAR, SOURCE_VAR
 
 
 class JobSpec(FrozenModel):

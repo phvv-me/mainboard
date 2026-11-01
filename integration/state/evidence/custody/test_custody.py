@@ -1,4 +1,6 @@
 import hashlib
+import shutil
+import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -253,3 +255,15 @@ def test_evict_deletes_only_what_the_lake_keeps_intact(
     assert sorted(files_of(evidence)) == ["late.txt", "noise.bin"]
     keeper.materialize([evidence / "receipts"])
     assert (evidence / "receipts" / "run=run1" / _PART).is_file()
+
+
+def test_evict_leaves_a_file_git_tracks_though_the_lake_holds_it(
+    kept: Evidence, stored: Callable[[str, bytes], Path]
+) -> None:
+    source, loose = stored("src/tracked.txt", b"source"), stored("data/loose.bin", b"evidence")
+    shutil.rmtree(kept.root / ".git")
+    for argv in (["init", "-q"], ["add", "src/tracked.txt"]):
+        subprocess.run(["git", "-C", str(kept.root), *argv], check=True)
+
+    assert kept.evict(kept.finalize([source, loose])) == [loose]
+    assert source.read_bytes() == b"source" and not loose.exists()

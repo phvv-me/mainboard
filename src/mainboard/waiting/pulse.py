@@ -24,6 +24,7 @@ from ..dispatch.schedulers import HostUnreachable, registry
 from ..dispatch.wrapping import connection
 from ..jobs.testing.beacon import Progress
 from ..state import schema
+from ..state.lake import Cell
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -101,7 +102,7 @@ class Pulses:
         readings = self.read(records)
         now = self.clock()
         held = self.recalled([_key(record) for record in readings])
-        grown: list[dict[str, object]] = []
+        grown: list[dict[str, Cell]] = []
         pulses: dict[RunRecord, Pulse] = {}
         for record, reading in readings.items():
             if not reading.output:

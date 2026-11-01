@@ -9,10 +9,10 @@ from typing import Annotated
 
 from pydantic import BeforeValidator
 
+from ..constants import CLOSURE_VAR, DIGEST_VAR
 from ..core.constants.units import SECONDS_PER_DAY, SECONDS_PER_HOUR
 from ..core.project import Project
 from ..log import logger
-from ..constants import CLOSURE_VAR, DIGEST_VAR
 
 # Research imports these two from here, where they lived before `constants`.
 __all__ = ["CLOSURE_VAR", "DIGEST_VAR"]

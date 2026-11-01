@@ -16,7 +16,7 @@ from ..schema import kind
 from ..storage.database import quoted
 from ..storage.sql import ndjson
 
-type Json = str | int | float | bool | None | list[Json] | dict[str, Json]
+type Json = str | int | float | bool | None | Sequence[Json] | Mapping[str, Json]
 type Cell = Json | bytes | date
 
 

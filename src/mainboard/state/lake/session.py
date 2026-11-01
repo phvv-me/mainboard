@@ -13,7 +13,7 @@ from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_rand
 
 from ...runtime.tree import FileBudget
 from ..enums import Access
-from .staging import insert
+from .staging import Cell, insert
 
 if TYPE_CHECKING:
     from .core import Lake
@@ -78,7 +78,7 @@ class Session:
             attachment.connection = connection
         return attachment.connection
 
-    def append(self, table: Table, rows: Iterable[Mapping[str, object]]) -> int:
+    def append(self, table: Table, rows: Iterable[Mapping[str, Cell]]) -> int:
         """Append `rows` to `table` in one commit, returning how many were appended."""
         staged = list(rows)
         return self.run(lambda connection: insert(connection, table, staged))
@@ -89,7 +89,7 @@ class Session:
             self._attachment.close()
 
     def rows(
-        self, statement: ClauseElement | str, parameters: Iterable[object] = ()
+        self, statement: ClauseElement | str, parameters: Iterable[Cell] = ()
     ) -> list[tuple[Any, ...]]:
         """What `statement` answers in this session."""
         bound = list(parameters)

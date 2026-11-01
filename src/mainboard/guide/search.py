@@ -10,12 +10,10 @@ from inspect import cleandoc
 from pathlib import Path
 from textwrap import shorten
 from types import FunctionType
-from typing import TYPE_CHECKING
 
 from cyclopts import App
-
-if TYPE_CHECKING:
-    from markdown_it.token import Token
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 # How many matches a search shows before it only counts the rest.
 _SHOWN = 20
@@ -27,9 +25,6 @@ class Help:
     @staticmethod
     def _blocks(lines: list[str]) -> Iterator[tuple[Token, int, list[str]]]:
         """Each top-level block of Markdown `lines` with its first line index and its lines."""
-        # Python 3.14 ignores `__lazy_modules__`, so only a search pays for the parser's import.
-        from markdown_it import MarkdownIt
-
         for block in MarkdownIt().enable("table").parse("\n".join(lines)):
             if not block.level and block.map:
                 first, last = block.map

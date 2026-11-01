@@ -17,8 +17,8 @@ from mainboard.dispatch.hosts.lease import Cap
 from mainboard.enums import Bound
 from mainboard.manifest import HostProfile
 
-from ....hosts.builders import lease
 from ....constants import DEADLINE
+from ....hosts.builders import lease
 from ...builders import refusal
 from ...constants import SSH_KEY
 from ...fakes import Recorded

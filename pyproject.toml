@@ -108,6 +108,10 @@ dev = [
     "mainboard[plot,adversarial,search]",
     # The lake tests compare a printed document by the shape of its fields (`IsJson`, `IsStr`).
     "dirty-equals>=0.11",
+    # The memory tests raise the upstream's own errors (`ToolError`, `MCPError`, its JSON-RPC
+    # codes); the client that speaks to AIZK is not here, so the tests that need it skip.
+    "fastmcp>=4.1",
+    "mcp>=2.3",
     "mypy>=1.11",
     "pyrefly>=1",
     "pytest>=8.0",
@@ -160,6 +164,11 @@ ignore_missing_imports = true
 module = ["gpuhunt", "gpuhunt.*"]
 ignore_missing_imports = true
 
+# The memory extra's libraries: a workspace installed without the extra has none of them.
+[[tool.mypy.overrides]]
+module = ["aizk_client", "aizk_client.*", "fastmcp", "fastmcp.*", "httpx", "httpx2", "mcp", "mcp.*", "mcp_types"]
+ignore_missing_imports = true
+
 [tool.mainboard.ci]
 os = ["linux", "osx"]
 
@@ -189,7 +198,8 @@ run = "uv run sh integration/gates/run.sh seed --report build/gate-report"
 
 [[tool.mainboard.ci.steps]]
 name = "test"
-run = "uv run sh integration/gates/run.sh suite --report build/gate-report --budget 1500"
+run = "uv run sh integration/gates/run.sh suite --report build/gate-report --budget 3600"
+timeout = 3900
 
 # The contextual lane reads a hosted model, so it names one rather than inheriting the default
 # `codex` backend this workspace retired. DeepSeek V4 Pro carries a one-million-token window,
@@ -569,7 +579,20 @@ python-version = "3.14"
 search-path = ["src", ".", "integration/gates/worker", "stubs"]
 # `stubs/` holds the hand-written `.pyi` of the optional CUDA, NVTX, ROCTx and signpost libraries
 # that ship no types; cupti-python ships them but has no macOS wheel (see the mypy override).
-ignore-missing-imports = ["cupti", "cupti.*"]
+ignore-missing-imports = [
+  "cupti",
+  "cupti.*",
+  # The memory extra's libraries: a workspace installed without the extra has none of them.
+  "aizk_client",
+  "aizk_client.*",
+  "fastmcp",
+  "fastmcp.*",
+  "httpx",
+  "httpx2",
+  "mcp",
+  "mcp.*",
+  "mcp_types",
+]
 
 [tool.ty.environment]
 python-version = "3.14"

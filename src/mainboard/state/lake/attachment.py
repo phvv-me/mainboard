@@ -18,7 +18,7 @@ from ...runtime.tree import FileBudget
 from ..constants import QUACK, RETRIES
 from ..enums import Access
 from ..storage.database import connect, extension_home, first_line, load, quoted
-from .staging import compiled, inlined
+from .staging import Cell, compiled, inlined
 
 # The DuckDB extensions an attach needs.
 _EXTENSIONS = ("ducklake", "sqlite")
@@ -261,7 +261,7 @@ class Attachment(FrozenModel):
         self,
         connection: duckdb.DuckDBPyConnection,
         statement: ClauseElement | str,
-        parameters: Iterable[object] = (),
+        parameters: Iterable[Cell] = (),
     ) -> duckdb.DuckDBPyConnection:
         """`statement` run on `connection`, inlined for a served lake.
 
@@ -278,7 +278,7 @@ class Attachment(FrozenModel):
         return bool(self.served) or self.catalog.is_file()
 
     def query(
-        self, statement: ClauseElement | str, parameters: Iterable[object] = ()
+        self, statement: ClauseElement | str, parameters: Iterable[Cell] = ()
     ) -> list[tuple[Any, ...]]:
         """One read-only query's rows; tables and views are named `lake.<name>`."""
         with self.open() as connection:

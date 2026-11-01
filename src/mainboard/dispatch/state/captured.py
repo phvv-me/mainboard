@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import func, literal_column, select
 
 from ...state import schema
+from ...state.lake import Cell
 from ..shared import now
 
 if TYPE_CHECKING:
@@ -22,7 +23,7 @@ class Captured:
     """One workspace's captured transcripts and trial receipts, in its state lake."""
 
     @staticmethod
-    def _receipt(stream: str, number: int, line: str) -> dict[str, object]:
+    def _receipt(stream: str, number: int, line: str) -> dict[str, Cell]:
         """One kept receipt line with the fields a query filters on.
 
         It is empty for a line that is not a receipt envelope.

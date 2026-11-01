@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from ...state import schema
 from ...state.lake import Lake, staged
+from ...state.lake.staging import Cell
 from .evidence import DeviceResult, Evidence
 
 
@@ -19,7 +20,7 @@ class EvidenceStore:
 
     def ingest[T: DeviceResult](self, evidence: Evidence[T]) -> str:
         evidence_id = evidence.key()
-        row = {
+        row: dict[str, Cell] = {
             "ts": datetime.now(UTC),
             "evidence_id": evidence_id,
             "artifact_sha256": evidence.artifact.sha256,

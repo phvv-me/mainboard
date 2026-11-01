@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..core.project import Marker, Project
 from ..constants import CLOSURE_VAR, DIGEST_VAR
+from ..core.project import Marker, Project
 from ..dispatch.provenance import Row, SourceTree, blob_of, listing
 from ..enums import Status
 from ..probe.machine import Machine

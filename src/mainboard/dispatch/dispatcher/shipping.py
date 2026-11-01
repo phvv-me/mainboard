@@ -15,7 +15,7 @@ from ...engines.compile.inputs.vendor import vendor_root
 from ...engines.compile.pixi.lockfile import Lockfile
 from ...log import logger
 from ...state import schema
-from ...state.lake import Lake
+from ...state.lake import Cell, Lake
 from ..agent import Agent, Scope, SshLink
 from ..constants import CARD_LEASES
 from ..hosts.locking import SyncLock
@@ -81,7 +81,7 @@ class Shipper:
         return parts[0] if parts else ""
 
     @staticmethod
-    def _recorded(name: str, content: bytes) -> tuple[Table, Column, str, list[dict[str, object]]]:
+    def _recorded(name: str, content: bytes) -> tuple[Table, Column, str, list[dict[str, Cell]]]:
         """How one staged file is recorded: its table, the column and value naming it, its rows.
 
         A closure listing is one row per listed file, its tab-separated path, blob and status; any
@@ -91,12 +91,12 @@ class Shipper:
         if name.startswith("closure-"):
             closure = name.removeprefix("closure-").removesuffix(".tsv")
             listed = (line.split("\t") for line in content.decode().splitlines() if line)
-            rows: list[dict[str, object]] = [
+            rows: list[dict[str, Cell]] = [
                 {"ts": stamp, "closure": closure, "path": path, "blob": blob, "status": status}
                 for path, blob, status in listed
             ]
             return schema.closures, schema.closures.c.closure, closure, rows
-        script: dict[str, object] = {
+        script: dict[str, Cell] = {
             "ts": stamp,
             "name": name,
             "sha256": hashlib.sha256(content).hexdigest(),

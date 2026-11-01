@@ -1,6 +1,7 @@
 """The dispatch constants other modules share."""
 
 from ..core.project import Project
+
 COMMIT_VAR = Project().variable("SOURCE_COMMIT")
 
 # Where a job keeps what it resumes from, the same directory on every attempt of one run name,

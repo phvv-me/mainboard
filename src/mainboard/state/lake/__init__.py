@@ -46,10 +46,11 @@ from ..storage.database import quoted as quoted
 from .core import Lake, Serving
 from .maintenance import Finding, Health
 from .session import Session
-from .staging import inlined, insert, staged
+from .staging import Cell, inlined, insert, staged
 
 __all__ = [
     "Access",
+    "Cell",
     "Finding",
     "Health",
     "Lake",

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy import Select, select
 
 from ...state import schema
-from ...state.lake import Lake, Session
+from ...state.lake import Cell, Lake, Session
 from ..hosts.lease import Lease
 from ..hosts.onboard import HostSetup
 from ..jobs import vocabulary
@@ -128,7 +128,7 @@ class Log:
         return False
 
     @staticmethod
-    def _row(run: RunRecord, *, dropped: bool = False) -> dict[str, object]:
+    def _row(run: RunRecord, *, dropped: bool = False) -> dict[str, Cell]:
         """The `runs_log` row recording `run`, or its removal when `dropped`."""
         return {
             "ts": now(),
@@ -287,7 +287,7 @@ class Hosts(Log):
         return None
 
     @staticmethod
-    def _host(setup: HostSetup, *, probed_at: str | None) -> dict[str, object]:
+    def _host(setup: HostSetup, *, probed_at: str | None) -> dict[str, Cell]:
         """The `host_facts` row recording `setup`, ordered among its alias's by `probed_at`."""
         return {
             "ts": now(),

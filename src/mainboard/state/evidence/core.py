@@ -13,6 +13,7 @@ import duckdb
 
 from ...core import Disk
 from ...core.errors import MissionError
+from ...git.process import Git
 from ..constants import EVICTED_TOGETHER, READERS, WINDOW_BYTES
 from ..lake import Finding
 from ..storage.blobs import Audit
@@ -122,6 +123,15 @@ class Evidence(Keeping):
                     removed.append(self.root / item.path)
         return removed
 
+    def _tracked(self) -> set[str]:
+        """Every path a git repository tracks under the workspace, submodules included.
+
+        A tracked file is source, whatever the lake also holds, so an eviction leaves it. Nothing
+        is tracked where the workspace is no repository.
+        """
+        listed = Git(self.root).run("ls-files", "-z", "--recurse-submodules")
+        return set(listed.stdout.split("\0")) if listed.returncode == 0 else set()
+
     def _write(self, row: Located, *, root: Path, replace: bool = False) -> None:
         """Write `row`'s object to its path under `root`, refusing when the lake lost it."""
         if not self.session.run(
@@ -163,10 +173,12 @@ class Evidence(Keeping):
         }
         if parts := len(finalized.files) - len(closed):
             logger.warning("%d archive files stay: readers open them by path", parts)
+        tracked = self._tracked()
+        inventory = [item for item in self.inventory(list(closed)) if item.evictable]
+        if held := sum(item.path in tracked for item in inventory):
+            logger.warning("%d tracked files stay: git holds them as source", held)
         candidates = [
-            (item, closed[self.root / item.path])
-            for item in self.inventory(list(closed))
-            if item.evictable
+            (item, closed[self.root / item.path]) for item in inventory if item.path not in tracked
         ]
         evicted = [
             source

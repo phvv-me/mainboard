@@ -55,13 +55,13 @@ class Eviction(FrozenModel):
             {"path": path, "outcome": "removed", "bytes": size, "why": ""}
             for path, size in self.removed.items()
         ]
-        rows += [
+        rows.extend(
             {"path": path, "outcome": "kept", "bytes": "", "why": why}
             for path, why in self.kept.items()
-        ]
-        rows += [
+        )
+        rows.extend(
             {"path": path, "outcome": "emptied", "bytes": "", "why": ""} for path in self.emptied
-        ]
+        )
         return rows
 
 

@@ -4,6 +4,28 @@ Found while running real work, kept here to fix later with care rather than in t
 campaign. Each entry says where it showed up, what it costs, and what is already done. Newest
 campaign first; move an entry to the bottom section once fixed and verified.
 
+## Found sending the second workspace to Miyabi-G, 2026-11-01 (evening)
+
+1. **Setting up a host from a workspace that vendors no mainboard source replaces the shared tool with the index
+   release.** A host has one uv tool install. `mb host setup miyabi-g` from `research/kernel-languages` (no
+   `packages/mainboard` in its mirror) installed the 0.5.7 release over the editable install the root workspace had
+   put there. Both report `0.5.7`, but the release lacks `Job.frames`, so every PBS job dispatched by the center died
+   after 4 seconds with `ValidationError: frames: Extra inputs are not permitted` in `mainboard execute`. Root
+   workspace jobs on that host would have failed the same way. Repaired by `mb host setup miyabi-g` from the root
+   workspace, which reinstalled the vendored source (`_editable_impl_mainboard.pth`). Open: setup should refuse, or
+   at least warn, when it would replace a tool installed from vendored source by one from an index, and the version
+   string should carry the build (a local version like `0.5.7+<commit>`), so a skew like this is visible in
+   `mainboard --version`.
+2. **A failed PBS job leaves no readable output when no `--fetch` is given, and a fetched folder was reported
+   "into the lake" but `lake materialize` found nothing.** The traceback was only in the scheduler's output file,
+   `.mb/dispatch/sources/<digest>/<script>.o<id>`, found with `qstat -f -H <id>` on the login node. `mb job logs`
+   answered "no output on file". With `--fetch results/gh200` the job showed `evidence verified` in `mb data query`
+   (`jobs`), but `mb data lake materialize results/gh200` said the lake indexes no evidence there, from the nested
+   workspace and from the root.
+3. **A job's relative `--fetch` folder resolved to a dangling symlink**, `<source dir>/results/gh200 ->
+   <root>/results/gh200`, which the job's own `mkdir -p results/gh200` then wrote through; after the fetch the
+   target no longer existed on the host.
+
 ## Found setting up a second workspace on a host, 2026-11-01
 
 A self-contained project manifest (`research/kernel-languages/mb.toml`, Python 3.15, its own lock) was onboarded on
@@ -2576,6 +2598,15 @@ is why a rename shows up as a fresh list.
   `mb code rules check`. The relock changed 19 lines and dropped 113 (mcmr, maturin, tron-python).
   The gate lost its `mcmr` lane and its `mcmr` version and finding counts in `baseline.json`.
   The `[tool.mcmr...]` tables stay as the name of rule settings in every `pyproject.toml`.
+- FIXED 2026-11-01, an incident: `mb data lake ingest research/reproducibility/experiments` kept
+  every file under the path, source included, and `evict` then removed every file the lake held, so
+  2,426 files git tracks (the experiments' scripts and READMEs) left that project's tree and
+  `host setup` deleted 2,157 of them from purple's mirror. `lake materialize` wrote them all back
+  from the lake, verified; it does not restore the executable bit, which `chmod +x` returned for 18
+  scripts (`git diff --summary`). `evict` now leaves every file a git repository tracks
+  (`Evidence._tracked`, one `git ls-files --recurse-submodules`), warning with the count. Open:
+  `ingest` still takes source when given a folder that holds some, and `materialize` should set
+  the mode from git's index for tracked paths; the hosts' mirrors of that project need a sync.
 - FIXED 2026-11-01: `mb data lake evict` took 0.2 to 0.3 s per file whatever its size (a tree of
   350,000 files would have taken a day), because it asked the lake about each object alone and
   every read scans all data files. It now moves a batch of 256 files aside (`EVICTED_TOGETHER`),

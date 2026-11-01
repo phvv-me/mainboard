@@ -16,8 +16,8 @@ import csv
 import json
 from typing import TYPE_CHECKING
 
-from ...core import replacing
 from ...constants import RECEIPTS_VAR
+from ...core import replacing
 from ...state.relations import Relations, write_parquet
 from ..constants import NESTED
 

@@ -26,7 +26,7 @@ from ..constants import QUACK, RETRIES
 from ..storage.database import connect, first_line, quoted
 from .maintenance import Maintained
 from .session import Session, patiently
-from .staging import insert
+from .staging import Cell, insert
 
 _DATA_PATH_UPDATE_SQL = (
     "UPDATE ducklake_metadata SET value = ? "
@@ -196,7 +196,7 @@ class Lake(Maintained):
             connection.execute("COMMIT")
         return done
 
-    def append(self, table: Table, rows: Iterable[Mapping[str, object]]) -> int:
+    def append(self, table: Table, rows: Iterable[Mapping[str, Cell]]) -> int:
         """Append `rows` to `table` in one commit, returning how many were appended.
 
         Retried with a fresh attach while SQLite answers that the catalog is locked.
