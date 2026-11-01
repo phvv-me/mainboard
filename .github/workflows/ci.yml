@@ -5,7 +5,7 @@ on:
   workflow_call: # publish.yml runs this exact gate on main before publishing
   workflow_dispatch: # manual runs (e.g. to validate main directly between releases)
 
-# The gate itself is `[tool.mainboard.ci]` in pyproject.toml, and `mainboard ci` is the only thing
+# The gate itself is `[tool.mainboard.ci]` in pyproject.toml, and `mainboard code ci` is the only thing
 # that runs it, here, on a developer's machine and across `--matrix` alike. This file only
 # chooses the runners and bootstraps what a runner lacks, so it has nothing left to drift from. A
 # runner of a platform the table does not support fails the job rather than checking nothing.
@@ -34,8 +34,8 @@ jobs:
       - if: runner.os == 'Linux'
         run: sh integration/gates/linux-runner.sh
       # `--locked` refuses a stale lock before the tool that checks for one is even installed.
-      - run: uv run --locked mainboard ci
-      # `mainboard ci` shows a step's own output, and the gate keeps each test's in its report.
+      - run: uv run --locked mainboard code ci
+      # `mainboard code ci` shows a step's own output, and the gate keeps each test's in its report.
       - if: failure()
         run: tail -n 150 build/gate-report/suite.log || true
       - if: failure()

@@ -3,7 +3,7 @@
 # integration/gates/README.md lists the modes, the report and the budgets.
 set -eu
 projects=${MB_GATE_PROJECTS:-/Users/pedro/Developer/projects}
-# `uv run` leaves VIRTUAL_ENV on the project environment it ran from, so CI and `mainboard ci`
+# `uv run` leaves VIRTUAL_ENV on the project environment it ran from, so CI and `mainboard code ci`
 # gate the installation the lock builds; run bare, the workspace's environment answers.
 environment=${VIRTUAL_ENV:-$projects/.mb/envs/default/.pixi/envs/default}
 bin=$environment/bin

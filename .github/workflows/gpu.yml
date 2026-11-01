@@ -25,7 +25,7 @@ jobs:
       # bubblewrap, which this script installs and lets an unprivileged user run with sudo, so the
       # runner's user needs passwordless sudo or the AppArmor sysctl lifted beforehand.
       - run: sh integration/gates/linux-runner.sh
-      - run: uv run --locked mainboard ci
+      - run: uv run --locked mainboard code ci
       # then assert a GPU was actually detected on this box
       - run: |
           uv run python - <<'PY'

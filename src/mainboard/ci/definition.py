@@ -2,9 +2,10 @@
 #
 # The gate used to live twice, as YAML steps GitHub ran and as whatever a developer remembered to
 # run before pushing, and the two drifted: a stale lock, a coverage hole and forty platform-only
-# failures each reached CI first. Now `[tool.mainboard.ci]` is the gate and `mainboard ci` alone
-# runs it: from a developer's shell, with `--matrix` on a remote host of each other platform before
-# a push, and from the GitHub workflow, which only checks out the code and calls that same verb.
+# failures each reached CI first. Now `[tool.mainboard.ci]` is the gate and `mainboard code ci`
+# alone runs it: from a developer's shell, with `--matrix` on a remote host of each other platform
+# before a push, and from the GitHub workflow, which only checks out the code and calls that same
+# verb.
 #
 # A step is a command line, never a shell script, so a gate means the same words on every
 # platform. A step runs on every platform the package supports unless it names the ones it is
